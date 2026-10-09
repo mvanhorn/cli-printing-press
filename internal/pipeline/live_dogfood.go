@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2100,33 +2101,12 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 
 			errorRun := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, errorArgs, len(command.Path), ctx.timeout, nil)
-			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun, ctx.authEnvValue)
-
-			if isSearch {
-				// Real-world feed/content APIs return recent items as a fallback
-				// for unmatched queries, so non-empty results under exit 0 are
-				// not a failure signal. The only fail mode is invalid JSON when
-				// the caller asked for --json.
-				switch {
-				case errorRun.exitCode != 0:
-					errorResult.Status = LiveDogfoodStatusPass
-					errorResult.Reason = ""
-				case suppliedJSON && !liveDogfoodJSONValid(errorRun):
-					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = "invalid JSON under --json"
-				default:
-					errorResult.Status = LiveDogfoodStatusPass
-					errorResult.Reason = ""
-				}
-			} else {
-				if errorRun.exitCode != 0 {
-					errorResult.Status = LiveDogfoodStatusPass
-					errorResult.Reason = ""
-				} else {
-					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = "expected non-zero exit for invalid argument"
-				}
-			}
+			errorResult := applyLiveDogfoodErrorPathVerdict(
+				liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun, ctx.authEnvValue),
+				errorRun,
+				isSearch,
+				suppliedJSON,
+			)
 			results = append(results, errorResult)
 		}
 	} else {
@@ -2294,35 +2274,42 @@ func liveDogfoodNewCLIPaths(before, after map[string]struct{}) []string {
 	return out
 }
 
-// omitGitIgnoredCLIPaths drops paths git would not list as untracked.
-// A gitignored cache is not part of the published tree. When cliDir is
-// not a git checkout, every new path is kept.
-func omitGitIgnoredCLIPaths(cliDir string, paths []string) []string {
+// omitUnshippableCLIPaths drops new paths the publish step already removes.
+// Publish force-adds the CLI tree, so a gitignore rule does not keep a
+// leftover out of the public library. Only live-check staging directories
+// and compiled probe binaries are stripped before that add.
+func omitUnshippableCLIPaths(cliDir string, paths []string) []string {
 	if len(paths) == 0 {
 		return paths
 	}
-	cmd := exec.Command("git", "-C", cliDir, "check-ignore", "-z", "--stdin")
-	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
-	cmd.Stderr = io.Discard
-	out, err := cmd.Output()
-	if err != nil {
-		return paths
-	}
-	ignored := make(map[string]struct{}, len(paths))
-	for part := range bytes.SplitSeq(out, []byte{0}) {
-		if len(part) == 0 {
-			continue
-		}
-		ignored[string(part)] = struct{}{}
-	}
 	kept := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if _, ok := ignored[path]; ok {
+		if cliPathPublishWouldDrop(cliDir, path) {
 			continue
 		}
 		kept = append(kept, path)
 	}
 	return kept
+}
+
+func cliPathPublishWouldDrop(cliDir, rel string) bool {
+	rel = filepath.Clean(rel)
+	if rel == "." || rel == "" || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return false
+	}
+	if slices.ContainsFunc(strings.Split(rel, string(filepath.Separator)), isLiveCheckStagingDirName) {
+		return true
+	}
+	abs := filepath.Join(cliDir, rel)
+	info, err := os.Lstat(abs)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	drop, err := isStrayPackageExecutable(abs, fs.FileInfoToDirEntry(info))
+	if err != nil {
+		return false
+	}
+	return drop
 }
 
 func liveDogfoodStrayCLIFileReason(paths []string) string {
@@ -2343,7 +2330,7 @@ func reportLiveDogfoodStrayCLIFiles(report *LiveDogfoodReport, cliDir string, be
 	if err != nil {
 		return
 	}
-	stray := omitGitIgnoredCLIPaths(cliDir, liveDogfoodNewCLIPaths(before, after))
+	stray := omitUnshippableCLIPaths(cliDir, liveDogfoodNewCLIPaths(before, after))
 	if len(stray) == 0 {
 		return
 	}
@@ -2487,6 +2474,63 @@ func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, 
 	if run.setupFailure && run.err != nil {
 		result.Reason = run.err.Error()
 	}
+	return result
+}
+
+// preserveLiveDogfoodSetupFailure keeps a scratch-directory or fixture-copy
+// error from being reclassified. The command never started, so a non-zero
+// exit is not evidence that an error-path probe worked or that --dry-run
+// declined to short-circuit.
+func preserveLiveDogfoodSetupFailure(result *LiveDogfoodTestResult, run liveDogfoodRun) bool {
+	if !run.setupFailure {
+		return false
+	}
+	result.Status = LiveDogfoodStatusFail
+	if run.err != nil {
+		result.Reason = run.err.Error()
+	}
+	return true
+}
+
+func applyLiveDogfoodErrorPathVerdict(result LiveDogfoodTestResult, run liveDogfoodRun, isSearch, suppliedJSON bool) LiveDogfoodTestResult {
+	if preserveLiveDogfoodSetupFailure(&result, run) {
+		return result
+	}
+	if isSearch {
+		// Real-world feed/content APIs return recent items as a fallback
+		// for unmatched queries, so non-empty results under exit 0 are
+		// not a failure signal. The only fail mode is invalid JSON when
+		// the caller asked for --json.
+		switch {
+		case run.exitCode != 0:
+			result.Status = LiveDogfoodStatusPass
+			result.Reason = ""
+		case suppliedJSON && !liveDogfoodJSONValid(run):
+			result.Status = LiveDogfoodStatusFail
+			result.Reason = "invalid JSON under --json"
+		default:
+			result.Status = LiveDogfoodStatusPass
+			result.Reason = ""
+		}
+		return result
+	}
+	if run.exitCode != 0 {
+		result.Status = LiveDogfoodStatusPass
+		result.Reason = ""
+		return result
+	}
+	result.Status = LiveDogfoodStatusFail
+	result.Reason = "expected non-zero exit for invalid argument"
+	return result
+}
+
+func applyLiveDogfoodDryRunJSONVerdict(result LiveDogfoodTestResult, run liveDogfoodRun, requireHonour bool) LiveDogfoodTestResult {
+	if preserveLiveDogfoodSetupFailure(&result, run) {
+		return result
+	}
+	status, reason := liveDogfoodDryRunJSONContract(run, requireHonour)
+	result.Status = status
+	result.Reason = reason
 	return result
 }
 
@@ -3529,10 +3573,11 @@ func probeLiveDogfoodDryRunJSON(command liveDogfoodCommand, ctx resolveCtx, muta
 		len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 	args = appendDryRunArg(appendJSONArg(args))
 	run := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, args, len(command.Path), ctx.timeout, stdinPayload)
-	result := liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue)
-	status, reason := liveDogfoodDryRunJSONContract(run, false)
-	result.Status = status
-	result.Reason = reason
+	result := applyLiveDogfoodDryRunJSONVerdict(
+		liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue),
+		run,
+		false,
+	)
 	return &result
 }
 

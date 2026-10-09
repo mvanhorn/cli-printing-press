@@ -1,9 +1,9 @@
 package pipeline
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,21 +45,71 @@ func TestLiveDogfoodStrayCLIFileReasonCapsList(t *testing.T) {
 	assert.Contains(t, reason, "(+1 more)")
 }
 
-func TestOmitGitIgnoredCLIPaths(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not available")
-	}
+func TestOmitUnshippableCLIPathsKeepsPublishableIgnoredFiles(t *testing.T) {
 	dir := t.TempDir()
-	initCmd := exec.Command("git", "init", "-q")
-	initCmd.Dir = dir
-	require.NoError(t, initCmd.Run())
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "build", "plan.json"), []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cache.log"), []byte("log\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "probe.exe"), []byte("not-a-binary"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "probe.bin"), []byte{0x7f, 'E', 'L', 'F'}, 0o755))
+	stage := ".printing-press-live-check-abc"
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, stage), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, stage, "note.json"), []byte("{}\n"), 0o644))
 
-	got := omitGitIgnoredCLIPaths(dir, []string{"photos.json", "cache.log", "nested/plan.json"})
-	assert.Equal(t, []string{"photos.json", "nested/plan.json"}, got)
+	got := omitUnshippableCLIPaths(dir, []string{
+		"build",
+		"build/plan.json",
+		"cache.log",
+		"probe.exe",
+		"probe.bin",
+		stage,
+		filepath.Join(stage, "note.json"),
+		"photos.json",
+	})
+	assert.Equal(t, []string{"build", "build/plan.json", "cache.log", "photos.json"}, got)
+}
 
-	bare := t.TempDir()
-	assert.Equal(t, []string{"photos.json"}, omitGitIgnoredCLIPaths(bare, []string{"photos.json"}))
+func TestApplyLiveDogfoodSetupFailureIsNotAProbePass(t *testing.T) {
+	run := liveDogfoodRun{
+		exitCode:     -1,
+		err:          errors.New("create live dogfood scratch dir: boom"),
+		setupFailure: true,
+	}
+
+	errorResult := applyLiveDogfoodErrorPathVerdict(
+		liveDogfoodResult("items get", LiveDogfoodTestError, []string{"items", "get", "__printing_press_invalid__"}, run, ""),
+		run,
+		false,
+		false,
+	)
+	assert.Equal(t, LiveDogfoodStatusFail, errorResult.Status)
+	assert.Equal(t, "create live dogfood scratch dir: boom", errorResult.Reason)
+
+	searchResult := applyLiveDogfoodErrorPathVerdict(
+		liveDogfoodResult("items search", LiveDogfoodTestError, nil, run, ""),
+		run,
+		true,
+		true,
+	)
+	assert.Equal(t, LiveDogfoodStatusFail, searchResult.Status)
+	assert.Equal(t, "create live dogfood scratch dir: boom", searchResult.Reason)
+
+	dryResult := applyLiveDogfoodDryRunJSONVerdict(
+		liveDogfoodResult("organize", LiveDogfoodTestDryRunJSON, []string{"organize", "--dry-run"}, run, ""),
+		run,
+		false,
+	)
+	assert.Equal(t, LiveDogfoodStatusFail, dryResult.Status)
+	assert.Equal(t, "create live dogfood scratch dir: boom", dryResult.Reason)
+
+	realError := applyLiveDogfoodErrorPathVerdict(
+		liveDogfoodResult("items get", LiveDogfoodTestError, nil, liveDogfoodRun{exitCode: 1}, ""),
+		liveDogfoodRun{exitCode: 1},
+		false,
+		false,
+	)
+	assert.Equal(t, LiveDogfoodStatusPass, realError.Status)
+	assert.Empty(t, realError.Reason)
 }
 
 func TestRunLiveDogfoodFileWritesDoNotLandInCLIDir(t *testing.T) {
