@@ -805,3 +805,431 @@ func TestSQLScanStateLongColumnsStaySQLEnvelope(t *testing.T) {
 		t.Fatalf("wide-column result fell back to a generic preview: %s", text)
 	}
 }
+
+func oversizedCursorPage(t *testing.T, extra map[string]any) ([]byte, []string) {
+	t.Helper()
+	ids := make([]string, 40)
+	entries := make([]map[string]string, len(ids))
+	for i := range ids {
+		ids[i] = "id-" + strconv.Itoa(i)
+		entries[i] = map[string]string{"id": ids[i], "payload": strings.Repeat("x", 1600)}
+	}
+	body := map[string]any{"entries": entries}
+	for key, value := range extra {
+		body[key] = value
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= MaxBytes {
+		t.Fatalf("fixture length %d, want > %d", len(data), MaxBytes)
+	}
+	return data, ids
+}
+
+func TestEndpointPageResponseReadOnlyPOSTPagesLikeGET(t *testing.T) {
+	const apiCursor = "upstream-cursor-value"
+	data, ids := oversizedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": true})
+	opts := PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "cursor",
+		HasMoreField:   "has_more",
+		RequestCursor:  apiCursor,
+		ReadOnly:       true,
+	}
+
+	first := EndpointPageResponse("POST", data, opts)
+	if len(first) > MaxBytes {
+		t.Fatalf("page length = %d, want <= %d", len(first), MaxBytes)
+	}
+	var page struct {
+		Entries    []map[string]string `json:"entries"`
+		NextCursor string              `json:"next_cursor"`
+		Preview    string              `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(first), &page); err != nil {
+		t.Fatalf("page must remain valid JSON: %v\n%s", err, first)
+	}
+	if page.Preview != "" || page.NextCursor == "" || len(page.Entries) == 0 {
+		t.Fatalf("read-only POST list should page instead of previewing: %s", first)
+	}
+	if page.Entries[0]["id"] != ids[0] {
+		t.Fatalf("first id = %q, want %q", page.Entries[0]["id"], ids[0])
+	}
+	if rawCursorFieldPresent(t, first) {
+		t.Fatalf("truncated page exposed the raw cursor: %s", first)
+	}
+	state, err := decodeEndpointCursor(page.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.UpstreamCursor != apiCursor || state.Offset == 0 {
+		t.Fatalf("opaque cursor = %+v, want offset within the page and upstream %q", state, apiCursor)
+	}
+
+	second := EndpointPageResponse("POST", data, PageOptions{
+		CursorParam:    opts.CursorParam,
+		NextCursorPath: opts.NextCursorPath,
+		HasMoreField:   opts.HasMoreField,
+		RequestCursor:  apiCursor,
+		ReadOnly:       true,
+		Cursor:         page.NextCursor,
+	})
+	var next struct {
+		Entries []map[string]string `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(second), &next); err != nil {
+		t.Fatalf("second page must remain valid JSON: %v\n%s", err, second)
+	}
+	if len(next.Entries) == 0 || next.Entries[0]["id"] != ids[len(page.Entries)] {
+		t.Fatalf("second page restarted or skipped, got %s", second)
+	}
+}
+
+func TestEndpointPageResponseExternalContinuationResumesThenExposesCursor(t *testing.T) {
+	const apiCursor = "upstream-cursor-value"
+	data, ids := oversizedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": true})
+	opts := PageOptions{
+		NextCursorPath:       "cursor",
+		HasMoreField:         "has_more",
+		ReadOnly:             true,
+		ExternalContinuation: true,
+	}
+	seen, last := walkCursorPages(t, "POST", data, opts)
+	if strings.Join(seen, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids = %v, want %v", seen, ids)
+	}
+	var finished struct {
+		HasMore *bool `json:"has_more"`
+	}
+	if err := json.Unmarshal([]byte(last), &finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.HasMore == nil || !*finished.HasMore {
+		t.Fatalf("final external page should keep has_more for the continuation tool: %s", last)
+	}
+}
+
+func TestEndpointPageResponseHasMoreFalseDoesNotContinue(t *testing.T) {
+	const apiCursor = "delta-cursor-value"
+	data, ids := oversizedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": false})
+	opts := PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "cursor",
+		HasMoreField:   "has_more",
+		RequestCursor:  apiCursor,
+		ReadOnly:       true,
+	}
+	seen, last := walkCursorPages(t, "POST", data, opts)
+	if strings.Join(seen, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids = %v, want %v", seen, ids)
+	}
+	var finished struct {
+		HasMore    *bool  `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(last), &finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.NextCursor != "" || finished.HasMore == nil || *finished.HasMore {
+		t.Fatalf("has_more false should finish the page without another cursor: %s", last)
+	}
+}
+
+func TestEndpointPageResponseMoreAliasSuppressesContinuation(t *testing.T) {
+	const apiCursor = "delta-cursor-value"
+	data, ids := oversizedCursorPage(t, map[string]any{"cursor": apiCursor, "more": false})
+	opts := PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "cursor",
+		HasMoreField:   "has_more",
+		RequestCursor:  apiCursor,
+		ReadOnly:       true,
+	}
+	seen, last := walkCursorPages(t, "POST", data, opts)
+	if strings.Join(seen, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids = %v, want %v", seen, ids)
+	}
+	var finished struct {
+		NextCursor string `json:"next_cursor"`
+		More       *bool  `json:"more"`
+	}
+	if err := json.Unmarshal([]byte(last), &finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.NextCursor != "" || finished.More == nil || *finished.More {
+		t.Fatalf("more false should finish the page without another cursor: %s", last)
+	}
+}
+
+func TestEndpointPageResponseMutatingPOSTStaysPreview(t *testing.T) {
+	data, _ := oversizedCursorPage(t, map[string]any{"cursor": "upstream-cursor-value", "has_more": true})
+	text := EndpointPageResponse("POST", data, PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "cursor",
+		HasMoreField:   "has_more",
+	})
+	var envelope struct {
+		Resumable  *bool  `json:"resumable"`
+		Preview    string `json:"preview"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("preview must remain valid JSON: %v\n%s", err, text)
+	}
+	if envelope.Resumable == nil || *envelope.Resumable || envelope.Preview == "" || envelope.NextCursor != "" {
+		t.Fatalf("mutating POST should stay a non-resumable preview: %s", text)
+	}
+}
+
+func TestEndpointPageResponseSmallReadOnlyPOSTPassesThrough(t *testing.T) {
+	data := []byte(`{"cursor":"abc","entries":[{"id":"1"}],"has_more":false}`)
+	text := EndpointPageResponse("POST", data, PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "cursor",
+		HasMoreField:   "has_more",
+		ReadOnly:       true,
+	})
+	if text != string(data) {
+		t.Fatalf("small read-only POST = %s, want original payload", text)
+	}
+}
+
+func TestEndpointPageResponseReadOnlyPOSTArrayWithoutCursorIsBounded(t *testing.T) {
+	items := make([]map[string]string, 40)
+	for i := range items {
+		items[i] = map[string]string{"id": "id-" + strconv.Itoa(i), "payload": strings.Repeat("x", 1600)}
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := EndpointPageResponse("POST", data, PageOptions{ReadOnly: true})
+	var envelope struct {
+		Items      []map[string]string `json:"items"`
+		Truncated  bool                `json:"truncated"`
+		NextCursor string              `json:"next_cursor"`
+		Preview    string              `json:"preview"`
+		Resumable  *bool               `json:"resumable"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("bounded array must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated || len(envelope.Items) == 0 || envelope.NextCursor != "" || envelope.Preview != "" {
+		t.Fatalf("oversized read-only array should truncate without a cursor: %s", text)
+	}
+	if envelope.Resumable != nil && *envelope.Resumable {
+		t.Fatalf("cursor-less truncation should not be resumable: %s", text)
+	}
+
+	mutating := EndpointResponse("POST", data)
+	var preview struct {
+		Resumable *bool  `json:"resumable"`
+		Preview   string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(mutating), &preview); err != nil {
+		t.Fatalf("mutating array preview must remain valid JSON: %v\n%s", err, mutating)
+	}
+	if preview.Resumable == nil || *preview.Resumable || preview.Preview == "" {
+		t.Fatalf("mutating POST array should stay a preview: %s", mutating)
+	}
+}
+
+func TestEndpointPageResponseGETIgnoresHasMoreFalse(t *testing.T) {
+	data, err := json.Marshal(map[string]any{
+		"items": []map[string]string{
+			{"id": "item-0"},
+			{"id": "item-1"},
+		},
+		"next_cursor": "server-next-token",
+		"has_more":    false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor", NextCursorPath: "next_cursor"})
+	var envelope struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("GET page must remain valid JSON: %v\n%s", err, text)
+	}
+	if envelope.NextCursor == "" || strings.Contains(envelope.NextCursor, "server-next-token") {
+		t.Fatalf("GET should still wrap the upstream cursor, got %q", envelope.NextCursor)
+	}
+}
+
+func walkCursorPages(t *testing.T, method string, data []byte, opts PageOptions) ([]string, string) {
+	t.Helper()
+	seen := make([]string, 0, 40)
+	cursor := ""
+	var last string
+	for step := 0; step < 20; step++ {
+		call := opts
+		call.Cursor = cursor
+		text := EndpointPageResponse(method, data, call)
+		if len(text) > MaxBytes {
+			t.Fatalf("page %d length = %d, want <= %d", step, len(text), MaxBytes)
+		}
+		var page struct {
+			Entries    []map[string]string `json:"entries"`
+			NextCursor string              `json:"next_cursor"`
+			HasMore    *bool               `json:"has_more"`
+			More       *bool               `json:"more"`
+			Preview    string              `json:"preview"`
+		}
+		if err := json.Unmarshal([]byte(text), &page); err != nil {
+			t.Fatalf("page %d must remain valid JSON: %v\n%s", step, err, text)
+		}
+		if page.Preview != "" {
+			t.Fatalf("page %d fell back to preview: %s", step, text)
+		}
+		for _, entry := range page.Entries {
+			seen = append(seen, entry["id"])
+		}
+		last = text
+		if page.NextCursor == "" {
+			if !rawCursorFieldPresent(t, text) {
+				t.Fatalf("finished page hid the API cursor: %s", text)
+			}
+			return seen, text
+		}
+		if rawCursorFieldPresent(t, text) {
+			t.Fatalf("truncated page exposed the raw cursor: %s", text)
+		}
+		if len(page.Entries) == 0 {
+			t.Fatalf("truncated page returned no entries: %s", text)
+		}
+		cursor = page.NextCursor
+	}
+	t.Fatalf("paging did not finish, last page %s", last)
+	return nil, last
+}
+
+func rawCursorFieldPresent(t *testing.T, text string) bool {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	_, ok := raw["cursor"]
+	return ok
+}
+
+func TestEndpointPageResponseNestedHasMoreFalseDoesNotContinue(t *testing.T) {
+	const apiCursor = "delta-cursor-value"
+	data, ids := nestedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": false}, map[string]any{"has_more": true})
+	opts := PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "paging.cursor",
+		HasMoreField:   "paging.has_more",
+		RequestCursor:  apiCursor,
+		ReadOnly:       true,
+	}
+	seen := make([]string, 0, len(ids))
+	cursor := ""
+	var last string
+	for step := 0; step < 20; step++ {
+		call := opts
+		call.Cursor = cursor
+		text := EndpointPageResponse("POST", data, call)
+		idsPage, next, pagingCursor := nestedPage(t, text)
+		if len(idsPage) == 0 {
+			t.Fatalf("page %d returned no entries: %s", step, text)
+		}
+		seen = append(seen, idsPage...)
+		last = text
+		if next == "" {
+			if pagingCursor != apiCursor {
+				t.Fatalf("finished page hid the API cursor: %s", text)
+			}
+			break
+		}
+		if pagingCursor != "" {
+			t.Fatalf("truncated page exposed the nested cursor: %s", text)
+		}
+		cursor = next
+	}
+	if strings.Join(seen, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids = %v, want %v; last page %s", seen, ids, last)
+	}
+	var finished struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(last), &finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.NextCursor != "" {
+		t.Fatalf("nested has_more false should finish without another cursor: %s", last)
+	}
+}
+
+func TestEndpointPageResponseGETKeepsNestedCursor(t *testing.T) {
+	const apiCursor = "server-next-token"
+	data, _ := nestedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": false}, nil)
+	text := EndpointPageResponse("GET", data, PageOptions{CursorParam: "after", NextCursorPath: "paging.cursor"})
+	_, next, pagingCursor := nestedPage(t, text)
+	if next == "" || pagingCursor != apiCursor || strings.Contains(next, apiCursor) {
+		t.Fatalf("GET should keep the nested cursor and wrap it, got next %q paging %q in %s", next, pagingCursor, text)
+	}
+}
+
+func nestedCursorPage(t *testing.T, paging map[string]any, extra map[string]any) ([]byte, []string) {
+	t.Helper()
+	ids := make([]string, 40)
+	entries := make([]map[string]string, len(ids))
+	for i := range ids {
+		ids[i] = "id-" + strconv.Itoa(i)
+		entries[i] = map[string]string{"id": ids[i], "payload": strings.Repeat("x", 1600)}
+	}
+	body := map[string]any{"entries": entries, "paging": paging}
+	for key, value := range extra {
+		body[key] = value
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= MaxBytes {
+		t.Fatalf("fixture length %d, want > %d", len(data), MaxBytes)
+	}
+	return data, ids
+}
+
+func nestedPage(t *testing.T, text string) (ids []string, next, pagingCursor string) {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatalf("page must remain valid JSON: %v\n%s", err, text)
+	}
+	if cursor, ok := raw["next_cursor"]; ok {
+		if json.Unmarshal(cursor, &next) != nil {
+			t.Fatalf("next_cursor was not a string: %s", text)
+		}
+	}
+	if paging, ok := raw["paging"]; ok {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(paging, &obj) != nil {
+			t.Fatalf("paging was not an object: %s", text)
+		}
+		if cursor, ok := obj["cursor"]; ok {
+			if json.Unmarshal(cursor, &pagingCursor) != nil {
+				t.Fatalf("paging.cursor was not a string: %s", text)
+			}
+		}
+	}
+	if entries, ok := raw["entries"]; ok {
+		var items []map[string]string
+		if json.Unmarshal(entries, &items) != nil {
+			t.Fatalf("entries were not objects: %s", text)
+		}
+		for _, item := range items {
+			ids = append(ids, item["id"])
+		}
+	}
+	if _, preview := raw["preview"]; preview {
+		t.Fatalf("page fell back to preview: %s", text)
+	}
+	return ids, next, pagingCursor
+}

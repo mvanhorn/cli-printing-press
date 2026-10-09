@@ -114,8 +114,13 @@ type mcpParamBinding struct {
 }
 
 type mcpPageConfig struct {
-	CursorParam    string
-	NextCursorPath string
+	CursorParam          string
+	NextCursorPath       string
+	HasMoreField         string
+	ContinuationInput    string
+	CursorInBody         bool
+	ExternalContinuation bool
+	BodyPath             []string
 }
 
 func formatMCPParamValue(v any) string {
@@ -187,20 +192,30 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 		params := make(map[string]string)
 		bodyArgs := make(map[string]any)
 		mcpCursor := ""
-		if pageConfig.CursorParam != "" {
+		requestCursor := ""
+		if pageConfig.CursorParam != "" || pageConfig.ExternalContinuation || pageConfig.ContinuationInput != "" {
 			knownArgs["cursor"] = true
 			if v, ok := args["cursor"]; ok {
 				s, ok := v.(string)
 				if !ok {
 					return mcpToolError("cursor must be an opaque string returned by a previous MCP response"), nil
 				}
-				mcpCursor = s
-				upstreamCursor, err := bound.UpstreamCursor(s)
-				if err != nil {
-					return mcpToolError(err.Error()), nil
-				}
-				if upstreamCursor != "" {
-					params[pageConfig.CursorParam] = upstreamCursor
+				if s != "" {
+					upstreamCursor, err := bound.UpstreamCursor(s)
+					if err == nil {
+						mcpCursor = s
+						requestCursor = upstreamCursor
+						if upstreamCursor != "" && pageConfig.CursorParam != "" && !pageConfig.CursorInBody {
+							params[pageConfig.CursorParam] = upstreamCursor
+						}
+					} else if !strings.EqualFold(method, "GET") && pageConfig.CursorParam != "" {
+						requestCursor = s
+						if !pageConfig.CursorInBody {
+							params[pageConfig.CursorParam] = s
+						}
+					} else {
+						return mcpToolError(err.Error()), nil
+					}
 				}
 			}
 		}
@@ -259,6 +274,33 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 				bodyArgs[k] = v
 			default:
 				params[k] = formatMCPParamValue(v)
+			}
+		}
+
+		// The public cursor argument is either an opaque MCP cursor or, on a
+		// read-only non-GET, the API cursor itself. Replay must send the API
+		// cursor, never the opaque blob, or the next slice skips entries.
+		// Query and form fields carry that cursor the same way the JSON body does.
+		if pageConfig.CursorInBody && pageConfig.CursorParam != "" {
+			if mcpCursor != "" {
+				if requestCursor != "" {
+					bodyArgs[pageConfig.CursorParam] = requestCursor
+				} else {
+					delete(bodyArgs, pageConfig.CursorParam)
+				}
+			} else if s, ok := bodyArgs[pageConfig.CursorParam].(string); ok {
+				requestCursor = s
+			}
+		}
+		if !strings.EqualFold(method, "GET") && !pageConfig.CursorInBody && pageConfig.CursorParam != "" {
+			if mcpCursor != "" {
+				if requestCursor != "" {
+					params[pageConfig.CursorParam] = requestCursor
+				} else {
+					delete(params, pageConfig.CursorParam)
+				}
+			} else if s, ok := params[pageConfig.CursorParam]; ok && s != "" {
+				requestCursor = s
 			}
 		}
 
@@ -381,15 +423,15 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 			}
 			return mcplib.NewToolResultText(result), nil
 		}
-		if pageConfig.CursorParam != "" {
-			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, platformSession), nil
+		if pageConfig.CursorParam != "" || pageConfig.NextCursorPath != "" || pageConfig.ExternalContinuation {
+			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession), nil
 		}
-		return mcpToolResultTextWithPlatform(method, data, platformSession), nil
+		return mcpToolResultTextWithPlatform(method, data, readOnly, platformSession), nil
 	}
 }
 
 func mcpToolResultText(method string, data json.RawMessage) *mcplib.CallToolResult {
-	return mcpToolResultTextWithPlatform(method, data, nil)
+	return mcpToolResultTextWithPlatform(method, data, false, nil)
 }
 
 func mcpToolTextWithPlatform(result string, platformSession *platform.Session) *mcplib.CallToolResult {
@@ -399,8 +441,8 @@ func mcpToolTextWithPlatform(result string, platformSession *platform.Session) *
 	return mcplib.NewToolResultText(result)
 }
 
-func mcpToolResultTextWithPlatform(method string, data json.RawMessage, platformSession *platform.Session) *mcplib.CallToolResult {
-	result := bound.EndpointResponse(method, data)
+func mcpToolResultTextWithPlatform(method string, data json.RawMessage, readOnly bool, platformSession *platform.Session) *mcplib.CallToolResult {
+	result := bound.EndpointPageResponse(method, data, bound.PageOptions{ReadOnly: readOnly})
 	return mcpToolTextWithPlatform(result, platformSession)
 }
 
@@ -411,14 +453,18 @@ func mcpToolError(message string) *mcplib.CallToolResult {
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
-	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, nil)
+	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, "", false, nil)
 }
 
-func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string, platformSession *platform.Session) *mcplib.CallToolResult {
+func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor, requestCursor string, readOnly bool, platformSession *platform.Session) *mcplib.CallToolResult {
 	result := bound.EndpointPageResponse(method, data, bound.PageOptions{
-		Cursor:         cursor,
-		CursorParam:    pageConfig.CursorParam,
-		NextCursorPath: pageConfig.NextCursorPath,
+		Cursor:               cursor,
+		CursorParam:          pageConfig.CursorParam,
+		NextCursorPath:       pageConfig.NextCursorPath,
+		HasMoreField:         pageConfig.HasMoreField,
+		RequestCursor:        requestCursor,
+		ReadOnly:             readOnly,
+		ExternalContinuation: pageConfig.ExternalContinuation,
 	})
 	if platformSession != nil {
 		result = bound.WithMetadata(result, platformSession.OutputMetadata())

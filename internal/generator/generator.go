@@ -478,6 +478,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamBindings":             mcpParamBindings,
 		"mcpEndpointPageable":          mcpEndpointPageable,
 		"mcpPageConfig":                mcpPageConfig,
+		"mcpToolPageConfig":            mcpToolPageConfig,
+		"mcpExposeOpaqueCursor":        mcpExposeOpaqueCursor,
 		"mcpGlobalTemplateInputParams": mcpGlobalTemplateInputParams,
 		"mcpGlobalTemplateBindings":    mcpGlobalTemplateBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
@@ -7435,18 +7437,7 @@ func mcpEndpointPageable(endpoint spec.Endpoint) bool {
 }
 
 func mcpPageConfig(endpoint spec.Endpoint) string {
-	if !mcpEndpointPageable(endpoint) {
-		return "mcpPageConfig{}"
-	}
-	nextCursorPath := endpoint.Pagination.NextCursorPath
-	paginationType := strings.ToLower(strings.TrimSpace(endpoint.Pagination.Type))
-	if strings.TrimSpace(nextCursorPath) == "" && paginationType != "offset" && paginationType != "page" {
-		nextCursorPath = endpoint.Pagination.CursorParam
-	}
-	return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}",
-		endpoint.Pagination.CursorParam,
-		nextCursorPath,
-	)
+	return mcpToolPageConfig(spec.Resource{}, "", endpoint)
 }
 
 func isMCPPaginationCursorParam(endpoint spec.Endpoint, p spec.Param) bool {

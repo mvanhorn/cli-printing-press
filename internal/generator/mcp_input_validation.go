@@ -26,7 +26,7 @@ func (g *Generator) validateMCPInputNames() error {
 		res := g.Spec.Resources[resName]
 		for _, epName := range sortedKeys(res.Endpoints) {
 			ep := res.Endpoints[epName]
-			if err := validateEndpointMCPInputNames(resName, epName, ep, effectiveEndpointPath(res, ep), vars); err != nil {
+			if err := validateEndpointMCPInputNames(res, resName, epName, ep, effectiveEndpointPath(res, ep), vars); err != nil {
 				return err
 			}
 		}
@@ -34,7 +34,7 @@ func (g *Generator) validateMCPInputNames() error {
 			sub := res.SubResources[subName]
 			for _, epName := range sortedKeys(sub.Endpoints) {
 				ep := sub.Endpoints[epName]
-				if err := validateEndpointMCPInputNames(resName+"/"+subName, epName, ep, effectiveSubEndpointPath(res, sub, ep), vars); err != nil {
+				if err := validateEndpointMCPInputNames(sub, resName+"/"+subName, epName, ep, effectiveSubEndpointPath(res, sub, ep), vars); err != nil {
 					return err
 				}
 			}
@@ -45,12 +45,12 @@ func (g *Generator) validateMCPInputNames() error {
 
 // validateEndpointMCPInputNames records every input name the MCP template
 // will emit for one endpoint's tool — the generator-reserved inputs first
-// (mirroring mcp_tools.go.tmpl's pageable cursor and raw-body blocks; the
+// (mirroring mcp_tools.go.tmpl's opaque-cursor and raw-body blocks; the
 // body_json fallback input arrives via mcpParamBindings, so it is NOT
 // recorded as reserved here), then the same mcpParamBindings /
 // mcpGlobalTemplateBindings producers the template renders from — and fails
 // on the first illegal or duplicate key.
-func validateEndpointMCPInputNames(resKey, epName string, ep spec.Endpoint, pathTemplate string, vars []string) error {
+func validateEndpointMCPInputNames(resource spec.Resource, resKey, epName string, ep spec.Endpoint, pathTemplate string, vars []string) error {
 	type source struct{ label string }
 	seen := map[string]source{}
 	record := func(name, label string) error {
@@ -64,8 +64,9 @@ func validateEndpointMCPInputNames(resKey, epName string, ep spec.Endpoint, path
 		return nil
 	}
 	// Reserved, generator-injected inputs first — mirror mcp_tools.go.tmpl's
-	// pageable-cursor and raw-body WithString emissions.
-	if mcpEndpointPageable(ep) {
+	// opaque-cursor and raw-body WithString emissions. A body field already
+	// named cursor is the continuation argument, so no second input is added.
+	if mcpExposeOpaqueCursor(resource, epName, ep) {
 		if err := record("cursor", "the generated pagination input"); err != nil {
 			return err
 		}

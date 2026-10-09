@@ -1,0 +1,383 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+type capturedCall struct {
+	path        string
+	body        map[string]any
+	form        url.Values
+	query       string
+	contentType string
+}
+
+func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
+	const apiCursor = "aGVsbG8"
+	entries := make([]map[string]string, 40)
+	ids := make([]string, len(entries))
+	for i := range entries {
+		ids[i] = "id-" + strconv.Itoa(i)
+		entries[i] = map[string]string{"id": ids[i], "payload": strings.Repeat("x", 1600)}
+	}
+	listBody, err := json.Marshal(map[string]any{"entries": entries, "cursor": apiCursor, "has_more": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrayBody, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchBody, err := json.Marshal(map[string]any{"entries": entries, "page_token": apiCursor, "more": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedBody, err := json.Marshal(map[string]any{
+		"entries": entries,
+		"paging":  map[string]any{"cursor": apiCursor, "has_more": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var calls []capturedCall
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		call := capturedCall{path: r.URL.Path, query: r.URL.RawQuery, contentType: r.Header.Get("Content-Type")}
+		if strings.Contains(call.contentType, "application/x-www-form-urlencoded") {
+			call.form, _ = url.ParseQuery(string(raw))
+		} else {
+			_ = json.Unmarshal(raw, &call.body)
+		}
+		mu.Lock()
+		calls = append(calls, call)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/folders/delete", "/folders/revisions":
+			_, _ = w.Write(arrayBody)
+		case "/items/search":
+			_, _ = w.Write(searchBody)
+		case "/items/nested":
+			_, _ = w.Write(nestedBody)
+		default:
+			_, _ = w.Write(listBody)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("__BASE_URL_ENV__", server.URL)
+
+	list := makeAPIHandler("POST", "/folders/list", true, false, nil, mcpPageConfig{NextCursorPath: "cursor", HasMoreField: "has_more", ContinuationInput: "cursor", ExternalContinuation: true}, []mcpParamBinding{
+		{PublicName: "path", WireName: "path", Location: "body"},
+		{PublicName: "limit", WireName: "limit", Location: "body"},
+	}, nil)
+	seen, toolCalls := walkToolPages(t, list)
+	if strings.Join(seen, ",") != strings.Join(ids, ",") {
+		t.Fatalf("list ids = %v, want %v", seen, ids)
+	}
+	listCalls := callsFor(&mu, &calls, "/folders/list")
+	if len(listCalls) != toolCalls {
+		t.Fatalf("list HTTP calls = %d, tool calls = %d", len(listCalls), toolCalls)
+	}
+	for _, got := range listCalls {
+		if _, ok := got.body["cursor"]; ok {
+			t.Fatalf("list replay sent a cursor: %#v", got.body)
+		}
+		if got.body["path"] != "/" {
+			t.Fatalf("list body = %#v", got.body)
+		}
+	}
+
+	cont := makeAPIHandler("POST", "/folders/list/continue", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor", HasMoreField: "has_more", ContinuationInput: "cursor", CursorInBody: true}, []mcpParamBinding{
+		{PublicName: "cursor", WireName: "cursor", Location: "body"},
+	}, nil)
+	mu.Lock()
+	before := len(calls)
+	mu.Unlock()
+	firstText := callTool(t, cont, map[string]any{"cursor": apiCursor})
+	firstIDs, firstNext, _, firstPreview := objectPage(t, firstText, "entries")
+	if firstPreview != "" || firstNext == "" || len(firstIDs) == 0 || firstIDs[0] != ids[0] {
+		t.Fatalf("continue first page = %s", firstText)
+	}
+	if rawCursorPresent(t, firstText) {
+		t.Fatalf("continue page exposed the raw cursor: %s", firstText)
+	}
+	secondText := callTool(t, cont, map[string]any{"cursor": firstNext})
+	secondIDs, _, _, secondPreview := objectPage(t, secondText, "entries")
+	if secondPreview != "" || len(secondIDs) == 0 || secondIDs[0] != ids[len(firstIDs)] {
+		t.Fatalf("continue replay restarted or skipped: %s", secondText)
+	}
+	mu.Lock()
+	contCalls := append([]capturedCall(nil), calls[before:]...)
+	mu.Unlock()
+	if len(contCalls) != 2 {
+		t.Fatalf("continue HTTP calls = %d, want 2", len(contCalls))
+	}
+	for _, got := range contCalls {
+		if got.path != "/folders/list/continue" {
+			t.Fatalf("continue path = %s", got.path)
+		}
+		if got.body["cursor"] != apiCursor {
+			t.Fatalf("continue sent cursor %#v, want the API cursor", got.body["cursor"])
+		}
+		if _, ok := got.body["limit"]; ok {
+			t.Fatalf("continue injected a limit: %#v", got.body)
+		}
+	}
+
+	del := makeAPIHandler("POST", "/folders/delete", false, false, nil, mcpPageConfig{}, []mcpParamBinding{
+		{PublicName: "path", WireName: "path", Location: "body"},
+	}, nil)
+	mu.Lock()
+	before = len(calls)
+	mu.Unlock()
+	deleted := callTool(t, del, map[string]any{"path": "/gone"})
+	var preview map[string]any
+	if err := json.Unmarshal([]byte(deleted), &preview); err != nil {
+		t.Fatalf("delete result: %v\n%s", err, deleted)
+	}
+	resumable, resumableOK := preview["resumable"].(bool)
+	previewText, _ := preview["preview"].(string)
+	if _, hasNext := preview["next_cursor"]; hasNext || !resumableOK || resumable || previewText == "" {
+		t.Fatalf("mutating POST was paged: %s", deleted)
+	}
+	mu.Lock()
+	deleteCalls := len(calls) - before
+	mu.Unlock()
+	if deleteCalls != 1 {
+		t.Fatalf("delete HTTP calls = %d, want 1", deleteCalls)
+	}
+
+	search := makeAPIHandler("POST", "/items/search", true, false, nil, mcpPageConfig{CursorParam: "page_token", NextCursorPath: "page_token", HasMoreField: "more", ContinuationInput: "page_token"}, []mcpParamBinding{
+		{PublicName: "q", WireName: "q", Location: "query"},
+		{PublicName: "page_token", WireName: "page_token", Location: "query"},
+	}, nil)
+	searchFirst := callTool(t, search, map[string]any{"q": "x", "page_token": apiCursor})
+	searchIDs, searchNext, _, searchPreview := objectPage(t, searchFirst, "entries")
+	if searchPreview != "" || searchNext == "" || len(searchIDs) == 0 || searchIDs[0] != ids[0] {
+		t.Fatalf("query search first page = %s", searchFirst)
+	}
+	var searchPage map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(searchFirst), &searchPage); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := searchPage["page_token"]; ok {
+		t.Fatalf("query search exposed the raw page token: %s", searchFirst)
+	}
+	searchSecond := callTool(t, search, map[string]any{"q": "x", "cursor": searchNext})
+	searchNextIDs, _, _, searchSecondPreview := objectPage(t, searchSecond, "entries")
+	if searchSecondPreview != "" || len(searchNextIDs) == 0 || searchNextIDs[0] != ids[len(searchIDs)] {
+		t.Fatalf("query search replay restarted or skipped: %s", searchSecond)
+	}
+	searchCalls := callsFor(&mu, &calls, "/items/search")
+	if len(searchCalls) != 2 {
+		t.Fatalf("query search HTTP calls = %d, want 2", len(searchCalls))
+	}
+	for _, got := range searchCalls {
+		if !strings.Contains(got.query, "page_token="+apiCursor) || strings.Contains(got.query, searchNext) {
+			t.Fatalf("query search query = %s, want page_token=%s", got.query, apiCursor)
+		}
+	}
+
+	nested := makeAPIHandler("POST", "/items/nested", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "paging.cursor", HasMoreField: "paging.has_more", ContinuationInput: "paging-cursor", CursorInBody: true, BodyPath: []string{"paging", "cursor"}}, []mcpParamBinding{
+		{PublicName: "path", WireName: "path", Location: "body"},
+		{PublicName: "paging-cursor", WireName: "cursor", Location: "body", BodyPath: []string{"paging", "cursor"}},
+	}, nil)
+	nestedFirst := callTool(t, nested, map[string]any{"path": "/", "paging-cursor": apiCursor})
+	nestedIDs, nestedNext, _, nestedPreview := objectPage(t, nestedFirst, "entries")
+	if nestedPreview != "" || nestedNext == "" || len(nestedIDs) == 0 || nestedIDs[0] != ids[0] {
+		t.Fatalf("nested first page = %s", nestedFirst)
+	}
+	if nestedCursorValue(t, nestedFirst) != "" {
+		t.Fatalf("nested page exposed the raw cursor: %s", nestedFirst)
+	}
+	nestedSecond := callTool(t, nested, map[string]any{"path": "/", "cursor": nestedNext})
+	nestedNextIDs, _, _, nestedSecondPreview := objectPage(t, nestedSecond, "entries")
+	if nestedSecondPreview != "" || len(nestedNextIDs) == 0 || nestedNextIDs[0] != ids[len(nestedIDs)] {
+		t.Fatalf("nested replay restarted or skipped: %s", nestedSecond)
+	}
+	nestedCalls := callsFor(&mu, &calls, "/items/nested")
+	if len(nestedCalls) != 2 {
+		t.Fatalf("nested HTTP calls = %d, want 2", len(nestedCalls))
+	}
+	for _, got := range nestedCalls {
+		paging, _ := got.body["paging"].(map[string]any)
+		if paging["cursor"] != apiCursor {
+			t.Fatalf("nested body = %#v, want paging.cursor %s", got.body, apiCursor)
+		}
+		if _, ok := got.body["cursor"]; ok {
+			t.Fatalf("nested replay wrote a top-level cursor: %#v", got.body)
+		}
+	}
+
+	formList := makeAPIHandler("POST", "/items/form", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor", HasMoreField: "has_more", ContinuationInput: "cursor", CursorInBody: true}, []mcpParamBinding{
+		{PublicName: "q", WireName: "q", Location: "body", RequestContentType: "application/x-www-form-urlencoded"},
+		{PublicName: "cursor", WireName: "cursor", Location: "body", RequestContentType: "application/x-www-form-urlencoded"},
+	}, nil)
+	formFirst := callTool(t, formList, map[string]any{"q": "x", "cursor": apiCursor})
+	formIDs, formNext, _, formPreview := objectPage(t, formFirst, "entries")
+	if formPreview != "" || formNext == "" || len(formIDs) == 0 || formIDs[0] != ids[0] {
+		t.Fatalf("form first page = %s", formFirst)
+	}
+	formSecond := callTool(t, formList, map[string]any{"q": "x", "cursor": formNext})
+	formNextIDs, _, _, formSecondPreview := objectPage(t, formSecond, "entries")
+	if formSecondPreview != "" || len(formNextIDs) == 0 || formNextIDs[0] != ids[len(formIDs)] {
+		t.Fatalf("form replay restarted or skipped: %s", formSecond)
+	}
+	formCalls := callsFor(&mu, &calls, "/items/form")
+	if len(formCalls) != 2 {
+		t.Fatalf("form HTTP calls = %d, want 2", len(formCalls))
+	}
+	for _, got := range formCalls {
+		if !strings.Contains(got.contentType, "application/x-www-form-urlencoded") {
+			t.Fatalf("form content type = %s", got.contentType)
+		}
+		if got.form.Get("cursor") != apiCursor || got.form.Get("q") != "x" {
+			t.Fatalf("form body = %s, want cursor=%s", got.form.Encode(), apiCursor)
+		}
+	}
+
+	revs := makeAPIHandler("GET", "/folders/revisions", true, false, nil, mcpPageConfig{CursorParam: "after", NextCursorPath: "after"}, []mcpParamBinding{
+		{PublicName: "limit", WireName: "limit", Location: "query"},
+	}, nil)
+	revText := callTool(t, revs, map[string]any{})
+	revIDs, revNext, _, revPreview := objectPage(t, revText, "items")
+	if revPreview != "" || revNext == "" || len(revIDs) == 0 {
+		t.Fatalf("GET revisions = %s", revText)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, got := range calls {
+		if got.path == "/folders/revisions" && strings.Contains(got.query, "after=") {
+			t.Fatalf("GET revisions forwarded a cursor query: %s", got.query)
+		}
+	}
+}
+
+func walkToolPages(t *testing.T, handler server.ToolHandlerFunc) ([]string, int) {
+	t.Helper()
+	var seen []string
+	cursor := ""
+	var last string
+	for step := 0; step < 20; step++ {
+		args := map[string]any{"path": "/"}
+		if cursor != "" {
+			args["cursor"] = cursor
+		}
+		text := callTool(t, handler, args)
+		ids, next, hasMore, preview := objectPage(t, text, "entries")
+		if preview != "" || len(ids) == 0 {
+			t.Fatalf("page %d was not a list page: %s", step, text)
+		}
+		seen = append(seen, ids...)
+		last = text
+		if next == "" {
+			if !rawCursorPresent(t, text) || hasMore == nil || !*hasMore {
+				t.Fatalf("final list page = %s", text)
+			}
+			return seen, step + 1
+		}
+		if rawCursorPresent(t, text) {
+			t.Fatalf("truncated list page exposed the raw cursor: %s", text)
+		}
+		cursor = next
+	}
+	t.Fatalf("list paging did not finish: %s", last)
+	return nil, 0
+}
+
+func callTool(t *testing.T, handler server.ToolHandlerFunc, args map[string]any) string {
+	t.Helper()
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("MCP call failed: result=%#v err=%v", result, err)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("content = %#v", result.Content)
+	}
+	text, ok := result.Content[0].(mcplib.TextContent)
+	if !ok {
+		t.Fatalf("content type = %T", result.Content[0])
+	}
+	return text.Text
+}
+
+func objectPage(t *testing.T, text, field string) (ids []string, next string, hasMore *bool, preview string) {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatalf("page json: %v\n%s", err, text)
+	}
+	preview, _ = raw["preview"].(string)
+	next, _ = raw["next_cursor"].(string)
+	if value, ok := raw["has_more"].(bool); ok {
+		hasMore = &value
+	}
+	items, _ := raw[field].([]any)
+	for _, item := range items {
+		obj, _ := item.(map[string]any)
+		id, _ := obj["id"].(string)
+		ids = append(ids, id)
+	}
+	return ids, next, hasMore, preview
+}
+
+func rawCursorPresent(t *testing.T, text string) bool {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	_, ok := raw["cursor"]
+	return ok
+}
+
+func nestedCursorValue(t *testing.T, text string) string {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	paging, ok := raw["paging"]
+	if !ok {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(paging, &obj) != nil {
+		t.Fatalf("paging was not an object: %s", text)
+	}
+	cursor, ok := obj["cursor"]
+	if !ok {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(cursor, &value) != nil {
+		t.Fatalf("paging.cursor was not a string: %s", text)
+	}
+	return value
+}
+
+func callsFor(mu *sync.Mutex, calls *[]capturedCall, path string) []capturedCall {
+	mu.Lock()
+	defer mu.Unlock()
+	var out []capturedCall
+	for _, got := range *calls {
+		if got.path == path {
+			out = append(out, got)
+		}
+	}
+	return out
+}
