@@ -249,7 +249,7 @@ func TestRenderMergedGoModFreshWinsEnetxHTTP(t *testing.T) {
 
 	pubGoMod := []byte(`module github.com/example/monorepo/library/foo
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/enetx/http v1.0.28
@@ -259,7 +259,7 @@ require (
 `)
 	freshGoMod := []byte(`module foo-pp-cli
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/enetx/http v1.0.29

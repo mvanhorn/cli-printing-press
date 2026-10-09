@@ -51,7 +51,7 @@ func TestWorkflowVerifyExitAfterReport(t *testing.T) {
 
 func TestWorkflowVerifyUnverifiedRemainsSuccessful(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.26.6\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.26.9\n"), 0o644))
 	target := filepath.Join(dir, "cmd", "fixture-pp-cli")
 	require.NoError(t, os.MkdirAll(target, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(target, "main.go"), []byte("package main\nimport (\"fmt\";\"os\")\nfunc main() { fmt.Println(\"401 Unauthorized\"); os.Exit(1) }\n"), 0o644))

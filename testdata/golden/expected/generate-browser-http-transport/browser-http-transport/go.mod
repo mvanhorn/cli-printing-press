@@ -1,8 +1,8 @@
 module browser-http-transport-pp-cli
 
-go 1.26.6
+go 1.26.9
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/refraction-networking/utls v1.8.2
