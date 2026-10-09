@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,11 @@ const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 const reasonInteractiveCommand = "interactive command requires human input"
 const reasonUnsynthesizableBody = "unsynthesizable-body"
 const reasonNoStdinFixture = "no-stdin-fixture"
+const reasonStrayCLIFiles = "new files left under the CLI directory"
+
+// liveDogfoodStrayCLIFileListMax bounds the failure reason so a subprocess
+// that drops a large tree still leaves a readable report.
+const liveDogfoodStrayCLIFileListMax = 20
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
 // inherits. Generated commands with a long-running happy path detect
@@ -162,6 +168,10 @@ type liveDogfoodRun struct {
 	stdoutJSONCheck bool
 	exitCode        int
 	err             error
+	// setupFailure is a scratch-directory or fixture-copy error. The
+	// subprocess never started, so the reason is the setup error rather
+	// than a command exit code.
+	setupFailure bool
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
@@ -246,6 +256,9 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		storeDBPath:      liveDogfoodDefaultDBPath(liveDogfoodCLINameForStore(binaryPath, opts.BinaryName)),
 		bodyFixtures:     loadLiveDogfoodBodyFixtures(opts.CLIDir),
 	}
+	// Snapshot before any matrix subprocess so a file created beside the
+	// binary, or by any path other than the scratch cwd, is still reported.
+	cliTreeBefore, cliTreeErr := snapshotLiveDogfoodCLITree(opts.CLIDir)
 	runLiveDogfoodPreSync(commands, ctx)
 
 	_, _, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
@@ -267,6 +280,9 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		}
 	}
 
+	if cliTreeErr == nil {
+		reportLiveDogfoodStrayCLIFiles(report, opts.CLIDir, cliTreeBefore)
+	}
 	finalizeLiveDogfoodReport(report, authType)
 	finalizeLiveDogfoodCoverage(report, opts.ResearchDir, liveDogfoodProofContext{
 		commands:  commands,
@@ -820,7 +836,7 @@ func runLiveDogfoodPreSync(commands []liveDogfoodCommand, ctx resolveCtx) {
 	}
 	for _, command := range commands {
 		if len(command.Path) == 1 && command.Path[0] == "sync" {
-			_ = runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, liveDogfoodPreSyncTimeout(ctx.timeout))
+			_ = runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, 1, liveDogfoodPreSyncTimeout(ctx.timeout), nil)
 			return
 		}
 	}
@@ -955,7 +971,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			continue
 		}
 
-		run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, listArgs, ctx.timeout)
+		run := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, listArgs, len(listCmd.Path), ctx.timeout, nil)
 		if run.exitCode != 0 {
 			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
 			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
@@ -1347,7 +1363,7 @@ func companionSupportsLimit(companion liveDogfoodCommand, ctx resolveCtx) bool {
 	help, cached := ctx.cache.helps[pathKey]
 	if !cached {
 		helpArgs := append(append([]string{}, companion.Path...), "--help")
-		run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, helpArgs, ctx.timeout)
+		run := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, helpArgs, len(companion.Path), ctx.timeout, nil)
 		if run.exitCode != 0 {
 			ctx.cache.helps[pathKey] = ""
 			return false
@@ -1736,7 +1752,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	helpArgs := append(append([]string{}, command.Path...), "--help")
-	helpRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, helpArgs, ctx.timeout)
+	helpRun := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, helpArgs, len(command.Path), ctx.timeout, nil)
 	helpResult := liveDogfoodResult(commandName, LiveDogfoodTestHelp, helpArgs, helpRun, ctx.authEnvValue)
 	helpPassed := helpRun.exitCode == 0
 	help := helpRun.stdout + helpRun.stderr
@@ -1958,32 +1974,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
-		happyDir := ctx.cliDir
-		if realOptIn {
-			// Run opted-in real happy paths from a throwaway working
-			// directory so files they write (downloads, starter configs)
-			// never land in the CLI source tree. Fixture paths that exist
-			// under the CLI directory are made absolute first so they
-			// still resolve.
-			scratch, err := os.MkdirTemp("", "printing-press-live-happy-*")
-			if err != nil {
-				results = append(results,
-					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, fmt.Sprintf("create live happy-path scratch dir: %v", err)),
-					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "live happy-path scratch dir unavailable"),
-				)
-				break
-			}
-			defer func() { _ = os.RemoveAll(scratch) }()
-			happyDir = scratch
-			if err := copyCLIDirFixtures(runArgs, len(command.Path), ctx.cliDir, scratch); err != nil {
-				results = append(results,
-					failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, err.Error()),
-					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "live happy-path fixture copy failed"),
-				)
-				break
-			}
-		}
-		happyRun := runLiveDogfoodProcessWithStdin(ctx.binaryPath, happyDir, runArgs, ctx.timeout, stdinPayload)
+		happyRun := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, runArgs, len(command.Path), ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
 		if happyRun.exitCode == 0 {
@@ -2031,14 +2022,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonArgs = appendJSONArg(jsonArgs)
 			var jsonRun liveDogfoodRun
 			if realOptIn {
-				// Never repeat an opted-in real run (a second paid generation
-				// would bill twice, and a rerun outside the scratch dir would
-				// write into the CLI tree): judge JSON fidelity from the
-				// happy run, which already requested --json when supported.
+				// Never repeat an opted-in real run: a second paid generation
+				// would bill twice. Judge JSON fidelity from the happy run,
+				// which already requested --json when supported.
 				jsonArgs = runArgs
 				jsonRun = happyRun
 			} else {
-				jsonRun = runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, stdinPayload)
+				jsonRun = runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, len(command.Path), ctx.timeout, stdinPayload)
 			}
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
@@ -2110,34 +2100,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
 			}
 
-			errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
-			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun, ctx.authEnvValue)
-
-			if isSearch {
-				// Real-world feed/content APIs return recent items as a fallback
-				// for unmatched queries, so non-empty results under exit 0 are
-				// not a failure signal. The only fail mode is invalid JSON when
-				// the caller asked for --json.
-				switch {
-				case errorRun.exitCode != 0:
-					errorResult.Status = LiveDogfoodStatusPass
-					errorResult.Reason = ""
-				case suppliedJSON && !liveDogfoodJSONValid(errorRun):
-					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = "invalid JSON under --json"
-				default:
-					errorResult.Status = LiveDogfoodStatusPass
-					errorResult.Reason = ""
-				}
-			} else {
-				if errorRun.exitCode != 0 {
-					errorResult.Status = LiveDogfoodStatusPass
-					errorResult.Reason = ""
-				} else {
-					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = "expected non-zero exit for invalid argument"
-				}
-			}
+			errorRun := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, errorArgs, len(command.Path), ctx.timeout, nil)
+			errorResult := applyLiveDogfoodErrorPathVerdict(
+				liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun, ctx.authEnvValue),
+				errorRun,
+				isSearch,
+				suppliedJSON,
+			)
 			results = append(results, errorResult)
 		}
 	} else {
@@ -2243,6 +2212,134 @@ func extractFlagsSection(help string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// runLiveDogfoodMatrixProcess runs one live-matrix subprocess from a
+// throwaway working directory. Example commands write relative files
+// (plans, downloads, starter configs); those must not land in the CLI
+// source tree, which is what gets published. Fixture paths named in args
+// that already exist under cliDir are copied in so the command still
+// finds them. The scratch directory is removed before return.
+func runLiveDogfoodMatrixProcess(binaryPath, cliDir string, args []string, pathLen int, timeout time.Duration, stdin []byte) liveDogfoodRun {
+	scratch, err := os.MkdirTemp("", "printing-press-live-dogfood-*")
+	if err != nil {
+		return liveDogfoodRun{exitCode: -1, err: fmt.Errorf("create live dogfood scratch dir: %w", err), setupFailure: true}
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	if err := copyCLIDirFixtures(args, pathLen, cliDir, scratch); err != nil {
+		return liveDogfoodRun{exitCode: -1, err: err, setupFailure: true}
+	}
+	return runLiveDogfoodProcessWithStdin(binaryPath, scratch, args, timeout, stdin)
+}
+
+// snapshotLiveDogfoodCLITree records every path under cliDir so a later diff
+// can report files a subprocess left behind. The walk is bounded to cliDir.
+func snapshotLiveDogfoodCLITree(cliDir string) (map[string]struct{}, error) {
+	if strings.TrimSpace(cliDir) == "" {
+		return nil, fmt.Errorf("CLI dir is empty")
+	}
+	root := filepath.Clean(cliDir)
+	snap := make(map[string]struct{})
+	err := filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if filepath.Clean(path) == root {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		snap[rel] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return snap, nil
+}
+
+func liveDogfoodNewCLIPaths(before, after map[string]struct{}) []string {
+	var out []string
+	for path := range after {
+		if _, ok := before[path]; !ok {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// omitUnshippableCLIPaths drops new paths the publish step already removes.
+// Publish force-adds the CLI tree, so a gitignore rule does not keep a
+// leftover out of the public library. Only live-check staging directories
+// and compiled probe binaries are stripped before that add.
+func omitUnshippableCLIPaths(cliDir string, paths []string) []string {
+	if len(paths) == 0 {
+		return paths
+	}
+	kept := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if cliPathPublishWouldDrop(cliDir, path) {
+			continue
+		}
+		kept = append(kept, path)
+	}
+	return kept
+}
+
+func cliPathPublishWouldDrop(cliDir, rel string) bool {
+	rel = filepath.Clean(rel)
+	if rel == "." || rel == "" || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return false
+	}
+	if slices.ContainsFunc(strings.Split(rel, string(filepath.Separator)), isLiveCheckStagingDirName) {
+		return true
+	}
+	abs := filepath.Join(cliDir, rel)
+	info, err := os.Lstat(abs)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	drop, err := isStrayPackageExecutable(abs, fs.FileInfoToDirEntry(info))
+	if err != nil {
+		return false
+	}
+	return drop
+}
+
+func liveDogfoodStrayCLIFileReason(paths []string) string {
+	listed := paths
+	extra := ""
+	if len(paths) > liveDogfoodStrayCLIFileListMax {
+		listed = paths[:liveDogfoodStrayCLIFileListMax]
+		extra = fmt.Sprintf(" (+%d more)", len(paths)-liveDogfoodStrayCLIFileListMax)
+	}
+	return reasonStrayCLIFiles + ": " + strings.Join(listed, ", ") + extra
+}
+
+func reportLiveDogfoodStrayCLIFiles(report *LiveDogfoodReport, cliDir string, before map[string]struct{}) {
+	if report == nil || before == nil {
+		return
+	}
+	after, err := snapshotLiveDogfoodCLITree(cliDir)
+	if err != nil {
+		return
+	}
+	stray := omitUnshippableCLIPaths(cliDir, liveDogfoodNewCLIPaths(before, after))
+	if len(stray) == 0 {
+		return
+	}
+	report.Tests = append(report.Tests, failedLiveDogfoodResult(
+		"live-dogfood",
+		LiveDogfoodTestHappy,
+		nil,
+		liveDogfoodStrayCLIFileReason(stray),
+	))
 }
 
 func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
@@ -2374,6 +2471,66 @@ func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, 
 	if run.err != nil && result.Reason == "" {
 		result.Reason = run.err.Error()
 	}
+	if run.setupFailure && run.err != nil {
+		result.Reason = run.err.Error()
+	}
+	return result
+}
+
+// preserveLiveDogfoodSetupFailure keeps a scratch-directory or fixture-copy
+// error from being reclassified. The command never started, so a non-zero
+// exit is not evidence that an error-path probe worked or that --dry-run
+// declined to short-circuit.
+func preserveLiveDogfoodSetupFailure(result *LiveDogfoodTestResult, run liveDogfoodRun) bool {
+	if !run.setupFailure {
+		return false
+	}
+	result.Status = LiveDogfoodStatusFail
+	if run.err != nil {
+		result.Reason = run.err.Error()
+	}
+	return true
+}
+
+func applyLiveDogfoodErrorPathVerdict(result LiveDogfoodTestResult, run liveDogfoodRun, isSearch, suppliedJSON bool) LiveDogfoodTestResult {
+	if preserveLiveDogfoodSetupFailure(&result, run) {
+		return result
+	}
+	if isSearch {
+		// Real-world feed/content APIs return recent items as a fallback
+		// for unmatched queries, so non-empty results under exit 0 are
+		// not a failure signal. The only fail mode is invalid JSON when
+		// the caller asked for --json.
+		switch {
+		case run.exitCode != 0:
+			result.Status = LiveDogfoodStatusPass
+			result.Reason = ""
+		case suppliedJSON && !liveDogfoodJSONValid(run):
+			result.Status = LiveDogfoodStatusFail
+			result.Reason = "invalid JSON under --json"
+		default:
+			result.Status = LiveDogfoodStatusPass
+			result.Reason = ""
+		}
+		return result
+	}
+	if run.exitCode != 0 {
+		result.Status = LiveDogfoodStatusPass
+		result.Reason = ""
+		return result
+	}
+	result.Status = LiveDogfoodStatusFail
+	result.Reason = "expected non-zero exit for invalid argument"
+	return result
+}
+
+func applyLiveDogfoodDryRunJSONVerdict(result LiveDogfoodTestResult, run liveDogfoodRun, requireHonour bool) LiveDogfoodTestResult {
+	if preserveLiveDogfoodSetupFailure(&result, run) {
+		return result
+	}
+	status, reason := liveDogfoodDryRunJSONContract(run, requireHonour)
+	result.Status = status
+	result.Reason = reason
 	return result
 }
 
@@ -3415,11 +3572,12 @@ func probeLiveDogfoodDryRunJSON(command liveDogfoodCommand, ctx resolveCtx, muta
 	args = protectLiveDogfoodNegativeNumericPositionals(args, command.Path,
 		len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 	args = appendDryRunArg(appendJSONArg(args))
-	run := runLiveDogfoodProcessWithStdin(ctx.binaryPath, ctx.cliDir, args, ctx.timeout, stdinPayload)
-	result := liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue)
-	status, reason := liveDogfoodDryRunJSONContract(run, false)
-	result.Status = status
-	result.Reason = reason
+	run := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, args, len(command.Path), ctx.timeout, stdinPayload)
+	result := applyLiveDogfoodDryRunJSONVerdict(
+		liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue),
+		run,
+		false,
+	)
 	return &result
 }
 

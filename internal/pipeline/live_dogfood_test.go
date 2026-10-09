@@ -1177,6 +1177,8 @@ func TestRunLiveDogfoodClassifiesTypedAuth401AsUnverifiedNeedsAccess(t *testing.
 	dir := t.TempDir()
 	binaryName := "fixture-pp-cli"
 	writeTestManifestForLiveDogfood(t, dir)
+	countPath := filepath.Join(t.TempDir(), "count")
+	t.Setenv("PRINTING_PRESS_TEST_COUNT", countPath)
 	writeStubBinary(t, dir, binaryName, `if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
@@ -1204,7 +1206,7 @@ HELP
   exit 0
 fi
 
-count_file="count"
+count_file="$PRINTING_PRESS_TEST_COUNT"
 count=0
 if [ -f "$count_file" ]; then
   count=$(cat "$count_file")
@@ -1233,9 +1235,11 @@ exit 4
 	assert.Equal(t, LiveDogfoodStatusUnverified, jsonResult.Status)
 	assert.Equal(t, reasonUnverifiedNeedsAccess, jsonResult.Reason)
 
-	count, err := os.ReadFile(filepath.Join(dir, "count"))
+	count, err := os.ReadFile(countPath)
 	require.NoError(t, err)
 	assert.Equal(t, "2", string(count), "typed auth denial may retry once before classification")
+	_, err = os.Stat(filepath.Join(dir, "count"))
+	assert.True(t, os.IsNotExist(err), "auth retry counter must not land in the CLI directory")
 }
 
 func TestLiveDogfoodUnverifiedNeedsAccessRequiresTypedAuthExit(t *testing.T) {
