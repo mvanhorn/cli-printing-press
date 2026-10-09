@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.33.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.2...v4.33.3) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ci:** bump Go toolchain floor to 1.26.9 ([#4963](https://github.com/mvanhorn/cli-printing-press/issues/4963)) ([43f0406](https://github.com/mvanhorn/cli-printing-press/commit/43f04061fbb9f233ef5fe4733a045db1f663b014))
+* **cli:** let audited proof files cover state-dependent novel features ([#4958](https://github.com/mvanhorn/cli-printing-press/issues/4958)) ([67bceea](https://github.com/mvanhorn/cli-printing-press/commit/67bceeaaba1c10683ab7b165b89ba005055a8aa1))
+* **cli:** let live dogfood record declared fixture gaps, optional positionals, and preview happy paths ([#4957](https://github.com/mvanhorn/cli-printing-press/issues/4957)) ([848907b](https://github.com/mvanhorn/cli-printing-press/commit/848907b923a63e900591ce64a7ac911311b1eaa5))
+* **cli:** page read-only POST MCP list responses ([#4967](https://github.com/mvanhorn/cli-printing-press/issues/4967)) ([468481d](https://github.com/mvanhorn/cli-printing-press/commit/468481d85e124460fc689b124ca6027c5d10d8fd))
+* **cli:** run live dogfood from a scratch directory ([#4966](https://github.com/mvanhorn/cli-printing-press/issues/4966)) ([472da69](https://github.com/mvanhorn/cli-printing-press/commit/472da692ac49f9a8e5b1a2e66218ba30a8db79a3))
+* **scorer:** accept cli_description as valid root.Short in descriptio… ([#4938](https://github.com/mvanhorn/cli-printing-press/issues/4938)) ([4f0084d](https://github.com/mvanhorn/cli-printing-press/commit/4f0084deadd66d06a65c4d1793149d647f156bd9))
+
 ## [4.33.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.1...v4.33.2) (2026-10-08)
 
 
