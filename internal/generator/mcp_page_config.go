@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -19,12 +20,16 @@ type mcpPageSettings struct {
 	CursorInBody         bool
 	ExternalContinuation bool
 	ExposeOpaqueCursor   bool
+	// BodyPath is the full request-body path, including the leaf, when the
+	// cursor is nested. Empty means CursorParam is a top-level body or query key.
+	BodyPath []string
 }
 
 type mcpEndpointInput struct {
-	public string
-	wire   string
-	inBody bool
+	public   string
+	wire     string
+	inBody   bool
+	bodyPath []string
 }
 
 // mcpToolPageConfig renders the page config for one operation. GET cursor
@@ -59,7 +64,7 @@ func deriveMCPPageSettings(resource spec.Resource, opName string, endpoint spec.
 		return settingsFromDeclaredPagination(endpoint, inputs)
 	}
 	if in, ok := findExactlyOneCursorInput(inputs); ok && (len(inputs) == 1 || mcpCursorListShaped(opName, endpoint, inputs)) {
-		return settingsFromCursorInput(in, inputs)
+		return settingsFromCursorInput(endpoint, in, inputs)
 	}
 	if settings, ok := externalContinuationSettings(resource, opName, endpoint, inputs); ok {
 		return settings
@@ -88,9 +93,14 @@ func settingsFromDeclaredPagination(endpoint spec.Endpoint, inputs []mcpEndpoint
 	}
 	cursorInBody := true
 	continuation := cursorParam
+	var bodyPath []string
 	if in, ok := findInputByWireOrPublic(inputs, cursorParam); ok {
 		cursorInBody = in.inBody
 		continuation = in.public
+		bodyPath = slices.Clone(in.bodyPath)
+	}
+	if cursorInBody && !endpointCanReplayBodyCursor(endpoint) {
+		return mcpPageSettings{}
 	}
 	return mcpPageSettings{
 		CursorParam:        cursorParam,
@@ -98,19 +108,30 @@ func settingsFromDeclaredPagination(endpoint spec.Endpoint, inputs []mcpEndpoint
 		HasMoreField:       hasMore,
 		ContinuationInput:  continuation,
 		CursorInBody:       cursorInBody,
+		BodyPath:           bodyPath,
 		ExposeOpaqueCursor: !mcpHasPublicCursor(inputs),
 	}
 }
 
-func settingsFromCursorInput(in mcpEndpointInput, inputs []mcpEndpointInput) mcpPageSettings {
+func settingsFromCursorInput(endpoint spec.Endpoint, in mcpEndpointInput, inputs []mcpEndpointInput) mcpPageSettings {
+	if in.inBody && !endpointCanReplayBodyCursor(endpoint) {
+		return mcpPageSettings{}
+	}
 	return mcpPageSettings{
 		CursorParam:        in.wire,
 		NextCursorPath:     in.wire,
 		HasMoreField:       "has_more",
 		ContinuationInput:  in.public,
 		CursorInBody:       in.inBody,
+		BodyPath:           slices.Clone(in.bodyPath),
 		ExposeOpaqueCursor: !mcpHasPublicCursor(inputs),
 	}
+}
+
+// Opaque JSON and non-form raw bodies are sent as a blob the replay path does
+// not rewrite, so a cursor that only lives there cannot be paged.
+func endpointCanReplayBodyCursor(endpoint spec.Endpoint) bool {
+	return !endpoint.BodyJSONFallback && !endpoint.UsesRawRequestBody()
 }
 
 func externalContinuationSettings(resource spec.Resource, opName string, endpoint spec.Endpoint, selfInputs []mcpEndpointInput) (mcpPageSettings, bool) {
@@ -196,7 +217,7 @@ func findExactlyOneCursorInput(inputs []mcpEndpointInput) (mcpEndpointInput, boo
 func findInputByWireOrPublic(inputs []mcpEndpointInput, name string) (mcpEndpointInput, bool) {
 	name = strings.TrimSpace(name)
 	for _, in := range inputs {
-		if in.wire == name || in.public == name {
+		if in.wire == name || in.public == name || strings.Join(in.bodyPath, ".") == name {
 			return in, true
 		}
 	}
@@ -277,30 +298,57 @@ func mcpEndpointInputs(endpoint spec.Endpoint) []mcpEndpointInput {
 	if endpoint.BodyJSONFallback {
 		return out
 	}
-	for _, p := range endpoint.Body {
-		if p.Type == "object" && len(p.Fields) > 0 {
-			continue
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			if p.Type == "object" && len(p.Fields) > 0 {
+				continue
+			}
+			out = append(out, mcpEndpointInput{
+				public: p.PublicInputName(),
+				wire:   p.BodyWireName(),
+				inBody: true,
+			})
 		}
-		out = append(out, mcpEndpointInput{
-			public: p.PublicInputName(),
-			wire:   p.BodyWireName(),
-			inBody: true,
-		})
+		return out
 	}
+	appendMCPEndpointBodyInputs(&out, flattenCollidingBodyFields(endpoint.Body), 0, "", nil)
 	return out
 }
 
+func appendMCPEndpointBodyInputs(out *[]mcpEndpointInput, body []spec.Param, depth int, flagPrefix string, bodyPath []string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
+			appendMCPEndpointBodyInputs(out, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath)
+			continue
+		}
+		public := p.PublicInputName()
+		if flagPrefix != "" {
+			public = joinFlag(flagPrefix, publicFlagName(p))
+		}
+		in := mcpEndpointInput{
+			public: public,
+			wire:   p.BodyWireName(),
+			inBody: true,
+		}
+		if len(bodyPath) > 0 {
+			in.bodyPath = append(append([]string(nil), bodyPath...), p.BodyWireName())
+		}
+		*out = append(*out, in)
+	}
+}
+
 func renderMCPPageConfig(s mcpPageSettings) string {
-	if s.CursorParam == "" && s.NextCursorPath == "" && s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation {
+	if s.CursorParam == "" && s.NextCursorPath == "" && s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation && len(s.BodyPath) == 0 {
 		return "mcpPageConfig{}"
 	}
 	// GET lists only fill CursorParam and NextCursorPath. Keep that literal
 	// byte-identical, including an explicit empty NextCursorPath for offset
 	// and page pagination.
-	if s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation {
+	if len(s.BodyPath) == 0 && s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation {
 		return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}", s.CursorParam, s.NextCursorPath)
 	}
-	parts := make([]string, 0, 6)
+	parts := make([]string, 0, 7)
 	if s.CursorParam != "" {
 		parts = append(parts, fmt.Sprintf("CursorParam: %q", s.CursorParam))
 	}
@@ -315,6 +363,13 @@ func renderMCPPageConfig(s mcpPageSettings) string {
 	}
 	if s.CursorInBody {
 		parts = append(parts, "CursorInBody: true")
+	}
+	if len(s.BodyPath) > 0 {
+		quoted := make([]string, len(s.BodyPath))
+		for i, part := range s.BodyPath {
+			quoted[i] = fmt.Sprintf("%q", part)
+		}
+		parts = append(parts, "BodyPath: []string{"+strings.Join(quoted, ", ")+"}")
 	}
 	if s.ExternalContinuation {
 		parts = append(parts, "ExternalContinuation: true")

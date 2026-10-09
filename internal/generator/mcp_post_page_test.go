@@ -228,6 +228,79 @@ func TestMCPPageConfigPagesReadOnlyPOSTLists(t *testing.T) {
 	parent := spec.Resource{SubResources: map[string]spec.Resource{"members": members}}
 	assert.Equal(t, "mcpPageConfig{}", mcpToolPageConfig(parent, "list", members.Endpoints["list"]), "sibling detection stays inside the resource that owns the operation")
 	assert.Equal(t, external, mcpToolPageConfig(members, "list", members.Endpoints["list"]))
+
+	nested := spec.Endpoint{
+		Method:      "POST",
+		Path:        "/items/nested",
+		Description: "List with a nested cursor",
+		Mutation:    new(false),
+		Pagination: &spec.Pagination{
+			Type:           "cursor",
+			CursorParam:    "cursor",
+			NextCursorPath: "paging.cursor",
+			HasMoreField:   "paging.has_more",
+		},
+		Body: []spec.Param{
+			{Name: "path", Type: "string"},
+			{Name: "paging", Type: "object", Fields: []spec.Param{{Name: "cursor", Type: "string"}}},
+		},
+	}
+	nestedConfig := `mcpPageConfig{CursorParam: "cursor", NextCursorPath: "paging.cursor", HasMoreField: "paging.has_more", ContinuationInput: "paging-cursor", CursorInBody: true, BodyPath: []string{"paging", "cursor"}}`
+	assert.Equal(t, nestedConfig, mcpToolPageConfig(spec.Resource{}, "nested-list", nested))
+	assert.True(t, mcpExposeOpaqueCursor(spec.Resource{}, "nested-list", nested))
+	dottedParam := nested
+	dottedParam.Pagination = &spec.Pagination{
+		Type:           "cursor",
+		CursorParam:    "paging.cursor",
+		NextCursorPath: "paging.cursor",
+		HasMoreField:   "paging.has_more",
+	}
+	assert.Equal(t,
+		`mcpPageConfig{CursorParam: "paging.cursor", NextCursorPath: "paging.cursor", HasMoreField: "paging.has_more", ContinuationInput: "paging-cursor", CursorInBody: true, BodyPath: []string{"paging", "cursor"}}`,
+		mcpToolPageConfig(spec.Resource{}, "nested-list", dottedParam),
+	)
+
+	opaque := spec.Endpoint{
+		Method:           "POST",
+		Path:             "/items/opaque",
+		Description:      "Opaque body list",
+		Mutation:         new(false),
+		BodyJSONFallback: true,
+		Pagination:       &spec.Pagination{Type: "cursor", CursorParam: "cursor", HasMoreField: "has_more"},
+	}
+	assert.Equal(t, "mcpPageConfig{}", mcpToolPageConfig(spec.Resource{}, "opaque-list", opaque))
+
+	opaqueQuery := opaque
+	opaqueQuery.Pagination = &spec.Pagination{Type: "cursor", CursorParam: "page_token", HasMoreField: "more"}
+	opaqueQuery.Params = []spec.Param{{Name: "page_token", In: "query", Type: "string"}}
+	assert.Equal(t,
+		`mcpPageConfig{CursorParam: "page_token", NextCursorPath: "page_token", HasMoreField: "more", ContinuationInput: "page_token"}`,
+		mcpToolPageConfig(spec.Resource{}, "opaque-query", opaqueQuery),
+	)
+
+	raw := spec.Endpoint{
+		Method:             "POST",
+		Path:               "/items/raw",
+		Description:        "Raw body list",
+		Mutation:           new(false),
+		RequestContentType: "text/plain",
+		Body:               []spec.Param{{Name: "cursor", Type: "string"}},
+	}
+	assert.Equal(t, "mcpPageConfig{}", mcpToolPageConfig(spec.Resource{}, "raw-list", raw))
+
+	form := spec.Endpoint{
+		Method:             "POST",
+		Path:               "/items/form",
+		Description:        "Form list",
+		Mutation:           new(false),
+		RequestContentType: "application/x-www-form-urlencoded",
+		Pagination:         &spec.Pagination{Type: "cursor", CursorParam: "cursor", HasMoreField: "has_more"},
+		Body: []spec.Param{
+			{Name: "q", Type: "string"},
+			{Name: "cursor", Type: "string"},
+		},
+	}
+	assert.Equal(t, sameTool, mcpToolPageConfig(spec.Resource{}, "form-list", form))
 }
 
 func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
@@ -290,6 +363,53 @@ func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
 					},
 					Pagination: &spec.Pagination{Type: "cursor", LimitParam: "limit", CursorParam: "after"},
 				},
+				"query-search": {
+					Method:      "POST",
+					Path:        "/items/search",
+					Description: "Search items",
+					Mutation:    new(false),
+					Pagination:  &spec.Pagination{Type: "cursor", CursorParam: "page_token", HasMoreField: "more"},
+					Params: []spec.Param{
+						{Name: "q", In: "query", Type: "string"},
+						{Name: "page_token", In: "query", Type: "string"},
+					},
+				},
+				"nested-list": {
+					Method:      "POST",
+					Path:        "/items/nested",
+					Description: "List with a nested cursor",
+					Mutation:    new(false),
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						CursorParam:    "cursor",
+						NextCursorPath: "paging.cursor",
+						HasMoreField:   "paging.has_more",
+					},
+					Body: []spec.Param{
+						{Name: "path", Type: "string"},
+						{Name: "paging", Type: "object", Fields: []spec.Param{{Name: "cursor", Type: "string"}}},
+					},
+				},
+				"form-list": {
+					Method:             "POST",
+					Path:               "/items/form",
+					Description:        "List with a form cursor",
+					Mutation:           new(false),
+					RequestContentType: "application/x-www-form-urlencoded",
+					Pagination:         &spec.Pagination{Type: "cursor", CursorParam: "cursor", HasMoreField: "has_more"},
+					Body: []spec.Param{
+						{Name: "q", Type: "string"},
+						{Name: "cursor", Type: "string"},
+					},
+				},
+				"opaque-list": {
+					Method:           "POST",
+					Path:             "/items/opaque",
+					Description:      "List with an opaque JSON body",
+					Mutation:         new(false),
+					BodyJSONFallback: true,
+					Pagination:       &spec.Pagination{Type: "cursor", CursorParam: "cursor", HasMoreField: "has_more"},
+				},
 			},
 			SubResources: map[string]spec.Resource{
 				"members": {
@@ -338,6 +458,10 @@ func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
 	requireLineContains(t, toolsCode, `"/folders/delete",`, `mcpPageConfig{}`)
 	requireLineContains(t, toolsCode, `"/folders/revisions",`, `mcpPageConfig{CursorParam: "after", NextCursorPath: "after"}`)
 	requireLineContains(t, toolsCode, `"/groups/{id}/members",`, `ExternalContinuation: true`)
+	requireLineContains(t, toolsCode, `"/items/search",`, `mcpPageConfig{CursorParam: "page_token", NextCursorPath: "page_token", HasMoreField: "more", ContinuationInput: "page_token"}`)
+	requireLineContains(t, toolsCode, `"/items/nested",`, `BodyPath: []string{"paging", "cursor"}`)
+	requireLineContains(t, toolsCode, `"/items/form",`, `CursorInBody: true`)
+	requireLineContains(t, toolsCode, `"/items/opaque",`, `mcpPageConfig{}`)
 	assert.NotContains(t, toolsCode, `mcplib.WithString("after"`)
 	assert.Contains(t, toolsCode, `mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response"))`)
 
@@ -355,7 +479,7 @@ func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
 
 func requireLineContains(t *testing.T, src, needleA, needleB string) {
 	t.Helper()
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		if strings.Contains(line, needleA) && strings.Contains(line, needleB) {
 			return
 		}

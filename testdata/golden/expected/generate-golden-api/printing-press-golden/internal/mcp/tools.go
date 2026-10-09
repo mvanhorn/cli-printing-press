@@ -225,6 +225,7 @@ type mcpPageConfig struct {
 	ContinuationInput    string
 	CursorInBody         bool
 	ExternalContinuation bool
+	BodyPath             []string
 }
 
 func formatMCPParamValue(v any) string {
@@ -412,6 +413,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 		// The public cursor argument is either an opaque MCP cursor or, on a
 		// read-only non-GET, the API cursor itself. Replay must send the API
 		// cursor, never the opaque blob, or the next slice skips entries.
+		// Query and form fields carry that cursor the same way the JSON body does.
 		if pageConfig.CursorInBody && pageConfig.CursorParam != "" {
 			if mcpCursor != "" {
 				if requestCursor != "" {
@@ -422,12 +424,29 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			} else if s, ok := bodyArgs[pageConfig.CursorParam].(string); ok {
 				requestCursor = s
 			}
+			if multipart {
+				if mcpCursor != "" {
+					if requestCursor != "" {
+						multipartFields[pageConfig.CursorParam] = requestCursor
+					} else {
+						delete(multipartFields, pageConfig.CursorParam)
+					}
+				} else if requestCursor == "" {
+					if s := multipartFields[pageConfig.CursorParam]; s != "" {
+						requestCursor = s
+					}
+				}
+			}
 		}
-		if !strings.EqualFold(method, "GET") && !pageConfig.CursorInBody && pageConfig.CursorParam != "" && mcpCursor != "" {
-			if requestCursor != "" {
-				params[pageConfig.CursorParam] = requestCursor
-			} else {
-				delete(params, pageConfig.CursorParam)
+		if !strings.EqualFold(method, "GET") && !pageConfig.CursorInBody && pageConfig.CursorParam != "" {
+			if mcpCursor != "" {
+				if requestCursor != "" {
+					params[pageConfig.CursorParam] = requestCursor
+				} else {
+					delete(params, pageConfig.CursorParam)
+				}
+			} else if s, ok := params[pageConfig.CursorParam]; ok && s != "" {
+				requestCursor = s
 			}
 		}
 

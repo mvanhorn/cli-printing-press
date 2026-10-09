@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,9 +17,11 @@ import (
 )
 
 type capturedCall struct {
-	path  string
-	body  map[string]any
-	query string
+	path        string
+	body        map[string]any
+	form        url.Values
+	query       string
+	contentType string
 }
 
 func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
@@ -36,19 +40,39 @@ func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	searchBody, err := json.Marshal(map[string]any{"entries": entries, "page_token": apiCursor, "more": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedBody, err := json.Marshal(map[string]any{
+		"entries": entries,
+		"paging":  map[string]any{"cursor": apiCursor, "has_more": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var mu sync.Mutex
 	var calls []capturedCall
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ := io.ReadAll(r.Body)
+		call := capturedCall{path: r.URL.Path, query: r.URL.RawQuery, contentType: r.Header.Get("Content-Type")}
+		if strings.Contains(call.contentType, "application/x-www-form-urlencoded") {
+			call.form, _ = url.ParseQuery(string(raw))
+		} else {
+			_ = json.Unmarshal(raw, &call.body)
+		}
 		mu.Lock()
-		calls = append(calls, capturedCall{path: r.URL.Path, body: body, query: r.URL.RawQuery})
+		calls = append(calls, call)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/folders/delete", "/folders/revisions":
 			_, _ = w.Write(arrayBody)
+		case "/items/search":
+			_, _ = w.Write(searchBody)
+		case "/items/nested":
+			_, _ = w.Write(nestedBody)
 		default:
 			_, _ = w.Write(listBody)
 		}
@@ -135,6 +159,95 @@ func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
 	mu.Unlock()
 	if deleteCalls != 1 {
 		t.Fatalf("delete HTTP calls = %d, want 1", deleteCalls)
+	}
+
+	search := makeAPIHandler("POST", "/items/search", true, false, nil, mcpPageConfig{CursorParam: "page_token", NextCursorPath: "page_token", HasMoreField: "more", ContinuationInput: "page_token"}, []mcpParamBinding{
+		{PublicName: "q", WireName: "q", Location: "query"},
+		{PublicName: "page_token", WireName: "page_token", Location: "query"},
+	}, nil)
+	searchFirst := callTool(t, search, map[string]any{"q": "x", "page_token": apiCursor})
+	searchIDs, searchNext, _, searchPreview := objectPage(t, searchFirst, "entries")
+	if searchPreview != "" || searchNext == "" || len(searchIDs) == 0 || searchIDs[0] != ids[0] {
+		t.Fatalf("query search first page = %s", searchFirst)
+	}
+	var searchPage map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(searchFirst), &searchPage); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := searchPage["page_token"]; ok {
+		t.Fatalf("query search exposed the raw page token: %s", searchFirst)
+	}
+	searchSecond := callTool(t, search, map[string]any{"q": "x", "cursor": searchNext})
+	searchNextIDs, _, _, searchSecondPreview := objectPage(t, searchSecond, "entries")
+	if searchSecondPreview != "" || len(searchNextIDs) == 0 || searchNextIDs[0] != ids[len(searchIDs)] {
+		t.Fatalf("query search replay restarted or skipped: %s", searchSecond)
+	}
+	searchCalls := callsFor(&mu, &calls, "/items/search")
+	if len(searchCalls) != 2 {
+		t.Fatalf("query search HTTP calls = %d, want 2", len(searchCalls))
+	}
+	for _, got := range searchCalls {
+		if !strings.Contains(got.query, "page_token="+apiCursor) || strings.Contains(got.query, searchNext) {
+			t.Fatalf("query search query = %s, want page_token=%s", got.query, apiCursor)
+		}
+	}
+
+	nested := makeAPIHandler("POST", "/items/nested", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "paging.cursor", HasMoreField: "paging.has_more", ContinuationInput: "paging-cursor", CursorInBody: true, BodyPath: []string{"paging", "cursor"}}, []mcpParamBinding{
+		{PublicName: "path", WireName: "path", Location: "body"},
+		{PublicName: "paging-cursor", WireName: "cursor", Location: "body", BodyPath: []string{"paging", "cursor"}},
+	}, nil)
+	nestedFirst := callTool(t, nested, map[string]any{"path": "/", "paging-cursor": apiCursor})
+	nestedIDs, nestedNext, _, nestedPreview := objectPage(t, nestedFirst, "entries")
+	if nestedPreview != "" || nestedNext == "" || len(nestedIDs) == 0 || nestedIDs[0] != ids[0] {
+		t.Fatalf("nested first page = %s", nestedFirst)
+	}
+	if nestedCursorValue(t, nestedFirst) != "" {
+		t.Fatalf("nested page exposed the raw cursor: %s", nestedFirst)
+	}
+	nestedSecond := callTool(t, nested, map[string]any{"path": "/", "cursor": nestedNext})
+	nestedNextIDs, _, _, nestedSecondPreview := objectPage(t, nestedSecond, "entries")
+	if nestedSecondPreview != "" || len(nestedNextIDs) == 0 || nestedNextIDs[0] != ids[len(nestedIDs)] {
+		t.Fatalf("nested replay restarted or skipped: %s", nestedSecond)
+	}
+	nestedCalls := callsFor(&mu, &calls, "/items/nested")
+	if len(nestedCalls) != 2 {
+		t.Fatalf("nested HTTP calls = %d, want 2", len(nestedCalls))
+	}
+	for _, got := range nestedCalls {
+		paging, _ := got.body["paging"].(map[string]any)
+		if paging["cursor"] != apiCursor {
+			t.Fatalf("nested body = %#v, want paging.cursor %s", got.body, apiCursor)
+		}
+		if _, ok := got.body["cursor"]; ok {
+			t.Fatalf("nested replay wrote a top-level cursor: %#v", got.body)
+		}
+	}
+
+	formList := makeAPIHandler("POST", "/items/form", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor", HasMoreField: "has_more", ContinuationInput: "cursor", CursorInBody: true}, []mcpParamBinding{
+		{PublicName: "q", WireName: "q", Location: "body", RequestContentType: "application/x-www-form-urlencoded"},
+		{PublicName: "cursor", WireName: "cursor", Location: "body", RequestContentType: "application/x-www-form-urlencoded"},
+	}, nil)
+	formFirst := callTool(t, formList, map[string]any{"q": "x", "cursor": apiCursor})
+	formIDs, formNext, _, formPreview := objectPage(t, formFirst, "entries")
+	if formPreview != "" || formNext == "" || len(formIDs) == 0 || formIDs[0] != ids[0] {
+		t.Fatalf("form first page = %s", formFirst)
+	}
+	formSecond := callTool(t, formList, map[string]any{"q": "x", "cursor": formNext})
+	formNextIDs, _, _, formSecondPreview := objectPage(t, formSecond, "entries")
+	if formSecondPreview != "" || len(formNextIDs) == 0 || formNextIDs[0] != ids[len(formIDs)] {
+		t.Fatalf("form replay restarted or skipped: %s", formSecond)
+	}
+	formCalls := callsFor(&mu, &calls, "/items/form")
+	if len(formCalls) != 2 {
+		t.Fatalf("form HTTP calls = %d, want 2", len(formCalls))
+	}
+	for _, got := range formCalls {
+		if !strings.Contains(got.contentType, "application/x-www-form-urlencoded") {
+			t.Fatalf("form content type = %s", got.contentType)
+		}
+		if got.form.Get("cursor") != apiCursor || got.form.Get("q") != "x" {
+			t.Fatalf("form body = %s, want cursor=%s", got.form.Encode(), apiCursor)
+		}
 	}
 
 	revs := makeAPIHandler("GET", "/folders/revisions", true, false, nil, mcpPageConfig{CursorParam: "after", NextCursorPath: "after"}, []mcpParamBinding{
@@ -230,6 +343,31 @@ func rawCursorPresent(t *testing.T, text string) bool {
 	}
 	_, ok := raw["cursor"]
 	return ok
+}
+
+func nestedCursorValue(t *testing.T, text string) string {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	paging, ok := raw["paging"]
+	if !ok {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(paging, &obj) != nil {
+		t.Fatalf("paging was not an object: %s", text)
+	}
+	cursor, ok := obj["cursor"]
+	if !ok {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(cursor, &value) != nil {
+		t.Fatalf("paging.cursor was not a string: %s", text)
+	}
+	return value
 }
 
 func callsFor(mu *sync.Mutex, calls *[]capturedCall, path string) []capturedCall {

@@ -1116,3 +1116,120 @@ func rawCursorFieldPresent(t *testing.T, text string) bool {
 	_, ok := raw["cursor"]
 	return ok
 }
+
+func TestEndpointPageResponseNestedHasMoreFalseDoesNotContinue(t *testing.T) {
+	const apiCursor = "delta-cursor-value"
+	data, ids := nestedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": false}, map[string]any{"has_more": true})
+	opts := PageOptions{
+		CursorParam:    "cursor",
+		NextCursorPath: "paging.cursor",
+		HasMoreField:   "paging.has_more",
+		RequestCursor:  apiCursor,
+		ReadOnly:       true,
+	}
+	seen := make([]string, 0, len(ids))
+	cursor := ""
+	var last string
+	for step := 0; step < 20; step++ {
+		call := opts
+		call.Cursor = cursor
+		text := EndpointPageResponse("POST", data, call)
+		idsPage, next, pagingCursor := nestedPage(t, text)
+		if len(idsPage) == 0 {
+			t.Fatalf("page %d returned no entries: %s", step, text)
+		}
+		seen = append(seen, idsPage...)
+		last = text
+		if next == "" {
+			if pagingCursor != apiCursor {
+				t.Fatalf("finished page hid the API cursor: %s", text)
+			}
+			break
+		}
+		if pagingCursor != "" {
+			t.Fatalf("truncated page exposed the nested cursor: %s", text)
+		}
+		cursor = next
+	}
+	if strings.Join(seen, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids = %v, want %v; last page %s", seen, ids, last)
+	}
+	var finished struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(last), &finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.NextCursor != "" {
+		t.Fatalf("nested has_more false should finish without another cursor: %s", last)
+	}
+}
+
+func TestEndpointPageResponseGETKeepsNestedCursor(t *testing.T) {
+	const apiCursor = "server-next-token"
+	data, _ := nestedCursorPage(t, map[string]any{"cursor": apiCursor, "has_more": false}, nil)
+	text := EndpointPageResponse("GET", data, PageOptions{CursorParam: "after", NextCursorPath: "paging.cursor"})
+	_, next, pagingCursor := nestedPage(t, text)
+	if next == "" || pagingCursor != apiCursor || strings.Contains(next, apiCursor) {
+		t.Fatalf("GET should keep the nested cursor and wrap it, got next %q paging %q in %s", next, pagingCursor, text)
+	}
+}
+
+func nestedCursorPage(t *testing.T, paging map[string]any, extra map[string]any) ([]byte, []string) {
+	t.Helper()
+	ids := make([]string, 40)
+	entries := make([]map[string]string, len(ids))
+	for i := range ids {
+		ids[i] = "id-" + strconv.Itoa(i)
+		entries[i] = map[string]string{"id": ids[i], "payload": strings.Repeat("x", 1600)}
+	}
+	body := map[string]any{"entries": entries, "paging": paging}
+	for key, value := range extra {
+		body[key] = value
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= MaxBytes {
+		t.Fatalf("fixture length %d, want > %d", len(data), MaxBytes)
+	}
+	return data, ids
+}
+
+func nestedPage(t *testing.T, text string) (ids []string, next, pagingCursor string) {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatalf("page must remain valid JSON: %v\n%s", err, text)
+	}
+	if cursor, ok := raw["next_cursor"]; ok {
+		if json.Unmarshal(cursor, &next) != nil {
+			t.Fatalf("next_cursor was not a string: %s", text)
+		}
+	}
+	if paging, ok := raw["paging"]; ok {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(paging, &obj) != nil {
+			t.Fatalf("paging was not an object: %s", text)
+		}
+		if cursor, ok := obj["cursor"]; ok {
+			if json.Unmarshal(cursor, &pagingCursor) != nil {
+				t.Fatalf("paging.cursor was not a string: %s", text)
+			}
+		}
+	}
+	if entries, ok := raw["entries"]; ok {
+		var items []map[string]string
+		if json.Unmarshal(entries, &items) != nil {
+			t.Fatalf("entries were not objects: %s", text)
+		}
+		for _, item := range items {
+			ids = append(ids, item["id"])
+		}
+	}
+	if _, preview := raw["preview"]; preview {
+		t.Fatalf("page fell back to preview: %s", text)
+	}
+	return ids, next, pagingCursor
+}

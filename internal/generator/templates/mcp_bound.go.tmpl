@@ -578,17 +578,48 @@ func presentedPageCursor(nextCursor string, opts PageOptions) string {
 
 func hideUpstreamCursor(out map[string]any, opts PageOptions, nextCursor string) {
 	path := strings.TrimSpace(opts.NextCursorPath)
-	if path == "" || path == "next_cursor" || strings.Contains(path, ".") {
+	if path == "" || path == "next_cursor" || nextCursor == "" {
 		return
 	}
-	if opts.ExternalContinuation {
-		if nextCursor != "" {
-			delete(out, path)
+	hide := opts.ExternalContinuation || opts.HasMoreField != ""
+	if !hide {
+		return
+	}
+	// Nested cursors are copied off the API payload as raw JSON objects.
+	deletePresentedCursor(out, strings.Split(path, "."))
+}
+
+func deletePresentedCursor(node map[string]any, parts []string) {
+	if len(parts) == 0 || node == nil {
+		return
+	}
+	key := parts[0]
+	if len(parts) == 1 {
+		delete(node, key)
+		return
+	}
+	child, ok := node[key]
+	if !ok {
+		return
+	}
+	switch typed := child.(type) {
+	case map[string]any:
+		deletePresentedCursor(typed, parts[1:])
+	case json.RawMessage:
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(typed, &obj) != nil {
+			return
 		}
-		return
-	}
-	if opts.HasMoreField != "" && nextCursor != "" {
-		delete(out, path)
+		nested := make(map[string]any, len(obj))
+		for name, raw := range obj {
+			nested[name] = raw
+		}
+		deletePresentedCursor(nested, parts[1:])
+		encoded, err := json.Marshal(nested)
+		if err != nil {
+			return
+		}
+		node[key] = json.RawMessage(encoded)
 	}
 }
 
@@ -605,27 +636,39 @@ func explicitHasMore(data json.RawMessage, field string) (bool, bool) {
 	if json.Unmarshal(data, &obj) != nil {
 		return false, false
 	}
-	names := make([]string, 0, 4)
+	// A configured path such as paging.has_more is the stop signal. Top-level
+	// aliases apply only when that path is absent, so a sibling has_more cannot
+	// override an explicit false.
 	if trimmed := strings.TrimSpace(field); trimmed != "" {
-		names = append(names, trimmed)
+		if more, ok := boolAtPath(obj, trimmed); ok {
+			return more, true
+		}
 	}
 	for _, name := range []string{"has_more", "hasMore", "more"} {
-		if name != strings.TrimSpace(field) {
-			names = append(names, name)
-		}
-	}
-	for _, name := range names {
-		value, ok := obj[name]
-		if !ok {
+		if name == strings.TrimSpace(field) {
 			continue
 		}
-		more, ok := value.(bool)
-		if !ok {
-			continue
+		if more, ok := boolAtPath(obj, name); ok {
+			return more, true
 		}
-		return more, true
 	}
 	return false, false
+}
+
+func boolAtPath(obj map[string]any, path string) (bool, bool) {
+	var current any = obj
+	for _, part := range strings.Split(path, ".") {
+		parent, ok := current.(map[string]any)
+		if !ok {
+			return false, false
+		}
+		current, ok = parent[part]
+		if !ok {
+			return false, false
+		}
+	}
+	more, ok := current.(bool)
+	return more, ok
 }
 
 func extractStringPath(data json.RawMessage, path string) string {
