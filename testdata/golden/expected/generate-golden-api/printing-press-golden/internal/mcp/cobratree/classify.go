@@ -46,6 +46,12 @@ const (
 	// is a different flag. Separate names with commas, semicolons, or
 	// whitespace. A leading "--" is ignored.
 	FlagWriteSinksAnnotation = "mcp:write-flags"
+	// ReadOnlyUnlessFlagsAnnotation lists Cobra flag names that turn an
+	// otherwise readable command into a write. With the MCP read-only switch
+	// on, the walker still registers the command, drops those flags, and
+	// marks the tool read-only. With the switch off, the annotation does not
+	// change the schema or hints. The list is command-local, not inherited.
+	ReadOnlyUnlessFlagsAnnotation = "mcp:read-only-unless-flags"
 )
 
 type commandKind int
@@ -177,10 +183,14 @@ func flagWriteSinkNames(cmd *cobra.Command) map[string]bool {
 }
 
 func annotationFlagNames(annotations map[string]string) map[string]bool {
+	return annotationNamedFlags(annotations, FlagWriteSinksAnnotation)
+}
+
+func annotationNamedFlags(annotations map[string]string, key string) map[string]bool {
 	if annotations == nil {
 		return nil
 	}
-	raw := strings.TrimSpace(annotations[FlagWriteSinksAnnotation])
+	raw := strings.TrimSpace(annotations[key])
 	if raw == "" {
 		return nil
 	}
@@ -196,6 +206,20 @@ func annotationFlagNames(annotations map[string]string) map[string]bool {
 		return nil
 	}
 	return out
+}
+
+func readOnlyUnlessFlagNames(cmd *cobra.Command) map[string]bool {
+	if cmd == nil {
+		return nil
+	}
+	return annotationNamedFlags(cmd.Annotations, ReadOnlyUnlessFlagsAnnotation)
+}
+
+func mirrorAllowedWhenMCPReadOnly(cmd *cobra.Command) bool {
+	if isMCPReadOnly(cmd) || isMCPLocalWrite(cmd) {
+		return true
+	}
+	return len(readOnlyUnlessFlagNames(cmd)) > 0
 }
 
 func inheritedWriteSink(cmd *cobra.Command, name string) bool {

@@ -15,10 +15,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/mcp/bound"
 )
 
@@ -103,6 +105,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"profile":      "attacker",
 		"receipt-file": "/tmp/evil-receipt.json",
 		"token":        "your-token-here",
+		"yes":          true,
 		// Keys containing "=" must not be emitted verbatim as flag=value.
 		"base-url=https://evil.example.com": true,
 		"config=/tmp/evil.yaml":             true,
@@ -126,12 +129,13 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"profile":      true,
 		"receipt-file": true,
 		"token":        true,
+		"yes":          true,
 	})
 	want := []string{"--limit=10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--audit-dir", "--base-url", "--client", "--config", "--db", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--token", "--args"} {
+	for _, blocked := range []string{"--audit-dir", "--base-url", "--client", "--config", "--db", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--token", "--yes", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)
@@ -243,6 +247,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	root.PersistentFlags().String("receipt-file", "", "root receipt file")
 	root.PersistentFlags().String("config", "", "root config")
 	root.PersistentFlags().String("json", "", "format output")
+	root.PersistentFlags().Bool("yes", false, "skip confirmation")
 
 	child := &cobra.Command{Use: "child"}
 	child.Flags().StringP("output", "o", "", "local output")
@@ -256,6 +261,9 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	}
 	if !blocked["config"] {
 		t.Fatalf("inherited root --config was not blocked: %#v", blocked)
+	}
+	if !blocked["yes"] {
+		t.Fatalf("inherited root --yes was not blocked: %#v", blocked)
 	}
 	for _, destination := range []string{"audit-dir", "db", "o", "out", "out-dir", "out-file", "output", "output-dir", "output-file", "receipt-file"} {
 		if !blocked[destination] {
@@ -273,6 +281,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 		"db":      "/tmp/evil.db",
 		"json":    "true",
 		"output":  "/tmp/evil.json",
+		"yes":     true,
 	}, blocked)
 	want := []string{"--json=true", "--profile=local-profile"}
 	if !reflect.DeepEqual(got, want) {
@@ -281,6 +290,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 }
 
 func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	noop := func(cmd *cobra.Command, args []string) error { return nil }
 
@@ -532,6 +542,7 @@ func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 }
 
 func TestShadowedPersistentWriteFlagStaysAvailable(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	distant := &cobra.Command{
 		Use: "archive",
@@ -924,6 +935,7 @@ func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 	root.PersistentFlags().String("audit-dir", "", "root audit dir")
 	root.PersistentFlags().String("config", "", "root config")
 	root.PersistentFlags().Bool("json", false, "json output")
+	root.PersistentFlags().Bool("yes", false, "skip confirmation")
 	root.PersistentFlags().String("receipt-file", "", "root receipt file")
 
 	child := &cobra.Command{Use: "child <query>"}
@@ -946,13 +958,13 @@ func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 	if _, ok := props["query"]; !ok {
 		t.Fatalf("positional <query> missing from schema: %#v", props)
 	}
-	for _, hidden := range []string{"args", "audit-dir", "db", "o", "output", "receipt-file"} {
+	for _, hidden := range []string{"args", "audit-dir", "db", "o", "output", "receipt-file", "yes"} {
 		if _, ok := props[hidden]; ok {
 			t.Fatalf("blocked parameter %q should not be exposed as a flag schema: %#v", hidden, props)
 		}
 	}
 	allowed := allowedStructuredArgsForCommand(child, blocked, positionals, true)
-	for _, hidden := range []string{"audit-dir", "db", "o", "output", "receipt-file"} {
+	for _, hidden := range []string{"audit-dir", "db", "o", "output", "receipt-file", "yes"} {
 		if allowed[hidden] {
 			t.Fatalf("blocked parameter %q should not be accepted by structured args: %#v", hidden, allowed)
 		}
@@ -987,6 +999,7 @@ func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
 }
 
 func TestPositionalAlternationPlaceholderSanitizesKey(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	noop := func(cmd *cobra.Command, args []string) error { return nil }
 	longA := strings.Repeat("a", 80)
 	where := &cobra.Command{Use: "where-is <ip|hostname|mac>", RunE: noop, Short: "Locate a host"}
@@ -1244,6 +1257,7 @@ func TestPositionalArgsFromRawArgsField(t *testing.T) {
 }
 
 func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEquivalent(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	root.AddCommand(
 		&cobra.Command{
@@ -1302,6 +1316,7 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 }
 
 func TestRegisterAllDisambiguatesOnlyMirrorOwnedNameCollisions(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	root.AddCommand(&cobra.Command{Use: "foo-bar", RunE: func(*cobra.Command, []string) error { return nil }})
 	foo := &cobra.Command{Use: "foo"}
@@ -1324,6 +1339,7 @@ func TestRegisterAllDisambiguatesOnlyMirrorOwnedNameCollisions(t *testing.T) {
 }
 
 func TestRegisterAllDescendsThroughCobraHiddenButPrunesMCPHidden(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	cobraHidden := &cobra.Command{Use: "orders", Hidden: true}
 	cobraHidden.AddCommand(&cobra.Command{
@@ -1829,6 +1845,441 @@ func assertNoBlockedFlagToken(t *testing.T, argv []string, blocked map[string]bo
 			t.Errorf("blocked flag %q leaked as argv token %q", name, tok)
 		}
 	}
+}
+
+func TestCliArgsFromMCP_DropsConfirmationBypassEvenIfUnblocked(t *testing.T) {
+	got := cliArgsFromMCP(map[string]any{
+		"yes":   true,
+		"limit": float64(1),
+		"force": true,
+	}, nil)
+	want := []string{"--force", "--limit=1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP confirmation bypass = %v, want %v", got, want)
+	}
+}
+
+func TestLocalYesFlagStaysBlocked(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+	root := &cobra.Command{Use: "root"}
+	child := &cobra.Command{Use: "child", RunE: noop, Short: "Child command"}
+	child.Flags().Bool("yes", false, "local confirmation bypass")
+	child.Flags().Bool("force", false, "per-command confirm")
+	root.AddCommand(child)
+
+	blocked := blockedStructuredArgsForCommand(child)
+	if !blocked["yes"] {
+		t.Fatalf("command-local --yes was not blocked: %#v", blocked)
+	}
+	if blocked["force"] {
+		t.Fatalf("per-command --force was blocked: %#v", blocked)
+	}
+
+	bin := writeArgvHelper(t)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	entry := s.ListTools()["child"]
+	if entry == nil {
+		t.Fatalf("child tool missing: %#v", s.ListTools())
+	}
+	props := entry.Tool.InputSchema.Properties
+	if _, ok := props["yes"]; ok {
+		t.Fatalf("local --yes leaked into schema: %#v", props)
+	}
+	if _, ok := props["force"]; !ok {
+		t.Fatalf("per-command --force missing from schema: %#v", props)
+	}
+	rejectMCPFlag(t, entry.Handler, map[string]any{"yes": true, "force": true}, "yes")
+
+	result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"force": true},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("per-command --force was rejected: %s", toolResultText(result))
+	}
+	argv := decodeArgvResult(t, result)
+	want := []string{"child", "--force"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("child argv = %#v, want %#v", argv, want)
+	}
+}
+
+func TestMirroredDestructiveCommandRefusesWithoutYes(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	bin := writeConfirmProbe(t)
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().Bool("yes", false, "skip confirmation")
+	root.PersistentFlags().Bool("dry-run", false, "preview")
+	purge := &cobra.Command{
+		Use:   "purge",
+		Short: "Delete stored rows",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	root.AddCommand(purge)
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	entry := s.ListTools()["purge"]
+	if entry == nil {
+		t.Fatalf("purge tool missing: %#v", s.ListTools())
+	}
+	props := entry.Tool.InputSchema.Properties
+	if _, ok := props["yes"]; ok {
+		t.Fatalf("destructive tool schema exposes yes: %#v", props)
+	}
+	if _, ok := props["dry-run"]; !ok {
+		t.Fatalf("dry-run missing from schema: %#v", props)
+	}
+	rejectMCPFlag(t, entry.Handler, map[string]any{"yes": true}, "yes")
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := entry.Handler(ctx, mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{},
+	}})
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("destructive call hung for %s", time.Since(start))
+	}
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("destructive call auto-confirmed: %s", toolResultText(result))
+	}
+	got := toolResultText(result)
+	if !strings.Contains(got, "refusing without confirmation") {
+		t.Fatalf("tool error = %q, want refusal without confirmation", got)
+	}
+	if strings.Contains(got, "confirmed") {
+		t.Fatalf("tool error auto-confirmed: %q", got)
+	}
+
+	preview, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"dry-run": true},
+	}})
+	if err != nil {
+		t.Fatalf("dry-run returned transport error: %v", err)
+	}
+	if preview == nil || preview.IsError {
+		t.Fatalf("dry-run was rejected: %s", toolResultText(preview))
+	}
+	if text := toolResultText(preview); !strings.Contains(text, "preview") || strings.Contains(text, "confirmed") {
+		t.Fatalf("dry-run result = %q, want preview", text)
+	}
+}
+
+// A developer shell that exported the operator kill switch would unregister
+// the commands these tests expect to mirror.
+func pinMCPReadOnlyOff(t *testing.T) {
+	t.Helper()
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "")
+}
+
+func TestMCPReadOnlySwitch(t *testing.T) {
+	t.Run("on", func(t *testing.T) {
+		t.Setenv(cliutil.MCPReadOnlyEnvVar, "1")
+		if !cliutil.IsMCPReadOnlyEnv() {
+			t.Fatal("MCP read-only switch did not enable")
+		}
+		bin := writeArgvHelper(t)
+		root := mcpReadOnlyFixtureRoot()
+		s := server.NewMCPServer("test", "0.0.0")
+		RegisterAll(s, root, func() (string, error) { return bin, nil })
+		tools := s.ListTools()
+		if _, ok := tools["purge"]; ok {
+			t.Fatalf("mutating tool registered while read-only: %#v", tools)
+		}
+		if ToolNameForCommand(s, root, "purge") != "" {
+			t.Fatal("mutating command still advertised")
+		}
+		status := tools["status"]
+		if status == nil {
+			t.Fatal("read-only tool missing")
+		}
+		if status.Tool.Annotations.ReadOnlyHint == nil || !*status.Tool.Annotations.ReadOnlyHint {
+			t.Fatalf("status readOnlyHint = %v", status.Tool.Annotations.ReadOnlyHint)
+		}
+		if _, ok := status.Tool.InputSchema.Properties["yes"]; ok {
+			t.Fatal("read-only tool schema exposes yes")
+		}
+		rejectMCPFlag(t, status.Handler, map[string]any{"yes": true}, "yes")
+
+		note := tools["note"]
+		if note == nil {
+			t.Fatal("local-write tool missing")
+		}
+		if note.Tool.Annotations.ReadOnlyHint != nil && *note.Tool.Annotations.ReadOnlyHint {
+			t.Fatal("local-write tool became read-only")
+		}
+		if note.Tool.Annotations.DestructiveHint == nil || *note.Tool.Annotations.DestructiveHint {
+			t.Fatalf("note destructiveHint = %v", note.Tool.Annotations.DestructiveHint)
+		}
+		if note.Tool.Annotations.OpenWorldHint == nil || *note.Tool.Annotations.OpenWorldHint {
+			t.Fatalf("note openWorldHint = %v", note.Tool.Annotations.OpenWorldHint)
+		}
+
+		repair := tools["repair"]
+		if repair == nil {
+			t.Fatal("read-only-unless-flags tool missing")
+		}
+		props := repair.Tool.InputSchema.Properties
+		for _, hidden := range []string{"fix", "fix-limit", "yes"} {
+			if _, ok := props[hidden]; ok {
+				t.Fatalf("repair schema exposes %q: %#v", hidden, props)
+			}
+		}
+		if _, ok := props["dry-run"]; !ok {
+			t.Fatalf("repair schema missing dry-run: %#v", props)
+		}
+		if repair.Tool.Annotations.ReadOnlyHint == nil || !*repair.Tool.Annotations.ReadOnlyHint {
+			t.Fatalf("repair readOnlyHint = %v", repair.Tool.Annotations.ReadOnlyHint)
+		}
+		if repair.Tool.Annotations.DestructiveHint == nil || *repair.Tool.Annotations.DestructiveHint {
+			t.Fatalf("repair destructiveHint = %v", repair.Tool.Annotations.DestructiveHint)
+		}
+		assertMCPRefusedWithoutSpawn(t, repair.Handler, map[string]any{"fix": true}, cliutil.MCPReadOnlyEnvVar)
+		assertMCPRefusedWithoutSpawn(t, repair.Handler, map[string]any{"fix-limit": float64(3)}, cliutil.MCPReadOnlyEnvVar)
+
+		result, err := repair.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+			Arguments: map[string]any{"dry-run": true},
+		}})
+		if err != nil {
+			t.Fatalf("repair dry-run returned transport error: %v", err)
+		}
+		if result == nil || result.IsError {
+			t.Fatalf("repair dry-run was rejected: %s", toolResultText(result))
+		}
+		argv := decodeArgvResult(t, result)
+		want := []string{"repair", "--dry-run"}
+		if !reflect.DeepEqual(argv, want) {
+			t.Fatalf("repair argv = %#v, want %#v", argv, want)
+		}
+
+		for name, entry := range tools {
+			if entry == nil || entry.Tool.Meta == nil || entry.Tool.Meta.AdditionalFields == nil {
+				continue
+			}
+			commandPath, _ := entry.Tool.Meta.AdditionalFields[mirrorCLICommandMetaKey].(string)
+			if strings.Contains(commandPath, "child") {
+				t.Fatalf("child inherited mcp:read-only-unless-flags as %s (%s)", name, commandPath)
+			}
+		}
+		parent := tools["parent"]
+		if parent == nil {
+			t.Fatal("command-local unless-flags parent missing")
+		}
+	})
+
+	t.Run("off", func(t *testing.T) {
+		t.Setenv(cliutil.MCPReadOnlyEnvVar, "")
+		bin := writeArgvHelper(t)
+		root := mcpReadOnlyFixtureRoot()
+		s := server.NewMCPServer("test", "0.0.0")
+		RegisterAll(s, root, func() (string, error) { return bin, nil })
+		tools := s.ListTools()
+		purge := tools["purge"]
+		if purge == nil {
+			t.Fatal("mutating tool missing while switch is off")
+		}
+		if _, ok := purge.Tool.InputSchema.Properties["yes"]; ok {
+			t.Fatal("switch-off schema still exposes yes")
+		}
+		repair := tools["repair"]
+		if repair == nil {
+			t.Fatal("repair tool missing")
+		}
+		props := repair.Tool.InputSchema.Properties
+		for _, kept := range []string{"fix", "fix-limit", "dry-run"} {
+			if _, ok := props[kept]; !ok {
+				t.Fatalf("switch-off repair schema missing %q: %#v", kept, props)
+			}
+		}
+		if repair.Tool.Annotations.ReadOnlyHint != nil && *repair.Tool.Annotations.ReadOnlyHint {
+			t.Fatal("switch-off unless-flags command was marked read-only")
+		}
+		result, err := repair.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+			Arguments: map[string]any{"fix": true},
+		}})
+		if err != nil {
+			t.Fatalf("repair returned transport error: %v", err)
+		}
+		if result == nil || result.IsError {
+			t.Fatalf("switch-off repair rejected --fix: %s", toolResultText(result))
+		}
+		argv := decodeArgvResult(t, result)
+		want := []string{"repair", "--fix"}
+		if !reflect.DeepEqual(argv, want) {
+			t.Fatalf("repair argv = %#v, want %#v", argv, want)
+		}
+	})
+
+	t.Run("other values", func(t *testing.T) {
+		for _, value := range []string{"", "true", "yes", "0", "TRUE"} {
+			t.Setenv(cliutil.MCPReadOnlyEnvVar, value)
+			if cliutil.IsMCPReadOnlyEnv() {
+				t.Fatalf("value %q enabled the read-only switch", value)
+			}
+		}
+		t.Setenv(cliutil.MCPReadOnlyEnvVar, "true")
+		root := mcpReadOnlyFixtureRoot()
+		s := server.NewMCPServer("test", "0.0.0")
+		RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+		if s.ListTools()["purge"] == nil {
+			t.Fatal(`"true" skipped mutating tools`)
+		}
+	})
+
+	t.Run("call-time backstop", func(t *testing.T) {
+		t.Setenv(cliutil.MCPReadOnlyEnvVar, "")
+		bin := writeArgvHelper(t)
+		root := mcpReadOnlyFixtureRoot()
+		s := server.NewMCPServer("test", "0.0.0")
+		RegisterAll(s, root, func() (string, error) { return bin, nil })
+		purge := s.ListTools()["purge"]
+		if purge == nil {
+			t.Fatal("purge missing before the switch flipped")
+		}
+		t.Setenv(cliutil.MCPReadOnlyEnvVar, "1")
+		assertMCPRefusedWithoutSpawn(t, purge.Handler, map[string]any{}, cliutil.MCPReadOnlyEnvVar)
+
+		spawned := false
+		cmd := &cobra.Command{Use: "purge", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+		handler := guardMirroredMCPCall(cmd, func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+			spawned = true
+			return mcplib.NewToolResultText("spawned"), nil
+		})
+		result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+			Arguments: map[string]any{},
+		}})
+		if spawned {
+			t.Fatal("guard spawned a skipped command")
+		}
+		if err != nil {
+			t.Fatalf("guard returned transport error: %v", err)
+		}
+		if result == nil || !result.IsError || !strings.Contains(toolResultText(result), cliutil.MCPReadOnlyEnvVar) {
+			t.Fatalf("guard result = %s", toolResultText(result))
+		}
+		if strings.Contains(toolResultText(result), "cli ") {
+			t.Fatalf("guard spawned the CLI: %s", toolResultText(result))
+		}
+	})
+}
+
+func mcpReadOnlyFixtureRoot() *cobra.Command {
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+	root := &cobra.Command{Use: "app"}
+	root.PersistentFlags().Bool("yes", false, "skip confirmation")
+	status := &cobra.Command{
+		Use:   "status",
+		Short: "Show status",
+		RunE:  noop,
+		Annotations: map[string]string{
+			ReadOnlyAnnotation: "true",
+		},
+	}
+	note := &cobra.Command{
+		Use:   "note",
+		Short: "Record a note",
+		RunE:  noop,
+		Annotations: map[string]string{
+			LocalWriteAnnotation: "true",
+		},
+	}
+	purge := &cobra.Command{Use: "purge", Short: "Delete rows", RunE: noop}
+	repair := &cobra.Command{
+		Use:   "repair",
+		Short: "Repair rows",
+		RunE:  noop,
+		Annotations: map[string]string{
+			ReadOnlyUnlessFlagsAnnotation: "fix, --fix-limit",
+		},
+	}
+	repair.Flags().Bool("fix", false, "apply fixes")
+	repair.Flags().Int("fix-limit", 0, "cap fixes")
+	repair.Flags().Bool("dry-run", false, "preview")
+	parent := &cobra.Command{
+		Use:   "parent",
+		Short: "Parent",
+		RunE:  noop,
+		Annotations: map[string]string{
+			ReadOnlyUnlessFlagsAnnotation: "fix",
+		},
+	}
+	parent.Flags().Bool("fix", false, "apply fixes")
+	child := &cobra.Command{Use: "child", Short: "Child", RunE: noop}
+	parent.AddCommand(child)
+	root.AddCommand(status, note, purge, repair, parent)
+	return root
+}
+
+func assertMCPRefusedWithoutSpawn(t *testing.T, handler server.ToolHandlerFunc, args map[string]any, want string) {
+	t.Helper()
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: args,
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handler succeeded: %s", toolResultText(result))
+	}
+	got := toolResultText(result)
+	if !strings.Contains(got, want) {
+		t.Fatalf("tool error = %q, want substring %q", got, want)
+	}
+	if strings.Contains(got, "cli ") {
+		t.Fatalf("handler spawned the CLI: %q", got)
+	}
+}
+
+func writeConfirmProbe(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "confirmprobe.go")
+	body := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	for _, arg := range os.Args[1:] {
+		if arg == "--dry-run" || strings.HasPrefix(arg, "--dry-run=") {
+			fmt.Println("preview")
+			return
+		}
+		if arg == "--yes" || strings.HasPrefix(arg, "--yes=") {
+			fmt.Println("confirmed")
+			return
+		}
+	}
+	// Match commands that require --yes: they return immediately when the
+	// flag is absent. /dev/null is a character device, so a ModeCharDevice
+	// check would treat the MCP child's stdin as a terminal and block.
+	fmt.Fprintln(os.Stderr, "refusing without confirmation")
+	os.Exit(2)
+}
+`
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatalf("write confirm probe source: %v", err)
+	}
+	bin := filepath.Join(dir, "confirmprobe")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", bin, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build confirm probe: %v\n%s", err, out)
+	}
+	return bin
 }
 
 func writeArgvHelper(t *testing.T) string {

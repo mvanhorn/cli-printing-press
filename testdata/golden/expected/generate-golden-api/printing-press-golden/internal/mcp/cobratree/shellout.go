@@ -14,6 +14,8 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/spf13/cobra"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/mcp/bound"
 )
 
@@ -79,6 +81,37 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		return ToolResultFromCLICommand(out), nil
 	}
+}
+
+// guardMirroredMCPCall re-reads the read-only switch at call time. Registration
+// already drops mutating tools when the switch is on; this refuses a handler
+// that was registered before the switch flipped, without spawning the CLI.
+func guardMirroredMCPCall(cmd *cobra.Command, next server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		if msg := mirroredMCPReadOnlyRefusal(cmd, req.GetArguments()); msg != "" {
+			return boundedToolResultError(msg), nil
+		}
+		return next(ctx, req)
+	}
+}
+
+func mirroredMCPReadOnlyRefusal(cmd *cobra.Command, args map[string]any) string {
+	if !cliutil.IsMCPReadOnlyEnv() {
+		return ""
+	}
+	path := "command"
+	if cmd != nil {
+		path = cmd.CommandPath()
+	}
+	if !mirrorAllowedWhenMCPReadOnly(cmd) {
+		return fmt.Sprintf("refusing %s while %s=1", path, cliutil.MCPReadOnlyEnvVar)
+	}
+	for name := range readOnlyUnlessFlagNames(cmd) {
+		if _, ok := args[name]; ok {
+			return fmt.Sprintf("refusing %s --%s while %s=1", path, name, cliutil.MCPReadOnlyEnvVar)
+		}
+	}
+	return ""
 }
 
 func validateMCPArgumentNames(args map[string]any, allowed map[string]bool) error {
@@ -209,24 +242,35 @@ var blockedDestinationFlags = map[string]bool{
 	"receipt-file": true,
 }
 
+// confirmationBypassYesFlag is the root flag that skips a command's own
+// confirmation prompt. It stays blocked even when a command redeclares the
+// same name. Per-command confirm flags (--force, --confirm, --launch) are
+// not confirmation-bypass root flags.
+const confirmationBypassYesFlag = "yes"
+
+var confirmationBypassRootFlags = map[string]bool{
+	confirmationBypassYesFlag: true,
+}
+
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
 // able to override via structured tool parameters. Allowing them lets a
 // caller swap auth credentials, redirect the API base URL, select a different
 // per-client filesystem, relocate the config/data/state/cache roots, load a
-// malicious config file, change receipt destinations, or change the delivery
-// target, all of which sit outside the per-command surface the agent is
-// supposed to be calling.
+// malicious config file, change receipt destinations, change the delivery
+// target, or skip a command's own confirmation prompt, all of which sit
+// outside the per-command surface the agent is supposed to be calling.
 var blockedRootFlags = map[string]bool{
-	"audit-dir":    true,
-	"base-url":     true,
-	"client":       true,
-	"config":       true,
-	"deliver":      true,
-	"home":         true,
-	"insecure":     true,
-	"profile":      true,
-	"receipt-file": true,
-	"token":        true,
+	"audit-dir":               true,
+	"base-url":                true,
+	"client":                  true,
+	"config":                  true,
+	confirmationBypassYesFlag: true,
+	"deliver":                 true,
+	"home":                    true,
+	"insecure":                true,
+	"profile":                 true,
+	"receipt-file":            true,
+	"token":                   true,
 }
 
 func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
@@ -235,7 +279,7 @@ func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 		if strings.Contains(k, "=") {
 			continue
 		}
-		if blocked[k] {
+		if blocked[k] || confirmationBypassRootFlags[k] {
 			continue
 		}
 		keys = append(keys, k)

@@ -270,6 +270,10 @@ func handleCodeOrchGet(ctx context.Context, req mcplib.CallToolRequest) (*mcplib
 	return mcplib.NewToolResultText(text), nil
 }
 
+func codeOrchBlockedByMCPReadOnly(method string) bool {
+	return cliutil.IsMCPReadOnlyEnv() && method != "GET"
+}
+
 func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	args := req.GetArguments()
 	id, ok := args["endpoint_id"].(string)
@@ -280,6 +284,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	ep := findCodeOrchEndpoint(id)
 	if ep == nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("unknown endpoint_id %q — call mcp-cloudflare_search to discover valid ids", id)), nil
+	}
+	if codeOrchBlockedByMCPReadOnly(ep.Method) {
+		return mcplib.NewToolResultError(fmt.Sprintf("refusing %s %s while %s=1", ep.Method, id, cliutil.MCPReadOnlyEnvVar)), nil
 	}
 
 	params, _ := args["params"].(map[string]any)

@@ -45,7 +45,7 @@ func TestMCPExportDestinationFlagsBlocked(t *testing.T) {
 			t.Fatalf("export tool schema missing %q: %#v", want, props)
 		}
 	}
-	for _, hidden := range []string{"audit-dir", "db", "o", "output", "receipt-file"} {
+	for _, hidden := range []string{"audit-dir", "db", "o", "output", "receipt-file", "yes"} {
 		if _, ok := props[hidden]; ok {
 			t.Fatalf("filesystem destination %q leaked into export tool schema: %#v", hidden, props)
 		}
