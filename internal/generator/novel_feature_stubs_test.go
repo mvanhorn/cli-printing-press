@@ -46,8 +46,6 @@ func TestGeneratorOmitsComposedNovelFeatureCommands(t *testing.T) {
 }
 
 func TestGeneratorSkipsReservedNovelFeatureRootCommands(t *testing.T) {
-	t.Parallel()
-
 	apiSpec := minimalSpec("recall-collide")
 	apiSpec.Learn.Enabled = true
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
@@ -117,8 +115,6 @@ func TestUnreservedNovelStillWires(t *testing.T) {
 }
 
 func TestGeneratorEmitsReservedNovelWhenFrameworkCommandInactive(t *testing.T) {
-	t.Parallel()
-
 	apiSpec := minimalSpec("recall-free")
 	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
