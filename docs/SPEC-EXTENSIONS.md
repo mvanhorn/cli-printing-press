@@ -1700,11 +1700,23 @@ Rules:
 - Operation-level values override path-item-level values.
 - Must be one of `auto`, `local`, or `live`.
 - `auto` keeps the normal live-with-local-fallback behavior for store-backed
-  reads.
+  reads. Local fallback and `--data-source local` apply equality, parent
+  scope, and limit. A row-selecting parameter that cannot be applied locally
+  (`filter`, `orderBy` / `sort` / `order`, search, cursor, or an equality key
+  that is not a stored field) fails with a clear error naming those parameters
+  and suggesting `--data-source live`, instead of returning a different row
+  set. `auto` still prefers live, and surfaces that same failure when live is
+  unreachable. Projection parameters such as `fields` stay warnings.
 - `local` makes the command use local synced data for `auto` and `local`, and
   reject `--data-source live` with a clear no-live-equivalent error.
 - `live` makes the command use the remote API for `auto` and `live`, and reject
   `--data-source local` with a clear no-local-data-source error.
+- A `pp:data-source` annotation of `live` or `local` on the running command
+  rejects the opposite `--data-source` value before any network or store
+  access, including a value applied from a saved run profile. `auto`,
+  `computed`, and commands with no annotation are unchanged. A command that
+  is live or local only in some modes stays unannotated and validates in its
+  own RunE.
 
 Example:
 

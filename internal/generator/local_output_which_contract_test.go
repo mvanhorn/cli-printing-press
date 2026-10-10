@@ -91,7 +91,15 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 	assert.NotContains(t, dataSrc, "localFieldLooksLikeParentKey")
 	assert.Contains(t, dataSrc, "localListControlParams",
 		"query controls such as sort/order/search must not become equality filters")
+	assert.Contains(t, dataSrc, "localQueryUnsupportedError",
+		"a local read must fail closed when a row-selecting parameter cannot be applied")
+	assert.Contains(t, dataSrc, "use --data-source live")
+	assert.Contains(t, dataSrc, "func resolveStoredResourceType(")
 	assert.NotContains(t, dataSrc, "local data is unfiltered")
+
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, rootSrc, "validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd))",
+		"root must reject a --data-source value the command annotation cannot serve")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -122,10 +130,19 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/spf13/cobra"
+
+	"shopsapi-pp-cli/internal/client"
+	"shopsapi-pp-cli/internal/config"
 	"shopsapi-pp-cli/internal/store"
 )
 
@@ -208,18 +225,15 @@ func TestResolveLocalGetByIDStillWorks(t *testing.T) {
 	}
 }
 
-func TestResolveLocalWarnsOnUnsupportedCursor(t *testing.T) {
+func TestResolveLocalRejectsUnsupportedCursor(t *testing.T) {
 	seedShopsStore(t)
-	var warn bytes.Buffer
-	_, _, err := resolveLocal(context.Background(), nil, &warn, "shops", true, "/shops", map[string]string{
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
 		"cursor": "abc",
 	}, "test")
-	if err != nil {
-		t.Fatalf("resolveLocal cursor: %v", err)
+	if data != nil {
+		t.Fatalf("cursor read returned %s", data)
 	}
-	if !strings.Contains(warn.String(), "cursor") {
-		t.Fatalf("expected unsupported-cursor warning, got %q", warn.String())
-	}
+	requireLocalUnsupported(t, err, "cursor")
 }
 
 func seedNestedShopsStore(t *testing.T) {
@@ -324,55 +338,373 @@ func TestResolveLocalNestedCollectionUsesImmediateParent(t *testing.T) {
 	}
 }
 
-func TestResolveLocalQueryControlsDoNotEmptyTheList(t *testing.T) {
+func TestResolveLocalRejectsRowSelectingControls(t *testing.T) {
+	seedShopsStore(t)
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
+		"sort":   "name",
+		"order":  "asc",
+		"search": "alpha",
+	}, "test")
+	if data != nil {
+		t.Fatalf("row-selecting read returned %s", data)
+	}
+	requireLocalUnsupported(t, err, "sort", "order", "search")
+}
+
+func TestResolveLocalProjectionStaysAWarning(t *testing.T) {
 	seedShopsStore(t)
 	var warn bytes.Buffer
 	data, _, err := resolveLocal(context.Background(), nil, &warn, "shops", true, "/shops", map[string]string{
-		"sort":   "name",
-		"order":  "asc",
-		"fields": "id,name",
-		"search": "alpha",
+		"fields":  "id,name",
+		"include": "owner",
 	}, "test")
 	if err != nil {
-		t.Fatalf("resolveLocal query controls: %v", err)
+		t.Fatalf("resolveLocal projection: %v", err)
 	}
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err != nil {
 		t.Fatalf("expected a JSON array, got %s: %v", data, err)
 	}
 	if len(items) != 2 {
-		t.Fatalf("query controls emptied the list: %s", data)
+		t.Fatalf("projection emptied the list: %s", data)
 	}
-	for _, key := range []string{"sort", "order", "fields", "search"} {
+	for _, key := range []string{"fields", "include"} {
 		if !strings.Contains(warn.String(), key) {
-			t.Fatalf("expected unsupported %s warning, got %q", key, warn.String())
+			t.Fatalf("expected projection warning for %s, got %q", key, warn.String())
 		}
 	}
 }
 
-func TestResolveLocalUnmatchedEqualityKeyDoesNotEmptyTheList(t *testing.T) {
+func TestResolveLocalUnmatchedEqualityKeyFailsClosed(t *testing.T) {
 	seedShopsStore(t)
-	var warn bytes.Buffer
-	data, _, err := resolveLocal(context.Background(), nil, &warn, "shops", true, "/shops", map[string]string{
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
 		"not_a_field": "x",
 	}, "test")
+	if data != nil {
+		t.Fatalf("unmatched key returned %s", data)
+	}
+	requireLocalUnsupported(t, err, "not_a_field")
+}
+
+func TestResolveLocalFilterDoesNotReturnUnfilteredRows(t *testing.T) {
+	seedShopsStore(t)
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Error(w, "unreachable", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	flags := &rootFlags{dataSource: "local"}
+	data, _, err := resolveRead(context.Background(), c, flags, "shops", true, "/shops", map[string]string{
+		"filter": "status:eq('active')",
+	}, nil, io.Discard)
+	if data != nil {
+		t.Fatalf("filter read returned %s", data)
+	}
+	requireLocalUnsupported(t, err, "filter")
+	if hits != 0 {
+		t.Fatalf("local read made %d HTTP calls", hits)
+	}
+}
+
+func TestResolveLocalOrderByWithLimitDoesNotCutUnorderedRows(t *testing.T) {
+	seedShopsStore(t)
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
+		"orderBy": "desc(id)",
+		"limit":   "1",
+	}, "test")
+	if data != nil {
+		t.Fatalf("orderBy+limit returned %s", data)
+	}
+	requireLocalUnsupported(t, err, "orderBy")
+}
+
+func TestResolveLocalEmptyStoreNamesMissingDataBeforeSelectors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
 	if err != nil {
-		t.Fatalf("resolveLocal unmatched key: %v", err)
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
+		"filter": "status:eq('active')",
+	}, "test")
+	if data != nil {
+		t.Fatalf("empty store returned %s", data)
+	}
+	if err == nil || !strings.Contains(err.Error(), "no local data for \"shops\"") {
+		t.Fatalf("err = %v, want no local data", err)
+	}
+	if strings.Contains(err.Error(), "could not apply") {
+		t.Fatalf("empty store reported an unapplied selector: %v", err)
+	}
+}
+
+func TestResolveLocalAutoOfflineDoesNotReturnUnfilteredRows(t *testing.T) {
+	seedShopsStore(t)
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	c := client.New(&config.Config{BaseURL: "http://" + addr}, 5*time.Second, 0)
+	flags := &rootFlags{dataSource: "auto"}
+	data, _, err := resolveRead(context.Background(), c, flags, "shops", true, "/shops", map[string]string{
+		"filter": "status:eq('active')",
+	}, nil, io.Discard)
+	if data != nil {
+		t.Fatalf("auto offline filter returned %s", data)
+	}
+	if err == nil || !strings.Contains(err.Error(), "API unreachable") || !strings.Contains(err.Error(), "filter") || !strings.Contains(err.Error(), "--data-source live") {
+		t.Fatalf("err = %v", err)
+	}
+	data, prov, err := resolveRead(context.Background(), c, flags, "shops", true, "/shops", nil, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("auto offline unfiltered: %v", err)
+	}
+	if prov.Source != "local" {
+		t.Fatalf("source = %q, want local", prov.Source)
 	}
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err != nil {
 		t.Fatalf("expected a JSON array, got %s: %v", data, err)
 	}
 	if len(items) != 2 {
-		t.Fatalf("unmatched equality key emptied the list: %s", data)
+		t.Fatalf("auto offline listed %d shops, want 2: %s", len(items), data)
 	}
-	if !strings.Contains(warn.String(), "not_a_field") {
-		t.Fatalf("expected unmatched-key warning, got %q", warn.String())
+}
+
+func TestResolveLocalParentScopedSubCollection(t *testing.T) {
+	seedTypedRows(t, "tagged_resources", []seedRow{
+		{"r1", "{\"id\":\"r1\",\"parent_id\":\"tag-a\",\"name\":\"alpha\"}"},
+		{"r2", "{\"id\":\"r2\",\"parent_id\":\"tag-b\",\"name\":\"beta\"}"},
+	})
+	for _, resourceType := range []string{"taggedResources", "tagged_resources"} {
+		parents := localReadPathParents(resourceType, "/api/v2/tags/tag-a/taggedResources")
+		if len(parents) != 1 || parents[0].ID != "tag-a" {
+			t.Fatalf("%s parents = %#v, want tag-a", resourceType, parents)
+		}
+		data, _, err := resolveLocal(context.Background(), nil, io.Discard, resourceType, true, "/api/v2/tags/tag-a/taggedResources", nil, "test")
+		if err != nil {
+			t.Fatalf("%s resolveLocal: %v", resourceType, err)
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(data, &items); err != nil {
+			t.Fatalf("expected a JSON array, got %s: %v", data, err)
+		}
+		if len(items) != 1 || items[0]["id"] != "r1" || items[0]["parent_id"] != "tag-a" {
+			t.Fatalf("%s rows = %#v, want only tag-a", resourceType, items)
+		}
+	}
+}
+
+func TestResolveLocalShardedParentSubCollection(t *testing.T) {
+	seedTypedRows(t, "tags_tagged_resources", []seedRow{
+		{"r1", "{\"id\":\"r1\",\"parent_id\":\"tag-a\",\"name\":\"alpha\"}"},
+		{"r2", "{\"id\":\"r2\",\"parent_id\":\"tag-b\",\"name\":\"beta\"}"},
+	})
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "taggedResources", true, "/api/v2/tags/tag-a/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("sharded resolveLocal: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 1 || items[0]["parent_id"] != "tag-a" {
+		t.Fatalf("sharded rows = %#v, want only tag-a", items)
+	}
+}
+
+func TestResolveLocalKebabTopLevelAlias(t *testing.T) {
+	seedTypedRows(t, "reconciliation-policies", []seedRow{
+		{"p1", "{\"id\":\"p1\",\"name\":\"one\"}"},
+		{"p2", "{\"id\":\"p2\",\"name\":\"two\"}"},
+	})
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "reconciliationPolicies", true, "/api/v2/reconciliationPolicies", nil, "test")
+	if err != nil {
+		t.Fatalf("kebab alias: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("kebab alias listed %d rows, want 2: %s", len(items), data)
+	}
+}
+
+func TestResolveLocalUnrelatedSuffixDoesNotPanic(t *testing.T) {
+	parents := localReadPathParents("html_posts", "/posts")
+	if parents != nil {
+		t.Fatalf("parents = %#v, want none", parents)
+	}
+	if !localReadPathIsCollection("html_posts", "/posts", true) {
+		t.Fatal("isList must still be a collection")
+	}
+	if localReadPathIsCollection("html_posts", "/posts", false) {
+		t.Fatal("a non-matching single segment must stay an object path")
+	}
+}
+
+func TestResolveLocalUnknownResourceStillNamesTheRequest(t *testing.T) {
+	seedShopsStore(t)
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "doesNotExist", true, "/doesNotExist", nil, "test")
+	if data != nil {
+		t.Fatalf("unknown resource returned %s", data)
+	}
+	if err == nil || !strings.Contains(err.Error(), "no local data for \"doesNotExist\"") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDataSourceAnnotationGatesFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	cases := []struct {
+		name       string
+		annotation string
+		args       []string
+		wantErr    string
+	}{
+		{"live rejects local", "live", []string{"--data-source", "local", "probe"}, "no local data source"},
+		{"local rejects live", "local", []string{"--data-source", "live", "probe"}, "no live equivalent"},
+		{"live allows live", "live", []string{"--data-source", "live", "probe"}, ""},
+		{"live allows default auto", "live", []string{"probe"}, ""},
+		{"local allows local", "local", []string{"--data-source", "local", "probe"}, ""},
+		{"local allows auto", "local", []string{"--data-source", "auto", "probe"}, ""},
+		{"computed allows live", "computed", []string{"--data-source", "live", "probe"}, ""},
+		{"unannotated allows local", "", []string{"--data-source", "local", "probe"}, ""},
+		{"auto allows local", "auto", []string{"--data-source", "local", "probe"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hits = 0
+			ran := false
+			root := newRootCmd(&rootFlags{})
+			probe := &cobra.Command{
+				Use: "probe",
+				RunE: func(cmd *cobra.Command, args []string) error {
+					ran = true
+					req, err := http.NewRequest(http.MethodGet, srv.URL+"/probe", nil)
+					if err != nil {
+						return err
+					}
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						return err
+					}
+					resp.Body.Close()
+					return nil
+				},
+			}
+			if tc.annotation != "" {
+				probe.Annotations = map[string]string{"pp:data-source": tc.annotation}
+			}
+			root.AddCommand(probe)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs(tc.args)
+			err := root.Execute()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				if ExitCode(err) == 0 {
+					t.Fatal("incompatible data source exited 0")
+				}
+				if ran {
+					t.Fatal("RunE ran before the annotation gate")
+				}
+				if hits != 0 {
+					t.Fatalf("incompatible request made %d HTTP calls", hits)
+				}
+				if _, statErr := os.Stat(defaultDBPath("shopsapi-pp-cli")); !os.IsNotExist(statErr) {
+					t.Fatalf("store opened or created: %v", statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("compatible request: %v", err)
+			}
+			if !ran {
+				t.Fatal("compatible request did not run")
+			}
+		})
+	}
+}
+
+type seedRow struct {
+	id   string
+	body string
+}
+
+func seedTypedRows(t *testing.T, resourceType string, rows []seedRow) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, row := range rows {
+		if err := db.Upsert(resourceType, row.id, json.RawMessage(row.body)); err != nil {
+			t.Fatalf("upsert %s: %v", row.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func requireLocalUnsupported(t *testing.T, err error, params ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected local query to fail closed")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "use --data-source live") {
+		t.Fatalf("error = %q, want --data-source live", msg)
+	}
+	for _, param := range params {
+		if !strings.Contains(msg, param) {
+			t.Fatalf("error = %q, missing %s", msg, param)
+		}
+	}
+	if ExitCode(err) == 0 {
+		t.Fatalf("exit 0 for %v", err)
 	}
 }
 
 func ioDiscard() io.Writer { return io.Discard }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens|TestRankWhich_ProseCreditDoesNotDoubleCount|TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry|TestRankWhich_OneCharacterCommandLeafMatches|TestRankWhich_FillerSubtokenDoesNotAdmitHyphenatedLeaf", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveLocal|TestDataSource|TestWhichJSONNoMatchExits2|TestWhichPipedNoMatchExits2WithEmptyEnvelope|TestRankWhich_SingleTokenLeaf|TestRankWhich_CompositeLeafLosesWhenQueryOmitsCapabilityTokens|TestRankWhich_ProseCreditDoesNotDoubleCount|TestRankWhich_IncidentalDescriptionWordDoesNotAdmitEntry|TestRankWhich_OneCharacterCommandLeafMatches|TestRankWhich_FillerSubtokenDoesNotAdmitHyphenatedLeaf", "-count=1")
 }

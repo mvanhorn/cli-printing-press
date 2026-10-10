@@ -430,6 +430,9 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
+		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
+			return err
+		}
 		// Auto-refresh stale local caches before serving read commands.
 		// Looks up the current command path in readCommandResources and
 		// consults cliutil.EnsureFresh against sync_state. When stale,

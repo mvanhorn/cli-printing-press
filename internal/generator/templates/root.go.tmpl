@@ -558,6 +558,9 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
+		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
+			return err
+		}
 {{- end}}
 {{- if .HasCostThrottling}}
 		switch flags.throttleMode {

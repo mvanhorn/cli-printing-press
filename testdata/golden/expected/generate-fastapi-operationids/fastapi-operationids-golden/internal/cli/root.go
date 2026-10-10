@@ -402,6 +402,9 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
+		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
+			return err
+		}
 		// Seed entity_lookups from spec.Learn.EntityLookupSeeds once per
 		// process. Skipped for framework commands that should never
 		// touch the local store (auth, doctor, help, etc.), for

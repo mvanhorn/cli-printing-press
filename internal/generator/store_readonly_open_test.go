@@ -229,7 +229,7 @@ func TestLoadLocalListSkipsEmptyBeforeTake(t *testing.T) {
 	if _, err := s.DB().Exec(`+"`"+`UPDATE resources SET updated_at = '2026-01-01T00:00:00Z' WHERE id = 'empty'`+"`"+`); err != nil {
 		t.Fatalf("age empty: %v", err)
 	}
-	items, _, _, _, err := loadLocalList(s, "items", "/items", map[string]string{"take": "1"})
+	items, _, _, _, _, err := loadLocalList(s, "items", "/items", map[string]string{"take": "1"})
 	if err != nil {
 		t.Fatalf("loadLocalList: %v", err)
 	}
