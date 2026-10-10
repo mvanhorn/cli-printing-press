@@ -212,13 +212,13 @@ After polish returns, parse the result block and act on the new `ship_recommenda
   "$PRINTING_PRESS_BIN" dogfood --live --dir "$CLI_WORK_DIR" --level full --research-dir "$RESEARCH_DIR" --json --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
   ```
 
-  If the rerun fails, use Phase 5's `18→20` hold handoff and do not promote. If it passes, copy the runner-generated marker to both locations required by the promotion and publish gates, then use the same `18→20` handoff with a recovery-pass note:
+  If the rerun fails, use Phase 5's `18→20` hold handoff and do not promote. If it passes, copy the complete run proofs directory, including every file named in `proof_covered_features`, to both locations required by the promotion and publish gates. Then use the same `18→20` handoff with a recovery-pass note:
 
   ```bash
   API_SLUG="<api>"
   mkdir -p "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"
-  cp -f "$PROOFS_DIR/phase5-acceptance.json" "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/phase5-acceptance.json"
-  cp -f "$PROOFS_DIR/phase5-acceptance.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/phase5-acceptance.json"
+  cp -r "$PROOFS_DIR/." "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/"
+  cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"
   ```
 
   Complete the Phase 5 receipt using the `18→20` command in its hold handoff section, with the note `polish recovered a dogfood hold; refreshed live matrix passed`. Then follow [Phase 5.6](20-promote-and-archive.md). Its acceptance gate must read the fresh `status: "pass"` marker before promotion. After Phase 5.6 completes, return to this phase's ship-path menu. Do not skip the acceptance check.

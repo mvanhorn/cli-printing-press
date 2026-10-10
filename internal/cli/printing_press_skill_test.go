@@ -341,7 +341,7 @@ func TestPrintingPressSkillDogfoodFailureRoutesToHoldMenu(t *testing.T) {
 	require.Contains(t, recovery, `--next "18-dogfood-testing"`)
 	require.Contains(t, recovery, `dogfood --live --dir "$CLI_WORK_DIR" --level full`)
 	require.Contains(t, recovery, `--write-acceptance "$PROOFS_DIR/phase5-acceptance.json"`)
-	require.Contains(t, recovery, `"$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/phase5-acceptance.json"`)
-	require.Contains(t, recovery, `"$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/phase5-acceptance.json"`)
+	require.Contains(t, recovery, `cp -r "$PROOFS_DIR/." "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/"`)
+	require.Contains(t, recovery, `cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"`)
 	require.Contains(t, recovery, "Do not skip the acceptance check")
 }
