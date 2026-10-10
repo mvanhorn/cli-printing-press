@@ -2883,6 +2883,19 @@ func (g *Generator) prepareOutput() error {
 	return nil
 }
 
+// emitsLegacyStoreAdoption matches the helpers.go.tmpl gate for
+// legacyStoreAdoptPaths: a local store plus credential auth. Learn-only
+// stores set VisionSet.Store without hasDataLayer and still define it.
+func (g *Generator) emitsLegacyStoreAdoption() bool {
+	if g == nil || g.Spec == nil {
+		return false
+	}
+	if !g.hasDataLayer() && !g.VisionSet.Store {
+		return false
+	}
+	return g.Spec.Auth.Type != "" && g.Spec.Auth.Type != "none"
+}
+
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
 		"main.go.tmpl":                             filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
@@ -2954,7 +2967,7 @@ func (g *Generator) renderSingleFiles() error {
 		"NOTICE.tmpl":                              "NOTICE",
 	}
 	maps.Copy(singleFiles, cobratreeWalkerTemplateFiles())
-	if g.Spec.Auth.Type != "" && g.Spec.Auth.Type != "none" {
+	if g.emitsLegacyStoreAdoption() {
 		singleFiles["store_adopt_linux.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_linux.go")
 		singleFiles["store_adopt_darwin.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_darwin.go")
 		singleFiles["store_adopt_windows.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_windows.go")

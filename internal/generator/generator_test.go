@@ -161,9 +161,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1: internal/cli/export_perms_test.go when export is emitted.
 		// +1: internal/mcp/mirror_property_names_test.go, the root-command
 		// property-name grammar check for cobratree mirrors.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 181},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 185},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 182},
+		// +4: store_adopt_{linux,darwin,windows,other}.go. Not always-emitted:
+		// only a local store plus credential auth. All three fixtures qualify.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 185},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 189},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 186},
 	}
 
 	for _, tt := range tests {
