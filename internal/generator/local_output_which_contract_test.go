@@ -158,6 +158,9 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 	storeSrc := readGeneratedFile(t, outputDir, "internal", "store", "store.go")
 	assert.Contains(t, storeSrc, `"widgets": "serialNumber"`,
 		"declared ID fields are stored under the profiler's resource name")
+	assert.Contains(t, storeSrc, "const resourceTypeRenameBatchSize = 64",
+		"moving a legacy cache must not hold the whole partition")
+	assert.Contains(t, storeSrc, "WHERE resource_type = ? ORDER BY id LIMIT ?")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -194,6 +197,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -965,6 +969,65 @@ func TestResolveLocalLegacyOnlyWriteKeepsCachedRows(t *testing.T) {
 	}
 	if _, err := db.Get("tagged_resources", "r1"); err != nil {
 		t.Fatalf("moved row: %v", err)
+	}
+}
+
+func TestResolveLocalLegacyRenameCrossesWriteBatch(t *testing.T) {
+	const n = 65 // one past resourceTypeRenameBatchSize
+	rows := make([]seedRow, n)
+	for i := range rows {
+		id := "b" + strconv.Itoa(i)
+		rows[i] = seedRow{id, "{\"id\":\"" + id + "\",\"name\":\"kept-" + id + "\"}"}
+	}
+	seedTypedRows(t, "taggedresources", rows)
+
+	ctx := context.Background()
+	db, err := store.OpenWithContext(ctx, defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("tagged_resources", "b0", json.RawMessage("{\"id\":\"b0\",\"name\":\"winner\"}")); err != nil {
+		t.Fatalf("plant canonical: %v", err)
+	}
+	if err := db.RenameResourceType("taggedresources", "tagged_resources"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	canonical, err := db.Count("tagged_resources")
+	if err != nil {
+		t.Fatalf("count canonical: %v", err)
+	}
+	legacy, err := db.Count("taggedresources")
+	if err != nil {
+		t.Fatalf("count legacy: %v", err)
+	}
+	if canonical != n || legacy != 0 {
+		t.Fatalf("after rename canonical=%d legacy=%d, want %d and 0", canonical, legacy, n)
+	}
+	winner, err := db.Get("tagged_resources", "b0")
+	if err != nil {
+		t.Fatalf("collision: %v", err)
+	}
+	if !bytes.Contains(winner, []byte("winner")) || bytes.Contains(winner, []byte("kept-b0")) {
+		t.Fatalf("collision body = %s", winner)
+	}
+	lastID := "b" + strconv.Itoa(n-1)
+	if _, err := db.Get("tagged_resources", lastID); err != nil {
+		t.Fatalf("last batch row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	writeThroughCache(ctx, "taggedResources", json.RawMessage("[{\"id\":\"bnew\",\"name\":\"fresh\"}]"))
+	data, _, err := resolveLocal(ctx, nil, io.Discard, "taggedResources", true, "/api/v2/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("batched read: %v", err)
+	}
+	got := string(data)
+	for _, name := range []string{"winner", "kept-" + lastID, "fresh"} {
+		if !strings.Contains(got, name) {
+			t.Fatalf("batched read missing %s: %s", name, got)
+		}
 	}
 }
 
