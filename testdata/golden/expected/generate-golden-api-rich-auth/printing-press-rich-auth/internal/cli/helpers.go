@@ -4128,35 +4128,313 @@ const defaultDBScopeHashLen = 12
 
 var defaultDBScopeState struct {
 	sync.RWMutex
-	hash string
+	hash            string
+	legacyHash      string
+	label           string
+	claimSuppressed bool
 }
 
 func configureDefaultDBScope(configPath string) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		setDefaultDBScopeCredential("")
+		setDefaultDBScopeIdentity("", "", "")
 		return
 	}
-	setDefaultDBScopeCredential(cfg.StoreScopeCredential())
+	setDefaultDBScopeIdentity(cfg.StoreScopeCredential(), cfg.StoreScopeLegacyCredential(), cfg.BaseURL)
 }
 
-func setDefaultDBScopeCredential(credential string) {
+func setDefaultDBScopeIdentity(credential, legacyCredential, baseURL string) {
 	credential = strings.TrimSpace(credential)
-	scopeHash := ""
-	if credential != "" {
-		sum := sha256.Sum256([]byte(credential))
-		scopeHash = hex.EncodeToString(sum[:])[:defaultDBScopeHashLen]
+	legacyCredential = strings.TrimSpace(legacyCredential)
+	scopeHash := hashDefaultDBScope(credential)
+	legacyHash := ""
+	if legacyCredential != "" && legacyCredential != credential {
+		if hashed := hashDefaultDBScope(legacyCredential); hashed != "" && hashed != scopeHash {
+			legacyHash = hashed
+		}
 	}
 
 	defaultDBScopeState.Lock()
 	defaultDBScopeState.hash = scopeHash
+	defaultDBScopeState.legacyHash = legacyHash
+	defaultDBScopeState.label = storeScopeLabel(baseURL)
 	defaultDBScopeState.Unlock()
 }
 
-func currentDefaultDBScopeHash() string {
+func setLegacyDBClaimSuppressed(suppressed bool) {
+	defaultDBScopeState.Lock()
+	defaultDBScopeState.claimSuppressed = suppressed
+	defaultDBScopeState.Unlock()
+}
+
+func hashDefaultDBScope(credential string) string {
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(credential))
+	return hex.EncodeToString(sum[:])[:defaultDBScopeHashLen]
+}
+
+func storeScopeLabel(baseURL string) string {
+	if parsed, err := url.Parse(strings.TrimSpace(baseURL)); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return "this credential"
+}
+
+func currentDefaultDBScope() (hash, legacyHash, label string) {
 	defaultDBScopeState.RLock()
 	defer defaultDBScopeState.RUnlock()
-	return defaultDBScopeState.hash
+	return defaultDBScopeState.hash, defaultDBScopeState.legacyHash, defaultDBScopeState.label
+}
+
+func currentDefaultDBClaimSuppressed() bool {
+	defaultDBScopeState.RLock()
+	defer defaultDBScopeState.RUnlock()
+	return defaultDBScopeState.claimSuppressed
+}
+
+var legacyStoreSidecarSuffixes = []string{"-wal", "-shm", "-journal"}
+
+// legacyStoreAdoptPaths lists the database and the sidecars that have to
+// move together. An unreadable sidecar is not missing; publishing without
+// it would split the store.
+func legacyStoreAdoptPaths(legacy string) ([]string, bool) {
+	paths := []string{legacy}
+	for _, suffix := range legacyStoreSidecarSuffixes {
+		path := legacy + suffix
+		if _, err := os.Stat(path); err == nil {
+			paths = append(paths, path)
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, false
+		}
+	}
+	return paths, true
+}
+
+const (
+	storePublishMissing = iota
+	storePublishReady
+	storePublishExists
+	storePublishFailed
+)
+
+// adoptLegacyScopedStore moves a store named for a previous scope key onto
+// the stable name. Callers that only preview must leave the bytes where
+// they are. Two legacy files can share one stable name, and a plain rename
+// replaces a destination created after the empty check, so the publish
+// holds that path for every sidecar and the database together. The source
+// has to be closed first: one SQLite file opened under two names keeps
+// separate journals and can drop committed rows. When that cannot be shown,
+// this run keeps the legacy path.
+func adoptLegacyScopedStore(stable, legacy string) (string, bool) {
+	if _, err := os.Stat(legacy); err != nil {
+		return "", false
+	}
+	if currentDefaultDBClaimSuppressed() {
+		return legacy, true
+	}
+	var adopted string
+	var ok bool
+	if err := cliutil.WithFileLock(stable, func() error {
+		adopted, ok = adoptLegacyScopedStoreLocked(stable, legacy)
+		return nil
+	}); err != nil {
+		return legacy, true
+	}
+	return adopted, ok
+}
+
+func adoptLegacyScopedStoreLocked(stable, legacy string) (string, bool) {
+	if _, err := os.Stat(legacy); err != nil {
+		return "", false
+	}
+	if stableInfo, err := os.Stat(stable); err == nil {
+		if legacyInfo, statErr := os.Stat(legacy); statErr == nil && os.SameFile(legacyInfo, stableInfo) {
+			release, stillClosed, claimed := claimClosedStore(legacy)
+			if !claimed {
+				// The old name is still in use. Opening the stable name
+				// beside it gives SQLite two paths to one inode.
+				return legacy, true
+			}
+			defer release()
+			if !stillClosed() {
+				return legacy, true
+			}
+			for _, suffix := range legacyStoreSidecarSuffixes {
+				removeSourceIfSameStoreFile(legacy+suffix, stable+suffix)
+			}
+			removeSourceIfSameStoreFile(legacy, stable)
+		}
+		return stable, true
+	} else if !os.IsNotExist(err) {
+		return legacy, true
+	}
+
+	release, stillClosed, claimed := claimClosedStore(legacy)
+	if !claimed {
+		return legacy, true
+	}
+	defer release()
+
+	var linked [][2]string
+	rollback := func() {
+		for i := len(linked) - 1; i >= 0; i-- {
+			removeDestinationIfSameStoreFile(linked[i][0], linked[i][1])
+		}
+	}
+	for _, suffix := range legacyStoreSidecarSuffixes {
+		src := legacy + suffix
+		dst := stable + suffix
+		switch publishStoreFile(src, dst) {
+		case storePublishMissing:
+			continue
+		case storePublishReady:
+			linked = append(linked, [2]string{src, dst})
+		default:
+			rollback()
+			return legacy, true
+		}
+	}
+	switch publishStoreFile(legacy, stable) {
+	case storePublishReady:
+		if !stillClosed() {
+			removeDestinationIfSameStoreFile(legacy, stable)
+			rollback()
+			return legacy, true
+		}
+		for _, pair := range linked {
+			removeSourceIfSameStoreFile(pair[0], pair[1])
+		}
+		removeSourceIfSameStoreFile(legacy, stable)
+		return stable, true
+	case storePublishExists:
+		rollback()
+		return stable, true
+	case storePublishMissing:
+		rollback()
+		return "", false
+	default:
+		rollback()
+		return legacy, true
+	}
+}
+
+func publishStoreFile(src, dst string) int {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return storePublishMissing
+		}
+		return storePublishFailed
+	}
+	dstInfo, err := os.Stat(dst)
+	if err == nil {
+		if os.SameFile(srcInfo, dstInfo) {
+			return storePublishReady
+		}
+		return storePublishExists
+	}
+	if !os.IsNotExist(err) {
+		return storePublishFailed
+	}
+	if err := os.Link(src, dst); err != nil {
+		if !os.IsExist(err) {
+			return storePublishFailed
+		}
+		dstInfo, statErr := os.Stat(dst)
+		if statErr != nil || !os.SameFile(srcInfo, dstInfo) {
+			return storePublishExists
+		}
+		return storePublishReady
+	}
+	return storePublishReady
+}
+
+func removeSourceIfSameStoreFile(src, dst string) {
+	removeSameStoreFile(src, dst, true)
+}
+
+func removeDestinationIfSameStoreFile(src, dst string) {
+	removeSameStoreFile(src, dst, false)
+}
+
+func removeSameStoreFile(src, dst string, removeSrc bool) {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil || !os.SameFile(srcInfo, dstInfo) {
+		return
+	}
+	if removeSrc {
+		_ = os.Remove(src)
+		return
+	}
+	_ = os.Remove(dst)
+}
+
+// claimLegacyUnscopedDB lets one scope adopt data.db. The owner marker is
+// published with a hard link so it cannot appear empty. Any link failure
+// other than a lost race declines the claim and leaves the file shared.
+func claimLegacyUnscopedDB(dir, unscoped, scopeHash, label string) (owned, decided bool) {
+	markerPath := unscoped + ".owner"
+	if data, err := os.ReadFile(markerPath); err == nil {
+		got := strings.TrimSpace(string(data))
+		if got == "" {
+			return false, false
+		}
+		return got == scopeHash, true
+	} else if !os.IsNotExist(err) {
+		return false, false
+	}
+	if currentDefaultDBClaimSuppressed() {
+		return false, false
+	}
+
+	temp, err := os.CreateTemp(dir, ".data-db-owner-*")
+	if err != nil {
+		return false, false
+	}
+	tempName := temp.Name()
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			_ = os.Remove(tempName)
+		}
+	}()
+	if _, err := temp.Write([]byte(scopeHash + "\n")); err != nil {
+		_ = temp.Close()
+		return false, false
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return false, false
+	}
+	if err := temp.Close(); err != nil {
+		return false, false
+	}
+	if err := os.Link(tempName, markerPath); err != nil {
+		if !os.IsExist(err) {
+			return false, false
+		}
+		data, readErr := os.ReadFile(markerPath)
+		if readErr != nil {
+			return false, false
+		}
+		got := strings.TrimSpace(string(data))
+		if got == "" {
+			return false, false
+		}
+		return got == scopeHash, true
+	}
+	cleanupTemp = false
+	_ = os.Remove(tempName)
+	fmt.Fprintf(os.Stderr, "note: existing data.db is now used only for %s; other credentials use their own store file\n", label)
+	return true, true
 }
 
 // defaultDBPath returns the canonical path for the local SQLite database.
@@ -4175,12 +4453,40 @@ func defaultDBPath(name string) string {
 
 func defaultDBPathInDir(dir string) string {
 	unscoped := filepath.Join(dir, "data.db")
-	if scopeHash := currentDefaultDBScopeHash(); scopeHash != "" {
+	scopeHash, legacyHash, label := currentDefaultDBScope()
+	if scopeHash != "" {
 		scoped := filepath.Join(dir, "data-"+scopeHash+".db")
-		if _, err := os.Stat(scoped); err == nil {
+		_, scopedErr := os.Stat(scoped)
+		scopedExists := scopedErr == nil
+		if legacyHash != "" {
+			legacy := filepath.Join(dir, "data-"+legacyHash+".db")
+			if _, err := os.Stat(legacy); err == nil {
+				// Preview suppression covers the unscoped claim below. Adopting
+				// a token-named file is also a move, so a dry run has to keep
+				// the old path when that file is the one on disk. A stable
+				// name that already exists still has to go through adoption
+				// so a live writer on the old name is not pointed at the new one.
+				if currentDefaultDBClaimSuppressed() {
+					if scopedExists {
+						return scoped
+					}
+					return legacy
+				}
+				if adopted, ok := adoptLegacyScopedStore(scoped, legacy); ok {
+					return adopted
+				}
+			}
+		}
+		if scopedExists {
 			return scoped
 		}
-		if _, err := os.Stat(unscoped); err == nil || !os.IsNotExist(err) {
+		if _, err := os.Stat(unscoped); err != nil {
+			if !os.IsNotExist(err) {
+				return unscoped
+			}
+			return scoped
+		}
+		if owned, decided := claimLegacyUnscopedDB(dir, unscoped, scopeHash, label); !decided || owned {
 			return unscoped
 		}
 		return scoped

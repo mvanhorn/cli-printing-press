@@ -83,6 +83,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -502,7 +503,7 @@ func TestDependentSyncNDJSON_NoCompleteOnCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("sync did not finish after cancel")
 	}
-	if res.Err != nil || res.Warn == nil {
+	if !errors.Is(res.Err, context.Canceled) || res.Warn != nil {
 		t.Fatalf("cancel result err=%v warn=%v", res.Err, res.Warn)
 	}
 	parsed := parseNDJSON(t, events.String())
