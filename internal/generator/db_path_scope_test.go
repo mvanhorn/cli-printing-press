@@ -28,6 +28,7 @@ func TestGeneratedRootSuppressesLegacyClaimAfterProfile(t *testing.T) {
 	if refreshIdx := strings.Index(rootSrc, "autoRefreshIfStale("); refreshIdx >= 0 {
 		require.Less(t, suppressIdx, refreshIdx, "suppression must be set before auto-refresh opens the store")
 	}
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedDefaultDBPathScopesCredential(t *testing.T) {
