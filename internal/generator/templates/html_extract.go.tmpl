@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/net/html/charset"
 	xhtml "golang.org/x/net/html"
+	"{{modulePath}}/internal/cliutil"
 {{- if .HasHTMLExtractMode "table" }}
 	"{{modulePath}}/internal/platform"
 {{- end }}
@@ -755,7 +756,7 @@ func htmlExtractionRequestURL(base string, path string, params map[string]string
 				q.Set(key, value)
 			}
 		}
-		full.RawQuery = q.Encode()
+		full.RawQuery = cliutil.EncodeQuery(q)
 	}
 	return full.String()
 }

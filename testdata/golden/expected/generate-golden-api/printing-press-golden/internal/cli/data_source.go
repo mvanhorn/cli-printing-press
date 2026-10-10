@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"printing-press-golden-pp-cli/internal/client"
 	"printing-press-golden-pp-cli/internal/store"
@@ -76,6 +77,31 @@ func validateDataSourceStrategy(flags *rootFlags, strategy string) error {
 		}
 	}
 	return nil
+}
+
+// localQueryUnsupportedError is the closed failure for a local read that
+// would otherwise answer a different question. Auto fallback must surface
+// it instead of the generic "no local data" wrapper.
+type localQueryUnsupportedError struct {
+	params []string
+}
+
+func (e *localQueryUnsupportedError) Error() string {
+	return fmt.Sprintf("local data could not apply %s; use --data-source live", strings.Join(e.params, ", "))
+}
+
+func newLocalQueryUnsupportedError(params []string) error {
+	copied := append([]string(nil), params...)
+	sort.Strings(copied)
+	return &localQueryUnsupportedError{params: copied}
+}
+
+func localFallbackError(networkErr, fallbackErr error) error {
+	var unsupported *localQueryUnsupportedError
+	if As(fallbackErr, &unsupported) {
+		return fmt.Errorf("API unreachable and local data could not apply %s; use --data-source live when the API is reachable\n\nOriginal error: %w", strings.Join(unsupported.params, ", "), networkErr)
+	}
+	return fmt.Errorf("API unreachable and no local data. Run 'printing-press-golden-pp-cli sync' to enable offline access.\n\nOriginal error: %w", networkErr)
 }
 
 // isNetworkError returns true for errors caused by network connectivity issues
@@ -241,7 +267,7 @@ func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *cli
 		// Network error — try local fallback
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, networkFallbackReason)
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'printing-press-golden-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
+			return nil, DataProvenance{}, localFallbackError(err, fallbackErr)
 		}
 		return fallbackData, attachFreshness(fallbackProv, flags), nil
 	}
@@ -339,7 +365,7 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 		}
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, networkFallbackReason)
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'printing-press-golden-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
+			return nil, DataProvenance{}, localFallbackError(err, fallbackErr)
 		}
 		return fallbackData, attachFreshness(fallbackProv, flags), nil
 	}
@@ -396,6 +422,9 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		return
 	}
 	defer db.Close()
+	// ID overrides and the generic partition use the stored name. The spec
+	// key is only for matching an envelope field to this resource.
+	storedType := localWriteResourceType(db, resourceType)
 
 	// Collect items to upsert from various response shapes
 	var items []json.RawMessage
@@ -407,7 +436,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
 			matchedListEnvelope := false
-			if extracted, ok := extractWriteThroughListItems(resourceType, envelope); ok {
+			if extracted, ok := extractWriteThroughListItems(resourceType, storedType, envelope); ok {
 				matchedListEnvelope = true
 				items = extracted
 			}
@@ -453,7 +482,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 					}
 				}
 				if !looksLikeListEnvelope {
-					_, _, _ = db.UpsertBatch(resourceType, []json.RawMessage{data})
+					_, _, _ = db.UpsertBatch(storedType, []json.RawMessage{data})
 					return
 				}
 			}
@@ -461,17 +490,17 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	}
 
 	if len(items) > 0 {
-		_, _, _ = db.UpsertBatch(resourceType, items)
+		_, _, _ = db.UpsertBatch(storedType, items)
 	}
 }
 
 type writeThroughArrayDecoder func(json.RawMessage) ([]json.RawMessage, bool)
 
-func extractWriteThroughListItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+func extractWriteThroughListItems(requestedType, storedType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	if items, ok := extractWriteThroughListWrapperItems(envelope, decodeWriteThroughNonEmptyArray); ok {
 		return items, true
 	}
-	if items, ok := extractWriteThroughResourceItems(resourceType, envelope); ok {
+	if items, ok := extractWriteThroughResourceItems(requestedType, storedType, envelope); ok {
 		return items, true
 	}
 
@@ -527,18 +556,18 @@ func extractWriteThroughMapKeyedItems(envelope map[string]json.RawMessage) ([]js
 	return items, ok
 }
 
-func extractWriteThroughResourceItems(resourceType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+func extractWriteThroughResourceItems(requestedType, storedType string, envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	var envelopeObject map[string]any
 	envelopeJSON, err := json.Marshal(envelope)
 	if err != nil || json.Unmarshal(envelopeJSON, &envelopeObject) != nil {
 		return nil, false
 	}
-	if store.ExtractResourceID(resourceType, envelopeObject) != "" {
+	if store.ExtractResourceID(storedType, envelopeObject) != "" {
 		return nil, false
 	}
 
 	for key, raw := range envelope {
-		if !strings.EqualFold(key, resourceType) {
+		if !strings.EqualFold(key, requestedType) {
 			continue
 		}
 		items, ok := decodeWriteThroughArray(raw)
@@ -622,18 +651,55 @@ func isRawJSONNull(raw json.RawMessage) bool {
 }
 
 func writeMutationResponseToStore(ctx context.Context, resourceType string, data json.RawMessage, responsePath string) {
-	items := mutationResponseEntityItems(resourceType, data, responsePath)
-	if len(items) == 0 {
-		return
-	}
-
 	db, err := store.OpenWithContext(ctx, defaultDBPath("printing-press-golden-pp-cli"))
 	if err != nil {
 		return
 	}
 	defer db.Close()
 
-	_, _, _ = db.UpsertBatch(resourceType, items)
+	storedType := localWriteResourceType(db, resourceType)
+	items := mutationResponseEntityItems(storedType, data, responsePath)
+	if len(items) == 0 {
+		return
+	}
+	_, _, _ = db.UpsertBatch(storedType, items)
+}
+
+// Sync and resourceIDFieldOverrides use the snake_case resource name, so an
+// empty store must not start a second table under the raw name. A populated
+// legacy spelling is moved onto that name before the write; leaving the rows
+// behind lets the new table hide them on the next read. A failed move keeps
+// the write on the table that already has the rows.
+func localWriteResourceType(db *store.Store, resourceType string) string {
+	canonical := localCanonicalResourceType(resourceType)
+	if db == nil {
+		return canonical
+	}
+	stored, err := resolveStoredResourceType(db, resourceType, "")
+	if err != nil || stored == "" {
+		return canonical
+	}
+	n, err := db.Count(stored)
+	if err != nil || n == 0 {
+		return canonical
+	}
+	if stored == canonical {
+		return stored
+	}
+	if stored == strings.ToLower(resourceType) {
+		if err := db.RenameResourceType(stored, canonical); err != nil {
+			return stored
+		}
+		return canonical
+	}
+	return stored
+}
+
+func localCanonicalResourceType(resourceType string) string {
+	if snake := localResourceSnake(resourceType); snake != "" {
+		return snake
+	}
+	return resourceType
 }
 
 func mutationResponseEntityItems(resourceType string, data json.RawMessage, responsePath string) []json.RawMessage {
@@ -716,10 +782,11 @@ func mutationResponseHasID(resourceType string, data json.RawMessage) bool {
 }
 
 // resolveLocal reads data from the local SQLite store.
-// Collection paths (isList, or a path whose last segment is the resource type)
-// list synced rows and apply supported query filters locally. Object paths
-// fetch by the trailing ID. Cursor-style params cannot be replayed locally
-// and are reported on stderr instead of silently ignored.
+// Collection paths (isList, or a path whose collection segment is the resource)
+// list synced rows and apply equality, parent scope, and limit locally.
+// A row-selecting parameter that cannot be applied fails closed: returning
+// the unfiltered rows would answer a different question. Projection
+// parameters are reported on stderr. Object paths fetch by the trailing ID.
 func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, resourceType string, isList bool, path string, params map[string]string, reason string) (json.RawMessage, DataProvenance, error) {
 	db, err := openStoreForRead(ctx, "printing-press-golden-pp-cli")
 	if err != nil {
@@ -730,14 +797,20 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 	}
 	defer db.Close()
 
-	if flags != nil {
-		emitSyncHints(hintWriter, db, resourceType, flags.maxAge)
+	requestedType := resourceType
+	storedType, err := resolveStoredResourceType(db, requestedType, path)
+	if err != nil {
+		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 	}
 
-	prov := localProvenance(db, resourceType, reason)
+	if flags != nil {
+		emitSyncHints(hintWriter, db, storedType, flags.maxAge)
+	}
 
-	if localReadPathIsCollection(resourceType, path, isList) {
-		items, unsupported, typedHint, sawValid, err := loadLocalList(db, resourceType, path, params)
+	prov := localProvenance(db, storedType, reason)
+
+	if localReadPathIsCollection(requestedType, path, isList) {
+		items, projection, rowSelecting, typedHint, sawValid, err := loadLocalList(db, storedType, requestedType, path, params)
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 		}
@@ -749,14 +822,17 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 			fmt.Fprintf(warnWriter, "warning: %s\n", typedHint)
 		}
 		if !sawValid {
-			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'printing-press-golden-pp-cli sync' first", resourceType)
+			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'printing-press-golden-pp-cli sync' first", requestedType)
 		}
-		if len(unsupported) > 0 {
+		if len(rowSelecting) > 0 {
+			return nil, DataProvenance{}, newLocalQueryUnsupportedError(rowSelecting)
+		}
+		if len(projection) > 0 {
 			warnWriter := hintWriter
 			if warnWriter == nil {
 				warnWriter = os.Stderr
 			}
-			fmt.Fprintf(warnWriter, "warning: local data could not apply filter(s) %s\n", strings.Join(unsupported, ", "))
+			fmt.Fprintf(warnWriter, "warning: local data ignored projection parameter(s) %s\n", strings.Join(projection, ", "))
 		}
 		if len(items) == 0 {
 			return json.RawMessage("[]"), prov, nil
@@ -771,10 +847,10 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	id := parts[len(parts)-1]
 
-	item, err := db.Get(resourceType, id)
+	item, err := db.Get(storedType, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'printing-press-golden-pp-cli sync' first", resourceType, id)
+			return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'printing-press-golden-pp-cli sync' first", requestedType, id)
 		}
 		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 	}
@@ -785,12 +861,11 @@ func localReadPathIsCollection(resourceType, path string, isList bool) bool {
 	if isList {
 		return true
 	}
-	trimmed := strings.Trim(path, "/")
-	if trimmed == "" {
+	parts := localPathSegments(path)
+	if len(parts) == 0 {
 		return true
 	}
-	parts := strings.Split(trimmed, "/")
-	return strings.EqualFold(parts[len(parts)-1], resourceType)
+	return localCollectionSegmentIndex(resourceType, path) == len(parts)-1
 }
 
 type localPathParent struct {
@@ -799,17 +874,16 @@ type localPathParent struct {
 }
 
 func localReadPathParents(resourceType, path string) []localPathParent {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
+	parts := localPathSegments(path)
+	if len(parts) == 0 {
 		return nil
 	}
-	if strings.EqualFold(parts[len(parts)-1], resourceType) {
-		parts = parts[:len(parts)-1]
-	} else if len(parts) >= 2 && strings.EqualFold(parts[len(parts)-2], resourceType) {
-		parts = parts[:len(parts)-2]
-	} else {
+	idx := localCollectionSegmentIndex(resourceType, path)
+	// idx == -1 must not compare equal to len-2 on a one-segment path.
+	if idx < 0 || (idx != len(parts)-1 && idx != len(parts)-2) {
 		return nil
 	}
+	parts = parts[:idx]
 	stripped := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part == "" || localReadPathPrefixSegment(part) {
@@ -842,6 +916,153 @@ func localReadPathPrefixSegment(seg string) bool {
 		return true
 	}
 	return false
+}
+
+func localPathSegments(path string) []string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+func localPathHasSegment(parts []string, snake string) bool {
+	if snake == "" {
+		return false
+	}
+	for _, part := range parts {
+		if localResourceSnake(part) == snake {
+			return true
+		}
+	}
+	return false
+}
+
+// localResourceSnake matches spec.ToSnakeCase so a camelCase path segment
+// resolves to the snake_case resource_type sync stored.
+func localResourceSnake(s string) string {
+	s = strings.ReplaceAll(s, ".", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+	var result strings.Builder
+	for i, r := range s {
+		if unicode.IsUpper(r) && i > 0 {
+			prev := rune(s[i-1])
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				result.WriteRune('_')
+			} else if unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1])) {
+				result.WriteRune('_')
+			}
+		}
+		result.WriteRune(unicode.ToLower(r))
+	}
+	return result.String()
+}
+
+func localResourceKebab(snake string) string {
+	return strings.ReplaceAll(snake, "_", "-")
+}
+
+func localCollectionSegmentIndex(resourceType, path string) int {
+	parts := localPathSegments(path)
+	if len(parts) == 0 {
+		return -1
+	}
+	resourceSnake := localResourceSnake(resourceType)
+	if resourceSnake == "" {
+		return -1
+	}
+	found := -1
+	for i, part := range parts {
+		segSnake := localResourceSnake(part)
+		if segSnake == "" {
+			continue
+		}
+		if segSnake == resourceSnake {
+			found = i
+			continue
+		}
+		suffix := "_" + segSnake
+		if !strings.HasSuffix(resourceSnake, suffix) {
+			continue
+		}
+		parentSnake := strings.TrimSuffix(resourceSnake, suffix)
+		if parentSnake != "" && localPathHasSegment(parts, parentSnake) {
+			found = i
+		}
+	}
+	return found
+}
+
+func localStoreResourceCandidates(resourceType, path string) []string {
+	var out []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == name {
+				return
+			}
+		}
+		out = append(out, name)
+	}
+	add(resourceType)
+	snake := localResourceSnake(resourceType)
+	add(snake)
+	add(localResourceKebab(snake))
+
+	parts := localPathSegments(path)
+	idx := localCollectionSegmentIndex(resourceType, path)
+	if idx < 0 || idx >= len(parts) || len(localReadPathParents(resourceType, path)) == 0 {
+		// A fully lowercased camelCase name is a legacy table. It stays last
+		// so a parent shard is preferred, and path parsing keeps the requested name.
+		add(strings.ToLower(resourceType))
+		return out
+	}
+	leaf := localResourceSnake(parts[idx])
+	if leaf == "" {
+		add(strings.ToLower(resourceType))
+		return out
+	}
+	parents := localReadPathParents(resourceType, path)
+	parentSnake := localResourceSnake(parents[len(parents)-1].Type)
+	if parentSnake == "" {
+		add(strings.ToLower(resourceType))
+		return out
+	}
+	shard := parentSnake + "_" + leaf
+	leafShaped := snake == leaf
+	shardShaped := snake == shard || (strings.HasSuffix(snake, "_"+leaf) && snake != leaf)
+	if leafShaped || shardShaped {
+		add(shard)
+		add(localResourceKebab(shard))
+	}
+	if shardShaped {
+		add(leaf)
+		add(localResourceKebab(leaf))
+	}
+	add(strings.ToLower(resourceType))
+	return out
+}
+
+// The first populated candidate wins so a leaf table is preferred over a
+// parent-prefixed shard when both could match the same path.
+func resolveStoredResourceType(db *store.Store, resourceType, path string) (string, error) {
+	candidates := localStoreResourceCandidates(resourceType, path)
+	if len(candidates) == 0 {
+		return resourceType, nil
+	}
+	for _, candidate := range candidates {
+		n, err := db.Count(candidate)
+		if err != nil {
+			return "", err
+		}
+		if n > 0 {
+			return candidate, nil
+		}
+	}
+	return candidates[0], nil
 }
 
 func applyLocalParentScope(db *store.Store, resourceType string, items []json.RawMessage, parents []localPathParent) []json.RawMessage {
@@ -956,11 +1177,17 @@ var localListCursorParams = map[string]bool{
 	"next_cursor": true, "start_cursor": true, "next": true,
 }
 
+var localListProjectionParams = map[string]bool{
+	"fields": true, "field": true, "select": true,
+	"include": true, "expand": true,
+}
+
 var localListControlParams = map[string]bool{
 	"sort": true, "order": true, "order_by": true, "orderby": true,
 	"fields": true, "field": true, "select": true,
 	"include": true, "expand": true,
 	"q": true, "query": true, "search": true,
+	"filter": true, "filters": true,
 }
 
 func localParamCanon(key string) string {
@@ -974,11 +1201,30 @@ func localListControlParam(canon string) bool {
 	return localListControlParams[strings.ReplaceAll(canon, "_", "")]
 }
 
+func localListProjectionParam(canon string) bool {
+	if localListProjectionParams[canon] {
+		return true
+	}
+	return localListProjectionParams[strings.ReplaceAll(canon, "_", "")]
+}
+
+func localListRowSelectingParam(canon string) bool {
+	stripped := strings.ReplaceAll(canon, "_", "")
+	if localListCursorParams[canon] || localListCursorParams[stripped] {
+		return true
+	}
+	if localListProjectionParam(canon) {
+		return false
+	}
+	return localListControlParam(canon)
+}
+
 type localListQuery struct {
-	equality    map[string]string
-	unsupported []string
-	limit       int
-	offset      int
+	equality     map[string]string
+	projection   []string
+	rowSelecting []string
+	limit        int
+	offset       int
 }
 
 func parseLocalListQuery(params map[string]string) localListQuery {
@@ -987,6 +1233,7 @@ func parseLocalListQuery(params map[string]string) localListQuery {
 		return q
 	}
 	page := 0
+	pageKey := ""
 	for key, val := range params {
 		val = strings.TrimSpace(val)
 		if val == "" {
@@ -994,42 +1241,51 @@ func parseLocalListQuery(params map[string]string) localListQuery {
 		}
 		canon := localParamCanon(key)
 		switch {
-		case localListCursorParams[canon]:
-			q.unsupported = append(q.unsupported, key)
-		case localListControlParam(canon):
-			q.unsupported = append(q.unsupported, key)
+		case localListRowSelectingParam(canon):
+			q.rowSelecting = append(q.rowSelecting, key)
+		case localListProjectionParam(canon):
+			q.projection = append(q.projection, key)
 		case localListLimitParams[canon]:
 			n, err := strconv.Atoi(val)
 			if err != nil || n < 0 {
-				q.unsupported = append(q.unsupported, key)
+				q.rowSelecting = append(q.rowSelecting, key)
 				continue
 			}
 			q.limit = n
 		case localListOffsetParams[canon]:
 			n, err := strconv.Atoi(val)
 			if err != nil || n < 0 {
-				q.unsupported = append(q.unsupported, key)
+				q.rowSelecting = append(q.rowSelecting, key)
 				continue
 			}
 			q.offset = n
 		case localListPageParams[canon]:
 			n, err := strconv.Atoi(val)
 			if err != nil || n < 1 {
-				q.unsupported = append(q.unsupported, key)
+				q.rowSelecting = append(q.rowSelecting, key)
 				continue
 			}
 			page = n
+			pageKey = key
 		default:
 			q.equality[key] = val
 		}
 	}
-	if page > 1 && q.limit < 0 {
-		q.unsupported = append(q.unsupported, "page")
+	// Page 1 still uses the server's default page size, which this store
+	// does not know. Any supplied page without a usable limit fails closed.
+	if page >= 1 && q.limit < 0 {
+		key := pageKey
+		if key == "" {
+			key = "page"
+		}
+		q.rowSelecting = append(q.rowSelecting, key)
 		page = 0
 	}
 	if page > 1 && q.limit >= 0 {
 		q.offset += (page - 1) * q.limit
 	}
+	sort.Strings(q.projection)
+	sort.Strings(q.rowSelecting)
 	return q
 }
 
@@ -1038,37 +1294,37 @@ func localRecordIsEmpty(raw json.RawMessage) bool {
 	return trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}"
 }
 
-func loadLocalList(db *store.Store, resourceType, path string, params map[string]string) ([]json.RawMessage, []string, string, bool, error) {
+func loadLocalList(db *store.Store, storedType, requestedType, path string, params map[string]string) ([]json.RawMessage, []string, []string, string, bool, error) {
 	q := parseLocalListQuery(params)
-	parents := localReadPathParents(resourceType, path)
-	complete, _, err := db.TypedPartitionComplete(resourceType)
+	parents := localReadPathParents(requestedType, path)
+	complete, _, err := db.TypedPartitionComplete(storedType)
 	if err != nil {
-		return nil, nil, "", false, err
+		return nil, nil, nil, "", false, err
 	}
-	_, hasTyped := store.TypedListTable(resourceType)
+	_, hasTyped := store.TypedListTable(storedType)
 	typedHintFor := func(sawValid bool) string {
 		if sawValid && hasTyped && !complete {
 			return store.TypedListIncompleteHint
 		}
 		return ""
 	}
+	if len(q.rowSelecting) > 0 {
+		n, err := db.Count(storedType)
+		if err != nil {
+			return nil, nil, nil, "", false, err
+		}
+		sawValid := n > 0
+		return nil, q.projection, q.rowSelecting, typedHintFor(sawValid), sawValid, nil
+	}
 
-	items, sawValid, unmatched, err := scanLocalList(db, resourceType, parents, q, complete)
+	items, sawValid, unmatched, err := scanLocalList(db, storedType, parents, q, complete)
 	if err != nil {
-		return nil, nil, "", false, err
+		return nil, nil, nil, "", false, err
 	}
 	if len(unmatched) > 0 {
-		for _, key := range unmatched {
-			q.unsupported = append(q.unsupported, key)
-			delete(q.equality, key)
-		}
-		items, sawValid, _, err = scanLocalList(db, resourceType, parents, q, complete)
-		if err != nil {
-			return nil, nil, "", false, err
-		}
+		return nil, q.projection, unmatched, typedHintFor(sawValid), sawValid, nil
 	}
-	sort.Strings(q.unsupported)
-	return items, q.unsupported, typedHintFor(sawValid), sawValid, nil
+	return items, q.projection, nil, typedHintFor(sawValid), sawValid, nil
 }
 
 func scanLocalList(db *store.Store, resourceType string, parents []localPathParent, q localListQuery, preferTyped bool) ([]json.RawMessage, bool, []string, error) {
@@ -1161,55 +1417,13 @@ func unmatchedEqualityKeys(present map[string]bool) []string {
 }
 
 func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([]json.RawMessage, []string) {
-	if len(params) == 0 {
-		return items, nil
+	q := parseLocalListQuery(params)
+	noted := append(append([]string{}, q.projection...), q.rowSelecting...)
+	if len(q.rowSelecting) > 0 || len(params) == 0 {
+		sort.Strings(noted)
+		return items, noted
 	}
-	equality := map[string]string{}
-	unsupported := make([]string, 0)
-	limit := -1
-	offset := 0
-	page := 0
-	for key, val := range params {
-		val = strings.TrimSpace(val)
-		if val == "" {
-			continue
-		}
-		canon := localParamCanon(key)
-		switch {
-		case localListCursorParams[canon]:
-			unsupported = append(unsupported, key)
-		case localListControlParam(canon):
-			unsupported = append(unsupported, key)
-		case localListLimitParams[canon]:
-			n, err := strconv.Atoi(val)
-			if err != nil || n < 0 {
-				unsupported = append(unsupported, key)
-				continue
-			}
-			limit = n
-		case localListOffsetParams[canon]:
-			n, err := strconv.Atoi(val)
-			if err != nil || n < 0 {
-				unsupported = append(unsupported, key)
-				continue
-			}
-			offset = n
-		case localListPageParams[canon]:
-			n, err := strconv.Atoi(val)
-			if err != nil || n < 1 {
-				unsupported = append(unsupported, key)
-				continue
-			}
-			page = n
-		default:
-			equality[key] = val
-		}
-	}
-	if page > 1 && limit < 0 {
-		unsupported = append(unsupported, "page")
-		page = 0
-	}
-	if len(equality) > 0 {
+	if len(q.equality) > 0 {
 		presentKeys := map[string]bool{}
 		parsed := make([]map[string]any, len(items))
 		valid := make([]bool, len(items))
@@ -1220,26 +1434,30 @@ func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([
 			}
 			parsed[i] = obj
 			valid[i] = true
-			for key := range equality {
+			for key := range q.equality {
 				if _, ok := localObjectField(obj, key); ok {
 					presentKeys[key] = true
 				}
 			}
 		}
-		for key := range equality {
+		for key := range q.equality {
 			if !presentKeys[key] {
-				unsupported = append(unsupported, key)
-				delete(equality, key)
+				noted = append(noted, key)
+				delete(q.equality, key)
 			}
 		}
-		if len(equality) > 0 {
+		if len(noted) > len(q.projection) {
+			sort.Strings(noted)
+			return items, noted
+		}
+		if len(q.equality) > 0 {
 			filtered := make([]json.RawMessage, 0, len(items))
 			for i, raw := range items {
 				if !valid[i] {
 					continue
 				}
 				keep := true
-				for key, want := range equality {
+				for key, want := range q.equality {
 					got, ok := localObjectField(parsed[i], key)
 					if !ok || !localFieldEquals(got, want) {
 						keep = false
@@ -1253,21 +1471,18 @@ func applyLocalListFilters(items []json.RawMessage, params map[string]string) ([
 			items = filtered
 		}
 	}
-	if page > 1 && limit >= 0 {
-		offset += (page - 1) * limit
-	}
-	if offset > 0 {
-		if offset >= len(items) {
+	if q.offset > 0 {
+		if q.offset >= len(items) {
 			items = items[:0]
 		} else {
-			items = items[offset:]
+			items = items[q.offset:]
 		}
 	}
-	if limit >= 0 && len(items) > limit {
-		items = items[:limit]
+	if q.limit >= 0 && len(items) > q.limit {
+		items = items[:q.limit]
 	}
-	sort.Strings(unsupported)
-	return items, unsupported
+	sort.Strings(noted)
+	return items, noted
 }
 
 func localObjectField(obj map[string]any, key string) (any, bool) {

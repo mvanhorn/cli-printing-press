@@ -215,7 +215,7 @@ func appendMCPArrayQueryParam(path, name string, value any, style string, explod
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	return path + separator + query.Encode()
+	return path + separator + cliutil.EncodeQuery(query)
 }
 
 // appendMCPDeepObjectQueryParam appends one style=deepObject query param to
@@ -242,7 +242,7 @@ func appendMCPDeepObjectQueryParam(path, name string, value any) (string, error)
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	return path + separator + values.Encode(), nil
+	return path + separator + cliutil.EncodeQuery(values), nil
 }
 
 // expandMCPDeepObjectValue expands one deepObject-style query param into

@@ -137,6 +137,17 @@ func IsDogfoodEnv() bool {
 	return os.Getenv(DogfoodEnvVar) == "1"
 }
 
+// MCPReadOnlyEnvVar is the operator kill switch for this CLI's MCP server.
+// The value must be exactly "1", matching the other harness switches.
+// "true" and "yes" do not enable it.
+const MCPReadOnlyEnvVar = "BLE_DESK_LAMP_MCP_READ_ONLY"
+
+// IsMCPReadOnlyEnv reports whether the MCP server should expose only
+// read-only mirrored commands and refuse non-GET execute calls.
+func IsMCPReadOnlyEnv() bool {
+	return os.Getenv(MCPReadOnlyEnvVar) == "1"
+}
+
 // EnvOverride returns the named environment variable, treating an
 // unresolved MCPB `${user_config.*}` placeholder as unset. Hosts that
 // skip optional user_config keys leave the template text in the

@@ -84,6 +84,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/duration_test.go",
 		"internal/cliutil/odata_date.go",
 		"internal/cliutil/odata_date_test.go",
+		"internal/cliutil/query.go",
+		"internal/cliutil/query_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/client/client_test.go",
@@ -163,9 +165,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// property-name grammar check for cobratree mirrors.
 		// +4: store_adopt_{linux,darwin,windows,other}.go. Not always-emitted:
 		// only a local store plus credential auth. All three fixtures qualify.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 185},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 189},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 186},
+		// +2: cliutil.EncodeQuery and its test.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 187},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 191},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 188},
 	}
 
 	for _, tt := range tests {
@@ -364,7 +367,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 
 	// All cliutil files must be emitted.
 	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
-	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "filelock_test.go"} {
+	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "query.go", "query_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "filelock_test.go"} {
 		_, err := os.Stat(filepath.Join(cliutilDir, name))
 		require.NoError(t, err, "expected %s to be emitted", name)
 	}
@@ -387,6 +390,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"extractnumber.go", "func ExtractInt("},
 		{"jwtshape.go", "func LooksLikeJWT("},
 		{"jwtshape.go", "func FindJWTInCookieJar("},
+		{"query.go", "func EncodeQuery("},
 		{"filelock.go", "func WithFileLock("},
 		{"filelock.go", "func TryWithFileLock("},
 		{"filelock_unix.go", "syscall.LOCK_NB"},
@@ -12917,7 +12921,7 @@ func TestGeneratedHelpers_AuthWithKeyURL_Compiles(t *testing.T) {
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientSrc, "q := req.URL.Query()",
 		"query API-key auth must emit cross-host query cleanup")
-	assert.Contains(t, clientSrc, "req.URL.RawQuery = q.Encode()",
+	assert.Contains(t, clientSrc, "req.URL.RawQuery = cliutil.EncodeQuery(q)",
 		"query API-key auth must write the cleaned query back")
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -20883,8 +20887,8 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 		"analytics group-by JSON should encode missing values as null via any")
 	dataSourceSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, resourceType, flags.maxAge)`,
-		"data-source local fallback should emit sync hints for endpoint reads")
+	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, storedType, flags.maxAge)`,
+		"data-source local fallback should emit sync hints for the stored resource name")
 
 	testSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync_hint_test.go"))
 	require.NoError(t, err, "sync_hint_test.go must compile the helper behavior in generated CLIs")

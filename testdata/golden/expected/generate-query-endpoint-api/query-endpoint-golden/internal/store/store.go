@@ -3782,6 +3782,130 @@ func (s *Store) Count(resourceType string) (int, error) {
 	return count, err
 }
 
+// resourceTypeRenameBatchSize bounds how many cached payloads are held
+// while a legacy resource_type moves onto its canonical name. The move stays
+// one transaction, so a later batch failing does not leave both spellings populated.
+const resourceTypeRenameBatchSize = 64
+
+// Readers prefer the first populated spelling. Leaving rows under a legacy
+// resource_type while new writes land on the canonical name hides that older
+// cache. FTS rowids include the resource type, so those index rows move too.
+func (s *Store) RenameResourceType(from, to string) error {
+	if from == "" || to == "" || from == to {
+		return nil
+	}
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for {
+		n, err := renameResourceTypeBatch(tx, from, to)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return tx.Commit()
+		}
+	}
+}
+
+func renameResourceTypeBatch(tx *sql.Tx, from, to string) (int, error) {
+	rows, err := tx.Query(
+		`SELECT id, data FROM resources WHERE resource_type = ? ORDER BY id LIMIT ?`,
+		from, resourceTypeRenameBatchSize,
+	)
+	if err != nil {
+		return 0, err
+	}
+	type resourceRow struct {
+		id   string
+		data string
+	}
+	batch := make([]resourceRow, 0, resourceTypeRenameBatchSize)
+	for rows.Next() {
+		var row resourceRow
+		if err := rows.Scan(&row.id, &row.data); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		batch = append(batch, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+
+	for _, row := range batch {
+		if err := moveResourceTypeRow(tx, from, to, row.id, row.data); err != nil {
+			return 0, err
+		}
+	}
+	return len(batch), nil
+}
+
+func moveResourceTypeRow(tx *sql.Tx, from, to, id, data string) error {
+	kept := data
+	var dest string
+	err := tx.QueryRow(
+		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+		to, id,
+	).Scan(&dest)
+	switch {
+	case err == nil:
+		kept = dest
+		if err := execMovedOneRow(tx, `DELETE FROM resources WHERE resource_type = ? AND id = ?`, from, id); err != nil {
+			return err
+		}
+	case err == sql.ErrNoRows:
+		if err := execMovedOneRow(tx,
+			`UPDATE resources SET resource_type = ? WHERE resource_type = ? AND id = ?`,
+			to, from, id,
+		); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	return rewriteResourceFTS(tx, from, to, id, kept)
+}
+
+func execMovedOneRow(tx *sql.Tx, query string, args ...any) error {
+	res, err := tx.Exec(query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("moved %d resource rows", n)
+	}
+	return nil
+}
+
+func rewriteResourceFTS(tx *sql.Tx, from, to, id, data string) error {
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(from, id)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(to, id)); err != nil {
+		return err
+	}
+	_, err := tx.Exec(
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+		ftsRowID(to, id), id, to, searchableResourceContent(json.RawMessage(data)),
+	)
+	return err
+}
+
 func (s *Store) Status() (map[string]int, error) {
 	rows, err := s.db.Query(
 		`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type ORDER BY resource_type`,
