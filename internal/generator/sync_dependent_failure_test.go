@@ -64,11 +64,14 @@ func TestGeneratedDependentSyncIncompleteIsError(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	// The server imports internal/mcp. Without MCP that directory has no
+	// non-test files, and the full-module build cannot succeed.
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "dependent_sync_failure_test.go"), []byte(dependentSyncFailureTestSource), 0o644))
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestDependentSync", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 const dependentSyncFailureTestSource = `package cli

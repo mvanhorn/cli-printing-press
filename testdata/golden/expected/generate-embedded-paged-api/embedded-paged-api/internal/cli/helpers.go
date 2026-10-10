@@ -4218,50 +4218,145 @@ func currentDefaultDBClaimSuppressed() bool {
 	return defaultDBScopeState.claimSuppressed
 }
 
-// adoptLegacyScopedStore renames a store named for a previous scope key onto
-// the stable name. A failed rename keeps the old path so the bytes stay
-// reachable. An existing destination is left untouched.
+var legacyStoreSidecarSuffixes = []string{"-wal", "-shm", "-journal"}
+
+const (
+	storePublishMissing = iota
+	storePublishReady
+	storePublishExists
+	storePublishFailed
+)
+
+// adoptLegacyScopedStore moves a store named for a previous scope key onto
+// the stable name. Callers that only preview must leave the bytes where
+// they are. Two legacy files can share one stable name, and a plain rename
+// replaces a destination created after the empty check, so the publish
+// holds that path for every sidecar and the database together.
 func adoptLegacyScopedStore(stable, legacy string) (string, bool) {
 	if _, err := os.Stat(legacy); err != nil {
 		return "", false
 	}
-	if _, err := os.Stat(stable); err == nil {
+	if currentDefaultDBClaimSuppressed() {
+		return legacy, true
+	}
+	var adopted string
+	var ok bool
+	if err := cliutil.WithFileLock(stable, func() error {
+		adopted, ok = adoptLegacyScopedStoreLocked(stable, legacy)
+		return nil
+	}); err != nil {
+		return legacy, true
+	}
+	return adopted, ok
+}
+
+func adoptLegacyScopedStoreLocked(stable, legacy string) (string, bool) {
+	if _, err := os.Stat(legacy); err != nil {
+		return "", false
+	}
+	if stableInfo, err := os.Stat(stable); err == nil {
+		if legacyInfo, statErr := os.Stat(legacy); statErr == nil && os.SameFile(legacyInfo, stableInfo) {
+			for _, suffix := range legacyStoreSidecarSuffixes {
+				removeSourceIfSameStoreFile(legacy+suffix, stable+suffix)
+			}
+			_ = os.Remove(legacy)
+		}
 		return stable, true
 	} else if !os.IsNotExist(err) {
 		return legacy, true
 	}
 
-	var renamed [][2]string
+	var linked [][2]string
 	rollback := func() {
-		for i := len(renamed) - 1; i >= 0; i-- {
-			_ = os.Rename(renamed[i][1], renamed[i][0])
+		for i := len(linked) - 1; i >= 0; i-- {
+			removeDestinationIfSameStoreFile(linked[i][0], linked[i][1])
 		}
 	}
-	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+	for _, suffix := range legacyStoreSidecarSuffixes {
 		src := legacy + suffix
 		dst := stable + suffix
-		if _, err := os.Stat(src); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+		switch publishStoreFile(src, dst) {
+		case storePublishMissing:
+			continue
+		case storePublishReady:
+			linked = append(linked, [2]string{src, dst})
+		default:
 			rollback()
 			return legacy, true
 		}
-		if _, err := os.Stat(dst); !os.IsNotExist(err) {
-			rollback()
-			return legacy, true
-		}
-		if err := os.Rename(src, dst); err != nil {
-			rollback()
-			return legacy, true
-		}
-		renamed = append(renamed, [2]string{src, dst})
 	}
-	if err := os.Rename(legacy, stable); err != nil {
+	switch publishStoreFile(legacy, stable) {
+	case storePublishReady:
+		for _, pair := range linked {
+			removeSourceIfSameStoreFile(pair[0], pair[1])
+		}
+		removeSourceIfSameStoreFile(legacy, stable)
+		return stable, true
+	case storePublishExists:
+		rollback()
+		return stable, true
+	case storePublishMissing:
+		rollback()
+		return "", false
+	default:
 		rollback()
 		return legacy, true
 	}
-	return stable, true
+}
+
+func publishStoreFile(src, dst string) int {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return storePublishMissing
+		}
+		return storePublishFailed
+	}
+	dstInfo, err := os.Stat(dst)
+	if err == nil {
+		if os.SameFile(srcInfo, dstInfo) {
+			return storePublishReady
+		}
+		return storePublishExists
+	}
+	if !os.IsNotExist(err) {
+		return storePublishFailed
+	}
+	if err := os.Link(src, dst); err != nil {
+		if !os.IsExist(err) {
+			return storePublishFailed
+		}
+		dstInfo, statErr := os.Stat(dst)
+		if statErr != nil || !os.SameFile(srcInfo, dstInfo) {
+			return storePublishExists
+		}
+		return storePublishReady
+	}
+	return storePublishReady
+}
+
+func removeSourceIfSameStoreFile(src, dst string) {
+	removeSameStoreFile(src, dst, true)
+}
+
+func removeDestinationIfSameStoreFile(src, dst string) {
+	removeSameStoreFile(src, dst, false)
+}
+
+func removeSameStoreFile(src, dst string, removeSrc bool) {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil || !os.SameFile(srcInfo, dstInfo) {
+		return
+	}
+	if removeSrc {
+		_ = os.Remove(src)
+		return
+	}
+	_ = os.Remove(dst)
 }
 
 // claimLegacyUnscopedDB lets one scope adopt data.db. The owner marker is
@@ -4347,7 +4442,14 @@ func defaultDBPathInDir(dir string) string {
 			return scoped
 		}
 		if legacyHash != "" {
-			if adopted, ok := adoptLegacyScopedStore(scoped, filepath.Join(dir, "data-"+legacyHash+".db")); ok {
+			legacy := filepath.Join(dir, "data-"+legacyHash+".db")
+			// Preview suppression covers the unscoped claim below. Adopting
+			// a token-named file is also a move, so a dry run has to keep
+			// the old path when that file is the one on disk.
+			if _, err := os.Stat(legacy); err == nil && currentDefaultDBClaimSuppressed() {
+				return legacy
+			}
+			if adopted, ok := adoptLegacyScopedStore(scoped, legacy); ok {
 				return adopted
 			}
 		}

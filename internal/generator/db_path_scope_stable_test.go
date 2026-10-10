@@ -64,12 +64,16 @@ func TestGeneratedDefaultDBPathStableBearerRefreshScope(t *testing.T) {
 const oauthStableScopeTestSource = `package cli
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"__MODULE_PATH__/internal/cliutil"
 	"__MODULE_PATH__/internal/config"
@@ -238,6 +242,282 @@ func TestStableStoreScopeOAuthAdoptsTokenHashFile(t *testing.T) {
 	if data, err := os.ReadFile(adopted); err != nil || string(data) != "kept" {
 		t.Fatalf("renewed read = %q, err %v", data, err)
 	}
+}
+
+func TestStableStoreScopeDryRunDoesNotAdoptLegacyFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DB_SCOPE_OAUTH_BASE_URL", "")
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	setDefaultDBScopeIdentity("", "", "")
+	setLegacyDBClaimSuppressed(true)
+	t.Cleanup(func() { setLegacyDBClaimSuppressed(false) })
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	writeOAuthScopeConfig(t, configPath, "https://api.example.com/v1", "session-a", "refresh-stable", "client-1", "secret-1")
+	configureDefaultDBScope(configPath)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(defaultDBPath("db-scope-oauth-pp-cli"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(dir, "data-"+stableScopeHash(cfg.StoreScopeLegacyCredential())+".db")
+	stable := filepath.Join(dir, "data-"+stableScopeHash(cfg.StoreScopeCredential())+".db")
+	if err := os.WriteFile(legacy, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy+"-wal", []byte("wal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultDBPath("db-scope-oauth-pp-cli"); got != legacy {
+		t.Fatalf("dry-run path = %s, want %s", got, legacy)
+	}
+	if _, err := os.Stat(stable); !os.IsNotExist(err) {
+		t.Fatalf("dry-run published the stable database: %v", err)
+	}
+	if _, err := os.Stat(stable + "-wal"); !os.IsNotExist(err) {
+		t.Fatalf("dry-run published the stable wal: %v", err)
+	}
+	if data, err := os.ReadFile(legacy); err != nil || string(data) != "kept" {
+		t.Fatalf("legacy bytes = %q, err %v", data, err)
+	}
+	if data, err := os.ReadFile(legacy + "-wal"); err != nil || string(data) != "wal" {
+		t.Fatalf("legacy wal = %q, err %v", data, err)
+	}
+}
+
+func TestStableStoreScopeConcurrentAdoptKeepsLoserFile(t *testing.T) {
+	dir := t.TempDir()
+	stable := filepath.Join(dir, "data-stable.db")
+	legacyA := filepath.Join(dir, "data-a.db")
+	legacyB := filepath.Join(dir, "data-b.db")
+	writeStoreBytes(t, legacyA, "AAAA", "walA")
+	writeStoreBytes(t, legacyB, "BBBB", "walB")
+	setLegacyDBClaimSuppressed(false)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		adoptLegacyScopedStore(stable, legacyA)
+	}()
+	go func() {
+		defer wg.Done()
+		adoptLegacyScopedStore(stable, legacyB)
+	}()
+	wg.Wait()
+	assertOneStoreSurvived(t, stable, legacyA, "AAAA", "walA", legacyB, "BBBB", "walB")
+}
+
+func TestStableStoreScopeAdoptDoesNotReplaceAcrossProcesses(t *testing.T) {
+	if role := os.Getenv("PP_ADOPT_ROLE"); role != "" {
+		runAdoptRoleChild(role)
+		return
+	}
+
+	dir := t.TempDir()
+	stable := filepath.Join(dir, "data-stable.db")
+	legacy := filepath.Join(dir, "data-legacy.db")
+	writeStoreBytes(t, legacy, "legacy-bytes", "wal-bytes")
+	release := filepath.Join(dir, "release")
+	ready := filepath.Join(dir, "holder-ready")
+	started := filepath.Join(dir, "adopter-started")
+
+	holder := startAdoptChild(t, "hold", stable, legacy, release, ready, started)
+	defer func() {
+		if holder.Process != nil && holder.ProcessState == nil {
+			_ = holder.Process.Kill()
+			_ = holder.Wait()
+		}
+	}()
+	if !waitForFile(ready, 5*time.Second) {
+		t.Fatalf("holder did not acquire the lock: %s", holder.stderr.String())
+	}
+	adopter := startAdoptChild(t, "adopt", stable, legacy, release, ready, started)
+	adoptDone := make(chan error, 1)
+	go func() { adoptDone <- adopter.Wait() }()
+	adopterFinished := false
+	defer func() {
+		if adopterFinished {
+			return
+		}
+		if adopter.Process != nil {
+			_ = adopter.Process.Kill()
+		}
+		<-adoptDone
+	}()
+	if !waitForFile(started, 5*time.Second) {
+		t.Fatalf("adopter did not start: %s", adopter.stderr.String())
+	}
+	select {
+	case err := <-adoptDone:
+		adopterFinished = true
+		t.Fatalf("adopt finished while the scope lock was held: %v: %s", err, adopter.stderr.String())
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := os.WriteFile(stable, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(release, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-adoptDone; err != nil {
+		adopterFinished = true
+		t.Fatalf("adopter: %v: %s", err, adopter.stderr.String())
+	}
+	adopterFinished = true
+	if data, err := os.ReadFile(stable); err != nil || string(data) != "kept" {
+		t.Fatalf("stable bytes = %q, err %v", data, err)
+	}
+	if data, err := os.ReadFile(legacy); err != nil || string(data) != "legacy-bytes" {
+		t.Fatalf("legacy bytes = %q, err %v", data, err)
+	}
+	if _, err := os.Stat(stable + "-wal"); !os.IsNotExist(err) {
+		t.Fatalf("adopt published a wal onto the existing database: %v", err)
+	}
+	if data, err := os.ReadFile(legacy + "-wal"); err != nil || string(data) != "wal-bytes" {
+		t.Fatalf("legacy wal = %q, err %v", data, err)
+	}
+}
+
+func TestStableStoreScopeAdoptLeavesForeignSidecar(t *testing.T) {
+	dir := t.TempDir()
+	stable := filepath.Join(dir, "data-stable.db")
+	legacy := filepath.Join(dir, "data-legacy.db")
+	writeStoreBytes(t, legacy, "legacy-bytes", "wal-bytes")
+	if err := os.WriteFile(stable+"-wal", []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setLegacyDBClaimSuppressed(false)
+	got, ok := adoptLegacyScopedStore(stable, legacy)
+	if !ok || got != legacy {
+		t.Fatalf("adopt = %s, %v; want the legacy path", got, ok)
+	}
+	if _, err := os.Stat(stable); !os.IsNotExist(err) {
+		t.Fatalf("main database published beside a foreign wal: %v", err)
+	}
+	if data, err := os.ReadFile(stable + "-wal"); err != nil || string(data) != "foreign" {
+		t.Fatalf("foreign wal = %q, err %v", data, err)
+	}
+	if data, err := os.ReadFile(legacy); err != nil || string(data) != "legacy-bytes" {
+		t.Fatalf("legacy bytes = %q, err %v", data, err)
+	}
+}
+
+func writeStoreBytes(t *testing.T, path, db, wal string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(db), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+"-wal", []byte(wal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertOneStoreSurvived(t *testing.T, stable, legacyA, dataA, walA, legacyB, dataB, walB string) {
+	t.Helper()
+	stableData, err := os.ReadFile(stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal, err := os.ReadFile(stable + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loser, loserData, loserWal string
+	switch string(stableData) {
+	case dataA:
+		loser, loserData, loserWal = legacyB, dataB, walB
+		if string(wal) != walA {
+			t.Fatalf("wal %q does not match the published database", wal)
+		}
+	case dataB:
+		loser, loserData, loserWal = legacyA, dataA, walA
+		if string(wal) != walB {
+			t.Fatalf("wal %q does not match the published database", wal)
+		}
+	default:
+		t.Fatalf("stable database = %q", stableData)
+	}
+	if data, err := os.ReadFile(loser); err != nil || string(data) != loserData {
+		t.Fatalf("loser database = %q, err %v", data, err)
+	}
+	if data, err := os.ReadFile(loser + "-wal"); err != nil || string(data) != loserWal {
+		t.Fatalf("loser wal = %q, err %v", data, err)
+	}
+}
+
+type adoptChild struct {
+	*exec.Cmd
+	stderr bytes.Buffer
+}
+
+func startAdoptChild(t *testing.T, role, stable, legacy, release, ready, started string) *adoptChild {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStableStoreScopeAdoptDoesNotReplaceAcrossProcesses$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PP_ADOPT_ROLE="+role,
+		"PP_ADOPT_STABLE="+stable,
+		"PP_ADOPT_LEGACY="+legacy,
+		"PP_ADOPT_RELEASE="+release,
+		"PP_ADOPT_READY="+ready,
+		"PP_ADOPT_STARTED="+started,
+	)
+	child := &adoptChild{Cmd: cmd}
+	cmd.Stderr = &child.stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start %s: %v", role, err)
+	}
+	return child
+}
+
+func waitForFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func runAdoptRoleChild(role string) {
+	stable := os.Getenv("PP_ADOPT_STABLE")
+	legacy := os.Getenv("PP_ADOPT_LEGACY")
+	switch role {
+	case "hold":
+		err := cliutil.WithFileLock(stable, func() error {
+			if err := os.WriteFile(os.Getenv("PP_ADOPT_READY"), []byte("1"), 0o600); err != nil {
+				return err
+			}
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(os.Getenv("PP_ADOPT_RELEASE")); err == nil {
+					return nil
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return os.ErrDeadlineExceeded
+		})
+		if err != nil {
+			os.Exit(1)
+		}
+	case "adopt":
+		if err := os.WriteFile(os.Getenv("PP_ADOPT_STARTED"), []byte("1"), 0o600); err != nil {
+			os.Exit(1)
+		}
+		adoptLegacyScopedStore(stable, legacy)
+	default:
+		os.Exit(2)
+	}
+	os.Exit(0)
 }
 
 func writeOAuthScopeConfig(t *testing.T, path, baseURL, accessToken, refreshToken, clientID, clientSecret string) {
