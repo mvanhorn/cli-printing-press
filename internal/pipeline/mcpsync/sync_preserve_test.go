@@ -230,8 +230,8 @@ func plantHandAuthoredMCPBehavior(cliDir string) error {
 		return err
 	}
 	walkerSrc := strings.Replace(string(walker),
-		"\t\treadOnly := isMCPReadOnly(cmd)\n\t\tif readOnly {\n\t\t\toptions = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))\n\t\t}\n\t\tif !readOnly && isMCPLocalWrite(cmd) {",
-		"\t\treadOnly := isMCPReadOnly(cmd)\n\t\tlocalWrite := isMCPLocalWrite(cmd)\n\t\tif localWrite {",
+		"\t\tif readOnly {\n\t\t\toptions = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))\n\t\t}\n\t\tif !readOnly && isMCPLocalWrite(cmd) {",
+		"\t\tlocalWrite := isMCPLocalWrite(cmd)\n\t\tif localWrite {",
 		1)
 	if walkerSrc == string(walker) {
 		return errPlant("walker.go local-write rule")
@@ -245,10 +245,11 @@ func plantHandAuthoredMCPBehavior(cliDir string) error {
 	if err != nil {
 		return err
 	}
-	shelloutSrc := strings.Replace(string(shellout),
-		"\t\"deliver\":      true,\n",
-		"\t\"db\":           true,\n\t\"deliver\":      true,\n",
-		1)
+	deliverAt := strings.Index(string(shellout), "\t\"deliver\":")
+	if deliverAt < 0 || !strings.Contains(string(shellout)[deliverAt:], "\n") {
+		return errPlant("shellout.go db blocklist")
+	}
+	shelloutSrc := string(shellout)[:deliverAt] + "\t\"db\": true,\n" + string(shellout)[deliverAt:]
 	if shelloutSrc == string(shellout) {
 		return errPlant("shellout.go db blocklist")
 	}

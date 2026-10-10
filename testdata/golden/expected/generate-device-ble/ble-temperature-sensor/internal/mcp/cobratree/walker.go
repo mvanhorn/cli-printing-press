@@ -7,6 +7,7 @@ package cobratree
 import (
 	"strings"
 
+	"ble-temperature-sensor-pp-cli/internal/cliutil"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
@@ -18,6 +19,7 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 	if root == nil {
 		return
 	}
+	readOnlyMode := cliutil.IsMCPReadOnlyEnv()
 	walk(root, nil, func(cmd *cobra.Command, path []string) {
 		switch classify(cmd) {
 		case commandHidden:
@@ -28,12 +30,24 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		if !cmd.Runnable() {
 			return
 		}
+		if readOnlyMode && !mirrorAllowedWhenMCPReadOnly(cmd) {
+			return
+		}
 
 		toolName := availableToolName(s, toolNameForPath(path))
 		if toolName == "" {
 			return
 		}
 		blockedStructuredArgs := blockedStructuredArgsForCommand(cmd)
+		readOnly := isMCPReadOnly(cmd)
+		if readOnlyMode {
+			if names := readOnlyUnlessFlagNames(cmd); len(names) > 0 {
+				for name := range names {
+					blockedStructuredArgs[name] = true
+				}
+				readOnly = true
+			}
+		}
 		positionals := positionalArgsForCommand(cmd, blockedStructuredArgs)
 		blockedCLIArgs := cliFlagBlockedArgs(blockedStructuredArgs, positionals)
 		allowedStructuredArgs := allowedStructuredArgsForCommand(cmd, blockedStructuredArgs, positionals, commandTakesArgs(cmd))
@@ -42,7 +56,6 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		if commandTakesArgs(cmd) && len(positionals) == 0 {
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the command. Raw flags are rejected; use structured flag parameters instead.")))
 		}
-		readOnly := isMCPReadOnly(cmd)
 		if readOnly {
 			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
 		}
@@ -64,7 +77,7 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		tool.Meta.AdditionalFields["pp:tenant-gate"] = "child-cli"
 		// Preserve the canonical Cobra identity when normalized names collide.
 		tool.Meta.AdditionalFields[mirrorCLICommandMetaKey] = strings.Join(path, " ")
-		s.AddTool(tool, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd)))
+		s.AddTool(tool, guardMirroredMCPCall(cmd, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd))))
 	})
 }
 

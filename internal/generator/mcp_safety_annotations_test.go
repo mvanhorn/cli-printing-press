@@ -118,8 +118,11 @@ func TestGeneratePlatformClientMCPAnnotations(t *testing.T) {
 	runtimeTest := fmt.Sprintf(`package cli
 
 import (
+	"context"
+	"strings"
 	"testing"
 
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"%s/internal/mcp/cobratree"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -164,6 +167,38 @@ func TestPlatformClientMCPAnnotations(t *testing.T) {
 		if annotations.OpenWorldHint == nil || *annotations.OpenWorldHint != want.openWorld {
 			t.Fatalf("%%s openWorldHint = %%v, want %%v", name, annotations.OpenWorldHint, want.openWorld)
 		}
+	}
+
+	deleteTool := tools["client_delete"]
+	if deleteTool == nil {
+		t.Fatal("client_delete missing")
+	}
+	if _, ok := deleteTool.Tool.InputSchema.Properties["yes"]; ok {
+		t.Fatal("client_delete schema exposes yes")
+	}
+	if _, ok := deleteTool.Tool.InputSchema.Properties["dry-run"]; !ok {
+		t.Fatal("client_delete schema missing dry-run")
+	}
+	result, err := deleteTool.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"yes": true},
+	}})
+	if err != nil {
+		t.Fatalf("client_delete returned transport error: %%v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatal("client_delete accepted yes")
+	}
+	text := ""
+	if len(result.Content) > 0 {
+		if content, ok := result.Content[0].(mcplib.TextContent); ok {
+			text = content.Text
+		}
+	}
+	if !strings.Contains(text, "unknown MCP parameter") || !strings.Contains(text, "yes") {
+		t.Fatalf("client_delete yes error = %%q", text)
+	}
+	if strings.Contains(text, "cli ") {
+		t.Fatalf("client_delete spawned the CLI: %%q", text)
 	}
 }
 `, modulePath)

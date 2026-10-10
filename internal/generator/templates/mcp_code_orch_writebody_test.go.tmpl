@@ -5,8 +5,13 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"{{modulePath}}/internal/cliutil"
 )
 
 // TestCodeOrchWriteBody_MarshalsToJSONObject pins the write-body contract.
@@ -94,5 +99,59 @@ func TestCodeOrchArrayBody_SendsTopLevelArray(t *testing.T) {
 	degraded, _ := json.Marshal(codeOrchArrayBody(map[string]any{"oops": 1}))
 	if len(degraded) == 0 || degraded[0] != '{' {
 		t.Fatalf("expected safe-degrade to the params object; got: %s", degraded)
+	}
+}
+
+func TestCodeOrchExecuteReadOnlyRefusesNonGET(t *testing.T) {
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "")
+	if codeOrchBlockedByMCPReadOnly("POST") {
+		t.Fatal("unset switch blocked POST")
+	}
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "true")
+	if codeOrchBlockedByMCPReadOnly("DELETE") {
+		t.Fatal(`"true" enabled the read-only switch`)
+	}
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "yes")
+	if codeOrchBlockedByMCPReadOnly("PATCH") {
+		t.Fatal(`"yes" enabled the read-only switch`)
+	}
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "1")
+	if codeOrchBlockedByMCPReadOnly("GET") {
+		t.Fatal("GET was blocked by the read-only switch")
+	}
+	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		if !codeOrchBlockedByMCPReadOnly(method) {
+			t.Fatalf("%s was not blocked", method)
+		}
+	}
+
+	for _, ep := range codeOrchEndpoints {
+		if ep.Method == "GET" {
+			if codeOrchBlockedByMCPReadOnly(ep.Method) {
+				t.Fatalf("GET endpoint %s was blocked", ep.ID)
+			}
+			continue
+		}
+		result, err := handleCodeOrchExecute(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+			Arguments: map[string]any{"endpoint_id": ep.ID},
+		}})
+		if err != nil {
+			t.Fatalf("handleCodeOrchExecute(%s %s) transport error: %v", ep.Method, ep.ID, err)
+		}
+		if result == nil || !result.IsError {
+			t.Fatalf("%s %s was not refused", ep.Method, ep.ID)
+		}
+		text := ""
+		if len(result.Content) > 0 {
+			if content, ok := result.Content[0].(mcplib.TextContent); ok {
+				text = content.Text
+			}
+		}
+		if !strings.Contains(text, cliutil.MCPReadOnlyEnvVar) {
+			t.Fatalf("%s %s error = %q, want %s", ep.Method, ep.ID, text, cliutil.MCPReadOnlyEnvVar)
+		}
+		if strings.Contains(text, "loading config") {
+			t.Fatalf("%s %s reached the API client: %s", ep.Method, ep.ID, text)
+		}
 	}
 }
