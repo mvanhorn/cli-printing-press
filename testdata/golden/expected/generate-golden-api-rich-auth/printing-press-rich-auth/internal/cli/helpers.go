@@ -2841,6 +2841,131 @@ func isCompactGravityField(name string) bool {
 	return false
 }
 
+// Bounds a provenance object so it stays in compact output, and rejects a
+// nested document that only borrowed an underscore name.
+const (
+	compactMarkerMaxRunes      = 256
+	compactMarkerMaxObjectKeys = 8
+)
+
+// Flag stems whose presence changes the row. Matched after lowercasing and
+// stripping '_' and '-', with an optional "is" prefix, so locked, is_locked,
+// and read-only hit. Ordinary booleans (enabled, verified) stay on the
+// frequency and gravity rules.
+var compactPresenceFlagNames = map[string]bool{
+	"deprecated": true,
+	"locked":     true,
+	"inherited":  true,
+	"override":   true,
+	"overridden": true,
+	"readonly":   true,
+}
+
+// Keep floor for both compaction paths. The API omits these keys when the
+// condition does not hold, so an 80% frequency cut and a gravity-only
+// documented-field cut both delete the signal.
+func compactPresenceMarkerKeys(items []map[string]any) map[string]bool {
+	eligible := make(map[string]bool)
+	for _, item := range items {
+		for key, value := range item {
+			if prev, seen := eligible[key]; seen && !prev {
+				continue
+			}
+			eligible[key] = isCompactPresenceMarker(key, value)
+		}
+	}
+	var keep map[string]bool
+	for key, ok := range eligible {
+		if !ok {
+			continue
+		}
+		if keep == nil {
+			keep = make(map[string]bool)
+		}
+		keep[key] = true
+	}
+	return keep
+}
+
+func isCompactPresenceMarker(name string, value any) bool {
+	if name == "" || compactVerboseListFields[name] {
+		return false
+	}
+	if isUnderscoreMetadataKey(name) {
+		return isCompactMarkerValue(value)
+	}
+	if isCompactPresenceFlagName(name) {
+		return isCompactMarkerScalar(value)
+	}
+	return false
+}
+
+func isUnderscoreMetadataKey(name string) bool {
+	if !strings.HasPrefix(name, "_") {
+		return false
+	}
+	for _, r := range name[1:] {
+		if r != '_' {
+			return true
+		}
+	}
+	return false
+}
+
+func isCompactPresenceFlagName(name string) bool {
+	normalized := strings.ToLower(name)
+	if strings.ContainsAny(normalized, "_-") {
+		normalized = strings.ReplaceAll(normalized, "_", "")
+		normalized = strings.ReplaceAll(normalized, "-", "")
+	}
+	if compactPresenceFlagNames[normalized] {
+		return true
+	}
+	rest, ok := strings.CutPrefix(normalized, "is")
+	return ok && compactPresenceFlagNames[rest]
+}
+
+func isCompactMarkerScalar(value any) bool {
+	switch v := value.(type) {
+	case nil, bool, float64:
+		return true
+	case string:
+		return compactMarkerStringOK(v)
+	default:
+		return false
+	}
+}
+
+func compactMarkerStringOK(s string) bool {
+	if strings.ContainsRune(s, '\n') || strings.ContainsRune(s, '\r') {
+		return false
+	}
+	n := 0
+	for range s {
+		n++
+		if n > compactMarkerMaxRunes {
+			return false
+		}
+	}
+	return true
+}
+
+func isCompactMarkerValue(value any) bool {
+	if isCompactMarkerScalar(value) {
+		return true
+	}
+	obj, ok := value.(map[string]any)
+	if !ok || len(obj) > compactMarkerMaxObjectKeys {
+		return false
+	}
+	for _, child := range obj {
+		if !isCompactMarkerScalar(child) {
+			return false
+		}
+	}
+	return true
+}
+
 // compactListFields keeps only high-gravity fields for array responses.
 //
 // Two-layer keep rule:
@@ -2867,6 +2992,14 @@ func isCompactGravityField(name string) bool {
 // hypothesis — object-level projection already copies those arrays
 // through, and the frequency rule then treats the same names inside
 // payload rows as ordinary keys, so a minority of rows lose them.
+//
+// Presence markers are a floor on both paths. A key whose presence or
+// absence changes the row (an underscore-prefixed provenance object such
+// as _inheritedFrom, or a boolean-ish flag such as deprecated, locked,
+// inherited, or override) is kept even when it is sparse and not a gravity
+// name. The value has to stay small: a scalar, or for underscore keys a
+// shallow object of scalars. Verbose names, ordinary sparse fields, arrays,
+// and nested documents stay on the frequency and gravity rules.
 func compactListFields(items []map[string]any, keep []string, documentedFields ...map[string]bool) json.RawMessage {
 	keepFields := map[string]bool{
 		// Identity
@@ -2938,6 +3071,9 @@ func compactListFields(items []map[string]any, keep []string, documentedFields .
 				keepFields[k] = true
 			}
 		}
+	}
+	for field := range compactPresenceMarkerKeys(items) {
+		keepFields[field] = true
 	}
 
 	filtered := make([]map[string]any, 0, len(items))
