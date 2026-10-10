@@ -4161,6 +4161,26 @@ func awaitDependentReport(reports <-chan parentReport, ticks <-chan time.Time) d
 	}
 }
 
+// dependentSyncInterruptError reports a cancelled dependent phase. A short
+// report means a worker returned before every parent was visited. A full
+// report counts only when the context is already done and a fetch failed
+// with that cancellation. An empty parent set is not an interrupt.
+func dependentSyncInterruptError(ctx context.Context, resource string, reported, total int, cancelSeen bool) error {
+	if total == 0 {
+		return nil
+	}
+	short := reported < total
+	ctxErr := ctx.Err()
+	if !short && !(ctxErr != nil && cancelSeen) {
+		return nil
+	}
+	cause := ctxErr
+	if cause == nil {
+		cause = context.Canceled
+	}
+	return fmt.Errorf("%s interrupted after %d of %d parents: %w", resource, reported, total, cause)
+}
+
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
 func syncDependentResource(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
@@ -4334,6 +4354,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	// yet still produces sync_progress. Workers write events concurrently, so
 	// those lines go through the lockedWriter installed above.
 	dryRunHit := false
+	cancelSeen := false
 	failedParents := 0
 	integrityFailedParents := 0
 	nonJSONParents := 0
@@ -4392,6 +4413,9 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 		if rep.failure != nil {
 			failedParents++
+			if errors.Is(rep.failure, context.Canceled) || errors.Is(rep.failure, context.DeadlineExceeded) {
+				cancelSeen = true
+			}
 			if rep.integrityFailure {
 				integrityFailedParents++
 			}
@@ -4409,6 +4433,17 @@ func syncDependentResource(ctx context.Context, c interface {
 			emitParentAnomaly(syncEvents, humanFriendly, dep.Name, rep.anomaly)
 			depAnomalyEmitted = true
 		}
+	}
+	// Cancellation has to win before the dry-run short-circuit. Otherwise a
+	// cancelled preview is reported as a clean sync_dryrun, and --strict
+	// (which reads only Err) exits 0 on an incomplete resource.
+	if interruptErr := dependentSyncInterruptError(ctx, dep.Name, reportedParents, len(parentRows), cancelSeen); interruptErr != nil {
+		if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+			if err := db.SaveSyncProgress(dep.Name, "", totalCount); err != nil {
+				return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), Duration: time.Since(started)}
+			}
+		}
+		return syncResult{Resource: dep.Name, Count: totalCount, Err: interruptErr, Duration: time.Since(started)}
 	}
 	if dryRunHit {
 		// A dry-run preview must not mutate sync-state, so short-circuit before
@@ -4435,8 +4470,8 @@ func syncDependentResource(ctx context.Context, c interface {
 		if integrityFailedParents > 0 {
 			return syncResult{Resource: dep.Name, Count: totalCount, Err: failure, IntegrityFailure: true, Duration: time.Since(started)}
 		}
-		if failedParents == len(parentRows) && totalCount == 0 {
-			return syncResult{Resource: dep.Name, Count: 0, Err: failure, Duration: time.Since(started)}
+		if failedParents == len(parentRows) {
+			return syncResult{Resource: dep.Name, Count: totalCount, Err: failure, Duration: time.Since(started)}
 		}
 		return syncResult{Resource: dep.Name, Count: totalCount, Warn: failure, Duration: time.Since(started)}
 	}

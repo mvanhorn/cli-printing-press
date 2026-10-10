@@ -4171,35 +4171,177 @@ const defaultDBScopeHashLen = 12
 
 var defaultDBScopeState struct {
 	sync.RWMutex
-	hash string
+	hash            string
+	legacyHash      string
+	label           string
+	claimSuppressed bool
 }
 
 func configureDefaultDBScope(configPath string) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		setDefaultDBScopeCredential("")
+		setDefaultDBScopeIdentity("", "", "")
 		return
 	}
-	setDefaultDBScopeCredential(cfg.StoreScopeCredential())
+	setDefaultDBScopeIdentity(cfg.StoreScopeCredential(), cfg.StoreScopeLegacyCredential(), cfg.BaseURL)
 }
 
-func setDefaultDBScopeCredential(credential string) {
+func setDefaultDBScopeIdentity(credential, legacyCredential, baseURL string) {
 	credential = strings.TrimSpace(credential)
-	scopeHash := ""
-	if credential != "" {
-		sum := sha256.Sum256([]byte(credential))
-		scopeHash = hex.EncodeToString(sum[:])[:defaultDBScopeHashLen]
+	legacyCredential = strings.TrimSpace(legacyCredential)
+	scopeHash := hashDefaultDBScope(credential)
+	legacyHash := ""
+	if legacyCredential != "" && legacyCredential != credential {
+		if hashed := hashDefaultDBScope(legacyCredential); hashed != "" && hashed != scopeHash {
+			legacyHash = hashed
+		}
 	}
 
 	defaultDBScopeState.Lock()
 	defaultDBScopeState.hash = scopeHash
+	defaultDBScopeState.legacyHash = legacyHash
+	defaultDBScopeState.label = storeScopeLabel(baseURL)
 	defaultDBScopeState.Unlock()
 }
 
-func currentDefaultDBScopeHash() string {
+func setLegacyDBClaimSuppressed(suppressed bool) {
+	defaultDBScopeState.Lock()
+	defaultDBScopeState.claimSuppressed = suppressed
+	defaultDBScopeState.Unlock()
+}
+
+func hashDefaultDBScope(credential string) string {
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(credential))
+	return hex.EncodeToString(sum[:])[:defaultDBScopeHashLen]
+}
+
+func storeScopeLabel(baseURL string) string {
+	if parsed, err := url.Parse(strings.TrimSpace(baseURL)); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return "this credential"
+}
+
+func currentDefaultDBScope() (hash, legacyHash, label string) {
 	defaultDBScopeState.RLock()
 	defer defaultDBScopeState.RUnlock()
-	return defaultDBScopeState.hash
+	return defaultDBScopeState.hash, defaultDBScopeState.legacyHash, defaultDBScopeState.label
+}
+
+func currentDefaultDBClaimSuppressed() bool {
+	defaultDBScopeState.RLock()
+	defer defaultDBScopeState.RUnlock()
+	return defaultDBScopeState.claimSuppressed
+}
+
+// adoptLegacyScopedStore renames a store named for a previous scope key onto
+// the stable name. A failed rename keeps the old path so the bytes stay
+// reachable. An existing destination is left untouched.
+func adoptLegacyScopedStore(stable, legacy string) (string, bool) {
+	if _, err := os.Stat(legacy); err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(stable); err == nil {
+		return stable, true
+	} else if !os.IsNotExist(err) {
+		return legacy, true
+	}
+
+	var renamed [][2]string
+	rollback := func() {
+		for i := len(renamed) - 1; i >= 0; i-- {
+			_ = os.Rename(renamed[i][1], renamed[i][0])
+		}
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		src := legacy + suffix
+		dst := stable + suffix
+		if _, err := os.Stat(src); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			rollback()
+			return legacy, true
+		}
+		if _, err := os.Stat(dst); !os.IsNotExist(err) {
+			rollback()
+			return legacy, true
+		}
+		if err := os.Rename(src, dst); err != nil {
+			rollback()
+			return legacy, true
+		}
+		renamed = append(renamed, [2]string{src, dst})
+	}
+	if err := os.Rename(legacy, stable); err != nil {
+		rollback()
+		return legacy, true
+	}
+	return stable, true
+}
+
+// claimLegacyUnscopedDB lets one scope adopt data.db. The owner marker is
+// published with a hard link so it cannot appear empty. Any link failure
+// other than a lost race declines the claim and leaves the file shared.
+func claimLegacyUnscopedDB(dir, unscoped, scopeHash, label string) (owned, decided bool) {
+	markerPath := unscoped + ".owner"
+	if data, err := os.ReadFile(markerPath); err == nil {
+		got := strings.TrimSpace(string(data))
+		if got == "" {
+			return false, false
+		}
+		return got == scopeHash, true
+	} else if !os.IsNotExist(err) {
+		return false, false
+	}
+	if currentDefaultDBClaimSuppressed() {
+		return false, false
+	}
+
+	temp, err := os.CreateTemp(dir, ".data-db-owner-*")
+	if err != nil {
+		return false, false
+	}
+	tempName := temp.Name()
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			_ = os.Remove(tempName)
+		}
+	}()
+	if _, err := temp.Write([]byte(scopeHash + "\n")); err != nil {
+		_ = temp.Close()
+		return false, false
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return false, false
+	}
+	if err := temp.Close(); err != nil {
+		return false, false
+	}
+	if err := os.Link(tempName, markerPath); err != nil {
+		if !os.IsExist(err) {
+			return false, false
+		}
+		data, readErr := os.ReadFile(markerPath)
+		if readErr != nil {
+			return false, false
+		}
+		got := strings.TrimSpace(string(data))
+		if got == "" {
+			return false, false
+		}
+		return got == scopeHash, true
+	}
+	cleanupTemp = false
+	_ = os.Remove(tempName)
+	fmt.Fprintf(os.Stderr, "note: existing data.db is now used only for %s; other credentials use their own store file\n", label)
+	return true, true
 }
 
 // defaultDBPath returns the canonical path for the local SQLite database.
@@ -4218,12 +4360,24 @@ func defaultDBPath(name string) string {
 
 func defaultDBPathInDir(dir string) string {
 	unscoped := filepath.Join(dir, "data.db")
-	if scopeHash := currentDefaultDBScopeHash(); scopeHash != "" {
+	scopeHash, legacyHash, label := currentDefaultDBScope()
+	if scopeHash != "" {
 		scoped := filepath.Join(dir, "data-"+scopeHash+".db")
 		if _, err := os.Stat(scoped); err == nil {
 			return scoped
 		}
-		if _, err := os.Stat(unscoped); err == nil || !os.IsNotExist(err) {
+		if legacyHash != "" {
+			if adopted, ok := adoptLegacyScopedStore(scoped, filepath.Join(dir, "data-"+legacyHash+".db")); ok {
+				return adopted
+			}
+		}
+		if _, err := os.Stat(unscoped); err != nil {
+			if !os.IsNotExist(err) {
+				return unscoped
+			}
+			return scoped
+		}
+		if owned, decided := claimLegacyUnscopedDB(dir, unscoped, scopeHash, label); !decided || owned {
 			return unscoped
 		}
 		return scoped

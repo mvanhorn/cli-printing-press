@@ -350,6 +350,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
+		setLegacyDBClaimSuppressed(flags.dryRun)
 		configureDefaultDBScope(flags.configPath)
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)

@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -321,7 +322,34 @@ func (c *Config) AuthHeader() string {
 	return ""
 }
 
+// StoreScopeIdentity overrides the default store-scope key. A print whose
+// session token rotates can pin a stable account id so re-login keeps the
+// same local database.
+var StoreScopeIdentity func(*Config) string
+
 func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if StoreScopeIdentity != nil {
+		if id := strings.TrimSpace(StoreScopeIdentity(c)); id != "" {
+			return id
+		}
+	}
+	if id := strings.TrimSpace(c.stableStoreScopeCredential()); id != "" {
+		return id
+	}
+	return c.legacyStoreScopeCredential()
+}
+
+func (c *Config) StoreScopeLegacyCredential() string {
+	if c == nil {
+		return ""
+	}
+	return c.legacyStoreScopeCredential()
+}
+
+func (c *Config) legacyStoreScopeCredential() string {
 	if c == nil {
 		return ""
 	}
@@ -355,6 +383,56 @@ func (c *Config) StoreScopeCredential() string {
 		return ""
 	}
 	return strings.Join(parts, "\n")
+}
+func (c *Config) stableStoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	var parts []string
+	if base := normalizeStoreScopeBaseURL(c.BaseURL); base != "" {
+		parts = append(parts, "base_url="+base)
+	}
+	if c.ClientID != "" {
+		parts = append(parts, "client_id="+c.ClientID)
+	}
+	if c.ClientSecret != "" {
+		parts = append(parts, "client_secret="+c.ClientSecret)
+	}
+	if c.RefreshToken != "" {
+		parts = append(parts, "refresh_token="+c.RefreshToken)
+	}
+	if c.PrintingPressOauth2ClientId != "" && c.PrintingPressOauth2ClientId != c.AccessToken {
+		parts = append(parts, "press_oauth2_client_id="+c.PrintingPressOauth2ClientId)
+	}
+	if c.PrintingPressOauth2ClientSecret != "" && c.PrintingPressOauth2ClientSecret != c.AccessToken {
+		parts = append(parts, "press_oauth2_client_secret="+c.PrintingPressOauth2ClientSecret)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n")
+}
+
+func normalizeStoreScopeBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.User = nil
+	if parsed.Path == "/" {
+		parsed.Path = ""
+	} else {
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+	}
+	return parsed.String()
 }
 
 // Raw browser-session values count as credentials even when no header

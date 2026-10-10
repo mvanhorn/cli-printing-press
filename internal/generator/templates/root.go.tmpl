@@ -484,6 +484,7 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 			return err
 		}
 {{- if and .HasStorePath (and .Auth.Type (ne .Auth.Type "none"))}}
+		setLegacyDBClaimSuppressed(flags.dryRun)
 		configureDefaultDBScope(flags.configPath)
 {{- end}}
 		if flags.deliverSpec != "" {

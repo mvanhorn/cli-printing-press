@@ -304,7 +304,31 @@ func (c *Config) AuthHeader() string {
 	return token
 }
 
+// StoreScopeIdentity overrides the default store-scope key. A print whose
+// session token rotates can pin a stable account id so re-login keeps the
+// same local database.
+var StoreScopeIdentity func(*Config) string
+
 func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if StoreScopeIdentity != nil {
+		if id := strings.TrimSpace(StoreScopeIdentity(c)); id != "" {
+			return id
+		}
+	}
+	return c.legacyStoreScopeCredential()
+}
+
+func (c *Config) StoreScopeLegacyCredential() string {
+	if c == nil {
+		return ""
+	}
+	return c.legacyStoreScopeCredential()
+}
+
+func (c *Config) legacyStoreScopeCredential() string {
 	if c == nil {
 		return ""
 	}

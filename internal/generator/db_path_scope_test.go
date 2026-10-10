@@ -139,12 +139,65 @@ func TestDefaultDBPathScopeCredentialsAndLegacy(t *testing.T) {
 		t.Fatalf("legacy unscoped database was not preserved: got %s want %s", got, legacy)
 	}
 
+	t.Setenv("MYAPI_TOKEN", "delta")
+	configureDefaultDBScope("")
+	delta := defaultDBPath("db-scope-pp-cli")
+	if delta == legacy {
+		t.Fatalf("second credential adopted the claimed legacy database: %s", delta)
+	}
+	assertScopedDBPath(t, delta, "Bearer delta")
+	if data, err := os.ReadFile(legacy); err != nil || string(data) != "legacy" {
+		t.Fatalf("legacy database bytes = %q, err %v", data, err)
+	}
+	owner, err := os.ReadFile(legacy + ".owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(owner)) != defaultDBScopeHash("Bearer gamma") {
+		t.Fatalf("owner marker = %q, want gamma scope hash", owner)
+	}
+
+	t.Setenv("MYAPI_TOKEN", "gamma")
+	configureDefaultDBScope("")
+	if got := defaultDBPath("db-scope-pp-cli"); got != legacy {
+		t.Fatalf("claiming credential lost the legacy database: got %s want %s", got, legacy)
+	}
+
 	scopedGamma := scopedDBPathForCredential(dir, "Bearer gamma")
 	if err := os.WriteFile(scopedGamma, []byte("scoped"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := defaultDBPath("db-scope-pp-cli"); got != scopedGamma {
 		t.Fatalf("scoped sibling should win once present: got %s want %s", got, scopedGamma)
+	}
+}
+
+func TestDefaultDBPathScopeDryRunDoesNotClaim(t *testing.T) {
+	resetDefaultDBScopeTest(t)
+	setLegacyDBClaimSuppressed(true)
+	t.Cleanup(func() { setLegacyDBClaimSuppressed(false) })
+
+	dir := filepath.Dir(defaultDBPath("db-scope-pp-cli"))
+	legacy := filepath.Join(dir, "data.db")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("MYAPI_TOKEN", "gamma")
+	configureDefaultDBScope("")
+	if got := defaultDBPath("db-scope-pp-cli"); got != legacy {
+		t.Fatalf("dry-run scope resolved %s, want shared legacy %s", got, legacy)
+	}
+	t.Setenv("MYAPI_TOKEN", "delta")
+	configureDefaultDBScope("")
+	if got := defaultDBPath("db-scope-pp-cli"); got != legacy {
+		t.Fatalf("dry-run second credential resolved %s, want shared legacy %s", got, legacy)
+	}
+	if _, err := os.Stat(legacy + ".owner"); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created an owner marker: %v", err)
 	}
 }
 
@@ -206,7 +259,8 @@ func resetDefaultDBScopeTest(t *testing.T) {
 		t.Fatalf("set home override: %v", err)
 	}
 	t.Cleanup(restore)
-	setDefaultDBScopeCredential("")
+	setDefaultDBScopeIdentity("", "", "")
+	setLegacyDBClaimSuppressed(false)
 }
 
 func writeTokenConfig(t *testing.T, path, token string, mode os.FileMode) {
@@ -262,7 +316,7 @@ func TestDefaultDBPathScopeComposedSiblingCredentials(t *testing.T) {
 		t.Fatalf("set home override: %v", err)
 	}
 	t.Cleanup(restore)
-	setDefaultDBScopeCredential("")
+	setDefaultDBScopeIdentity("", "", "")
 
 	configureDefaultDBScope("")
 	first := defaultDBPath("db-scope-composed-pp-cli")
@@ -290,7 +344,7 @@ func TestDefaultDBPathScopeComposedCookieAndSiblingCredentials(t *testing.T) {
 		t.Fatalf("set home override: %v", err)
 	}
 	t.Cleanup(restore)
-	setDefaultDBScopeCredential("")
+	setDefaultDBScopeIdentity("", "", "")
 
 	firstConfig := filepath.Join(t.TempDir(), "first.toml")
 	writeComposedScopeConfig(t, firstConfig, "Bearer shared-primary", "cookie-a", "same-sibling")
@@ -344,7 +398,7 @@ func TestDefaultDBPathScopeComposedCookieCredentials(t *testing.T) {
 		t.Fatalf("set home override: %v", err)
 	}
 	t.Cleanup(restore)
-	setDefaultDBScopeCredential("")
+	setDefaultDBScopeIdentity("", "", "")
 
 	firstConfig := filepath.Join(t.TempDir(), "first.toml")
 	writeComposedCookieConfig(t, firstConfig, "Bearer shared-primary", "cookie-a")
