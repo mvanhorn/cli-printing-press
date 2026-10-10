@@ -8,7 +8,7 @@
 
 ### Acceptance gate check
 
-This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A `hold` run reaches this phase from [12-shipcheck](12-shipcheck.md) with no dogfood markers by design — it skips promotion entirely, archives manuscripts, and completes canonically to [21-next-steps](21-next-steps.md). A hold must NOT take the backtrack to [18-dogfood-testing](18-dogfood-testing.md) below; its missing markers are expected. The binary rejects `20→18` when this visit arrived on the `12→20` hold jump.
+This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A shipcheck `hold` reaches this phase from [12-shipcheck](12-shipcheck.md) with no dogfood markers by design; a dogfood `fail` reaches it from [18-dogfood-testing](18-dogfood-testing.md) with the failure marker. Neither path promotes: both archive manuscripts and continue canonically to [21-next-steps](21-next-steps.md). A shipcheck hold must NOT take the backtrack to [18-dogfood-testing](18-dogfood-testing.md) below; its missing markers are expected. The binary rejects `20→18` when this visit arrived on the `12→20` hold jump.
 
 For a ship-verdict run, verify the [Phase 5](18-dogfood-testing.md) JSON gate marker before promoting:
 

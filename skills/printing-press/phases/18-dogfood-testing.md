@@ -191,6 +191,12 @@ keep PII out of the acceptance report from the moment you write it.
 ```bash
 "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
 ```
+
+Record the hold handoff on the receipt before proceeding:
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --next "20-promote-and-archive" --evidence "$PROOFS_DIR/phase5-acceptance.json" --note "hold: dogfood gate still fails after two fix loops"
+```
+
 The working copy remains in `$CLI_WORK_DIR`. Proceed to [Phase 5.6](20-promote-and-archive.md) to archive
 manuscripts (archiving still happens on hold). Tag the failure reason in the
 acceptance report so the next run can learn from it.
@@ -327,9 +333,10 @@ the LAN-only carve-out above. Do **not** use missing API key
 session-handshake auth; inject the session, or rely on the runner-emitted
 `cookie-auth-no-harness-session` skip when none is available.
 
-Before following `Next:`, record the durable handoff and point `--evidence` at
-the live dogfood acceptance JSON. If dogfood used an allowed skip, record it
-with `--skip --note "<allowed reason>"` and point at the skip marker instead:
+For a passing or allowed-skip run, before following `Next:` record the durable
+handoff and point `--evidence` at the live dogfood acceptance JSON. If dogfood
+used an allowed skip, record it with `--skip --note "<allowed reason>"` and
+point at the skip marker instead:
 
 ```bash
 "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --evidence "$PROOFS_DIR/phase5-acceptance.json"

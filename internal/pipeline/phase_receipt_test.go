@@ -421,6 +421,8 @@ func TestReadPhaseReceiptsAcceptsAlternateStoredHandoff(t *testing.T) {
 func TestPhaseReceiptsAcceptEveryDocumentedAlternateHandoff(t *testing.T) {
 	t.Parallel()
 
+	assert.Contains(t, PrintingPressAlternateNextPhases(phaseDogfoodTesting), phasePromoteAndArchive)
+
 	// Derived from the graph the binary enforces rather than restated as a
 	// literal, so the name stays true and an alternate edge added later is
 	// covered without editing this test.

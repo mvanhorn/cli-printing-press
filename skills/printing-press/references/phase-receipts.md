@@ -24,6 +24,7 @@ At each phase boundary:
    - shipcheck hold — `12-shipcheck` straight to `20-promote-and-archive` (`12→20`)
    - scope change in review — `17-local-code-review` back to `08-ecosystem-absorb-gate` (`17→08`)
    - promote backtrack — `20-promote-and-archive` back to `18-dogfood-testing` (`20→18`), refused after a `12→20` hold
+   - dogfood hold — `18-dogfood-testing` straight to `20-promote-and-archive` (`18→20`) after the two fix loops still leave the gate failing
 3. Do the phase work only after the entry receipt succeeds.
 4. Run `complete` before following the phase file's `Next:` pointer. Use
    `--skip --note "<allowed reason>"` for an allowed skip.
