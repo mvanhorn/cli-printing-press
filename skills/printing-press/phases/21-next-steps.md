@@ -12,10 +12,12 @@ After archiving, offer the user the next action. The menu shape is determined by
 
 ### Gate
 
-Use the most recent shipcheck verdict:
-- if [Phase 5](18-dogfood-testing.md) reran shipcheck after a live-smoke fix, use that rerun verdict
-- otherwise use the [Phase 4](12-shipcheck.md) verdict
-- if [Phase 5.5](19-polish.md) polish downgraded the verdict (`ship_recommendation: hold`), use the downgraded verdict
+Check `$PROOFS_DIR/phase5-acceptance.json` before using the shipcheck or polish verdict:
+- If the marker exists with `status: "fail"` → **hold-path menu**, even when the earlier shipcheck or polish verdict was `ship` or `ship-with-gaps`. The CLI did not pass dogfood and was not promoted.
+- Otherwise, use the most recent shipcheck verdict:
+  - if [Phase 5](18-dogfood-testing.md) reran shipcheck after a live-smoke fix, use that rerun verdict
+  - otherwise use the [Phase 4](12-shipcheck.md) verdict
+  - if [Phase 5.5](19-polish.md) polish downgraded the verdict (`ship_recommendation: hold`), use the downgraded verdict
 
 Route to the menu shape:
 - `ship` or `ship-with-gaps` → **ship-path menu** (below)

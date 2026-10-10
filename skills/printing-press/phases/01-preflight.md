@@ -20,7 +20,7 @@ Artifacts are still written, but only the ones that materially help the next ste
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 4.33.0
+# min-binary-version: 4.33.4
 # skill-version: 3.0.0
 
 # Derive scope first — needed for local build detection
@@ -262,7 +262,7 @@ echo "PRESS_REPO_MODE=$_press_repo"
 _this_skill_version=3.0.0
 # Skill text is refreshed every run. Compare this embedded floor locally,
 # before the .version-check TTL, so a fresh cache cannot keep a too-old binary.
-_min_binary_version=4.33.0
+_min_binary_version=4.33.4
 if [ -n "$PRINTING_PRESS_BIN" ]; then
   _compat_json=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null || true)
   _min_skill=$(printf '%s\n' "$_compat_json" | sed -nE 's/.*"min_skill_version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
