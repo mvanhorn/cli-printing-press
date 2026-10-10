@@ -312,6 +312,11 @@ func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
 	for name := range flagWriteSinkNames(cmd) {
 		blocked[name] = true
 	}
+	// A local --yes is still the confirmation bypass. Other blocked root
+	// flags stay available when the command defines its own flag of that name.
+	for name := range confirmationBypassRootFlags {
+		blocked[name] = true
+	}
 	if cmd == nil {
 		return blocked
 	}
