@@ -445,6 +445,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyHasStringBackedBool":             bodyHasStringBackedBool,
 		"multipartBodyMaps":                   multipartBodyMaps,
 		"endpointUsesMultipart":               endpointUsesMultipart,
+		"endpointHasJSONBody":                 endpointHasJSONBody,
 		"endpointReplaySafe":                  endpointReplaySafe,
 		"endpointUsesRawRequest":              endpointUsesRawRequest,
 		"endpointUsesCSVArray":                endpointUsesCSVArray,
@@ -8959,6 +8960,19 @@ func hasMultipartRequest(apiSpec *spec.APISpec) bool {
 
 func endpointUsesForm(endpoint spec.Endpoint) bool {
 	return strings.EqualFold(strings.TrimSpace(endpoint.RequestContentType), "application/x-www-form-urlencoded")
+}
+
+func endpointHasJSONBody(endpoint spec.Endpoint) bool {
+	if len(endpoint.Body) > 0 || endpoint.BodyJSONFallback {
+		return !endpointUsesMultipart(endpoint) && !endpointUsesForm(endpoint)
+	}
+	if !endpoint.BodyRequired {
+		return false
+	}
+	contentType, _, _ := strings.Cut(endpoint.RequestContentType, ";")
+	endpoint.RequestContentType = strings.TrimSpace(contentType)
+	return endpoint.RequestContentType != "" &&
+		!endpointUsesMultipart(endpoint) && !endpointUsesForm(endpoint) && !endpointUsesRawRequest(endpoint)
 }
 
 func hasFormRequest(apiSpec *spec.APISpec) bool {

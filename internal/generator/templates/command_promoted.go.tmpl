@@ -4,7 +4,7 @@
 {{- $isMultipart := endpointUsesMultipart .Endpoint}}
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $isRaw := endpointUsesRawRequest .Endpoint}}
-{{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
+{{- $hasJSONBody := endpointHasJSONBody .Endpoint}}
 {{- $hasQueryFlags := endpointHasQueryFlags .Endpoint}}
 {{- $method := upper .Endpoint.Method}}
 {{- $deleteBodyWithoutParams := and (eq $method "DELETE") $hasJSONBody (not (endpointHasRequestParams .Endpoint))}}
