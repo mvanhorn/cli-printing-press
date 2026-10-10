@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.33.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.3...v4.33.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* **cli:** claim legacy store once and error on incomplete dependent syncs ([#4987](https://github.com/mvanhorn/cli-printing-press/issues/4987)) ([2023969](https://github.com/mvanhorn/cli-printing-press/commit/20239691cf9fe302e0c919e120ed764cce0c7762))
+* **cli:** encode query-string spaces as %20 ([#4985](https://github.com/mvanhorn/cli-printing-press/issues/4985)) ([f85d298](https://github.com/mvanhorn/cli-printing-press/commit/f85d298ef5fb016ce2107b5331574ebf9f891ccb))
+* **cli:** honor local read filters, parent scope, and data-source gates ([#4989](https://github.com/mvanhorn/cli-printing-press/issues/4989)) ([e5c30a7](https://github.com/mvanhorn/cli-printing-press/commit/e5c30a7557f4f91f88d8f5f586d7035d265adadb))
+* **cli:** keep --yes off mirrored MCP tools and add a read-only switch ([#4986](https://github.com/mvanhorn/cli-printing-press/issues/4986)) ([c537fe0](https://github.com/mvanhorn/cli-printing-press/commit/c537fe0717e62ad29664f35bad0bf071b8381f4d))
+* **cli:** keep presence-significant keys in --compact output ([#4988](https://github.com/mvanhorn/cli-printing-press/issues/4988)) ([5d0ce9e](https://github.com/mvanhorn/cli-printing-press/commit/5d0ce9e9493fa33f5b5405550d31c57502fd330a))
+* **cli:** omit read-only request body inputs ([#4950](https://github.com/mvanhorn/cli-printing-press/issues/4950)) ([3241e04](https://github.com/mvanhorn/cli-printing-press/commit/3241e044116ba4575059d906e3217216a53c265b))
+* **cli:** serialize captureNovelFeatureStderr callers to fix os.Stderr race ([#4947](https://github.com/mvanhorn/cli-printing-press/issues/4947)) ([8a389ff](https://github.com/mvanhorn/cli-printing-press/commit/8a389ffc22ddbf99a8281f9b1cc7781e1bcdd3cf)), closes [#4341](https://github.com/mvanhorn/cli-printing-press/issues/4341)
+
 ## [4.33.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.2...v4.33.3) (2026-10-09)
 
 
