@@ -246,15 +246,10 @@ func plantHandAuthoredMCPBehavior(cliDir string) error {
 		return err
 	}
 	deliverAt := strings.Index(string(shellout), "\t\"deliver\":")
-	if deliverAt < 0 {
+	if deliverAt < 0 || !strings.Contains(string(shellout)[deliverAt:], "\n") {
 		return errPlant("shellout.go db blocklist")
 	}
-	deliverEnd := strings.Index(string(shellout)[deliverAt:], "\n")
-	if deliverEnd < 0 {
-		return errPlant("shellout.go db blocklist")
-	}
-	deliverEnd += deliverAt
-	shelloutSrc := string(shellout)[:deliverAt] + "\t\"db\": true,\n" + string(shellout)[deliverAt:deliverEnd+1] + string(shellout)[deliverEnd+1:]
+	shelloutSrc := string(shellout)[:deliverAt] + "\t\"db\": true,\n" + string(shellout)[deliverAt:]
 	if shelloutSrc == string(shellout) {
 		return errPlant("shellout.go db blocklist")
 	}
