@@ -254,7 +254,18 @@ directive when the implementation is narrower instead of adding a second one.
 
 Use exactly one of:
 - `auto` for commands that honor `--data-source auto|local|live` by choosing
-  live data with local fallback.
+  live data, then falling back locally only when the store can answer the same
+  question. That is a synced top-level collection, or a parent-scoped
+  sub-collection whose rows were stored with `parent_id` (pass `resourceType`
+  as the stored name or the path segment; camelCase, snake_case, and
+  kebab-case names for the same resource resolve to the stored table). A
+  local read that cannot apply a row-selecting parameter (`filter`,
+  `orderBy`/`sort`/`order`, search, cursor, or an equality key that is not a
+  stored field) fails closed with a clear error naming those parameters and
+  suggesting `--data-source live`. It must not return a different row set.
+  `auto` does the same when live is unreachable. Projection parameters such
+  as `fields` stay warnings. Use `live` instead of `auto` when the read is
+  not a synced collection.
 - `local` for commands that only read synced/local SQLite data. These commands
   must reject `--data-source live` with a clear "no live equivalent" error.
 - `live` for commands that only call the remote API. These commands must reject
@@ -262,6 +273,11 @@ Use exactly one of:
 - `computed` for pure-computation commands that intentionally calculate from
   embedded policy/math/reference rules rather than calling an API or reading the
   local store. TODO stubs still fail dogfood even with this annotation.
+
+Root rejects an incompatible `--data-source` for a `live` or `local` annotation
+before any network or store access. `auto`, `computed`, and unannotated
+commands are unchanged. A command that is live or local only in some modes
+stays unannotated and validates in its own RunE.
 
 Dogfood reports hand-written novel commands that omit the annotation or use an
 unknown strategy.

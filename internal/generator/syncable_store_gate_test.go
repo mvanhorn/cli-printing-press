@@ -89,7 +89,9 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 	require.NotContains(t, doctorSrc, "collectCacheReport")
 	require.NotContains(t, dataSourceSrc, "emitSyncHints")
 	require.NotContains(t, dataSourceSrc, "Run 'zero-syncable-query-pp-cli sync' first")
-	require.Equal(t, 6, strings.Count(dataSourceSrc, "Populate the local store through a custom store-backed command first."))
+	require.Equal(t, 5, strings.Count(dataSourceSrc, "Populate the local store through a custom store-backed command first."))
+	require.Equal(t, 2, strings.Count(dataSourceSrc, "localFallbackError(err, fallbackErr)"),
+		"both auto fallbacks must share the no-sync local-store message")
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync_hint_test.go"))
 	require.Contains(t, mcpSrc, `mcplib.NewTool("sql"`)

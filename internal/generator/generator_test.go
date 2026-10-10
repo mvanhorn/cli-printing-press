@@ -20885,8 +20885,8 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 		"analytics group-by JSON should encode missing values as null via any")
 	dataSourceSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, resourceType, flags.maxAge)`,
-		"data-source local fallback should emit sync hints for endpoint reads")
+	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, storedType, flags.maxAge)`,
+		"data-source local fallback should emit sync hints for the stored resource name")
 
 	testSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync_hint_test.go"))
 	require.NoError(t, err, "sync_hint_test.go must compile the helper behavior in generated CLIs")

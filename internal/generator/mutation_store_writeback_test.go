@@ -305,6 +305,6 @@ func TestWriteMutationResponseToStoreFiltersArrayItemsWithoutIDs(t *testing.T) {
 	dataSourceSrc := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
 	require.Contains(t, dataSourceSrc, "func writeMutationResponseToStore(")
 	require.NotContains(t, dataSourceSrc, "writeMutationResponseToStore(ctx context.Context, resourceType string, data json.RawMessage)")
-	require.Contains(t, dataSourceSrc, "mutationResponseEntityItems(resourceType, data, responsePath)")
+	require.Contains(t, dataSourceSrc, "mutationResponseEntityItems(storedType, data, responsePath)")
 	require.False(t, strings.Contains(dataSourceSrc, "TODO"), "mutation write-back must not ship as a TODO stub")
 }
