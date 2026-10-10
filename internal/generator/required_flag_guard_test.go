@@ -21,7 +21,7 @@ func TestFlagRequiredUnsatisfiedExpr(t *testing.T) {
 		{
 			name: "required string",
 			p:    spec.Param{Name: "instance-key", Type: "string", Required: true},
-			want: `!cmd.Flags().Changed("instance-key") && flagInstanceKey == "" && !flags.dryRun`,
+			want: `!cmd.Flags().Changed("instance-key") && flagInstanceKey == ""`,
 		},
 		{
 			name: "required string with alias",
@@ -32,17 +32,17 @@ func TestFlagRequiredUnsatisfiedExpr(t *testing.T) {
 				Type:     "string",
 				Required: true,
 			},
-			want: `!(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && flagS == "" && !flags.dryRun`,
+			want: `!(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && flagS == ""`,
 		},
 		{
 			name: "required integer",
 			p:    spec.Param{Name: "year", Type: "integer", Required: true},
-			want: `!cmd.Flags().Changed("year") && flagYear == 0 && !flags.dryRun`,
+			want: `!cmd.Flags().Changed("year") && flagYear == 0`,
 		},
 		{
 			name: "required bool uses string zero",
 			p:    spec.Param{Name: "enabled", Type: "boolean", Required: true},
-			want: `!cmd.Flags().Changed("enabled") && flagEnabled == "" && !flags.dryRun`,
+			want: `!cmd.Flags().Changed("enabled") && flagEnabled == ""`,
 		},
 		{
 			name: "global-scope string keeps env-default value check",
@@ -52,7 +52,7 @@ func TestFlagRequiredUnsatisfiedExpr(t *testing.T) {
 				Required:    true,
 				GlobalScope: true,
 			},
-			want: `!cmd.Flags().Changed("tenant-filter") && flagTenantFilter == "" && !flags.dryRun`,
+			want: `!cmd.Flags().Changed("tenant-filter") && flagTenantFilter == ""`,
 		},
 	}
 	for _, tt := range tests {
@@ -74,10 +74,10 @@ func TestBodyRequiredChecksHonorResolvedValue(t *testing.T) {
 			{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true},
 		},
 	}, "\t\t\t")
-	assert.Contains(t, got, `!cmd.Flags().Changed("name") && bodyName == "" && !flags.dryRun`)
-	assert.Contains(t, got, `!cmd.Flags().Changed("visibility") && bodyVisibility == "" && !flags.dryRun`)
-	assert.Contains(t, got, `!cmd.Flags().Changed("filter") && bodyFilter == "" && !flags.dryRun`)
-	assert.Contains(t, got, `!(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && bodyStoreCode == "" && !flags.dryRun`)
+	assert.Contains(t, got, `!cmd.Flags().Changed("name") && bodyName == ""`)
+	assert.Contains(t, got, `!cmd.Flags().Changed("visibility") && bodyVisibility == ""`)
+	assert.Contains(t, got, `!cmd.Flags().Changed("filter") && bodyFilter == ""`)
+	assert.Contains(t, got, `!(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && bodyStoreCode == ""`)
 }
 
 func TestGeneratedOutput_RequiredFlagGuardHonorsResolvedValue(t *testing.T) {
@@ -165,7 +165,7 @@ func TestGeneratedOutput_RequiredFlagGuardHonorsResolvedValue(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "reqguard-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	guard := `!cmd.Flags().Changed("instance-key") && flagInstanceKey == "" && !flags.dryRun`
+	guard := `!cmd.Flags().Changed("instance-key") && flagInstanceKey == ""`
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "tenants_list.go")
 	assert.Contains(t, endpointSrc, guard)
 	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "instance-key")`)
@@ -216,11 +216,17 @@ func TestRequiredFlagGuardResolvedAndMissing(t *testing.T) {
 		wantErr  string
 	}{
 		{name: "endpoint missing", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--label", "x", "--json"}, wantErr: ` + "`" + `required flag "instance-key" not set` + "`" + `},
+		{name: "endpoint missing dry run", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--label", "x", "--dry-run"}, wantErr: ` + "`" + `required flag "instance-key" not set` + "`" + `},
 		{name: "promoted missing", path: []string{"whoami"}, args: []string{"whoami", "--label", "x", "--json"}, wantErr: ` + "`" + `required flag "instance-key" not set` + "`" + `},
+		{name: "promoted missing dry run", path: []string{"whoami"}, args: []string{"whoami", "--label", "x", "--dry-run"}, wantErr: ` + "`" + `required flag "instance-key" not set` + "`" + `},
 		{name: "endpoint resolved", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--label", "x", "--json"}, setValue: true, value: "tenant-a"},
+		{name: "endpoint resolved dry run", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--label", "x", "--dry-run"}, setValue: true, value: "tenant-a"},
 		{name: "promoted resolved", path: []string{"whoami"}, args: []string{"whoami", "--label", "x", "--json"}, setValue: true, value: "tenant-a"},
+		{name: "promoted resolved dry run", path: []string{"whoami"}, args: []string{"whoami", "--label", "x", "--dry-run"}, setValue: true, value: "tenant-a"},
 		{name: "endpoint empty resolve", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--label", "x", "--json"}, setValue: true, value: "", wantErr: ` + "`" + `required flag "instance-key" not set` + "`" + `},
+		{name: "endpoint empty resolve dry run", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--label", "x", "--dry-run"}, setValue: true, value: "", wantErr: ` + "`" + `required flag "instance-key" not set` + "`" + `},
 		{name: "endpoint cli flag", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--instance-key", "tenant-a", "--label", "x", "--json"}},
+		{name: "endpoint cli flag dry run", path: []string{"tenants", "list"}, args: []string{"tenants", "list", "--instance-key", "tenant-a", "--label", "x", "--dry-run"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

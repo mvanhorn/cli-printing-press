@@ -7363,7 +7363,7 @@ func flagChangedExpr(p spec.Param) string {
 // bound value without flipping cobra's Changed bit.
 func flagRequiredUnsatisfiedExpr(p spec.Param) string {
 	zero := zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p))
-	return fmt.Sprintf("!%s && flag%s == %s && !flags.dryRun",
+	return fmt.Sprintf("!%s && flag%s == %s",
 		flagChangedExpr(p), toCamel(paramIdent(p)), zero)
 }
 
@@ -8504,7 +8504,7 @@ func bodyRequiredPresenceChecks(endpoint spec.Endpoint, indent string) string {
 func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent string, includeEnum bool) {
 	if endpoint.BodyJSONFallback {
 		if endpoint.BodyRequired {
-			fmt.Fprintf(b, "\n%sif !cmd.Flags().Changed(\"body-json\") && flagBodyJSON == \"\" && !flags.dryRun {", indent)
+			fmt.Fprintf(b, "\n%sif !cmd.Flags().Changed(\"body-json\") && flagBodyJSON == \"\" {", indent)
 			fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
 			fmt.Fprintf(b, "\n%s}", indent)
 		}
@@ -8718,7 +8718,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 	} else {
 		changedExpr = fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
 	}
-	fmt.Fprintf(b, "\n%sif !%s && body%s == %s && !flags.dryRun {", indent, changedExpr, ident, zeroValForBodyParam(p))
+	fmt.Fprintf(b, "\n%sif !%s && body%s == %s {", indent, changedExpr, ident, zeroValForBodyParam(p))
 	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\")", indent, flag)
 	fmt.Fprintf(b, "\n%s}", indent)
 }
