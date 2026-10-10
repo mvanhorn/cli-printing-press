@@ -8267,6 +8267,151 @@ func TestPrintJSONFilteredSelectOverridesCompact(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsKeepsFrequentNestedPayloads|TestPrintJSONFilteredSelectOverridesCompact", "-count=1")
 }
 
+// TestGeneratedCompactListFieldsPreservesPresenceMarkers pins that --compact
+// (and therefore --agent) keeps a key whose presence changes the row, on
+// both the frequency path and the schema-aware path. Four local rows plus
+// one inherited row must still show _inheritedFrom on that row, while
+// verbose fields and ordinary sparse fields stay dropped. revenue is on
+// every row and is not a gravity name: the frequency path keeps it and the
+// schema-aware path drops it, so a passing schema-aware case cannot be the
+// frequency path in disguise.
+func TestGeneratedCompactListFieldsPreservesPresenceMarkers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("compact-markers")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	runtimeTest := `package cli
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestCompactFieldsKeepsPresenceMarkers(t *testing.T) {
+	rows := []map[string]any{
+		{"id": "s1", "name": "Local A", "revenue": 1, "description": "verbose", "body": "verbose"},
+		{"id": "s2", "name": "Local B", "revenue": 2, "description": "verbose", "body": "verbose", "deprecated": true},
+		{
+			"id": "s3", "name": "Local C", "revenue": 3, "description": "verbose", "body": "verbose",
+			"note": "sparse text", "enabled": true, "isolated": true,
+			"_links": map[string]any{"self": "/s3"},
+			"_debug": strings.Repeat("x", compactMarkerMaxRunes+1),
+			"_note":  "line1\nline2",
+			"_blob":  map[string]any{"child": map[string]any{"id": "nested"}},
+			"_tags":  []any{"a"},
+		},
+		{"id": "s4", "name": "Local D", "revenue": 4, "description": "verbose", "body": "verbose", "override": false, "read_only": true},
+		{
+			"id": "s5", "name": "Inherited", "revenue": 5, "description": "verbose", "body": "verbose",
+			"_inheritedFrom": map[string]any{"id": "parent-1", "name": "Root"},
+			"locked": true, "inherited": true,
+		},
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	gravityOnly := map[string]bool{
+		"id": true, "name": true, "revenue": true,
+		"description": true, "body": true, "note": true, "enabled": true, "isolated": true,
+		"_debug": true, "_note": true, "_blob": true, "_tags": true, "_links": true,
+	}
+	withMarkers := map[string]bool{
+		"id": true, "name": true, "revenue": true,
+		"description": true, "body": true, "note": true, "enabled": true, "isolated": true,
+		"_debug": true, "_note": true, "_blob": true, "_tags": true, "_links": true,
+		"_inheritedFrom": true, "locked": true, "inherited": true, "deprecated": true,
+		"override": true, "read_only": true,
+	}
+	cases := []struct {
+		name        string
+		documented  []map[string]bool
+		keepRevenue bool
+	}{
+		{name: "frequency", keepRevenue: true},
+		{name: "schema-aware gravity-only documented map", documented: []map[string]bool{gravityOnly}},
+		{name: "schema-aware documented markers", documented: []map[string]bool{withMarkers}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := compactFields(json.RawMessage(raw), tc.documented...)
+			decoded := decodePresenceRows(t, got)
+			if len(decoded) != 5 {
+				t.Fatalf("got %d rows, want 5: %s", len(decoded), got)
+			}
+			byID := map[string]map[string]any{}
+			for _, row := range decoded {
+				id, _ := row["id"].(string)
+				byID[id] = row
+			}
+			base := []string{"id", "name"}
+			if tc.keepRevenue {
+				base = append(base, "revenue")
+			}
+			assertPresenceKeys(t, byID["s1"], base...)
+			assertPresenceKeys(t, byID["s3"], base...)
+			assertPresenceKeys(t, byID["s2"], append(append([]string{}, base...), "deprecated")...)
+			assertPresenceKeys(t, byID["s4"], append(append([]string{}, base...), "override", "read_only")...)
+			assertPresenceKeys(t, byID["s5"], append(append([]string{}, base...), "_inheritedFrom", "locked", "inherited")...)
+			if byID["s2"]["deprecated"] != true {
+				t.Fatalf("deprecated = %#v", byID["s2"]["deprecated"])
+			}
+			if _, ok := byID["s4"]["override"]; !ok || byID["s4"]["override"] != false {
+				t.Fatalf("override = %#v, want false", byID["s4"]["override"])
+			}
+			if byID["s4"]["read_only"] != true || byID["s5"]["locked"] != true || byID["s5"]["inherited"] != true {
+				t.Fatalf("flag values drifted: s4=%#v s5=%#v", byID["s4"], byID["s5"])
+			}
+			parent, ok := byID["s5"]["_inheritedFrom"].(map[string]any)
+			if !ok || parent["id"] != "parent-1" || parent["name"] != "Root" {
+				t.Fatalf("_inheritedFrom = %#v", byID["s5"]["_inheritedFrom"])
+			}
+			if _, present := byID["s1"]["_inheritedFrom"]; present {
+				t.Fatalf("s1 gained _inheritedFrom: %#v", byID["s1"])
+			}
+		})
+	}
+}
+
+func decodePresenceRows(t *testing.T, raw json.RawMessage) []map[string]any {
+	t.Helper()
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("compactFields returned invalid JSON: %v\n%s", err, raw)
+	}
+	return rows
+}
+
+func assertPresenceKeys(t *testing.T, row map[string]any, want ...string) {
+	t.Helper()
+	if row == nil {
+		t.Fatalf("missing row, want keys %v", want)
+	}
+	got := make(map[string]bool, len(row))
+	for key := range row {
+		got[key] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("keys = %#v, want %v", row, want)
+	}
+	for _, key := range want {
+		if !got[key] {
+			t.Fatalf("keys = %#v, want %v", row, want)
+		}
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "compact_presence_markers_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(runtimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsKeepsPresenceMarkers", "-count=1")
+}
+
 // matchClosingBrace walks s from start, finds the first `{`, then returns
 // the index of the matching `}` by counting depth. Returns -1 if either no
 // opening brace exists at/after start or the input is unbalanced.
