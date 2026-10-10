@@ -905,7 +905,7 @@ func pathWithQueryValues(path string, params url.Values) string {
 	if len(params) == 0 {
 		return path
 	}
-	encoded := params.Encode()
+	encoded := cliutil.EncodeQuery(params)
 	if encoded == "" {
 		return path
 	}
@@ -1420,14 +1420,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					q.Set(k, v)
 				}
 			}
-			req.URL.RawQuery = q.Encode()
+			req.URL.RawQuery = cliutil.EncodeQuery(q)
 		}
 
 		if authHeader != "" {
 			if authInfo.In == "query" {
 				q := req.URL.Query()
 				q.Set(authInfo.Name, authHeader)
-				req.URL.RawQuery = q.Encode()
+				req.URL.RawQuery = cliutil.EncodeQuery(q)
 			} else {
 				req.Header.Set(authInfo.Name, authHeader)
 			}

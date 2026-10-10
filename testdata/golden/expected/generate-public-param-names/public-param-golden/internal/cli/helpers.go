@@ -86,7 +86,7 @@ func appendArrayQueryParam(path, name, raw, style string, explode bool) string {
 		query.Set(name, raw)
 	}
 
-	encoded := query.Encode()
+	encoded := cliutil.EncodeQuery(query)
 	separator := "?"
 	if strings.Contains(path, "?") {
 		separator = "&"
@@ -111,7 +111,7 @@ func appendDeepObjectQueryParam(path, name, raw string) (string, error) {
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	return path + separator + values.Encode(), nil
+	return path + separator + cliutil.EncodeQuery(values), nil
 }
 
 // expandDeepObjectValue expands one deepObject-style query param into indexed
