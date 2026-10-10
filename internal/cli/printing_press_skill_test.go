@@ -333,4 +333,15 @@ func TestPrintingPressSkillDogfoodFailureRoutesToHoldMenu(t *testing.T) {
 	require.Less(t, failMarker, verdictSelection, "the failed marker must take precedence over earlier shipcheck and polish status")
 	require.Less(t, holdRoute, verdictSelection, "the failed marker must route to the hold-path menu before verdict selection")
 	require.Contains(t, gate[failMarker:verdictSelection], "even when the earlier shipcheck or polish verdict was `ship` or `ship-with-gaps`")
+
+	polishRetry := strings.Index(content, `#### If "Polish to retry"`)
+	require.GreaterOrEqual(t, polishRetry, 0, "the hold menu must define the Polish retry path")
+	recovery := content[polishRetry:]
+	require.Contains(t, recovery, "Do not promote based on polish alone")
+	require.Contains(t, recovery, `--next "18-dogfood-testing"`)
+	require.Contains(t, recovery, `dogfood --live --dir "$CLI_WORK_DIR" --level full`)
+	require.Contains(t, recovery, `--write-acceptance "$PROOFS_DIR/phase5-acceptance.json"`)
+	require.Contains(t, recovery, `"$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/phase5-acceptance.json"`)
+	require.Contains(t, recovery, `"$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/phase5-acceptance.json"`)
+	require.Contains(t, recovery, "Do not skip the acceptance check")
 }

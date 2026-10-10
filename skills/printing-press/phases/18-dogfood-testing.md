@@ -184,7 +184,11 @@ keep PII out of the acceptance report from the moment you write it.
 
 **Bugs surfaced in Phase 5 must be fixed now, not deferred.** Do not offer the user a "ship as-is and file for v0.2" option when the fix is a 1-3 file edit. Present a "Fix now" (default), "Fix critical only", "Hold (don't ship)" set. Deferring bugs to a v0.2 backlog is an anti-pattern — context is freshest in-session, and a backlog that may never be revisited ships known-broken CLIs.
 
-**Gate = PASS:** proceed to [Phase 5.5](19-polish.md) (Polish).
+**Gate = PASS:**
+- On the normal route, proceed to [Phase 5.5](19-polish.md) (Polish).
+- If the preceding completed receipt is `21-next-steps` after a Polish retry
+  from a failed dogfood hold, do not polish again. Use the `18→20` handoff
+  below to re-enter promotion with the refreshed acceptance marker.
 
 **Gate = FAIL:** fix issues inline (Step 3) and re-run failing tests, up to
 2 fix loops. If the gate still fails after 2 loops, put the CLI on hold:
@@ -192,9 +196,13 @@ keep PII out of the acceptance report from the moment you write it.
 "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
 ```
 
-Record the hold handoff on the receipt before proceeding:
+For a normal failed gate, or a recovery re-run after polish that still fails,
+record the handoff on the receipt before proceeding. A recovery re-run that
+passes also uses this handoff to skip the already-completed polish phase. Pick
+the note that matches the result, such as `hold: dogfood still fails after two
+fix loops` or `polish recovered a dogfood hold; refreshed live matrix passed`:
 ```bash
-"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --next "20-promote-and-archive" --evidence "$PROOFS_DIR/phase5-acceptance.json" --note "hold: dogfood gate still fails after two fix loops"
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --next "20-promote-and-archive" --evidence "$PROOFS_DIR/phase5-acceptance.json" --note "<concise hold or recovery outcome>"
 ```
 
 The working copy remains in `$CLI_WORK_DIR`. Proceed to [Phase 5.6](20-promote-and-archive.md) to archive
