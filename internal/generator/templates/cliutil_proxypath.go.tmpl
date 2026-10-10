@@ -14,8 +14,9 @@ import (
 //   - Empty param values are dropped (not encoded as `key=`).
 //   - When a key appears in both the path's existing query string and
 //     the params map, params wins (url.Values.Set semantics).
-//   - Output ordering is alphabetical-by-key (url.Values.Encode), so
-//     callers can fingerprint the result safely.
+//   - Output ordering is alphabetical-by-key. Spaces are %20 and a
+//     literal "+" is %2B (EncodeQuery), so callers can fingerprint
+//     the result safely.
 //   - Malformed paths that fail url.Parse are returned verbatim; the
 //     proxy request will surface the parse error during dispatch.
 //
@@ -49,7 +50,7 @@ func buildPath(path string, params map[string]string, preserveEmpty bool) string
 		}
 		q.Set(k, v)
 	}
-	u.RawQuery = q.Encode()
+	u.RawQuery = EncodeQuery(q)
 	if u.RawQuery == "" {
 		// url.Parse sets ForceQuery on a trailing `?` so u.String()
 		// preserves it; clear the flag when the merged query is empty

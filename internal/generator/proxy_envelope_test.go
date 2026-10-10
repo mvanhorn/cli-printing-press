@@ -32,6 +32,9 @@ func TestProxyEnvelopeBuildPathEmittedAsCliutil(t *testing.T) {
 		"cliutil.BuildPath must be exported so client.go can call it")
 	require.Contains(t, string(proxyPathSrc), `"net/url"`,
 		"BuildPath must use net/url for correct query encoding")
+	require.Contains(t, string(proxyPathSrc), "EncodeQuery(q)",
+		"proxy path query strings must percent-encode spaces")
+	require.NotContains(t, string(proxyPathSrc), "q.Encode()")
 
 	// 2. Its test file is emitted next to it.
 	_, err = os.ReadFile(filepath.Join(outputDir, "internal", "cliutil", "proxypath_test.go"))
@@ -45,6 +48,8 @@ func TestProxyEnvelopeBuildPathEmittedAsCliutil(t *testing.T) {
 		"client.go must call cliutil.BuildPath in the proxy-envelope branch")
 	require.NotContains(t, string(clientSrc), "func buildProxyPath(",
 		"client.go must not carry an inline buildProxyPath; the helper moved to cliutil")
+
+	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestBuildPath$", "-count=1")
 }
 
 // TestCliutilProxyPath_NotEmittedForRESTClients keeps the helper

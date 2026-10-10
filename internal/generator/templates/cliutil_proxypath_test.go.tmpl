@@ -64,10 +64,16 @@ func TestBuildPath(t *testing.T) {
 			want:   "/api/things?q=k%3Dv",
 		},
 		{
-			name:   "value containing space is URL-encoded",
+			name:   "value containing space is percent-encoded",
 			path:   "/api/things",
 			params: map[string]string{"q": "hello world"},
-			want:   "/api/things?q=hello+world",
+			want:   "/api/things?q=hello%20world",
+		},
+		{
+			name:   "literal plus is percent-encoded",
+			path:   "/api/things",
+			params: map[string]string{"q": "a+b"},
+			want:   "/api/things?q=a%2Bb",
 		},
 		{
 			name:   "empty values are dropped",

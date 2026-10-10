@@ -230,7 +230,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	// bound port, which the OS assigns when --port 0 is passed.
 	if cliutil.IsVerifyEnv() {
 		params.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d/callback", port))
-		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+params.Encode())
+		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+cliutil.EncodeQuery(params))
 		return nil
 	}
 
@@ -247,7 +247,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	// "localhost" redirect URIs outright.
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", listener.Addr().(*net.TCPAddr).Port)
 	params.Set("redirect_uri", redirectURI)
-	fullURL := authURL + "?" + params.Encode()
+	fullURL := authURL + "?" + cliutil.EncodeQuery(params)
 
 	fmt.Fprintf(os.Stderr, "Opening browser for authentication...\n")
 	fmt.Fprintf(os.Stderr, "If the browser doesn't open, visit:\n%s\n\n", fullURL)
