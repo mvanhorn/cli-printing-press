@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -91,21 +93,31 @@ func TestGeneratedQueryStringUsesPercent20(t *testing.T) {
 
 	home := t.TempDir()
 	env := isolatedQueryTestEnv(home)
+	wait := func() captured {
+		t.Helper()
+		select {
+		case got := <-seen:
+			return got
+		case <-time.After(15 * time.Second):
+			t.Fatal("timed out waiting for the generated CLI to reach the test server")
+			return captured{}
+		}
+	}
 	_, _, err := runGeneratedBinaryEnv(t, binaryPath, env, "records", "--filter", `Title="Lab Probe Net"`, "--json")
 	require.NoError(t, err)
-	space := <-seen
+	space := wait()
 	require.Contains(t, space.rawQuery, `filter=Title%3D%22Lab%20Probe%20Net%22`)
 	require.NotContains(t, space.rawQuery, "+")
 	require.Empty(t, space.body)
 
 	_, _, err = runGeneratedBinaryEnv(t, binaryPath, env, "records", "--filter", "a+b", "--json")
 	require.NoError(t, err)
-	plus := <-seen
+	plus := wait()
 	require.Equal(t, "filter=a%2Bb", plus.rawQuery)
 
 	_, _, err = runGeneratedBinaryEnv(t, binaryPath, env, "notes", "--note", "Lab Probe", "--json")
 	require.NoError(t, err)
-	form := <-seen
+	form := wait()
 	require.Contains(t, form.contentType, "application/x-www-form-urlencoded")
 	require.Equal(t, "note=Lab+Probe", form.body)
 	require.NotContains(t, form.body, "%20")
@@ -177,6 +189,11 @@ func TestCodeOrchQuerySpaceEncoding(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("QORCH_BASE_URL", server.URL)
+	// Blank overrides an inherited PRINTING_PRESS_VERIFY=1. That mode skips
+	// this PUT before it reaches the test server.
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
 
 	request := mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: map[string]any{
 		"endpoint_id": "notes.update",
@@ -200,11 +217,23 @@ func TestCodeOrchQuerySpaceEncoding(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "code_orch_query_space_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestCodeOrchQuerySpaceEncoding", "-count=1")
+	runGoCommandWithEnv(t, outputDir, clearedHarnessEnv(), "test", "./internal/mcp", "-run", "TestCodeOrchQuerySpaceEncoding", "-count=1")
+}
+
+// clearedHarnessEnv blanks Printing Press harness variables. Callers append
+// this slice to os.Environ(); omitting a key leaves an inherited
+// PRINTING_PRESS_VERIFY=1 in force, and mutating requests then return
+// without contacting the test server.
+func clearedHarnessEnv() []string {
+	return []string{
+		"PRINTING_PRESS_VERIFY=",
+		"PRINTING_PRESS_VERIFY_LIVE_HTTP=",
+		"PRINTING_PRESS_DOGFOOD=",
+	}
 }
 
 func isolatedQueryTestEnv(home string) []string {
-	env := make([]string, 0, len(os.Environ())+6)
+	env := make([]string, 0, len(os.Environ())+9)
 	for _, entry := range os.Environ() {
 		switch {
 		case strings.HasPrefix(entry, "HOME="),
@@ -217,7 +246,7 @@ func isolatedQueryTestEnv(home string) []string {
 		}
 		env = append(env, entry)
 	}
-	return append(env,
+	env = append(env,
 		"HOME="+home,
 		"USERPROFILE="+home,
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
@@ -225,4 +254,30 @@ func isolatedQueryTestEnv(home string) []string {
 		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
 		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
 	)
+	return append(env, clearedHarnessEnv()...)
+}
+
+func TestQueryEncodingChildEnvClearsInheritedHarnessVars(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "1")
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "1")
+
+	home := t.TempDir()
+	script := `printf '%s|%s|%s|%s' "$PRINTING_PRESS_VERIFY" "$PRINTING_PRESS_VERIFY_LIVE_HTTP" "$PRINTING_PRESS_DOGFOOD" "$HOME"`
+
+	isolated := exec.Command("sh", "-c", script)
+	isolated.Env = append(os.Environ(), isolatedQueryTestEnv(home)...)
+	out, err := isolated.Output()
+	require.NoError(t, err)
+	require.Equal(t, "|||"+home, string(out))
+
+	cleared := exec.Command("sh", "-c", script)
+	cleared.Env = append(os.Environ(), clearedHarnessEnv()...)
+	out, err = cleared.Output()
+	require.NoError(t, err)
+	parts := strings.Split(string(out), "|")
+	require.Len(t, parts, 4)
+	require.Empty(t, parts[0])
+	require.Empty(t, parts[1])
+	require.Empty(t, parts[2])
 }
