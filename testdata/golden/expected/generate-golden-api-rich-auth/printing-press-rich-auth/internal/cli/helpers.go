@@ -4197,6 +4197,23 @@ func currentDefaultDBClaimSuppressed() bool {
 
 var legacyStoreSidecarSuffixes = []string{"-wal", "-shm", "-journal"}
 
+// legacyStoreAdoptPaths lists the database and the sidecars that have to
+// move together. An unreadable sidecar is not missing; publishing without
+// it would split the store.
+func legacyStoreAdoptPaths(legacy string) ([]string, bool) {
+	paths := []string{legacy}
+	for _, suffix := range legacyStoreSidecarSuffixes {
+		path := legacy + suffix
+		if _, err := os.Stat(path); err == nil {
+			paths = append(paths, path)
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, false
+		}
+	}
+	return paths, true
+}
+
 const (
 	storePublishMissing = iota
 	storePublishReady
@@ -4208,7 +4225,10 @@ const (
 // the stable name. Callers that only preview must leave the bytes where
 // they are. Two legacy files can share one stable name, and a plain rename
 // replaces a destination created after the empty check, so the publish
-// holds that path for every sidecar and the database together.
+// holds that path for every sidecar and the database together. The source
+// has to be closed first: one SQLite file opened under two names keeps
+// separate journals and can drop committed rows. When that cannot be shown,
+// this run keeps the legacy path.
 func adoptLegacyScopedStore(stable, legacy string) (string, bool) {
 	if _, err := os.Stat(legacy); err != nil {
 		return "", false
@@ -4233,15 +4253,31 @@ func adoptLegacyScopedStoreLocked(stable, legacy string) (string, bool) {
 	}
 	if stableInfo, err := os.Stat(stable); err == nil {
 		if legacyInfo, statErr := os.Stat(legacy); statErr == nil && os.SameFile(legacyInfo, stableInfo) {
+			release, stillClosed, claimed := claimClosedStore(legacy)
+			if !claimed {
+				// The old name is still in use. Opening the stable name
+				// beside it gives SQLite two paths to one inode.
+				return legacy, true
+			}
+			defer release()
+			if !stillClosed() {
+				return legacy, true
+			}
 			for _, suffix := range legacyStoreSidecarSuffixes {
 				removeSourceIfSameStoreFile(legacy+suffix, stable+suffix)
 			}
-			_ = os.Remove(legacy)
+			removeSourceIfSameStoreFile(legacy, stable)
 		}
 		return stable, true
 	} else if !os.IsNotExist(err) {
 		return legacy, true
 	}
+
+	release, stillClosed, claimed := claimClosedStore(legacy)
+	if !claimed {
+		return legacy, true
+	}
+	defer release()
 
 	var linked [][2]string
 	rollback := func() {
@@ -4264,6 +4300,11 @@ func adoptLegacyScopedStoreLocked(stable, legacy string) (string, bool) {
 	}
 	switch publishStoreFile(legacy, stable) {
 	case storePublishReady:
+		if !stillClosed() {
+			removeDestinationIfSameStoreFile(legacy, stable)
+			rollback()
+			return legacy, true
+		}
 		for _, pair := range linked {
 			removeSourceIfSameStoreFile(pair[0], pair[1])
 		}
@@ -4415,20 +4456,29 @@ func defaultDBPathInDir(dir string) string {
 	scopeHash, legacyHash, label := currentDefaultDBScope()
 	if scopeHash != "" {
 		scoped := filepath.Join(dir, "data-"+scopeHash+".db")
-		if _, err := os.Stat(scoped); err == nil {
-			return scoped
-		}
+		_, scopedErr := os.Stat(scoped)
+		scopedExists := scopedErr == nil
 		if legacyHash != "" {
 			legacy := filepath.Join(dir, "data-"+legacyHash+".db")
-			// Preview suppression covers the unscoped claim below. Adopting
-			// a token-named file is also a move, so a dry run has to keep
-			// the old path when that file is the one on disk.
-			if _, err := os.Stat(legacy); err == nil && currentDefaultDBClaimSuppressed() {
-				return legacy
+			if _, err := os.Stat(legacy); err == nil {
+				// Preview suppression covers the unscoped claim below. Adopting
+				// a token-named file is also a move, so a dry run has to keep
+				// the old path when that file is the one on disk. A stable
+				// name that already exists still has to go through adoption
+				// so a live writer on the old name is not pointed at the new one.
+				if currentDefaultDBClaimSuppressed() {
+					if scopedExists {
+						return scoped
+					}
+					return legacy
+				}
+				if adopted, ok := adoptLegacyScopedStore(scoped, legacy); ok {
+					return adopted
+				}
 			}
-			if adopted, ok := adoptLegacyScopedStore(scoped, legacy); ok {
-				return adopted
-			}
+		}
+		if scopedExists {
+			return scoped
 		}
 		if _, err := os.Stat(unscoped); err != nil {
 			if !os.IsNotExist(err) {

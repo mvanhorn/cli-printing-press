@@ -4438,12 +4438,16 @@ func syncDependentResource(ctx context.Context, c interface {
 	// cancelled preview is reported as a clean sync_dryrun, and --strict
 	// (which reads only Err) exits 0 on an incomplete resource.
 	if interruptErr := dependentSyncInterruptError(ctx, dep.Name, reportedParents, len(parentRows), cancelSeen); interruptErr != nil {
+		// Cancellation returns before the integrity-failure result below.
+		// Parents that already reported missing IDs or failed typed-table
+		// writes still have to fail the run when --strict is off.
+		integrityFailure := integrityFailedParents > 0
 		if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
 			if err := db.SaveSyncProgress(dep.Name, "", totalCount); err != nil {
-				return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), Duration: time.Since(started)}
+				return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), IntegrityFailure: integrityFailure, Duration: time.Since(started)}
 			}
 		}
-		return syncResult{Resource: dep.Name, Count: totalCount, Err: interruptErr, Duration: time.Since(started)}
+		return syncResult{Resource: dep.Name, Count: totalCount, Err: interruptErr, IntegrityFailure: integrityFailure, Duration: time.Since(started)}
 	}
 	if dryRunHit {
 		// A dry-run preview must not mutate sync-state, so short-circuit before

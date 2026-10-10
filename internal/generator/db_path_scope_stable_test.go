@@ -65,7 +65,9 @@ const oauthStableScopeTestSource = `package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"os"
 	"os/exec"
@@ -77,6 +79,8 @@ import (
 
 	"__MODULE_PATH__/internal/cliutil"
 	"__MODULE_PATH__/internal/config"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestStableStoreScopeOAuthIgnoresAccessToken(t *testing.T) {
@@ -407,6 +411,172 @@ func TestStableStoreScopeAdoptLeavesForeignSidecar(t *testing.T) {
 	}
 	if data, err := os.ReadFile(legacy); err != nil || string(data) != "legacy-bytes" {
 		t.Fatalf("legacy bytes = %q, err %v", data, err)
+	}
+}
+
+func TestStableStoreScopeOpenDatabaseIsNotAdopted(t *testing.T) {
+	dir := t.TempDir()
+	stable := filepath.Join(dir, "data-stable.db")
+	legacy := filepath.Join(dir, "data-legacy.db")
+	writeStoreBytes(t, legacy, "legacy-bytes", "wal-bytes")
+	setLegacyDBClaimSuppressed(false)
+
+	dbFile, err := os.Open(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	walFile, err := os.Open(legacy + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbFile.Close()
+	defer walFile.Close()
+
+	got, ok := adoptLegacyScopedStore(stable, legacy)
+	if !ok || got != legacy {
+		t.Fatalf("open adopt = %s, %v; want the legacy path", got, ok)
+	}
+	if _, err := os.Stat(stable); !os.IsNotExist(err) {
+		t.Fatalf("stable database created while the source was open: %v", err)
+	}
+	if _, err := os.Stat(stable + "-wal"); !os.IsNotExist(err) {
+		t.Fatalf("stable wal created while the source was open: %v", err)
+	}
+	if err := dbFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := walFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok = adoptLegacyScopedStore(stable, legacy)
+	if !ok || got != stable {
+		t.Fatalf("closed adopt = %s, %v; want the stable path", got, ok)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy name still present after the source closed: %v", err)
+	}
+	if _, err := os.Stat(legacy + "-wal"); !os.IsNotExist(err) {
+		t.Fatalf("legacy wal still present after the source closed: %v", err)
+	}
+	if data, err := os.ReadFile(stable); err != nil || string(data) != "legacy-bytes" {
+		t.Fatalf("stable bytes = %q, err %v", data, err)
+	}
+	if data, err := os.ReadFile(stable + "-wal"); err != nil || string(data) != "wal-bytes" {
+		t.Fatalf("stable wal = %q, err %v", data, err)
+	}
+}
+
+func TestStableStoreScopeOpenLinkedNameStaysOnLegacy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DB_SCOPE_OAUTH_BASE_URL", "")
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	setDefaultDBScopeIdentity("", "", "")
+	setLegacyDBClaimSuppressed(false)
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	writeOAuthScopeConfig(t, configPath, "https://api.example.com/v1", "session-a", "refresh-stable", "client-1", "secret-1")
+	configureDefaultDBScope(configPath)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(defaultDBPath("db-scope-oauth-pp-cli"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(dir, "data-"+stableScopeHash(cfg.StoreScopeLegacyCredential())+".db")
+	stable := filepath.Join(dir, "data-"+stableScopeHash(cfg.StoreScopeCredential())+".db")
+	if err := os.WriteFile(legacy, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(legacy, stable); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if got := defaultDBPath("db-scope-oauth-pp-cli"); got != legacy {
+		t.Fatalf("path while open = %s, want %s", got, legacy)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultDBPath("db-scope-oauth-pp-cli"); got != stable {
+		t.Fatalf("path after close = %s, want %s", got, stable)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy name still present after the source closed: %v", err)
+	}
+	if data, err := os.ReadFile(stable); err != nil || string(data) != "kept" {
+		t.Fatalf("stable bytes = %q, err %v", data, err)
+	}
+}
+
+func TestStableStoreScopeIdleSQLiteConnectionIsNotAdopted(t *testing.T) {
+	dir := t.TempDir()
+	stable := filepath.Join(dir, "data-stable.db")
+	legacy := filepath.Join(dir, "data-legacy.db")
+	setLegacyDBClaimSuppressed(false)
+
+	db, err := sql.Open("sqlite", legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "CREATE TABLE rows (id INTEGER PRIMARY KEY, v TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "INSERT INTO rows (v) VALUES ('one')"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := adoptLegacyScopedStore(stable, legacy)
+	if !ok || got != legacy {
+		t.Fatalf("idle adopt = %s, %v; want the legacy path", got, ok)
+	}
+	if _, err := os.Stat(stable); !os.IsNotExist(err) {
+		t.Fatalf("stable database created while sqlite held the file: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), "INSERT INTO rows (v) VALUES ('two')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok = adoptLegacyScopedStore(stable, legacy)
+	if !ok || got != stable {
+		t.Fatalf("closed sqlite adopt = %s, %v; want the stable path", got, ok)
+	}
+	reopen, err := sql.Open("sqlite", stable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopen.Close()
+	var n int
+	if err := reopen.QueryRow("SELECT COUNT(*) FROM rows").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("rows = %d, want 2", n)
 	}
 }
 

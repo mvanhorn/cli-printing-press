@@ -232,6 +232,84 @@ func TestDependentSyncCancelBeforeRemainingParentsIsError(t *testing.T) {
 	if strings.Contains(events.String(), "sync_dryrun") || strings.Contains(events.String(), "sync_complete") {
 		t.Fatalf("cancelled run reported success: %s", events.String())
 	}
+	if res.IntegrityFailure {
+		t.Fatal("IntegrityFailure set without a missing id or failed typed write")
+	}
+	assertModuleWatermark(t, db, wantSynced, 0)
+}
+
+func TestDependentSyncCancelKeepsIntegrityFailure(t *testing.T) {
+	db := seedFailureProjects(t, 2)
+	wantSynced := seedModuleWatermark(t, db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &failingDependentGetter{
+		respond: func(_ context.Context, _ string, _ map[string]string) (json.RawMessage, error) {
+			cancel()
+			return json.RawMessage("{\"ok\":false}"), nil
+		},
+	}
+	res := syncDependentResource(ctx, fake, db, failureModulesDep(), "", false, 0, false, false, nil, nil, 1)
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf("Err = %v, want context.Canceled", res.Err)
+	}
+	if !res.IntegrityFailure {
+		t.Fatal("interrupted sync dropped IntegrityFailure")
+	}
+	assertModuleWatermark(t, db, wantSynced, 0)
+}
+
+func TestDependentSyncFullReportCancelKeepsIntegrityFailure(t *testing.T) {
+	db := seedFailureProjects(t, 2)
+	wantSynced := seedModuleWatermark(t, db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	var mu sync.Mutex
+	started := 0
+	fake := &failingDependentGetter{
+		respond: func(_ context.Context, _ string, _ map[string]string) (json.RawMessage, error) {
+			mu.Lock()
+			started++
+			mine := started
+			mu.Unlock()
+			entered <- struct{}{}
+			<-release
+			if mine == 1 {
+				return json.RawMessage("{\"ok\":false}"), nil
+			}
+			return nil, context.Canceled
+		},
+	}
+	go func() {
+		defer releaseAll()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for i := 0; i < 2; i++ {
+			select {
+			case <-entered:
+			case <-timer.C:
+				return
+			}
+		}
+		cancel()
+	}()
+	res := syncDependentResource(ctx, fake, db, failureModulesDep(), "", false, 0, false, false, nil, nil, 2)
+	mu.Lock()
+	gotStarted := started
+	mu.Unlock()
+	if gotStarted != 2 {
+		t.Fatalf("parents that reached Get = %d, want 2", gotStarted)
+	}
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf("Err = %v, want context.Canceled", res.Err)
+	}
+	if !res.IntegrityFailure {
+		t.Fatal("full-report cancel dropped IntegrityFailure")
+	}
 	assertModuleWatermark(t, db, wantSynced, 0)
 }
 

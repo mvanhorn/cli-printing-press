@@ -2954,6 +2954,12 @@ func (g *Generator) renderSingleFiles() error {
 		"NOTICE.tmpl":                              "NOTICE",
 	}
 	maps.Copy(singleFiles, cobratreeWalkerTemplateFiles())
+	if g.Spec.Auth.Type != "" && g.Spec.Auth.Type != "none" {
+		singleFiles["store_adopt_linux.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_linux.go")
+		singleFiles["store_adopt_darwin.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_darwin.go")
+		singleFiles["store_adopt_windows.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_windows.go")
+		singleFiles["store_adopt_other.go.tmpl"] = filepath.Join("internal", "cli", "store_adopt_other.go")
+	}
 	if g.Spec.UsesBrowserHTTPTransport() {
 		singleFiles["chrome.go.tmpl"] = filepath.Join("internal", "client", "chrome.go")
 		singleFiles["chrome_profile.go.tmpl"] = filepath.Join("internal", "client", "chrome_profile.go")
