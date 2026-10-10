@@ -46,10 +46,10 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if !stdinBody {
-				if !cmd.Flags().Changed("name") && bodyName == "" && !flags.dryRun {
+				if !cmd.Flags().Changed("name") && bodyName == "" {
 					return fmt.Errorf("required flag \"%s\" not set", "name")
 				}
-				if !cmd.Flags().Changed("visibility") && bodyVisibility == "" && !flags.dryRun {
+				if !cmd.Flags().Changed("visibility") && bodyVisibility == "" {
 					return fmt.Errorf("required flag \"%s\" not set", "visibility")
 				}
 			}
