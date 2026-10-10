@@ -291,7 +291,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			var data json.RawMessage
 			var prov DataProvenance
 			if flags.dataSource == "local" || "{{$dataSourceStrategy}}" == "local" {
-				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, "user_requested")
+				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), {{printf "%q" .ResourceName}}, true, path, nil, "user_requested")
 			} else {
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
@@ -340,7 +340,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .HasStore}}
 				if err != nil && flags.dataSource == "auto" && "{{$dataSourceStrategy}}" == "auto" && isNetworkError(err) {
-					data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, networkFallbackReason)
+					data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), {{printf "%q" .ResourceName}}, true, path, nil, networkFallbackReason)
 				} else if err == nil {
 					prov = attachFreshness(DataProvenance{Source: "live"}, flags)
 				}
@@ -358,7 +358,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				if "{{$dataSourceStrategy}}" == "local" {
 					localReason = "strategy_local"
 				}
-				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", false, path+"/"+args[0], nil, localReason)
+				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), {{printf "%q" .ResourceName}}, false, path+"/"+args[0], nil, localReason)
 			} else {
 				data, err = c.Query(cmd.Context(), client.{{pascal .ResourceName}}GetQuery, map[string]any{
 {{- else}}
@@ -393,7 +393,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- if .HasStore}}
-			{{if $skipLiveJSONGuard}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, retainCLIQueryParams(cmd, map[string]string{
+			{{if $skipLiveJSONGuard}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", {{printf "%q" .ResourceName}}, path, retainCLIQueryParams(cmd, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -437,9 +437,9 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if .HasStore}}
 {{- if .IsReadOnly}}
 {{- if $skipLiveJSONGuard}}
-			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", {{printf "%q" .ResourceName}}, {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
-			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", {{printf "%q" .ResourceName}}, {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
 {{- end}}
 {{- else}}
 {{- if .HasStore}}
@@ -1002,7 +1002,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 	{{- if and .HasStore (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse) (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH"))}}
 			if !flags.dryRun && statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure) {
-				writeMutationResponseToStore(cmd.Context(), "{{lower .ResourceName}}", data, {{printf "%q" .Endpoint.ResponsePath}})
+				writeMutationResponseToStore(cmd.Context(), {{printf "%q" .ResourceName}}, data, {{printf "%q" .Endpoint.ResponsePath}})
 			}
 	{{- end}}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
