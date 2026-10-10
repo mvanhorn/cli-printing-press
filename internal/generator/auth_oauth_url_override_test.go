@@ -51,6 +51,11 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 		"login flow must read cfg.AuthorizationURL before falling back to spec default")
 	require.Contains(t, auth, "tokenURL = cfg.TokenURL",
 		"login flow must read cfg.TokenURL before falling back to spec default")
+	require.Contains(t, auth, `authURL+"?"+cliutil.EncodeQuery(params)`,
+		"authorization URL query must percent-encode spaces")
+	require.Contains(t, auth, `strings.NewReader(tokenParams.Encode())`,
+		"token request body stays form-encoded")
+	require.NotContains(t, auth, `authURL+"?"+params.Encode()`)
 
 	// The expiry calc must guard against ExpiresIn==0 so a non-conformant
 	// server doesn't make every subsequent call think the token has expired.
