@@ -484,7 +484,6 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 			return err
 		}
 {{- if and .HasStorePath (and .Auth.Type (ne .Auth.Type "none"))}}
-		setLegacyDBClaimSuppressed(flags.dryRun)
 		configureDefaultDBScope(flags.configPath)
 {{- end}}
 		if flags.deliverSpec != "" {
@@ -515,6 +514,11 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 			}
 			appliedProfile = profile
 		}
+{{- if and .HasStorePath (and .Auth.Type (ne .Auth.Type "none"))}}
+		// A saved profile can set dry-run after flag parse. Suppression has to
+		// see that value before any store path is resolved.
+		setLegacyDBClaimSuppressed(flags.dryRun)
+{{- end}}
 {{- if .VisionSet.Store}}
 		// An incompatible --data-source has to fail before the platform
 		// identity probe. A failed probe would otherwise hide this error.

@@ -11,6 +11,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGeneratedRootSuppressesLegacyClaimAfterProfile(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("db-claim-after-profile")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	profileIdx := strings.Index(rootSrc, "ApplyProfileToFlags(cmd, profile)")
+	suppressIdx := strings.Index(rootSrc, "setLegacyDBClaimSuppressed(flags.dryRun)")
+	require.GreaterOrEqual(t, profileIdx, 0)
+	require.Greater(t, suppressIdx, profileIdx, "legacy claim suppression must follow profile overlay so a saved dry-run is in effect")
+	if refreshIdx := strings.Index(rootSrc, "autoRefreshIfStale("); refreshIdx >= 0 {
+		require.Less(t, suppressIdx, refreshIdx, "suppression must be set before auto-refresh opens the store")
+	}
+}
+
 func TestGeneratedDefaultDBPathScopesCredential(t *testing.T) {
 	t.Parallel()
 

@@ -330,7 +330,6 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
 			return err
 		}
-		setLegacyDBClaimSuppressed(flags.dryRun)
 		configureDefaultDBScope(flags.configPath)
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
@@ -360,6 +359,9 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 			}
 			appliedProfile = profile
 		}
+		// A saved profile can set dry-run after flag parse. Suppression has to
+		// see that value before any store path is resolved.
+		setLegacyDBClaimSuppressed(flags.dryRun)
 		// An incompatible --data-source has to fail before the platform
 		// identity probe. A failed probe would otherwise hide this error.
 		switch flags.dataSource {
