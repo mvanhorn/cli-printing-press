@@ -26,6 +26,7 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 	apiSpec.APILanguage = "en-US"
 	outputDir := filepath.Join(t.TempDir(), "finance-pp-cli")
 	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, Analytics: true, MCP: true}
 	gen.Narrative = &ReadmeNarrative{
 		Headline:       "Quotes, charts, and a local portfolio nothing else has",
 		ValueProp:      "Quotes, charts, fundamentals, options chains, and a SQLite-backed portfolio tracker.",
@@ -127,6 +128,12 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"Exit codes table should render")
 	assert.False(t, strings.Contains(content, "| 6 | Partial failure"),
 		"read-only specs must not document unused exit code 6")
+	assert.Contains(t, content, `"live"`, "response envelope should document live provenance")
+	assert.Contains(t, content, `"local"`, "response envelope should document local provenance")
+	assert.Contains(t, content, `"local+live"`, "response envelope should document mixed provenance")
+	assert.Contains(t, content, `"computed"`, "response envelope should document computed provenance")
+	assert.Contains(t, content, `"dry-run"`, "response envelope should document dry-run provenance")
+	assert.Contains(t, content, "combined local-store data with data fetched from the API", "mixed provenance should explain combined local and live data")
 }
 
 // TestSkillFallsBackWhenNarrativeAbsent asserts SKILL.md still renders a

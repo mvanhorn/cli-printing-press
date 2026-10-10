@@ -92,6 +92,25 @@ func TestPrintJSONFilteredAgentUsesDeclaredLiveSource(t *testing.T) {
 	}
 }
 
+func TestPrintJSONFilteredAgentUsesRuntimeMixedSource(t *testing.T) {
+	var out bytes.Buffer
+	flags := &rootFlags{agent: true, asJSON: true, compact: true, agentSource: "local+live"}
+	if err := printJSONFiltered(&out, []map[string]any{{"id": "one"}}, flags); err != nil {
+		t.Fatalf("printJSONFiltered returned error: %v", err)
+	}
+	var payload struct {
+		Meta struct {
+			Source string `+"`json:\"source\"`"+`
+		} `+"`json:\"meta\"`"+`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("agent output must be valid JSON: %v\n%s", err, out.String())
+	}
+	if payload.Meta.Source != "local+live" {
+		t.Fatalf("runtime mixed-source override meta.source = %q, want local+live; output=%s", payload.Meta.Source, out.String())
+	}
+}
+
 func TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope(t *testing.T) {
 	data := json.RawMessage(`+"`"+`{"results":[{"id":"one"}],"meta":{"source":"live","reason":"api"}}`+"`"+`)
 	var out bytes.Buffer
@@ -210,5 +229,5 @@ func TestPrintOutputWithFlagsKeepsMeasuredOrigin(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation|TestPrintJSONFilteredAgentAutoDefaultsLive|TestPrintOutputWithFlagsKeepsMeasuredOrigin", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintJSONFilteredAgentDefaultsLocal|TestPrintJSONFilteredAgentUsesDeclaredLiveSource|TestPrintJSONFilteredAgentUsesRuntimeMixedSource|TestPrintOutputWithFlagsAgentPreservesProvenanceEnvelope|TestDeclaredAgentSourceLiveAnnotation|TestPrintJSONFilteredAgentAutoDefaultsLive|TestPrintOutputWithFlagsKeepsMeasuredOrigin", "-count=1")
 }

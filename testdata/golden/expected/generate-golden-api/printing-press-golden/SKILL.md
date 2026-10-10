@@ -125,12 +125,20 @@ Commands that read from the local store or the API wrap output in a provenance e
 
 ```json
 {
-  "meta": {"source": "live" | "local", "synced_at": "...", "reason": "..."},
+  "meta": {"source": "live" | "local" | "local+live" | "computed" | "dry-run", "synced_at": "...", "reason": "..."},
   "results": <data>
 }
 ```
 
-Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
+The standard `.meta.source` values are:
+
+- `live` — data came from the API.
+- `local` — data came from the local store.
+- `local+live` — the command combined local-store data with data fetched from the API during this invocation.
+- `computed` — the command derived the result locally.
+- `dry-run` — the command previewed an operation without making the request.
+
+Some commands may pass through a more specific source value from their response. Parse `.results` for data and `.meta.source` for provenance; do not assume every response is only live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
 
 ## Paths and state
 
