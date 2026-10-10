@@ -125,6 +125,194 @@ paths:
 	assert.True(t, bodyNames["password"])
 }
 
+func TestParseRequestBodyOmitsReadOnlyFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Jobs API
+  version: 1.0.0
+paths:
+  /jobs:
+    post:
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobPostRequestBody'
+      responses:
+        '200':
+          description: Created job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+components:
+  schemas:
+    Job:
+      type: object
+      required: [kind, targetId, comment, parentJob, serverId]
+      properties:
+        id:
+          type: integer
+        kind:
+          type: string
+          enum: [UNDO]
+        targetId:
+          type: integer
+        comment:
+          type: string
+          readOnly: true
+        parentJob:
+          readOnly: true
+          allOf:
+            - $ref: '#/components/schemas/Job'
+        serverId:
+          allOf:
+            - type: integer
+              readOnly: true
+        serverNote:
+          allOf:
+            - type: string
+              readOnly: true
+        password:
+          type: string
+          writeOnly: true
+        visible:
+          readOnly: false
+          allOf:
+            - type: string
+        server-name:
+          allOf:
+            - type: string
+            - readOnly: true
+        server_name:
+          type: string
+    JobPostRequestBody:
+      type: object
+      required: [kind, targetId]
+      allOf:
+        - $ref: '#/components/schemas/Job'
+      properties:
+        job:
+          $ref: '#/components/schemas/Job'
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/jobs")
+	assert.True(t, endpoint.BodyRequired)
+	byName := map[string]spec.Param{}
+	var bodyNames []string
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+		bodyNames = append(bodyNames, param.Name)
+	}
+	assert.Equal(t, []string{"id", "job", "kind", "password", "server_name", "targetId", "visible"}, bodyNames)
+	assert.True(t, byName["kind"].Required)
+	assert.True(t, byName["targetId"].Required)
+	assert.Equal(t, []string{"UNDO"}, byName["kind"].Enum)
+
+	fields := map[string]spec.Param{}
+	var fieldNames []string
+	for _, field := range byName["job"].Fields {
+		fields[field.Name] = field
+		fieldNames = append(fieldNames, field.Name)
+	}
+	assert.Equal(t, []string{"id", "kind", "password", "server_name", "targetId", "visible"}, fieldNames)
+	assert.True(t, fields["kind"].Required)
+	assert.True(t, fields["targetId"].Required)
+
+	responseFields := map[string]spec.TypeField{}
+	for _, field := range parsed.Types["Job"].Fields {
+		responseFields[field.Name] = field
+	}
+	assert.Contains(t, responseFields, "comment")
+	assert.Contains(t, responseFields, "parentJob")
+	assert.Contains(t, responseFields, "serverId")
+	assert.Contains(t, responseFields, "serverNote")
+}
+
+func TestRequestBodyReadOnlyAllOfBoundaries(t *testing.T) {
+	readOnly := &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeInteger}, ReadOnly: true}
+	annotation := &openapi3.Schema{ReadOnly: true}
+	scalar := &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeInteger}}
+	ref := func(schema *openapi3.Schema) *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{Value: schema}
+	}
+	cycle := &openapi3.Schema{}
+	cycle.AllOf = openapi3.SchemaRefs{ref(cycle)}
+	cycleWithReadOnly := &openapi3.Schema{}
+	cycleWithReadOnly.AllOf = openapi3.SchemaRefs{ref(cycleWithReadOnly), ref(readOnly)}
+	readOnlyBeforeCycle := &openapi3.Schema{}
+	readOnlyBeforeCycle.AllOf = openapi3.SchemaRefs{ref(readOnly), ref(readOnlyBeforeCycle)}
+	readOnlyObject := &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeObject}, ReadOnly: true, Properties: openapi3.Schemas{"name": ref(scalar)}}
+
+	for _, tc := range []struct {
+		name   string
+		schema *openapi3.Schema
+		want   bool
+	}{
+		{name: "nil", want: true},
+		{name: "direct", schema: readOnly},
+		{name: "inline allOf", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(readOnly)}}},
+		{name: "later annotation-only allOf", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(scalar), ref(annotation)}}},
+		{name: "object allOf annotation", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(readOnlyObject)}}},
+		{name: "resolved allOf reference", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{{Ref: "#/components/schemas/ServerID", Value: readOnly}}}},
+		{name: "allOf chain", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(&openapi3.Schema{AllOf: openapi3.SchemaRefs{nil, ref(annotation)}})}}},
+		{name: "unannotated cycle", schema: cycle, want: true},
+		{name: "cycle with read-only sibling", schema: cycleWithReadOnly},
+		{name: "read-only before cycle", schema: readOnlyBeforeCycle},
+		{name: "repeated allOf nodes", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(scalar), ref(scalar), ref(annotation), ref(scalar), ref(scalar)}}},
+		{name: "false allOf", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(scalar)}}, want: true},
+		{name: "write-only allOf", schema: &openapi3.Schema{AllOf: openapi3.SchemaRefs{ref(&openapi3.Schema{Type: &openapi3.Types{openapi3.TypeString}, WriteOnly: true})}}, want: true},
+		{name: "oneOf annotation", schema: &openapi3.Schema{OneOf: openapi3.SchemaRefs{ref(readOnly), ref(&openapi3.Schema{Type: &openapi3.Types{openapi3.TypeNull}})}}, want: true},
+		{name: "anyOf annotation", schema: &openapi3.Schema{AnyOf: openapi3.SchemaRefs{ref(readOnly), ref(&openapi3.Schema{Type: &openapi3.Types{openapi3.TypeNull}})}}, want: true},
+		{name: "read-only child", schema: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeObject}, Properties: openapi3.Schemas{"id": ref(readOnly)}}, want: true},
+		{name: "read-only item", schema: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeArray}, Items: ref(readOnly)}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			property := ref(tc.schema)
+			nested := &openapi3.Schema{
+				Type:       &openapi3.Types{openapi3.TypeObject},
+				Properties: openapi3.Schemas{"value": property},
+				Required:   []string{"value"},
+			}
+			root := &openapi3.Schema{
+				Type:       &openapi3.Types{openapi3.TypeObject},
+				Properties: openapi3.Schemas{"value": property, "nested": ref(nested)},
+				Required:   []string{"value", "nested"},
+			}
+			body, _, _, required, _ := mapRequestBody(&openapi3.RequestBodyRef{Value: &openapi3.RequestBody{
+				Required: true,
+				Content:  openapi3.Content{"application/json": &openapi3.MediaType{Schema: ref(root)}},
+			}}, "POST", "/records")
+			require.True(t, required)
+			byName := map[string]spec.Param{}
+			for _, param := range body {
+				byName[param.Name] = param
+			}
+			_, rootPresent := byName["value"]
+			assert.Equal(t, tc.want, rootPresent, "root input")
+			require.Contains(t, byName, "nested")
+			assert.True(t, byName["nested"].Required, "writable parent requirement")
+			nestedPresent := false
+			for _, field := range byName["nested"].Fields {
+				if field.Name == "value" {
+					nestedPresent = true
+				}
+			}
+			assert.Equal(t, tc.want, nestedPresent, "nested input")
+			assert.True(t, readOnly.ReadOnly)
+			assert.True(t, annotation.ReadOnly)
+			assert.True(t, readOnlyObject.ReadOnly)
+			assert.Same(t, tc.schema, property.Value)
+		})
+	}
+}
+
 func TestGlobalParameterFilteringDoesNotDropRepeatedHeaders(t *testing.T) {
 	t.Parallel()
 

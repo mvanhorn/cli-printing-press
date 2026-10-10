@@ -5,7 +5,7 @@
 {{- $isMultipart := endpointUsesMultipart .Endpoint}}
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $isRaw := endpointUsesRawRequest .Endpoint}}
-{{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
+{{- $hasJSONBody := endpointHasJSONBody .Endpoint}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq .Endpoint.Method "GET") .IsReadOnly}}
 {{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")))}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
