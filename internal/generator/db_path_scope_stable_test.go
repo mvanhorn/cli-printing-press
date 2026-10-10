@@ -137,6 +137,44 @@ func TestStableStoreScopeOAuthIgnoresAccessToken(t *testing.T) {
 	}
 }
 
+func TestStableStoreScopeOAuthWithoutAccountMaterialStaysLegacy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DB_SCOPE_OAUTH_BASE_URL", "")
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	setDefaultDBScopeIdentity("", "", "")
+	setLegacyDBClaimSuppressed(false)
+
+	barePath := filepath.Join(t.TempDir(), "bare.toml")
+	writeOAuthScopeConfig(t, barePath, "https://api.example.com/v1", "", "", "", "")
+	configureDefaultDBScope(barePath)
+	if got := defaultDBPath("db-scope-oauth-pp-cli"); filepath.Base(got) != "data.db" {
+		t.Fatalf("logged-out path = %s, want data.db", got)
+	}
+
+	tokenA := filepath.Join(t.TempDir(), "token-a.toml")
+	writeOAuthScopeConfig(t, tokenA, "https://api.example.com/v1", "session-a", "", "", "")
+	configureDefaultDBScope(tokenA)
+	cfg, err := config.Load(tokenA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StoreScopeCredential() != cfg.StoreScopeLegacyCredential() || !strings.Contains(cfg.StoreScopeCredential(), "session-a") {
+		t.Fatalf("access-token-only scope = %q legacy %q", cfg.StoreScopeCredential(), cfg.StoreScopeLegacyCredential())
+	}
+	first := defaultDBPath("db-scope-oauth-pp-cli")
+
+	tokenB := filepath.Join(t.TempDir(), "token-b.toml")
+	writeOAuthScopeConfig(t, tokenB, "https://api.example.com/v1", "session-b", "", "", "")
+	configureDefaultDBScope(tokenB)
+	if got := defaultDBPath("db-scope-oauth-pp-cli"); got == first {
+		t.Fatalf("distinct access tokens shared %s", first)
+	}
+}
+
 func TestStableStoreScopeOAuthAdoptsTokenHashFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DB_SCOPE_OAUTH_BASE_URL", "")
@@ -306,6 +344,20 @@ func TestStableStoreScopeBearerRefreshUsesBaseURL(t *testing.T) {
 	configureDefaultDBScope(otherPath)
 	if got := defaultDBPath("db-scope-bearer-pp-cli"); got == first {
 		t.Fatalf("different backend reused %s", first)
+	}
+
+	loggedOut := filepath.Join(t.TempDir(), "logged-out.toml")
+	writeBearerScopeConfig(t, loggedOut, "https://api.example.com/v1", "")
+	configureDefaultDBScope(loggedOut)
+	loggedOutCfg, err := config.Load(loggedOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loggedOutCfg.StoreScopeCredential() != "" {
+		t.Fatalf("logged-out bearer scope = %q, want empty", loggedOutCfg.StoreScopeCredential())
+	}
+	if got := defaultDBPath("db-scope-bearer-pp-cli"); filepath.Base(got) != "data.db" {
+		t.Fatalf("logged-out bearer path = %s, want data.db", got)
 	}
 }
 

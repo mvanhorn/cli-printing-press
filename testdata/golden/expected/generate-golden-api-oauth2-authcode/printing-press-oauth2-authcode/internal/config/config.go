@@ -344,10 +344,15 @@ func (c *Config) StoreScopeCredential() string {
 			return id
 		}
 	}
-	if id := strings.TrimSpace(c.stableStoreScopeCredential()); id != "" {
-		return id
+	// A base URL is present on every install. Use the stable key only when a
+	// credential already scopes the store, so a logged-out CLI stays on data.db.
+	legacy := c.legacyStoreScopeCredential()
+	if legacy != "" {
+		if id := strings.TrimSpace(c.stableStoreScopeCredential()); id != "" {
+			return id
+		}
 	}
-	return c.legacyStoreScopeCredential()
+	return legacy
 }
 
 func (c *Config) StoreScopeLegacyCredential() string {
@@ -393,26 +398,29 @@ func (c *Config) stableStoreScopeCredential() string {
 	if c == nil {
 		return ""
 	}
-	var parts []string
-	if base := normalizeStoreScopeBaseURL(c.BaseURL); base != "" {
-		parts = append(parts, "base_url="+base)
-	}
+	// Base URL alone is not an account. Without a client id, secret, refresh
+	// token, or other non-rotating field, keep the legacy key so two access
+	// tokens on one host do not share a database.
+	var identity []string
 	if c.ClientID != "" {
-		parts = append(parts, "client_id="+c.ClientID)
+		identity = append(identity, "client_id="+c.ClientID)
 	}
 	if c.ClientSecret != "" {
-		parts = append(parts, "client_secret="+c.ClientSecret)
+		identity = append(identity, "client_secret="+c.ClientSecret)
 	}
 	if c.RefreshToken != "" {
-		parts = append(parts, "refresh_token="+c.RefreshToken)
+		identity = append(identity, "refresh_token="+c.RefreshToken)
 	}
 	if c.PrintingPressOauth2Oauth2AuthCode != "" && c.PrintingPressOauth2Oauth2AuthCode != c.AccessToken {
-		parts = append(parts, "press_oauth2_oauth2_auth_code="+c.PrintingPressOauth2Oauth2AuthCode)
+		identity = append(identity, "press_oauth2_oauth2_auth_code="+c.PrintingPressOauth2Oauth2AuthCode)
 	}
-	if len(parts) == 0 {
+	if len(identity) == 0 {
 		return ""
 	}
-	return strings.Join(parts, "\n")
+	if base := normalizeStoreScopeBaseURL(c.BaseURL); base != "" {
+		identity = append([]string{"base_url=" + base}, identity...)
+	}
+	return strings.Join(identity, "\n")
 }
 
 func normalizeStoreScopeBaseURL(raw string) string {
