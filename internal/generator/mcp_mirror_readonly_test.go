@@ -24,7 +24,11 @@ func TestGenerateMCPMirrorBlocksYesAndHonorsReadOnlySwitch(t *testing.T) {
 	require.Contains(t, verifyenv, "func IsMCPReadOnlyEnv()")
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(CliArgsFromMCP_DropsConfirmationBypassEvenIfUnblocked|LocalYesFlagStaysBlocked|MirroredDestructiveCommandRefusesWithoutYes|MCPReadOnlySwitch|BlockedStructuredArgsOnlyDropsInheritedRootFlags|ToolOptionsHideBlockedRootFlagsButKeepLocalCollisions)$", "-count=1")
+	// The parent process may already have the printed read-only switch on.
+	// These tests must still see the switch-off registration set.
+	readOnlyEnv := []string{naming.EnvPrefix(apiSpec.Name) + "_MCP_READ_ONLY=1"}
+	output, err := runGoCommandOutputWithEnv(t, outputDir, readOnlyEnv, "test", "./internal/mcp/cobratree", "-run", "^Test(CliArgsFromMCP_DropsConfirmationBypassEvenIfUnblocked|LocalYesFlagStaysBlocked|MirroredDestructiveCommandRefusesWithoutYes|MCPReadOnlySwitch|BlockedStructuredArgsOnlyDropsInheritedRootFlags|ToolOptionsHideBlockedRootFlagsButKeepLocalCollisions|WriteSinkFlagsStayOutOfMCPSchemaAndArgv|ShadowedPersistentWriteFlagStaysAvailable|PositionalAlternationPlaceholderSanitizesKey|RegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEquivalent|RegisterAllDisambiguatesOnlyMirrorOwnedNameCollisions|RegisterAllDescendsThroughCobraHiddenButPrunesMCPHidden)$", "-count=1")
+	require.NoError(t, err, output)
 }
 
 func TestGenerateMCPExecuteReadOnlyRefusesNonGET(t *testing.T) {
@@ -53,5 +57,7 @@ func TestGenerateMCPExecuteReadOnlyRefusesNonGET(t *testing.T) {
 	require.Contains(t, verifyenv, naming.EnvPrefix(apiSpec.Name)+`_MCP_READ_ONLY`)
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestCodeOrchExecuteReadOnlyRefusesNonGET$", "-count=1")
+	readOnlyEnv := []string{naming.EnvPrefix(apiSpec.Name) + "_MCP_READ_ONLY=1"}
+	output, err := runGoCommandOutputWithEnv(t, outputDir, readOnlyEnv, "test", "./internal/mcp", "-run", "^TestCodeOrchExecuteReadOnlyRefusesNonGET$", "-count=1")
+	require.NoError(t, err, output)
 }

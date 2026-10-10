@@ -103,6 +103,7 @@ func TestCodeOrchArrayBody_SendsTopLevelArray(t *testing.T) {
 }
 
 func TestCodeOrchExecuteReadOnlyRefusesNonGET(t *testing.T) {
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "")
 	if codeOrchBlockedByMCPReadOnly("POST") {
 		t.Fatal("unset switch blocked POST")
 	}

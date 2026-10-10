@@ -290,6 +290,7 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 }
 
 func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	noop := func(cmd *cobra.Command, args []string) error { return nil }
 
@@ -541,6 +542,7 @@ func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 }
 
 func TestShadowedPersistentWriteFlagStaysAvailable(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	distant := &cobra.Command{
 		Use: "archive",
@@ -997,6 +999,7 @@ func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
 }
 
 func TestPositionalAlternationPlaceholderSanitizesKey(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	noop := func(cmd *cobra.Command, args []string) error { return nil }
 	longA := strings.Repeat("a", 80)
 	where := &cobra.Command{Use: "where-is <ip|hostname|mac>", RunE: noop, Short: "Locate a host"}
@@ -1254,6 +1257,7 @@ func TestPositionalArgsFromRawArgsField(t *testing.T) {
 }
 
 func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEquivalent(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	root.AddCommand(
 		&cobra.Command{
@@ -1312,6 +1316,7 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 }
 
 func TestRegisterAllDisambiguatesOnlyMirrorOwnedNameCollisions(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	root.AddCommand(&cobra.Command{Use: "foo-bar", RunE: func(*cobra.Command, []string) error { return nil }})
 	foo := &cobra.Command{Use: "foo"}
@@ -1334,6 +1339,7 @@ func TestRegisterAllDisambiguatesOnlyMirrorOwnedNameCollisions(t *testing.T) {
 }
 
 func TestRegisterAllDescendsThroughCobraHiddenButPrunesMCPHidden(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
 	cobraHidden := &cobra.Command{Use: "orders", Hidden: true}
 	cobraHidden.AddCommand(&cobra.Command{
@@ -1854,6 +1860,7 @@ func TestCliArgsFromMCP_DropsConfirmationBypassEvenIfUnblocked(t *testing.T) {
 }
 
 func TestLocalYesFlagStaysBlocked(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	noop := func(cmd *cobra.Command, args []string) error { return nil }
 	root := &cobra.Command{Use: "root"}
 	child := &cobra.Command{Use: "child", RunE: noop, Short: "Child command"}
@@ -1902,6 +1909,7 @@ func TestLocalYesFlagStaysBlocked(t *testing.T) {
 }
 
 func TestMirroredDestructiveCommandRefusesWithoutYes(t *testing.T) {
+	pinMCPReadOnlyOff(t)
 	bin := writeConfirmProbe(t)
 	root := &cobra.Command{Use: "root"}
 	root.PersistentFlags().Bool("yes", false, "skip confirmation")
@@ -1963,6 +1971,13 @@ func TestMirroredDestructiveCommandRefusesWithoutYes(t *testing.T) {
 	if text := toolResultText(preview); !strings.Contains(text, "preview") || strings.Contains(text, "confirmed") {
 		t.Fatalf("dry-run result = %q, want preview", text)
 	}
+}
+
+// A developer shell that exported the operator kill switch would unregister
+// the commands these tests expect to mirror.
+func pinMCPReadOnlyOff(t *testing.T) {
+	t.Helper()
+	t.Setenv(cliutil.MCPReadOnlyEnvVar, "")
 }
 
 func TestMCPReadOnlySwitch(t *testing.T) {
