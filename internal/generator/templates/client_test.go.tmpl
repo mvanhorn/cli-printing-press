@@ -215,6 +215,16 @@ func TestGetWithHeadersValuesPreservesRepeatedQueryParams(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.RawQuery
+		if !strings.Contains(raw, "filter=Title%3D%22Lab%20Probe%20Net%22") {
+			t.Fatalf("raw query = %q, want %%20 for spaces", raw)
+		}
+		if strings.Contains(raw, "Lab+Probe") || strings.Contains(raw, "a+b") {
+			t.Fatalf("raw query = %q, space or literal plus was left as +", raw)
+		}
+		if !strings.Contains(raw, "plus=a%2Bb") {
+			t.Fatalf("raw query = %q, want %%2B for a literal plus", raw)
+		}
 		got := r.URL.Query()["format"]
 		if len(got) != 2 || got[0] != "blu-ray" || got[1] != "4k" {
 			t.Fatalf("format query values = %#v, want [blu-ray 4k]", got)
@@ -234,6 +244,8 @@ func TestGetWithHeadersValuesPreservesRepeatedQueryParams(t *testing.T) {
 	params := url.Values{
 		"format":  []string{"blu-ray", "4k"},
 		"country": []string{"US"},
+		"filter":  []string{`Title="Lab Probe Net"`},
+		"plus":    []string{"a+b"},
 	}
 	if _, err := c.GetWithHeadersValues(context.Background(), "/titles", params, nil); err != nil {
 		t.Fatalf("GetWithHeadersValues returned error: %v", err)
