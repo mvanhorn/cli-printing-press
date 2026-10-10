@@ -8274,7 +8274,9 @@ func TestPrintJSONFilteredSelectOverridesCompact(t *testing.T) {
 // verbose fields and ordinary sparse fields stay dropped. revenue is on
 // every row and is not a gravity name: the frequency path keeps it and the
 // schema-aware path drops it, so a passing schema-aware case cannot be the
-// frequency path in disguise.
+// frequency path in disguise. A key stays only when every observed value is
+// marker-sized: mixed small and bulky values in both row orders drop it on
+// both paths, and objects of 8 and 9 keys pin the size limit.
 func TestGeneratedCompactListFieldsPreservesPresenceMarkers(t *testing.T) {
 	t.Parallel()
 
@@ -8377,6 +8379,109 @@ func TestCompactFieldsKeepsPresenceMarkers(t *testing.T) {
 	}
 }
 
+// One bulky value disqualifies the key. Filler rows keep it under the
+// frequency threshold, which drops to 1 on a 2-row list and would keep it anyway.
+func TestCompactFieldsRejectsBulkyPresenceMarkers(t *testing.T) {
+	small := map[string]any{"id": "parent-1", "name": "Root"}
+	eight := presenceMarkerObject(8)
+	nine := presenceMarkerObject(9)
+	bulky := strings.Repeat("x", compactMarkerMaxRunes+1)
+	plain := func(id string, revenue int) map[string]any {
+		return map[string]any{"id": id, "name": id, "revenue": revenue}
+	}
+	control := []map[string]any{
+		{"id": "a", "name": "A", "revenue": 1, "_provenance": small, "deprecated": true},
+		{"id": "b", "name": "B", "revenue": 2, "_provenance": small, "deprecated": false},
+		{"id": "c", "name": "C", "revenue": 3, "_bound": eight},
+		plain("d", 4),
+		{"id": "e", "name": "E", "revenue": 5, "_toobig": nine},
+	}
+	smallThenBulky := []map[string]any{
+		{"id": "a", "name": "A", "revenue": 1, "_provenance": eight, "deprecated": false},
+		{"id": "b", "name": "B", "revenue": 2, "_provenance": nine, "deprecated": bulky},
+		plain("c", 3),
+		plain("d", 4),
+		plain("e", 5),
+	}
+	bulkyThenSmall := []map[string]any{
+		{"id": "a", "name": "A", "revenue": 1, "_provenance": nine, "deprecated": bulky},
+		{"id": "b", "name": "B", "revenue": 2, "_provenance": eight, "deprecated": true},
+		plain("c", 3),
+		plain("d", 4),
+		plain("e", 5),
+	}
+	documented := map[string]bool{
+		"id": true, "name": true, "revenue": true,
+		"_provenance": true, "deprecated": true, "_bound": true, "_toobig": true,
+	}
+	cases := []struct {
+		name        string
+		rows        []map[string]any
+		documented  []map[string]bool
+		keepRevenue bool
+		keepMarkers bool
+	}{
+		{name: "frequency control", rows: control, keepRevenue: true, keepMarkers: true},
+		{name: "schema-aware control", rows: control, documented: []map[string]bool{documented}, keepMarkers: true},
+		{name: "frequency small then bulky", rows: smallThenBulky, keepRevenue: true},
+		{name: "schema-aware small then bulky", rows: smallThenBulky, documented: []map[string]bool{documented}},
+		{name: "frequency bulky then small", rows: bulkyThenSmall, keepRevenue: true},
+		{name: "schema-aware bulky then small", rows: bulkyThenSmall, documented: []map[string]bool{documented}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.rows)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := compactFields(json.RawMessage(raw), tc.documented...)
+			decoded := decodePresenceRows(t, got)
+			if len(decoded) != len(tc.rows) {
+				t.Fatalf("got %d rows, want %d: %s", len(decoded), len(tc.rows), got)
+			}
+			byID := map[string]map[string]any{}
+			for _, row := range decoded {
+				id, _ := row["id"].(string)
+				byID[id] = row
+			}
+			base := []string{"id", "name"}
+			if tc.keepRevenue {
+				base = append(base, "revenue")
+			}
+			if !tc.keepMarkers {
+				for _, id := range []string{"a", "b", "c", "d", "e"} {
+					assertPresenceKeys(t, byID[id], base...)
+				}
+				return
+			}
+			assertPresenceKeys(t, byID["a"], append(append([]string{}, base...), "_provenance", "deprecated")...)
+			assertPresenceKeys(t, byID["b"], append(append([]string{}, base...), "_provenance", "deprecated")...)
+			assertPresenceKeys(t, byID["c"], append(append([]string{}, base...), "_bound")...)
+			assertPresenceKeys(t, byID["d"], base...)
+			assertPresenceKeys(t, byID["e"], base...)
+			if byID["a"]["deprecated"] != true || byID["b"]["deprecated"] != false {
+				t.Fatalf("deprecated values drifted: a=%#v b=%#v", byID["a"]["deprecated"], byID["b"]["deprecated"])
+			}
+			bound, ok := byID["c"]["_bound"].(map[string]any)
+			if !ok || len(bound) != 8 {
+				t.Fatalf("_bound = %#v, want 8 scalar keys", byID["c"]["_bound"])
+			}
+			if _, present := byID["e"]["_toobig"]; present {
+				t.Fatalf("9-key object survived compaction: %#v", byID["e"])
+			}
+		})
+	}
+}
+
+func presenceMarkerObject(n int) map[string]any {
+	obj := make(map[string]any, n)
+	const keys = "abcdefghi"
+	for i := 0; i < n; i++ {
+		obj[keys[i:i+1]] = "v"
+	}
+	return obj
+}
+
 func decodePresenceRows(t *testing.T, raw json.RawMessage) []map[string]any {
 	t.Helper()
 	var rows []map[string]any
@@ -8409,7 +8514,7 @@ func assertPresenceKeys(t *testing.T, row map[string]any, want ...string) {
 	require.NoError(t, os.WriteFile(testPath, []byte(runtimeTest), 0o644))
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsKeepsPresenceMarkers", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsKeepsPresenceMarkers|TestCompactFieldsRejectsBulkyPresenceMarkers", "-count=1")
 }
 
 // matchClosingBrace walks s from start, finds the first `{`, then returns
