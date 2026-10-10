@@ -77,6 +77,18 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 					},
 				},
 			},
+			"Widgets": {
+				Description: "Widgets",
+				IDField:     "serialNumber",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/widgets",
+						Description: "List widgets",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
 		},
 		Types: map[string]spec.TypeDef{
 			"Shop": {
@@ -141,6 +153,11 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_reconciliation-policies.go")
 	assert.Contains(t, promotedSrc, `"reconciliationPolicies"`)
 	assert.NotContains(t, promotedSrc, `"reconciliationpolicies"`)
+	widgetSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_widgets.go")
+	assert.Contains(t, widgetSrc, `"Widgets"`)
+	storeSrc := readGeneratedFile(t, outputDir, "internal", "store", "store.go")
+	assert.Contains(t, storeSrc, `"widgets": "serialNumber"`,
+		"declared ID fields are stored under the profiler's resource name")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -814,6 +831,101 @@ func TestResolveLocalCamelCaseMutationWriteUsesSnakeTable(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "r9") {
 		t.Fatalf("camelCase alias = %s", data)
+	}
+}
+
+func TestResolveLocalLowercaseParentScopeKeepsRequestedName(t *testing.T) {
+	seedTypedRows(t, "taggedresources", []seedRow{
+		{"r1", "{\"id\":\"r1\",\"parent_id\":\"tag-a\",\"name\":\"alpha\"}"},
+		{"r2", "{\"id\":\"r2\",\"parent_id\":\"tag-b\",\"name\":\"beta\"}"},
+	})
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "taggedResources", true, "/api/v2/tags/tag-a/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("lowercase parent scope: %v", err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	if len(items) != 1 || items[0]["id"] != "r1" {
+		t.Fatalf("lowercase parent rows = %#v, want only tag-a", items)
+	}
+}
+
+func TestResolveLocalShardBeatsLowercaseTable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := []struct {
+		resource string
+		id       string
+		body     string
+	}{
+		{"tags_tagged_resources", "r1", "{\"id\":\"r1\",\"parent_id\":\"tag-a\",\"name\":\"shard-alpha\"}"},
+		{"taggedresources", "decoy", "{\"id\":\"decoy\",\"parent_id\":\"tag-a\",\"name\":\"lower-decoy\"}"},
+		{"taggedresources", "r2", "{\"id\":\"r2\",\"parent_id\":\"tag-b\",\"name\":\"lower-beta\"}"},
+	}
+	for _, row := range rows {
+		if err := db.Upsert(row.resource, row.id, json.RawMessage(row.body)); err != nil {
+			t.Fatalf("upsert %s: %v", row.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "taggedResources", true, "/api/v2/tags/tag-a/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("shard over lowercase: %v", err)
+	}
+	if !strings.Contains(string(data), "shard-alpha") || strings.Contains(string(data), "lower-decoy") {
+		t.Fatalf("shard over lowercase = %s", data)
+	}
+}
+
+func TestResolveLocalCustomIDUsesStoredResourceName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	ctx := context.Background()
+	writeMutationResponseToStore(ctx, "Widgets", json.RawMessage("{\"serialNumber\":\"sn-1\",\"name\":\"one\"}"), "")
+	writeThroughCache(ctx, "Widgets", json.RawMessage("{\"serialNumber\":\"sn-2\"}"))
+	writeThroughCache(ctx, "Widgets", json.RawMessage("{\"Widgets\":[{\"serialNumber\":\"sn-3\",\"name\":\"three\"}]}"))
+	data, _, err := resolveLocal(ctx, nil, io.Discard, "Widgets", true, "/widgets", nil, "test")
+	if err != nil {
+		t.Fatalf("widgets read: %v", err)
+	}
+	got := string(data)
+	for _, id := range []string{"sn-1", "sn-2", "sn-3"} {
+		if !strings.Contains(got, id) {
+			t.Fatalf("widgets read missing %s: %s", id, got)
+		}
+	}
+	db, err := store.OpenWithContext(ctx, defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	n, err := db.Count("Widgets")
+	if err != nil {
+		t.Fatalf("count spec key: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("spec-key table has %d rows", n)
+	}
+	if _, err := db.Get("widgets", "sn-1"); err != nil {
+		t.Fatalf("stored id sn-1: %v", err)
 	}
 }
 
