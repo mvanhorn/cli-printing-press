@@ -514,6 +514,19 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 			}
 			appliedProfile = profile
 		}
+{{- if .VisionSet.Store}}
+		// An incompatible --data-source has to fail before the platform
+		// identity probe. A failed probe would otherwise hide this error.
+		switch flags.dataSource {
+		case "auto", "live", "local":
+			// valid
+		default:
+			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
+		}
+		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
+			return err
+		}
+{{- end}}
 		if platformCommandNeedsGate(cmd) {
 			if err := preparePlatformSession(flags); err != nil {
 				return err
@@ -551,17 +564,6 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 				noColor = true
 			}
 		}
-{{- if .VisionSet.Store}}
-		switch flags.dataSource {
-		case "auto", "live", "local":
-			// valid
-		default:
-			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
-		}
-		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
-			return err
-		}
-{{- end}}
 {{- if .HasCostThrottling}}
 		switch flags.throttleMode {
 		case "strict", "lenient", "off":

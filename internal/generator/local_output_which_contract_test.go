@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -44,6 +45,35 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 						Description: "Get a shop",
 						Params:      []spec.Param{{Name: "id", Type: "string", Positional: true, PathParam: true}},
 						Response:    spec.ResponseDef{Type: "object", Item: "Shop"},
+					},
+				},
+			},
+			"taggedResources": {
+				Description: "Tagged resources",
+				Endpoints: map[string]spec.Endpoint{
+					"index": {
+						Method:      "GET",
+						Path:        "/api/v2/taggedResources",
+						Description: "List tagged resources",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+					"get": {
+						Method:      "GET",
+						Path:        "/api/v2/taggedResources/{id}",
+						Description: "Get a tagged resource",
+						Params:      []spec.Param{{Name: "id", Type: "string", Positional: true, PathParam: true}},
+						Response:    spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"reconciliationPolicies": {
+				Description: "Reconciliation policies",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/api/v2/reconciliationPolicies",
+						Description: "List reconciliation policies",
+						Response:    spec.ResponseDef{Type: "array"},
 					},
 				},
 			},
@@ -100,6 +130,17 @@ func TestGeneratedLocalReadsAndWhichHonorSharedRuntimeContracts(t *testing.T) {
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	assert.Contains(t, rootSrc, "validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd))",
 		"root must reject a --data-source value the command annotation cannot serve")
+	dataSourceGate := strings.Index(rootSrc, "validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd))")
+	platformProbe := strings.Index(rootSrc, "verifyPlatformSession(cmd.Context(), flags)")
+	assert.Greater(t, platformProbe, dataSourceGate, "data-source gate must run before the platform identity probe")
+
+	taggedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "taggedResources_index.go")
+	assert.Contains(t, taggedSrc, `"taggedResources"`)
+	assert.NotContains(t, taggedSrc, `"taggedresources"`,
+		"generated local reads must keep the camelCase resource name so the store lookup can recover snake_case")
+	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_reconciliation-policies.go")
+	assert.Contains(t, promotedSrc, `"reconciliationPolicies"`)
+	assert.NotContains(t, promotedSrc, `"reconciliationpolicies"`)
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -129,6 +170,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -143,6 +185,7 @@ import (
 
 	"shopsapi-pp-cli/internal/client"
 	"shopsapi-pp-cli/internal/config"
+	"shopsapi-pp-cli/internal/platform"
 	"shopsapi-pp-cli/internal/store"
 )
 
@@ -654,6 +697,238 @@ func TestDataSourceAnnotationGatesFlag(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveLocalPageOneWithoutLimitFailsClosed(t *testing.T) {
+	seedShopsStore(t)
+	for _, params := range []map[string]string{
+		{"page": "1"},
+		{"page_number": "1"},
+		{"page": "2"},
+	} {
+		data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", params, "test")
+		if data != nil {
+			t.Fatalf("page without limit returned %s", data)
+		}
+		want := "page"
+		if _, ok := params["page_number"]; ok {
+			want = "page_number"
+		}
+		requireLocalUnsupported(t, err, want)
+	}
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
+		"page":  "1",
+		"limit": "1",
+	}, "test")
+	if err != nil {
+		t.Fatalf("page 1 with limit: %v", err)
+	}
+	if n := localJSONCount(t, data); n != 1 {
+		t.Fatalf("page 1 limit 1 returned %d rows: %s", n, data)
+	}
+	data, _, err = resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
+		"page":  "2",
+		"limit": "1",
+	}, "test")
+	if err != nil {
+		t.Fatalf("page 2 with limit: %v", err)
+	}
+	if n := localJSONCount(t, data); n != 1 {
+		t.Fatalf("page 2 limit 1 returned %d rows: %s", n, data)
+	}
+	data, _, err = resolveLocal(context.Background(), nil, io.Discard, "shops", true, "/shops", map[string]string{
+		"page":  "1",
+		"limit": "0",
+	}, "test")
+	if err != nil {
+		t.Fatalf("page 1 limit 0: %v", err)
+	}
+	if n := localJSONCount(t, data); n != 0 {
+		t.Fatalf("page 1 limit 0 returned %d rows: %s", n, data)
+	}
+}
+
+func TestResolveLocalCamelCaseCommandReadsStoredRows(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := []struct {
+		resource string
+		id       string
+		body     string
+	}{
+		{"tagged_resources", "r1", "{\"id\":\"r1\",\"name\":\"camel-alpha\"}"},
+		{"taggedresources", "decoy", "{\"id\":\"decoy\",\"name\":\"lower-decoy\"}"},
+		{"reconciliation_policies", "p1", "{\"id\":\"p1\",\"name\":\"policy-one\"}"},
+	}
+	for _, row := range rows {
+		if err := db.Upsert(row.resource, row.id, json.RawMessage(row.body)); err != nil {
+			t.Fatalf("upsert %s: %v", row.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout := runGeneratedLocal(t, "--data-source", "local", "tagged-resources", "index")
+	if !strings.Contains(stdout, "camel-alpha") || strings.Contains(stdout, "lower-decoy") {
+		t.Fatalf("tagged-resources index stdout = %s", stdout)
+	}
+	stdout = runGeneratedLocal(t, "--data-source", "local", "reconciliation-policies")
+	if !strings.Contains(stdout, "policy-one") {
+		t.Fatalf("reconciliation-policies stdout = %s", stdout)
+	}
+}
+
+func TestResolveLocalCamelCaseMutationWriteUsesSnakeTable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	writeMutationResponseToStore(context.Background(), "taggedResources", json.RawMessage("{\"id\":\"r9\",\"name\":\"nine\"}"), "")
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "tagged_resources", true, "/api/v2/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("snake table: %v", err)
+	}
+	if !strings.Contains(string(data), "r9") {
+		t.Fatalf("snake table = %s", data)
+	}
+	data, _, err = resolveLocal(context.Background(), nil, io.Discard, "taggedresources", true, "/api/v2/taggedresources", nil, "test")
+	if err == nil || !strings.Contains(err.Error(), "no local data") {
+		t.Fatalf("lowercased table err = %v data = %s", err, data)
+	}
+	data, _, err = resolveLocal(context.Background(), nil, io.Discard, "taggedResources", false, "/api/v2/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("camelCase alias: %v", err)
+	}
+	if !strings.Contains(string(data), "r9") {
+		t.Fatalf("camelCase alias = %s", data)
+	}
+}
+
+func TestResolveLocalFullyLowercasedTableRemainsReadable(t *testing.T) {
+	seedTypedRows(t, "taggedresources", []seedRow{
+		{"r1", "{\"id\":\"r1\",\"name\":\"lower-kept\"}"},
+	})
+	data, _, err := resolveLocal(context.Background(), nil, io.Discard, "taggedResources", true, "/api/v2/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("lowercased alias: %v", err)
+	}
+	if !strings.Contains(string(data), "lower-kept") {
+		t.Fatalf("lowercased alias = %s", data)
+	}
+}
+
+func TestDataSourceGatePrecedesPlatformProbe(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("PRINTING_PRESS_CLIENT_PROFILE", "tenant-a")
+	t.Setenv(mcpBoundProfileEnv, "")
+	if err := platform.SaveProfile(&platform.Profile{
+		SchemaVersion: platform.ProfileSchemaVersion,
+		Name:          "tenant-a",
+		Sources: map[string]platform.SourceProfile{
+			"tenant-source": {ExpectedBaseURL: "https://tenant.example"},
+		},
+	}); err != nil {
+		t.Fatalf("save profile: %v", err)
+	}
+	adapter := &failingIdentityAdapter{}
+	previous := registeredPlatformSource
+	t.Cleanup(func() { registeredPlatformSource = previous })
+	registeredPlatformSource = &platformSourceRegistration{
+		Source:         "tenant-source",
+		Adapter:        adapter,
+		Credentialless: true,
+	}
+
+	runProbe := func(args ...string) error {
+		t.Helper()
+		ran := false
+		root := newRootCmd(&rootFlags{})
+		probe := &cobra.Command{
+			Use:         "probe",
+			Annotations: map[string]string{"pp:data-source": "live"},
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ran = true
+				return nil
+			},
+		}
+		root.AddCommand(probe)
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		root.SetArgs(args)
+		err := root.Execute()
+		if ran {
+			t.Fatal("RunE ran before the pre-run gate finished")
+		}
+		return err
+	}
+
+	err := runProbe("--data-source", "local", "--client-profile", "tenant-a", "probe")
+	if err == nil || !strings.Contains(err.Error(), "no local data source") {
+		t.Fatalf("local on live command: %v", err)
+	}
+	if adapter.calls != 0 {
+		t.Fatalf("incompatible local request probed identity %d times", adapter.calls)
+	}
+
+	err = runProbe("--data-source", "live", "--client-profile", "tenant-a", "probe")
+	if err == nil || !strings.Contains(err.Error(), "identity probe failed") {
+		t.Fatalf("live request: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("compatible live request probed identity %d times, want 1", adapter.calls)
+	}
+}
+
+type failingIdentityAdapter struct {
+	calls int
+}
+
+func (a *failingIdentityAdapter) ProbeIdentity(context.Context, platform.ResolvedCredentials, platform.SourceProfile) (platform.ObservedIdentity, error) {
+	a.calls++
+	return platform.ObservedIdentity{}, errors.New("identity probe failed")
+}
+
+func (*failingIdentityAdapter) EndpointClass() string { return "GET /identity" }
+
+func runGeneratedLocal(t *testing.T, args ...string) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	root := newRootCmd(&rootFlags{})
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute %v: %v\nstderr: %s\nstdout: %s", args, err, stderr.String(), stdout.String())
+	}
+	return stdout.String()
+}
+
+func localJSONCount(t *testing.T, data []byte) int {
+	t.Helper()
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("expected a JSON array, got %s: %v", data, err)
+	}
+	return len(items)
 }
 
 type seedRow struct {

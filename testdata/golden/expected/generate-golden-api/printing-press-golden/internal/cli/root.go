@@ -387,6 +387,17 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 			}
 			appliedProfile = profile
 		}
+		// An incompatible --data-source has to fail before the platform
+		// identity probe. A failed probe would otherwise hide this error.
+		switch flags.dataSource {
+		case "auto", "live", "local":
+			// valid
+		default:
+			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
+		}
+		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
+			return err
+		}
 		if platformCommandNeedsGate(cmd) {
 			if err := preparePlatformSession(flags); err != nil {
 				return err
@@ -423,15 +434,6 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 			if !cmd.Flags().Changed("no-color") {
 				noColor = true
 			}
-		}
-		switch flags.dataSource {
-		case "auto", "live", "local":
-			// valid
-		default:
-			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
-		}
-		if err := validateDataSourceStrategy(flags, commandDataSourceAnnotation(cmd)); err != nil {
-			return err
 		}
 		// Auto-refresh stale local caches before serving read commands.
 		// Looks up the current command path in readCommandResources and

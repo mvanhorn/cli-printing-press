@@ -659,7 +659,23 @@ func writeMutationResponseToStore(ctx context.Context, resourceType string, data
 	}
 	defer db.Close()
 
-	_, _, _ = db.UpsertBatch(resourceType, items)
+	_, _, _ = db.UpsertBatch(localWriteResourceType(db, resourceType), items)
+}
+
+// Sync stores the snake_case resource name. An empty store must not start
+// a second table under the raw or fully lowercased name.
+func localWriteResourceType(db *store.Store, resourceType string) string {
+	if db != nil {
+		if stored, err := resolveStoredResourceType(db, resourceType, ""); err == nil {
+			if n, err := db.Count(stored); err == nil && n > 0 {
+				return stored
+			}
+		}
+	}
+	if snake := localResourceSnake(resourceType); snake != "" {
+		return snake
+	}
+	return resourceType
 }
 
 func mutationResponseEntityItems(resourceType string, data json.RawMessage, responsePath string) []json.RawMessage {
@@ -973,6 +989,9 @@ func localStoreResourceCandidates(resourceType, path string) []string {
 	snake := localResourceSnake(resourceType)
 	add(snake)
 	add(localResourceKebab(snake))
+	// Rows written under a fully lowercased camelCase name stay readable
+	// when the snake_case table sync uses is empty.
+	add(strings.ToLower(resourceType))
 
 	parts := localPathSegments(path)
 	idx := localCollectionSegmentIndex(resourceType, path)
@@ -1227,7 +1246,9 @@ func parseLocalListQuery(params map[string]string) localListQuery {
 			q.equality[key] = val
 		}
 	}
-	if page > 1 && q.limit < 0 {
+	// Page 1 still uses the server's default page size, which this store
+	// does not know. Any supplied page without a usable limit fails closed.
+	if page >= 1 && q.limit < 0 {
 		key := pageKey
 		if key == "" {
 			key = "page"

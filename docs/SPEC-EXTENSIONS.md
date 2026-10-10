@@ -1702,8 +1702,9 @@ Rules:
 - `auto` keeps the normal live-with-local-fallback behavior for store-backed
   reads. Local fallback and `--data-source local` apply equality, parent
   scope, and limit. A row-selecting parameter that cannot be applied locally
-  (`filter`, `orderBy` / `sort` / `order`, search, cursor, or an equality key
-  that is not a stored field) fails with a clear error naming those parameters
+  (`filter`, `orderBy` / `sort` / `order`, search, cursor, a page without a
+  usable limit, or an equality key that is not a stored field) fails with a
+  clear error naming those parameters
   and suggesting `--data-source live`, instead of returning a different row
   set. `auto` still prefers live, and surfaces that same failure when live is
   unreachable. Projection parameters such as `fields` stay warnings.
