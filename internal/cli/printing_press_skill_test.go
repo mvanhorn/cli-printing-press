@@ -310,3 +310,38 @@ func TestPrintingPressSkillAgenticSkillReviewGateDoesNotSkipToDogfood(t *testing
 	require.Contains(t, gate, "15-readme-skill-agents-correctness-audit.md")
 	require.NotContains(t, gate, "18-dogfood-testing.md")
 }
+
+func TestPrintingPressSkillDogfoodFailureRoutesToHoldMenu(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/phases/21-next-steps.md")
+	require.NoError(t, err)
+	content := string(data)
+	gateStart := strings.Index(content, "### Gate")
+	require.Greater(t, gateStart, 0)
+	rest := content[gateStart:]
+	gateEnd := strings.Index(rest, "### Check for existing PR")
+	require.Greater(t, gateEnd, 0)
+	gate := rest[:gateEnd]
+
+	failMarker := strings.Index(gate, `status: "fail"`)
+	holdRoute := strings.Index(gate, "hold-path menu")
+	verdictSelection := strings.Index(gate, "use the most recent shipcheck verdict")
+	require.GreaterOrEqual(t, failMarker, 0, "Phase 6 must recognize a failed phase5 acceptance marker")
+	require.GreaterOrEqual(t, holdRoute, 0, "a failed marker must route to the hold-path menu")
+	require.GreaterOrEqual(t, verdictSelection, 0, "Phase 6 must still use shipcheck and polish for non-fail outcomes")
+	require.Less(t, failMarker, verdictSelection, "the failed marker must take precedence over earlier shipcheck and polish status")
+	require.Less(t, holdRoute, verdictSelection, "the failed marker must route to the hold-path menu before verdict selection")
+	require.Contains(t, gate[failMarker:verdictSelection], "even when the earlier shipcheck or polish verdict was `ship` or `ship-with-gaps`")
+
+	polishRetry := strings.Index(content, `#### If "Polish to retry"`)
+	require.GreaterOrEqual(t, polishRetry, 0, "the hold menu must define the Polish retry path")
+	recovery := content[polishRetry:]
+	require.Contains(t, recovery, "Do not promote based on polish alone")
+	require.Contains(t, recovery, `--next "18-dogfood-testing"`)
+	require.Contains(t, recovery, `dogfood --live --dir "$CLI_WORK_DIR" --level full`)
+	require.Contains(t, recovery, `--write-acceptance "$PROOFS_DIR/phase5-acceptance.json"`)
+	require.Contains(t, recovery, `cp -r "$PROOFS_DIR/." "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/"`)
+	require.Contains(t, recovery, `cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"`)
+	require.Contains(t, recovery, "Do not skip the acceptance check")
+}

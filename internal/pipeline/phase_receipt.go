@@ -59,8 +59,8 @@ var printingPressReceiptPhases = []string{
 // graph: every handoff the phase text prescribes that departs from the canonical
 // linear order. The absorb and reachability gates route discovery rework back to
 // the sniff gates, a build that proves infeasible returns to the absorb gate for
-// re-approval, the shipcheck hold jumps straight to promote-and-archive, a local
-// code review that uncovers a scope change returns to the absorb gate, and the
+// re-approval, shipcheck and dogfood holds jump straight to promote-and-archive,
+// a local code review that uncovers a scope change returns to the absorb gate, and the
 // promote gate backtracks to dogfood when an acceptance marker is missing. Every
 // other handoff stays on the canonical linear order.
 //
@@ -82,7 +82,9 @@ var printingPressAlternateNext = map[string][]string{
 	"11-build-the-goat":        {"08-ecosystem-absorb-gate"},
 	"12-shipcheck":             {"20-promote-and-archive"},
 	"17-local-code-review":     {"08-ecosystem-absorb-gate"},
+	"18-dogfood-testing":       {"20-promote-and-archive"},
 	"20-promote-and-archive":   {"18-dogfood-testing"},
+	"21-next-steps":            {"18-dogfood-testing"},
 }
 
 // printingPressReturnBoundPhases names the phases whose alternate handoffs are
@@ -95,10 +97,13 @@ var printingPressAlternateNext = map[string][]string{
 //
 // The other alternate edges mean something else and stay unbound: 08 and 09 into
 // the sniff gates order rework, 11 and 17 into 08 jump back to replay forward,
-// 12 into 20 is a forward jump, and 20 into 18 is a missing-marker backtrack
-// that validateHoldBacktrack refuses after a 12→20 hold. Binding 11/17/12
-// would demand, say, that the absorb gate entered from the local code review
-// complete back to that review.
+// 12 into 20 is a forward hold jump, 18 into 20 is a forward hold or recovered
+// dogfood jump, 20 into 18 is a missing-marker backtrack that
+// validateHoldBacktrack refuses after a 12→20 hold, and 21 into 18 re-runs
+// dogfood after polish recovers a held run. These forward jumps and
+// discovery rework edges stay unbound: binding the 17→08 edge would demand that
+// the absorb gate entered from the local code review complete back to that
+// review.
 var printingPressReturnBoundPhases = []string{"06-browser-sniff-gate"}
 
 // PrintingPressReceiptPhases returns the canonical phase order the state machine

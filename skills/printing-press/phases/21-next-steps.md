@@ -12,10 +12,12 @@ After archiving, offer the user the next action. The menu shape is determined by
 
 ### Gate
 
-Use the most recent shipcheck verdict:
-- if [Phase 5](18-dogfood-testing.md) reran shipcheck after a live-smoke fix, use that rerun verdict
-- otherwise use the [Phase 4](12-shipcheck.md) verdict
-- if [Phase 5.5](19-polish.md) polish downgraded the verdict (`ship_recommendation: hold`), use the downgraded verdict
+Check `$PROOFS_DIR/phase5-acceptance.json` before using the shipcheck or polish verdict:
+- If the marker exists with `status: "fail"` → **hold-path menu**, even when the earlier shipcheck or polish verdict was `ship` or `ship-with-gaps`. The CLI did not pass dogfood and was not promoted.
+- Otherwise, use the most recent shipcheck verdict:
+  - if [Phase 5](18-dogfood-testing.md) reran shipcheck after a live-smoke fix, use that rerun verdict
+  - otherwise use the [Phase 4](12-shipcheck.md) verdict
+  - if [Phase 5.5](19-polish.md) polish downgraded the verdict (`ship_recommendation: hold`), use the downgraded verdict
 
 Route to the menu shape:
 - `ship` or `ship-with-gaps` → **ship-path menu** (below)
@@ -196,13 +198,30 @@ If the current hold also warrants a retro, tell the user after the journal PR op
 
 After polish returns, parse the result block and act on the new `ship_recommendation`:
 
-- **Polish landed on `ship` or `ship-with-gaps`** — the verdict transitioned out of hold. The working copy is still un-promoted; the library is stale. Run promote, then route to the ship-path menu (above):
+- **Polish landed on `ship` or `ship-with-gaps`** — the verdict transitioned out of hold, but the failed dogfood marker still blocks promotion. Re-run the full live dogfood matrix against the polished working copy. Do not promote based on polish alone.
+
+  Record the recovery handoff and re-enter Phase 5 before running dogfood:
 
   ```bash
-  "$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
+  "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "21-next-steps" --next "18-dogfood-testing" --note "polish recovered a dogfood hold; rerun the full live matrix"
   ```
 
-  Then re-enter the ship-path menu using polish's new result block. Skip the [Phase 5.6](20-promote-and-archive.md) acceptance-gate JSON check — that gate was already satisfied when this run originally reached [Phase 5.6](20-promote-and-archive.md), and polish does not regenerate it.
+  Follow [Phase 5](18-dogfood-testing.md), including its entry receipt and auth-session setup, and run the full matrix:
+
+  ```bash
+  "$PRINTING_PRESS_BIN" dogfood --live --dir "$CLI_WORK_DIR" --level full --research-dir "$RESEARCH_DIR" --json --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
+  ```
+
+  If the rerun fails, use Phase 5's `18→20` hold handoff and do not promote. If it passes, copy the complete run proofs directory, including every file named in `proof_covered_features`, to both locations required by the promotion and publish gates. Then use the same `18→20` handoff with a recovery-pass note:
+
+  ```bash
+  API_SLUG="<api>"
+  mkdir -p "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"
+  cp -r "$PROOFS_DIR/." "$CLI_WORK_DIR/.manuscripts/$RUN_ID/proofs/"
+  cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"
+  ```
+
+  Complete the Phase 5 receipt using the `18→20` command in its hold handoff section, with the note `polish recovered a dogfood hold; refreshed live matrix passed`. Then follow [Phase 5.6](20-promote-and-archive.md). Its acceptance gate must read the fresh `status: "pass"` marker before promotion. After Phase 5.6 completes, return to this phase's ship-path menu. Do not skip the acceptance check.
 
 - **Polish still on `hold`** — re-show this hold-path menu so the user can pick again. Do not loop polish automatically; the user may want retro or to give up after a failed retry.
 
