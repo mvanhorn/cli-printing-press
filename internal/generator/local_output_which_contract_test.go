@@ -929,6 +929,97 @@ func TestResolveLocalCustomIDUsesStoredResourceName(t *testing.T) {
 	}
 }
 
+func TestResolveLocalLegacyOnlyWriteKeepsCachedRows(t *testing.T) {
+	seedTypedRows(t, "taggedresources", []seedRow{
+		{"r1", "{\"id\":\"r1\",\"name\":\"kept\"}"},
+	})
+	ctx := context.Background()
+	writeMutationResponseToStore(ctx, "taggedResources", json.RawMessage("{\"id\":\"r2\",\"name\":\"mutated\"}"), "")
+	writeThroughCache(ctx, "taggedResources", json.RawMessage("[{\"id\":\"r3\",\"name\":\"cached\"}]"))
+
+	data, _, err := resolveLocal(ctx, nil, io.Discard, "taggedResources", true, "/api/v2/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("legacy write read: %v", err)
+	}
+	got := string(data)
+	for _, name := range []string{"kept", "mutated", "cached"} {
+		if !strings.Contains(got, name) {
+			t.Fatalf("local read missing %s: %s", name, got)
+		}
+	}
+	db, err := store.OpenWithContext(ctx, defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	canonical, err := db.Count("tagged_resources")
+	if err != nil {
+		t.Fatalf("count canonical: %v", err)
+	}
+	legacy, err := db.Count("taggedresources")
+	if err != nil {
+		t.Fatalf("count legacy: %v", err)
+	}
+	if canonical != 3 || legacy != 0 {
+		t.Fatalf("after write canonical=%d legacy=%d, want 3 and 0", canonical, legacy)
+	}
+	if _, err := db.Get("tagged_resources", "r1"); err != nil {
+		t.Fatalf("moved row: %v", err)
+	}
+}
+
+func TestResolveLocalCanonicalWriteLeavesLegacyDecoy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := []struct {
+		resource string
+		id       string
+		body     string
+	}{
+		{"tagged_resources", "r1", "{\"id\":\"r1\",\"name\":\"canonical\"}"},
+		{"taggedresources", "decoy", "{\"id\":\"decoy\",\"name\":\"legacy-decoy\"}"},
+	}
+	for _, row := range rows {
+		if err := db.Upsert(row.resource, row.id, json.RawMessage(row.body)); err != nil {
+			t.Fatalf("upsert %s: %v", row.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	ctx := context.Background()
+	writeMutationResponseToStore(ctx, "taggedResources", json.RawMessage("{\"id\":\"r2\",\"name\":\"mutated\"}"), "")
+	data, _, err := resolveLocal(ctx, nil, io.Discard, "taggedResources", true, "/api/v2/taggedResources", nil, "test")
+	if err != nil {
+		t.Fatalf("canonical write read: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "canonical") || !strings.Contains(got, "mutated") || strings.Contains(got, "legacy-decoy") {
+		t.Fatalf("canonical write read = %s", got)
+	}
+	db, err = store.OpenWithContext(ctx, defaultDBPath("shopsapi-pp-cli"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Get("taggedresources", "decoy"); err != nil {
+		t.Fatalf("legacy decoy: %v", err)
+	}
+	if _, err := db.Get("tagged_resources", "r2"); err != nil {
+		t.Fatalf("canonical write: %v", err)
+	}
+}
+
 func TestResolveLocalFullyLowercasedTableRemainsReadable(t *testing.T) {
 	seedTypedRows(t, "taggedresources", []seedRow{
 		{"r1", "{\"id\":\"r1\",\"name\":\"lower-kept\"}"},

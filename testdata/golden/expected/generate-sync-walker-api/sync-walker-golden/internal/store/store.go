@@ -3800,6 +3800,91 @@ func (s *Store) Count(resourceType string) (int, error) {
 	return count, err
 }
 
+// Readers prefer the first populated spelling. Leaving rows under a legacy
+// resource_type while new writes land on the canonical name hides that older
+// cache. FTS rowids include the resource type, so those index rows move too.
+func (s *Store) RenameResourceType(from, to string) error {
+	if from == "" || to == "" || from == to {
+		return nil
+	}
+	s.lockForWrite()
+	defer s.unlockAfterWrite()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id, data FROM resources WHERE resource_type = ?`, from)
+	if err != nil {
+		return err
+	}
+	type resourceRow struct {
+		id   string
+		data string
+	}
+	var pending []resourceRow
+	for rows.Next() {
+		var row resourceRow
+		if err := rows.Scan(&row.id, &row.data); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for _, row := range pending {
+		kept := row.data
+		var dest string
+		err := tx.QueryRow(
+			`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+			to, row.id,
+		).Scan(&dest)
+		switch {
+		case err == nil:
+			kept = dest
+			if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, from, row.id); err != nil {
+				return err
+			}
+		case err == sql.ErrNoRows:
+			if _, err := tx.Exec(
+				`UPDATE resources SET resource_type = ? WHERE resource_type = ? AND id = ?`,
+				to, from, row.id,
+			); err != nil {
+				return err
+			}
+		default:
+			return err
+		}
+		if err := rewriteResourceFTS(tx, from, to, row.id, kept); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func rewriteResourceFTS(tx *sql.Tx, from, to, id, data string) error {
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(from, id)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(to, id)); err != nil {
+		return err
+	}
+	_, err := tx.Exec(
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+		ftsRowID(to, id), id, to, searchableResourceContent(json.RawMessage(data)),
+	)
+	return err
+}
+
 func (s *Store) Status() (map[string]int, error) {
 	rows, err := s.db.Query(
 		`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type ORDER BY resource_type`,

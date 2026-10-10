@@ -665,9 +665,11 @@ func writeMutationResponseToStore(ctx context.Context, resourceType string, data
 	_, _, _ = db.UpsertBatch(storedType, items)
 }
 
-// Sync and resourceIDFieldOverrides use the snake_case resource name. An
-// empty store must not start a second table under the raw name, and a legacy
-// fully lowercased table must not keep receiving writes that miss that key.
+// Sync and resourceIDFieldOverrides use the snake_case resource name, so an
+// empty store must not start a second table under the raw name. A populated
+// legacy spelling is moved onto that name before the write; leaving the rows
+// behind lets the new table hide them on the next read. A failed move keeps
+// the write on the table that already has the rows.
 func localWriteResourceType(db *store.Store, resourceType string) string {
 	canonical := localCanonicalResourceType(resourceType)
 	if db == nil {
@@ -681,7 +683,13 @@ func localWriteResourceType(db *store.Store, resourceType string) string {
 	if err != nil || n == 0 {
 		return canonical
 	}
-	if stored == strings.ToLower(resourceType) && stored != canonical {
+	if stored == canonical {
+		return stored
+	}
+	if stored == strings.ToLower(resourceType) {
+		if err := db.RenameResourceType(stored, canonical); err != nil {
+			return stored
+		}
 		return canonical
 	}
 	return stored
