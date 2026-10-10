@@ -379,6 +379,9 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			}
 			appliedProfile = profile
 		}
+		// A saved profile can set dry-run after flag parse. Suppression has to
+		// see that value before any store path is resolved.
+		setLegacyDBClaimSuppressed(flags.dryRun)
 		// An incompatible --data-source has to fail before the platform
 		// identity probe. A failed probe would otherwise hide this error.
 		switch flags.dataSource {

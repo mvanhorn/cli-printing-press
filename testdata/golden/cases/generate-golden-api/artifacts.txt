@@ -8,6 +8,10 @@ printing-press-golden/cmd/printing-press-golden-pp-cli/main.go
 printing-press-golden/internal/client/client.go
 printing-press-golden/internal/cli/data_source.go
 printing-press-golden/internal/cli/helpers.go
+printing-press-golden/internal/cli/store_adopt_linux.go
+printing-press-golden/internal/cli/store_adopt_darwin.go
+printing-press-golden/internal/cli/store_adopt_windows.go
+printing-press-golden/internal/cli/store_adopt_other.go
 printing-press-golden/internal/cli/root.go
 printing-press-golden/internal/cli/root_test.go
 printing-press-golden/internal/cli/auth.go

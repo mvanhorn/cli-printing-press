@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -322,7 +323,39 @@ func (c *Config) AuthHeader() string {
 	return ""
 }
 
+// StoreScopeIdentity overrides the default store-scope key. A print whose
+// session token rotates can pin a stable account id so re-login keeps the
+// same local database.
+var StoreScopeIdentity func(*Config) string
+
 func (c *Config) StoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	if StoreScopeIdentity != nil {
+		if id := strings.TrimSpace(StoreScopeIdentity(c)); id != "" {
+			return id
+		}
+	}
+	// A base URL is present on every install. Use the stable key only when a
+	// credential already scopes the store, so a logged-out CLI stays on data.db.
+	legacy := c.legacyStoreScopeCredential()
+	if legacy != "" {
+		if id := strings.TrimSpace(c.stableStoreScopeCredential()); id != "" {
+			return id
+		}
+	}
+	return legacy
+}
+
+func (c *Config) StoreScopeLegacyCredential() string {
+	if c == nil {
+		return ""
+	}
+	return c.legacyStoreScopeCredential()
+}
+
+func (c *Config) legacyStoreScopeCredential() string {
 	if c == nil {
 		return ""
 	}
@@ -353,6 +386,56 @@ func (c *Config) StoreScopeCredential() string {
 		return ""
 	}
 	return strings.Join(parts, "\n")
+}
+func (c *Config) stableStoreScopeCredential() string {
+	if c == nil {
+		return ""
+	}
+	// Base URL alone is not an account. Without a client id, secret, refresh
+	// token, or other non-rotating field, keep the legacy key so two access
+	// tokens on one host do not share a database.
+	var identity []string
+	if c.ClientID != "" {
+		identity = append(identity, "client_id="+c.ClientID)
+	}
+	if c.ClientSecret != "" {
+		identity = append(identity, "client_secret="+c.ClientSecret)
+	}
+	if c.RefreshToken != "" {
+		identity = append(identity, "refresh_token="+c.RefreshToken)
+	}
+	if c.DeviceCodeClientId != "" && c.DeviceCodeClientId != c.AccessToken {
+		identity = append(identity, "code_client_id="+c.DeviceCodeClientId)
+	}
+	if len(identity) == 0 {
+		return ""
+	}
+	if base := normalizeStoreScopeBaseURL(c.BaseURL); base != "" {
+		identity = append([]string{"base_url=" + base}, identity...)
+	}
+	return strings.Join(identity, "\n")
+}
+
+func normalizeStoreScopeBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.User = nil
+	if parsed.Path == "/" {
+		parsed.Path = ""
+	} else {
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+	}
+	return parsed.String()
 }
 
 // Raw browser-session values count as credentials even when no header
