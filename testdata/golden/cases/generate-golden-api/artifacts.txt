@@ -22,6 +22,7 @@ printing-press-golden/internal/cli/deliver.go
 printing-press-golden/internal/cli/promoted_public.go
 printing-press-golden/internal/cli/promoted_tickets.go
 printing-press-golden/internal/cliutil/text.go
+printing-press-golden/internal/cliutil/query.go
 printing-press-golden/internal/cliutil/ratelimit.go
 printing-press-golden/internal/config/config.go
 printing-press-golden/internal/mcp/tools.go

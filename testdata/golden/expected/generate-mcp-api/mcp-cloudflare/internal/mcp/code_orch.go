@@ -27,6 +27,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"mcp-cloudflare-pp-cli/internal/cli"
+	"mcp-cloudflare-pp-cli/internal/cliutil"
 	"mcp-cloudflare-pp-cli/internal/mcp/bound"
 )
 
@@ -461,7 +462,7 @@ func codeOrchSplitQuery(queryParams []codeOrchParamBinding, params map[string]an
 			}
 		}
 	}
-	return uv.Encode()
+	return cliutil.EncodeQuery(uv)
 }
 
 func codeOrchWireQueryName(queryParams []codeOrchParamBinding, name string) string {

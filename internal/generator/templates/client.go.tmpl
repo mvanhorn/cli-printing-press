@@ -904,7 +904,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			q.Del("{{.Header}}")
 {{- end}}
 {{- end}}
-			req.URL.RawQuery = q.Encode()
+			req.URL.RawQuery = cliutil.EncodeQuery(q)
 {{- end}}
 		}
 {{- end}}
@@ -1007,13 +1007,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 					}
 					if carried != "" {
 						q.Set("{{.Header}}", carried)
-						req.URL.RawQuery = q.Encode()
+						req.URL.RawQuery = cliutil.EncodeQuery(q)
 					}
 				}
 			} else {
 				q := req.URL.Query()
 				q.Del("{{.Header}}")
-				req.URL.RawQuery = q.Encode()
+				req.URL.RawQuery = cliutil.EncodeQuery(q)
 			}
 {{- else}}
 			if destinationScheme == {{printf "%q" .Scheme}} {
@@ -1034,7 +1034,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			if !(redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}) {
 				q := req.URL.Query()
 				q.Del("{{.Header}}")
-				req.URL.RawQuery = q.Encode()
+				req.URL.RawQuery = cliutil.EncodeQuery(q)
 			}
 {{- else}}
 			if !(redirectScheme == "" || redirectScheme == {{printf "%q" .Scheme}}) {
@@ -1440,7 +1440,7 @@ func pathWithQueryValues(path string, params url.Values) string {
 	if len(params) == 0 {
 		return path
 	}
-	encoded := params.Encode()
+	encoded := cliutil.EncodeQuery(params)
 	if encoded == "" {
 		return path
 	}
@@ -2682,7 +2682,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					q.Set(k, v)
 				}
 			}
-			req.URL.RawQuery = q.Encode()
+			req.URL.RawQuery = cliutil.EncodeQuery(q)
 		}
 {{- end}}
 
@@ -2691,7 +2691,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			if authInfo.In == "query" {
 				q := req.URL.Query()
 				q.Set(authInfo.Name, authHeader)
-				req.URL.RawQuery = q.Encode()
+				req.URL.RawQuery = cliutil.EncodeQuery(q)
 			} else {
 				req.Header.Set(authInfo.Name, authHeader)
 			}
@@ -2701,13 +2701,13 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- else}}
 			q := req.URL.Query()
 			q.Set("{{.Auth.TokenParamName}}", authHeader)
-			req.URL.RawQuery = q.Encode()
+			req.URL.RawQuery = cliutil.EncodeQuery(q)
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 			// API key goes in query parameter
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
-			req.URL.RawQuery = q.Encode()
+			req.URL.RawQuery = cliutil.EncodeQuery(q)
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
 {{- else if eq .Auth.Type "cookie"}}
@@ -2750,7 +2750,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- if eq .In "query"}}
 					q := req.URL.Query()
 					q.Set("{{.Header}}", v)
-					req.URL.RawQuery = q.Encode()
+					req.URL.RawQuery = cliutil.EncodeQuery(q)
 {{- else}}
 					req.Header.Set("{{.Header}}", v)
 {{- end}}
@@ -2771,7 +2771,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- if eq .In "query"}}
 				q := req.URL.Query()
 				q.Set("{{.Header}}", v)
-				req.URL.RawQuery = q.Encode()
+				req.URL.RawQuery = cliutil.EncodeQuery(q)
 {{- else}}
 				req.Header.Set("{{.Header}}", v)
 {{- end}}

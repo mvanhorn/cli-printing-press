@@ -30,6 +30,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"{{modulePath}}/internal/cli"
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/mcp/bound"
 )
 
@@ -694,7 +695,7 @@ func codeOrchSplitQuery({{if hasIndexedOrArrayQueryParams .APISpec}}path string,
 		}
 	}
 {{- if hasIndexedOrArrayQueryParams .APISpec}}
-	if enc := uv.Encode(); enc != "" {
+	if enc := cliutil.EncodeQuery(uv); enc != "" {
 		sep := "?"
 		if strings.Contains(path, "?") {
 			sep = "&"
@@ -703,7 +704,7 @@ func codeOrchSplitQuery({{if hasIndexedOrArrayQueryParams .APISpec}}path string,
 	}
 	return path{{if hasDeepObjectQueryParams .APISpec}}, nil{{end}}
 {{- else}}
-	return uv.Encode()
+	return cliutil.EncodeQuery(uv)
 {{- end}}
 }
 
