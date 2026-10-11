@@ -5147,7 +5147,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
 	declaredBy := map[string]*openapi3.Schema{}
-	if collectAllOfProperties(media.Schema, properties, required, declaredBy, map[*openapi3.Schema]struct{}{}) {
+	if collectAllOfProperties(media.Schema, properties, required, declaredBy, map[*openapi3.Schema]struct{}{}, foldBodyNames) {
 		// oneOf/anyOf at the body root cannot be flattened to named flags.
 		// Only enable the --body-json fallback for JSON-shaped content
 		// types; the runtime decode path is wired through the JSON branch
@@ -5354,7 +5354,7 @@ func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
 
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
-	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, properties, required, nil, map[*openapi3.Schema]struct{}{}) || len(properties) == 0 {
+	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, properties, required, nil, map[*openapi3.Schema]struct{}{}, foldBodyNames) || len(properties) == 0 {
 		return schema
 	}
 
@@ -5732,7 +5732,9 @@ func (w *bodyFieldWalk) fields(schema *openapi3.Schema, depth int) []spec.Param 
 	props := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
 	declared := map[string]*openapi3.Schema{}
-	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, props, required, declared, map[*openapi3.Schema]struct{}{}) || len(props) == 0 {
+	// Keep spec property names. Folding them here renames the JSON key and
+	// misses required, which is declared against the original name.
+	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, props, required, declared, map[*openapi3.Schema]struct{}{}, keepBodyNames) || len(props) == 0 {
 		return nil
 	}
 
@@ -5758,8 +5760,10 @@ func (w *bodyFieldWalk) fields(schema *openapi3.Schema, depth int) []spec.Param 
 		if description == "" {
 			description = humanizeFieldName(name)
 		}
+		publicName, bodyName := nestedBodyPublicName(name)
 		field := spec.Param{
-			Name:              name,
+			Name:              publicName,
+			BodyName:          bodyName,
 			Type:              mapBodyParamType(fieldSchema, w.inferCSVArrays),
 			Required:          isRequired(required, name),
 			Description:       description,
@@ -5804,12 +5808,29 @@ func assignBodySchemaDefault(param *spec.Param, schema *openapi3.Schema) {
 	}
 }
 
+const (
+	foldBodyNames = true
+	keepBodyNames = false
+)
+
+func nestedBodyPublicName(wireName string) (publicName, bodyName string) {
+	publicName = naming.ASCIIFold(wireName)
+	if publicName == "" {
+		publicName = wireName
+	}
+	if publicName != wireName {
+		bodyName = wireName
+	}
+	return publicName, bodyName
+}
+
 func collectAllOfProperties(
 	schemaRef *openapi3.SchemaRef,
 	properties map[string]*openapi3.SchemaRef,
 	required map[string]struct{},
 	declaredBy map[string]*openapi3.Schema,
 	visited map[*openapi3.Schema]struct{},
+	foldNames bool,
 ) bool {
 	if schemaRef == nil || schemaRef.Value == nil {
 		return false
@@ -5826,7 +5847,7 @@ func collectAllOfProperties(
 	}
 
 	for _, sub := range schema.AllOf {
-		if collectAllOfProperties(sub, properties, required, declaredBy, visited) {
+		if collectAllOfProperties(sub, properties, required, declaredBy, visited, foldNames) {
 			return true
 		}
 	}
@@ -5837,7 +5858,10 @@ func collectAllOfProperties(
 		if prop == nil {
 			continue
 		}
-		key := naming.ASCIIFold(name)
+		key := name
+		if foldNames {
+			key = naming.ASCIIFold(name)
+		}
 		properties[key] = prop
 		if declaredBy != nil {
 			declaredBy[key] = schema

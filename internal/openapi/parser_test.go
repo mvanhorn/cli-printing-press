@@ -2539,6 +2539,17 @@ func fieldByName(t *testing.T, params []spec.Param, name string) spec.Param {
 	return spec.Param{}
 }
 
+func fieldByWireName(t *testing.T, params []spec.Param, wire string) spec.Param {
+	t.Helper()
+	for _, param := range params {
+		if param.BodyWireName() == wire {
+			return param
+		}
+	}
+	t.Fatalf("body field %q not found in %v", wire, paramNames(params))
+	return spec.Param{}
+}
+
 func paramTreeDepth(params []spec.Param) int {
 	depth := 0
 	for _, param := range params {
@@ -2772,6 +2783,101 @@ components:
               type: object
               properties:
                 sku: {type: string}
+`
+
+func TestParseNestedNonASCIIBodyKeyKeepsWireName(t *testing.T) {
+	warnings := captureWarnings(t, func() {
+		parsed, err := Parse([]byte(nestedNonASCIIBodySpec))
+		require.NoError(t, err)
+
+		plain := bodyFields(t, parsed, "/places")
+		details := fieldByName(t, plain, "details")
+		assert.True(t, details.Required)
+		cafe := fieldByWireName(t, details.Fields, "café")
+		assert.Equal(t, "café", cafe.BodyWireName())
+		assert.Equal(t, "café", cafe.BodyName)
+		assert.Equal(t, "cafe", cafe.Name)
+		assert.True(t, cafe.Required)
+		assert.Equal(t, "string", cafe.Type)
+
+		city := fieldByName(t, details.Fields, "city")
+		assert.Equal(t, "city", city.BodyWireName())
+		assert.Empty(t, city.BodyName)
+		assert.True(t, city.Required)
+
+		note := fieldByName(t, details.Fields, "note")
+		assert.Equal(t, "note", note.BodyWireName())
+		assert.Empty(t, note.BodyName)
+		assert.False(t, note.Required)
+
+		parent := fieldByName(t, details.Fields, "parent")
+		assert.Equal(t, "object", parent.Type)
+		assert.Empty(t, parent.Fields)
+
+		composed := bodyFields(t, parsed, "/composed")
+		composedDetails := fieldByName(t, composed, "details")
+		composedCafe := fieldByWireName(t, composedDetails.Fields, "café")
+		assert.Equal(t, "café", composedCafe.BodyWireName())
+		assert.True(t, composedCafe.Required)
+		assert.Empty(t, fieldByName(t, composedDetails.Fields, "parent").Fields)
+	})
+
+	assert.Contains(t, warnings, "details.parent")
+	assert.NotContains(t, warnings, "café")
+	assert.NotContains(t, warnings, "details.cafe")
+}
+
+const nestedNonASCIIBodySpec = `
+openapi: 3.0.3
+info:
+  title: Accent API
+  version: 1.0.0
+paths:
+  /places:
+    post:
+      operationId: createPlace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [details]
+              properties:
+                details:
+                  $ref: '#/components/schemas/Details'
+      responses:
+        '200': {description: ok}
+  /composed:
+    post:
+      operationId: createComposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [details]
+              properties:
+                details:
+                  allOf:
+                    - $ref: '#/components/schemas/Details'
+      responses:
+        '200': {description: ok}
+components:
+  schemas:
+    Details:
+      type: object
+      required: [café, city]
+      properties:
+        café:
+          type: string
+        city:
+          type: string
+        note:
+          type: string
+        parent:
+          $ref: '#/components/schemas/Details'
 `
 
 func TestParseOneOfRequestBodyEmitsJSONFallback(t *testing.T) {
