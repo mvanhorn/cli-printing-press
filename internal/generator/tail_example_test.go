@@ -1,0 +1,361 @@
+package generator
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestTailPollResourcesUsesLexicalSyncableRead(t *testing.T) {
+	t.Parallel()
+
+	api := &spec.APISpec{
+		Name: "tail-pick",
+		Resources: map[string]spec.Resource{
+			"Invoices": tailListResource("/invoices"),
+			"widgets":  tailListResource("/widgets"),
+			"alpha":    tailListResource("/parents/{id}/alpha"),
+			"zeta":     tailListResource("/zeta"),
+		},
+	}
+	data := visionRenderData{
+		APISpec: api,
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "zeta", Path: "/zeta", Method: "GET"},
+			{Name: "alpha", Path: "/parents/{id}/alpha", Method: "GET"},
+			{Name: "invoices", Path: "/invoices", Method: "GET"},
+			{Name: "widgets", Path: "/widgets", Method: "GET"},
+			{Name: "pages", Path: "/pages", Method: "GET", ResponseFormat: spec.ResponseFormatHTML, UsesHTMLResponse: true},
+		},
+	}
+	api.Resources["pages"] = tailListResource("/pages")
+
+	assert.Equal(t, []string{"Invoices", "widgets", "zeta"}, tailPollResources(data))
+	assert.Equal(t, "Invoices", tailPrimaryResource(data))
+	assert.Equal(t, "resource=Invoices;--follow=false", tailHappyArgs(data))
+
+	example := tailCommandExample(data)
+	first := firstTailExampleLine(example)
+	args, err := shellargs.ArgsAfterBinary(first)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tail", "Invoices", "--follow=false"}, args)
+	assert.NotContains(t, example, "messages")
+	assert.NotContains(t, example, "events")
+}
+
+func TestTailExampleWithoutPollTargetIsDiscovery(t *testing.T) {
+	t.Parallel()
+
+	data := visionRenderData{
+		APISpec: &spec.APISpec{
+			Name: "tail-empty",
+			Resources: map[string]spec.Resource{
+				"widgets": {
+					Endpoints: map[string]spec.Endpoint{
+						"create": {Method: "POST", Path: "/widgets"},
+					},
+				},
+			},
+		},
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "children", Path: "/parents/{id}/children", Method: "GET"},
+		},
+	}
+	assert.Empty(t, tailPollResources(data))
+	assert.Empty(t, tailHappyArgs(data))
+	first := firstTailExampleLine(tailCommandExample(data))
+	args, err := shellargs.ArgsAfterBinary(first)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tail", "--json"}, args)
+	assert.NotContains(t, tailCommandExample(data), "messages")
+	assert.NotContains(t, tailCommandExample(data), "events")
+}
+
+func TestGeneratedTailExamplesUseSyncableResources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "tail-examples",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"widgets":  tailListResource("/widgets"),
+			"invoices": tailListResource("/invoices"),
+			"alpha-notes": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {Method: "POST", Path: "/notes"},
+				},
+			},
+			"scoped": tailListResource("/parents/{id}/children"),
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Tail: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	tailSrc := readTailExampleFile(t, outputDir)
+	assert.NotContains(t, tailSrc, "messages")
+	assert.NotContains(t, tailSrc, "events")
+	assert.Contains(t, tailSrc, `"pp:happy-args"] = "resource=invoices;--follow=false"`)
+	assert.NotContains(t, tailSrc, "cmd.Hidden = true")
+	assert.Contains(t, tailSrc, "BoolVar(&follow, \"follow\", true")
+	assert.Contains(t, tailSrc, "resource name required; known resources:")
+	assert.NotContains(t, tailSrc, "tail messages")
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "tail_example_behavior_test.go"), []byte(tailSyncableBehaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestGeneratedTail", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedTailWithoutSyncableResourcesStaysCompilable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "tail-empty",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {Method: "POST", Path: "/widgets", Body: []spec.Param{{Name: "name", Type: "string"}}},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Tail: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	tailSrc := readTailExampleFile(t, outputDir)
+	assert.NotContains(t, tailSrc, "messages")
+	assert.NotContains(t, tailSrc, "events")
+	assert.NotContains(t, tailSrc, "pp:happy-args")
+	assert.Contains(t, tailSrc, "cmd.Hidden = true")
+	assert.Contains(t, tailSrc, "tail --json")
+	assert.Contains(t, tailSrc, "this CLI exposes no tail resources")
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "tail_example_behavior_test.go"), []byte(tailEmptyBehaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestGeneratedTail", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func tailListResource(path string) spec.Resource {
+	return spec.Resource{
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:     "GET",
+				Path:       path,
+				Response:   spec.ResponseDef{Type: "array"},
+				Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"},
+			},
+		},
+	}
+}
+
+func firstTailExampleLine(example string) string {
+	for _, line := range strings.Split(example, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+func readTailExampleFile(t *testing.T, outputDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "tail.go"))
+	require.NoError(t, err)
+	return string(data)
+}
+
+const tailSyncableBehaviorTest = `package cli
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/spf13/pflag"
+)
+
+func TestGeneratedTailPollsFirstSyncableResourceOnce(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+
+	cmd := newTailCmd(&rootFlags{})
+	if cmd.Hidden {
+		t.Fatal("tail with a syncable resource must stay visible")
+	}
+	if got := cmd.Annotations["pp:happy-args"]; got != "resource=invoices;--follow=false" {
+		t.Fatalf("pp:happy-args = %q", got)
+	}
+	follow := cmd.Flags().Lookup("follow")
+	if follow == nil || follow.Value.Type() != "bool" {
+		t.Fatal("--follow must exist and accept --follow=false")
+	}
+	first := firstGeneratedTailExample(cmd.Example)
+	if !strings.Contains(first, "tail invoices --follow=false") {
+		t.Fatalf("first example = %q\nfull:\n%s", first, cmd.Example)
+	}
+	if strings.Contains(cmd.Example, "messages") || strings.Contains(cmd.Example, "events") {
+		t.Fatalf("example names a placeholder resource:\n%s", cmd.Example)
+	}
+
+	missing := newTailCmd(&rootFlags{})
+	missing.SetOut(io.Discard)
+	missing.SetErr(io.Discard)
+	err := missing.Execute()
+	if err == nil || !strings.Contains(err.Error(), "invoices") || !strings.Contains(err.Error(), "widgets") || strings.Contains(err.Error(), "messages") {
+		t.Fatalf("missing-resource error = %v", err)
+	}
+
+	help := newRootCmd(&rootFlags{})
+	var helpBuf bytes.Buffer
+	help.SetOut(&helpBuf)
+	help.SetErr(&helpBuf)
+	help.SetArgs([]string{"tail", "--help"})
+	helpErr := help.Execute()
+	if helpErr != nil && !errors.Is(helpErr, pflag.ErrHelp) {
+		t.Fatalf("tail --help: %v\n%s", helpErr, helpBuf.String())
+	}
+	if !strings.Contains(helpBuf.String(), "tail invoices --follow=false") {
+		t.Fatalf("help missing runnable example:\n%s", helpBuf.String())
+	}
+
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `[{"id":"inv-1"}]` + "`" + `)
+	}))
+	defer server.Close()
+	t.Setenv("TAIL_EXAMPLES_BASE_URL", server.URL)
+
+	orig := os.Stdout
+	readEnd, writeEnd, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	os.Stdout = writeEnd
+	poll := newTailCmd(&rootFlags{})
+	poll.SetOut(io.Discard)
+	poll.SetErr(io.Discard)
+	poll.SetArgs([]string{"invoices", "--follow=false"})
+	done := make(chan error, 1)
+	go func() { done <- poll.Execute() }()
+	select {
+	case execErr := <-done:
+		os.Stdout = orig
+		_ = writeEnd.Close()
+		_, _ = io.Copy(io.Discard, readEnd)
+		if execErr != nil {
+			t.Fatalf("tail invoices --follow=false: %v", execErr)
+		}
+	case <-time.After(5 * time.Second):
+		os.Stdout = orig
+		_ = writeEnd.Close()
+		t.Fatal("tail invoices --follow=false did not return")
+	}
+	if gotPath != "/invoices" {
+		t.Fatalf("path = %q, want /invoices", gotPath)
+	}
+}
+
+func firstGeneratedTailExample(example string) string {
+	for _, line := range strings.Split(example, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+`
+
+const tailEmptyBehaviorTest = `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/spf13/pflag"
+)
+
+func TestGeneratedTailWithoutResourcesDiscoversAndCompiles(t *testing.T) {
+	cmd := newTailCmd(&rootFlags{})
+	if !cmd.Hidden {
+		t.Fatal("tail with no syncable resources must be hidden")
+	}
+	if _, ok := cmd.Annotations["pp:happy-args"]; ok {
+		t.Fatalf("pp:happy-args = %q", cmd.Annotations["pp:happy-args"])
+	}
+	first := ""
+	for _, line := range strings.Split(cmd.Example, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		first = line
+		break
+	}
+	if !strings.Contains(first, "tail --json") {
+		t.Fatalf("first example = %q", first)
+	}
+	if strings.Contains(cmd.Example, "messages") || strings.Contains(cmd.Example, "events") {
+		t.Fatalf("example names a placeholder resource:\n%s", cmd.Example)
+	}
+
+	missing := newTailCmd(&rootFlags{})
+	missing.SetOut(io.Discard)
+	missing.SetErr(io.Discard)
+	err := missing.Execute()
+	if err == nil || strings.Contains(err.Error(), "messages") || !strings.Contains(err.Error(), "no tail resources") {
+		t.Fatalf("missing-resource error = %v", err)
+	}
+
+	root := newRootCmd(&rootFlags{})
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"tail", "--json"})
+	if err := root.Execute(); err != nil && !errors.Is(err, pflag.ErrHelp) {
+		t.Fatalf("tail --json: %v\n%s", err, buf.String())
+	}
+	out := strings.TrimSpace(buf.String())
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("tail --json stdout is not JSON: %s", out)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	if _, ok := payload["resources"]; !ok {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+`
