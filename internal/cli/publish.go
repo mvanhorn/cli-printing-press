@@ -1644,7 +1644,13 @@ func isBareModuleName(declared string) bool {
 }
 
 func buildValidationBinary(dir, cliName string) (path string, cleanup func(), err error) {
-	tempDir, err := os.MkdirTemp(dir, ".publish-validate-*")
+	// go build resolves a relative -o against cmd.Dir. A relative MkdirTemp
+	// parent would put the binary in a duplicated tree cleanup does not remove.
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", nil, err
+	}
+	tempDir, err := os.MkdirTemp(absDir, ".publish-validate-*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -1654,23 +1660,34 @@ func buildValidationBinary(dir, cliName string) (path string, cleanup func(), er
 	}
 
 	outPath := platform.ExecutablePath(filepath.Join(tempDir, cliName))
-	if err := buildBinaryAtPath(dir, outPath, "./cmd/"+cliName); err == nil {
-		return outPath, cleanup, nil
+	if built, buildErr := buildBinaryAtPath(absDir, outPath, "./cmd/"+cliName); buildErr == nil {
+		return built, cleanup, nil
 	}
-	if err := buildBinaryAtPath(dir, outPath, "."); err == nil {
-		return outPath, cleanup, nil
+	if built, buildErr := buildBinaryAtPath(absDir, outPath, "."); buildErr == nil {
+		return built, cleanup, nil
 	}
 
 	cleanup()
 	return "", nil, fmt.Errorf("building validation binary")
 }
 
-func buildBinaryAtPath(dir, outPath, pkg string) error {
+func buildBinaryAtPath(dir, outPath, pkg string) (string, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	absOut, err := filepath.Abs(outPath)
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
 	defer cancel()
-	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, pkg)
-	buildCmd.Dir = dir
-	return buildCmd.Run()
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", absOut, pkg)
+	buildCmd.Dir = absDir
+	if err := buildCmd.Run(); err != nil {
+		return "", err
+	}
+	return absOut, nil
 }
 
 func buildArtifactCandidates(dir, cliName string) []string {
