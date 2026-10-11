@@ -284,6 +284,28 @@ func TestTailGetNeedsQueryArgsIgnoresAuthSuppliedKeys(t *testing.T) {
 			needs:    true,
 		},
 		{
+			name:     "query key case must match",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query"},
+			resource: tailResourceWithParams("/quotes", required("API_KEY", "")),
+			needs:    true,
+		},
+		{
+			name:     "exact query key case",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query", Header: "API_KEY"},
+			resource: tailResourceWithParams("/quotes", required("API_KEY", "")),
+		},
+		{
+			name:     "path query case must match",
+			auth:     spec.AuthConfig{Type: "none"},
+			resource: tailResourceWithParams("/quotes?API_KEY=1", required("api_key", "")),
+			needs:    true,
+		},
+		{
+			name:     "path query exact case",
+			auth:     spec.AuthConfig{Type: "none"},
+			resource: tailResourceWithParams("/quotes?api_key=1", required("api_key", "")),
+		},
+		{
 			name:     "auth type none supplies nothing",
 			auth:     spec.AuthConfig{Type: "none", In: "query"},
 			resource: tailResourceWithParams("/quotes", required("api_key", "")),

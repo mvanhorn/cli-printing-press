@@ -88,7 +88,7 @@ func clientSuppliedQueryNames(api *spec.APISpec, endpoint spec.Endpoint) map[str
 	}
 	names := map[string]struct{}{}
 	add := func(name string) {
-		key := strings.ToLower(strings.TrimSpace(name))
+		key := strings.TrimSpace(name)
 		if key == "" {
 			return
 		}
@@ -163,7 +163,7 @@ func unsentRequiredQueryArg(param spec.Param, satisfied map[string]struct{}) boo
 	if wire == "" {
 		return false
 	}
-	_, present := satisfied[strings.ToLower(wire)]
+	_, present := satisfied[wire]
 	return !present
 }
 
@@ -175,7 +175,7 @@ func pathQueryNames(path string) map[string]struct{} {
 	names := map[string]struct{}{}
 	for part := range strings.SplitSeq(query, "&") {
 		name, _, _ := strings.Cut(part, "=")
-		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+		if key := strings.TrimSpace(name); key != "" {
 			names[key] = struct{}{}
 		}
 	}
