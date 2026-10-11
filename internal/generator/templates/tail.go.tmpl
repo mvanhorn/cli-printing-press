@@ -28,19 +28,12 @@ func newTailCmd(flags *rootFlags) *cobra.Command {
 		Args:         cobra.RangeArgs(0, 1),
 		Annotations: map[string]string{"mcp:read-only": "true", "pp:no-error-path-probe": "true"},
 		Long: `Tail streams live data changes by polling the API at configurable intervals.
-Events are emitted as NDJSON to stdout for piping to other tools.
+Changes are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
 
 Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
-		Example: `  # Tail all changes every 10 seconds
-  {{.Name}}-pp-cli tail --interval 10s
-
-  # Tail a specific resource
-  {{.Name}}-pp-cli tail messages --interval 5s
-
-  # Pipe to jq for filtering
-  {{.Name}}-pp-cli tail events --interval 30s | jq 'select(.type == "error")'`,
+		Example: {{printf "%q" (tailCommandExample .)}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				resource = args[0]
@@ -56,7 +49,11 @@ native streaming instead of polling.`,
 				}, flags)
 			}
 			if resource == "" {
-				return fmt.Errorf("resource name required (e.g., 'tail messages')")
+				known := tailKnownResources()
+				if len(known) == 0 {
+					return fmt.Errorf("resource name required; this CLI exposes no tail resources")
+				}
+				return fmt.Errorf("resource name required; known resources: %v", known)
 			}
 			// Reject a resource this CLI does not expose before binding the poll
 			// loop: an unknown name only ever 404s, so failing fast with a
@@ -125,6 +122,12 @@ native streaming instead of polling.`,
 			}
 		},
 	}
+{{- if not (tailPrimaryResource .)}}
+	cmd.Hidden = true
+{{- end}}
+{{- with tailHappyArgs .}}
+	cmd.Annotations["pp:happy-args"] = {{printf "%q" .}}
+{{- end}}
 
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource type to tail")
 	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval")
