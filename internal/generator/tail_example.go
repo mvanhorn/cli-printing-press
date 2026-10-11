@@ -12,9 +12,10 @@ import (
 const tailFollowOnceArg = "--follow=false"
 
 // A syncable name with no parameter-free read path is dropped so the example
-// is not rejected as unknown. A GET that still needs query arguments is
-// dropped because the poll sends none and the live example would fail.
-// Non-JSON bodies are dropped because tail emits NDJSON from a JSON response.
+// is not rejected as unknown. A GET that still needs a query argument the
+// client does not add is dropped because the poll sends a nil query map and
+// the live example would fail. Non-JSON bodies are dropped because tail
+// emits NDJSON from a JSON response.
 func tailPollResources(data visionRenderData) []string {
 	exportable := exportableResources(data.APISpec)
 	if len(exportable) == 0 || len(data.SyncableResources) == 0 {
@@ -42,7 +43,7 @@ func tailPollResources(data visionRenderData) []string {
 			continue
 		}
 		if data.APISpec != nil {
-			if specResource, found := data.Resources[canonical]; found && tailGetNeedsQueryArgs(specResource) {
+			if specResource, found := data.Resources[canonical]; found && tailGetNeedsQueryArgs(data.APISpec, specResource) {
 				continue
 			}
 		}
@@ -56,20 +57,99 @@ func tailPollResources(data visionRenderData) []string {
 	return names
 }
 
-// Client.Get is called with a nil query map, so a required query argument
-// that is not already on the path never reaches the API.
-func tailGetNeedsQueryArgs(resource spec.Resource) bool {
+// Client.Get is called with a nil query map. Path query keys and query
+// credentials the client attaches on its own are already on the request.
+func tailGetNeedsQueryArgs(api *spec.APISpec, resource spec.Resource) bool {
 	endpoint, ok := resourceEndpointForMethod(resource, "GET")
 	if !ok {
 		return false
 	}
 	satisfied := pathQueryNames(endpoint.Path)
+	for name := range clientSuppliedQueryNames(api, endpoint) {
+		if satisfied == nil {
+			satisfied = map[string]struct{}{}
+		}
+		satisfied[name] = struct{}{}
+	}
 	for _, param := range endpoint.Params {
 		if unsentRequiredQueryArg(param, satisfied) {
 			return true
 		}
 	}
 	return false
+}
+
+func clientSuppliedQueryNames(api *spec.APISpec, endpoint spec.Endpoint) map[string]struct{} {
+	// The envelope path is built from the caller's query map. Auth query
+	// keys are attached to the outer proxy URL after that, so they never
+	// satisfy a required parameter of the inner request.
+	if api == nil || api.ClientPattern == "proxy-envelope" || !hasAuth(api.Auth) {
+		return nil
+	}
+	names := map[string]struct{}{}
+	add := func(name string) {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			return
+		}
+		names[key] = struct{}{}
+	}
+	if name, ok := primaryAuthQueryName(api, endpoint); ok {
+		add(name)
+	}
+	for _, extra := range api.Auth.AdditionalHeaders {
+		if additionalAuthQuerySent(api, endpoint, extra) {
+			add(extra.Header)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func primaryAuthQueryName(api *spec.APISpec, endpoint spec.Endpoint) (string, bool) {
+	if !sendsPrimaryCredential(api, endpoint) {
+		return "", false
+	}
+	auth := api.Auth
+	// Session handshake attaches TokenParamName and does not reach the
+	// Auth.In query branch. Tier routing resolves the empty tier through
+	// the primary placement instead, so that branch is absent there.
+	if auth.Type == "session_handshake" && !api.HasTierRouting() {
+		if strings.TrimSpace(auth.TokenParamIn) == "header" {
+			return "", false
+		}
+		name := strings.TrimSpace(auth.TokenParamName)
+		return name, name != ""
+	}
+	if authPlacement(auth) != "query" {
+		return "", false
+	}
+	return authParameterName(auth), true
+}
+
+func sendsPrimaryCredential(api *spec.APISpec, endpoint spec.Endpoint) bool {
+	if !api.HasPerOperationAuth() {
+		return true
+	}
+	scheme := strings.TrimSpace(endpoint.AuthScheme)
+	return scheme == "" || scheme == strings.TrimSpace(api.Auth.Scheme)
+}
+
+func additionalAuthQuerySent(api *spec.APISpec, endpoint spec.Endpoint, extra spec.AdditionalAuthHeader) bool {
+	if strings.TrimSpace(extra.In) != "query" || strings.TrimSpace(extra.Header) == "" {
+		return false
+	}
+	if !api.HasPerOperationAuth() {
+		return true
+	}
+	scheme := strings.TrimSpace(endpoint.AuthScheme)
+	extraScheme := strings.TrimSpace(extra.Scheme)
+	if extra.PerOperation {
+		return scheme != "" && scheme == extraScheme
+	}
+	return scheme == "" || scheme == extraScheme
 }
 
 func unsentRequiredQueryArg(param spec.Param, satisfied map[string]struct{}) bool {

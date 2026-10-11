@@ -147,6 +147,212 @@ func TestTailPollResourcesSkipsGetsThatNeedQueryArgs(t *testing.T) {
 	assert.Equal(t, []string{"tail", "--json"}, hiddenArgs)
 }
 
+func TestTailGetNeedsQueryArgsIgnoresAuthSuppliedKeys(t *testing.T) {
+	t.Parallel()
+
+	required := func(name, urlName string) spec.Param {
+		return spec.Param{Name: name, URLName: urlName, In: "query", Required: true}
+	}
+	withScheme := func(resource spec.Resource, scheme string) spec.Resource {
+		endpoint := resource.Endpoints["list"]
+		endpoint.AuthScheme = scheme
+		resource.Endpoints["list"] = endpoint
+		return resource
+	}
+	queryKey := spec.AuthConfig{Type: "api_key", In: "query", Header: "key", Scheme: "APIKey"}
+	sibling := queryKey
+	sibling.AdditionalHeaders = []spec.AdditionalAuthHeader{{
+		Header: "token",
+		In:     "query",
+		EnvVar: spec.AuthEnvVar{Name: "API_TOKEN"},
+	}}
+	perOperation := queryKey
+	perOperation.AdditionalHeaders = []spec.AdditionalAuthHeader{{
+		Header:       "token",
+		In:           "query",
+		Scheme:       "APIToken",
+		PerOperation: true,
+		EnvVar:       spec.AuthEnvVar{Name: "API_TOKEN"},
+	}}
+	handshake := spec.AuthConfig{
+		Type:           "session_handshake",
+		In:             "query",
+		Header:         "api_key",
+		TokenParamName: "crumb",
+		TokenParamIn:   "query",
+	}
+
+	tests := []struct {
+		name     string
+		auth     spec.AuthConfig
+		resource spec.Resource
+		pattern  string
+		tier     bool
+		needs    bool
+	}{
+		{
+			name:     "default query key",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query"},
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+		},
+		{
+			name:     "configured query name",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query", Header: "key"},
+			resource: tailResourceWithParams("/quotes", required("key", "")),
+		},
+		{
+			name:     "wire name",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query"},
+			resource: tailResourceWithParams("/quotes", required("apiKey", "api_key")),
+		},
+		{
+			name:     "different query name still required",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query", Header: "key"},
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+			needs:    true,
+		},
+		{
+			name:     "header auth does not satisfy a query param",
+			auth:     spec.AuthConfig{Type: "api_key", In: "header", Header: "api_key"},
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+			needs:    true,
+		},
+		{
+			name: "auth key plus another required query",
+			auth: spec.AuthConfig{Type: "api_key", In: "query"},
+			resource: tailResourceWithParams("/quotes",
+				required("api_key", ""),
+				required("source", ""),
+			),
+			needs: true,
+		},
+		{
+			name:     "sibling query credential",
+			auth:     sibling,
+			resource: tailResourceWithParams("/quotes", required("key", ""), required("token", "")),
+		},
+		{
+			name:     "other sole scheme omits the primary key",
+			auth:     perOperation,
+			resource: withScheme(tailResourceWithParams("/quotes", required("key", "")), "APIToken"),
+			needs:    true,
+		},
+		{
+			name:     "other sole scheme supplies its query credential",
+			auth:     perOperation,
+			resource: withScheme(tailResourceWithParams("/quotes", required("token", "")), "APIToken"),
+		},
+		{
+			name:     "session handshake query token",
+			auth:     handshake,
+			resource: tailResourceWithParams("/quotes", required("crumb", "")),
+		},
+		{
+			name:     "session handshake does not send the header name",
+			auth:     handshake,
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+			needs:    true,
+		},
+		{
+			name: "session handshake header token is not a query arg",
+			auth: spec.AuthConfig{
+				Type:           "session_handshake",
+				TokenParamName: "crumb",
+				TokenParamIn:   "header",
+			},
+			resource: tailResourceWithParams("/quotes", required("crumb", "")),
+			needs:    true,
+		},
+		{
+			name:     "tier routing uses the primary query name",
+			auth:     handshake,
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+			tier:     true,
+		},
+		{
+			name:     "tier routing does not use the session token name",
+			auth:     handshake,
+			resource: tailResourceWithParams("/quotes", required("crumb", "")),
+			tier:     true,
+			needs:    true,
+		},
+		{
+			name:     "proxy envelope leaves auth off the inner path",
+			auth:     spec.AuthConfig{Type: "api_key", In: "query"},
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+			pattern:  "proxy-envelope",
+			needs:    true,
+		},
+		{
+			name:     "auth type none supplies nothing",
+			auth:     spec.AuthConfig{Type: "none", In: "query"},
+			resource: tailResourceWithParams("/quotes", required("api_key", "")),
+			needs:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			api := &spec.APISpec{
+				Name:          "tail-auth",
+				Auth:          tt.auth,
+				ClientPattern: tt.pattern,
+				Resources:     map[string]spec.Resource{"quotes": tt.resource},
+			}
+			if tt.tier {
+				api.TierRouting = spec.TierRoutingConfig{DefaultTier: "live"}
+			}
+			assert.Equal(t, tt.needs, tailGetNeedsQueryArgs(api, tt.resource))
+		})
+	}
+}
+
+func TestTailPollResourcesKeepsQueryAuthResource(t *testing.T) {
+	t.Parallel()
+
+	api := &spec.APISpec{
+		Name: "tail-auth",
+		Auth: spec.AuthConfig{Type: "api_key", In: "query"},
+		Resources: map[string]spec.Resource{
+			"quotes": tailResourceWithParams("/quotes", spec.Param{
+				Name: "api_key", In: "query", Required: true,
+			}),
+			"availability": tailResourceWithParams("/availability", spec.Param{
+				Name: "source", In: "query", Required: true,
+			}),
+		},
+	}
+	data := visionRenderData{
+		APISpec: api,
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "availability", Path: "/availability", Method: "GET"},
+			{Name: "quotes", Path: "/quotes", Method: "GET"},
+		},
+	}
+	assert.Equal(t, []string{"quotes"}, tailPollResources(data))
+	assert.Equal(t, "quotes", tailPrimaryResource(data))
+	assert.Equal(t, "resource=quotes;--follow=false", tailHappyArgs(data))
+	args, err := shellargs.ArgsAfterBinary(firstTailExampleLine(tailCommandExample(data)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tail", "quotes", "--follow=false"}, args)
+
+	onlyKey := visionRenderData{
+		APISpec: &spec.APISpec{
+			Name: "tail-auth-only",
+			Auth: api.Auth,
+			Resources: map[string]spec.Resource{
+				"quotes": api.Resources["quotes"],
+			},
+		},
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "quotes", Path: "/quotes", Method: "GET"},
+		},
+	}
+	assert.Equal(t, []string{"quotes"}, tailPollResources(onlyKey))
+	assert.NotEmpty(t, tailHappyArgs(onlyKey))
+}
+
 func TestGeneratedTailExamplesUseSyncableResources(t *testing.T) {
 	t.Parallel()
 
@@ -284,6 +490,39 @@ func TestGeneratedTailHidesWhenEveryGetNeedsQueryArgs(t *testing.T) {
 	assert.Contains(t, tailSrc, "tail --json")
 	assert.NotContains(t, tailSrc, "tail availability")
 	assert.Contains(t, tailSrc, `"availability"`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedTailKeepsQueryAuthResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "tail-auth-query",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", In: "query"},
+		Resources: map[string]spec.Resource{
+			"quotes": tailResourceWithParams("/quotes", spec.Param{
+				Name:     "api_key",
+				In:       "query",
+				Type:     "string",
+				Required: true,
+			}),
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Tail: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	tailSrc := readTailExampleFile(t, outputDir)
+	assert.NotContains(t, tailSrc, "cmd.Hidden = true")
+	assert.Contains(t, tailSrc, `"pp:happy-args"] = "resource=quotes;--follow=false"`)
+	assert.Contains(t, tailSrc, "tail quotes --follow=false")
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientSrc), `q.Set("api_key", authHeader)`)
 	requireGeneratedCompiles(t, outputDir)
 }
 
