@@ -2450,6 +2450,436 @@ components:
 	assert.Empty(t, fieldsByName["child"].Fields)
 }
 
+func TestParseWritableRequestBodyCycleOmitsNestedFlags(t *testing.T) {
+	warnings := captureWarnings(t, func() {
+		parsed, err := Parse([]byte(writableCycleSpec))
+		require.NoError(t, err)
+
+		direct := bodyFields(t, parsed, "/records")
+		assert.Equal(t, []string{"id", "kind", "parentJob"}, paramNames(direct))
+		assert.Empty(t, fieldByName(t, direct, "parentJob").Fields)
+		assert.Equal(t, "object", fieldByName(t, direct, "parentJob").Type)
+
+		composed := bodyFields(t, parsed, "/composed-records")
+		assert.Equal(t, []string{"id", "kind", "parentJob"}, paramNames(composed))
+		assert.Empty(t, fieldByName(t, composed, "parentJob").Fields)
+
+		nested := bodyFields(t, parsed, "/moves")
+		assert.Equal(t, []string{"destination", "job"}, paramNames(nested))
+		job := fieldByName(t, nested, "job")
+		assert.Equal(t, []string{"id", "kind", "parentJob"}, paramNames(job.Fields))
+		assert.Empty(t, fieldByName(t, job.Fields, "parentJob").Fields)
+		assert.LessOrEqual(t, paramTreeDepth(nested), 2)
+
+		directNested := bodyFields(t, parsed, "/direct-moves")
+		directJob := fieldByName(t, directNested, "job")
+		assert.Equal(t, []string{"id", "kind", "parentJob"}, paramNames(directJob.Fields))
+		assert.Empty(t, fieldByName(t, directJob.Fields, "parentJob").Fields)
+
+		mutual := bodyFields(t, parsed, "/nodes")
+		other := fieldByName(t, mutual, "other")
+		assert.Equal(t, []string{"label", "node"}, paramNames(other.Fields))
+		assert.Empty(t, fieldByName(t, other.Fields, "node").Fields)
+		assert.LessOrEqual(t, paramTreeDepth(mutual), 2)
+
+		longBody := bodyFields(t, parsed, "/long-records")
+		assert.Empty(t, fieldByName(t, longBody, "parentBackgroundJob").Fields)
+		assert.LessOrEqual(t, paramTreeDepth(longBody), 1)
+
+		embedded := bodyFields(t, parsed, "/anonymous-records")
+		assert.Empty(t, fieldByName(t, embedded, "parentJob").Fields)
+
+		shared := bodyFields(t, parsed, "/shipments")
+		for _, name := range []string{"billing", "shipping"} {
+			address := fieldByName(t, shared, name)
+			assert.Equal(t, []string{"city", "country"}, paramNames(address.Fields), name)
+		}
+
+		chain := bodyFields(t, parsed, "/chains")
+		b := fieldByName(t, chain, "b")
+		c := fieldByName(t, b.Fields, "c")
+		assert.Empty(t, fieldByName(t, c.Fields, "a").Fields)
+		assert.LessOrEqual(t, paramTreeDepth(chain), 3)
+
+		plain := bodyFields(t, parsed, "/orders")
+		item := fieldByName(t, fieldByName(t, plain, "order").Fields, "item")
+		assert.Equal(t, "string", fieldByName(t, item.Fields, "sku").Type)
+	})
+
+	for _, field := range []string{"parentJob", "job.parentJob", "other.node", "parentBackgroundJob", "b.c.a"} {
+		assert.Contains(t, warnings, field)
+	}
+	assert.Contains(t, warnings, "--stdin")
+	assert.NotContains(t, warnings, "billing")
+	assert.NotContains(t, warnings, "sku")
+}
+
+func bodyFields(t *testing.T, parsed *spec.APISpec, path string) []spec.Param {
+	t.Helper()
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", path)
+	return endpoint.Body
+}
+
+func paramNames(params []spec.Param) []string {
+	names := make([]string, 0, len(params))
+	for _, param := range params {
+		names = append(names, param.Name)
+	}
+	return names
+}
+
+func fieldByName(t *testing.T, params []spec.Param, name string) spec.Param {
+	t.Helper()
+	for _, param := range params {
+		if param.Name == name {
+			return param
+		}
+	}
+	t.Fatalf("field %q not found in %v", name, paramNames(params))
+	return spec.Param{}
+}
+
+func fieldByWireName(t *testing.T, params []spec.Param, wire string) spec.Param {
+	t.Helper()
+	for _, param := range params {
+		if param.BodyWireName() == wire {
+			return param
+		}
+	}
+	t.Fatalf("body field %q not found in %v", wire, paramNames(params))
+	return spec.Param{}
+}
+
+func paramTreeDepth(params []spec.Param) int {
+	depth := 0
+	for _, param := range params {
+		child := paramTreeDepth(param.Fields)
+		if child+1 > depth {
+			depth = child + 1
+		}
+	}
+	return depth
+}
+
+const writableCycleSpec = `
+openapi: 3.0.3
+info:
+  title: Writable Cycle API
+  version: 1.0.0
+paths:
+  /records:
+    post:
+      operationId: createRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Job'
+      responses:
+        '200': {description: ok}
+  /composed-records:
+    post:
+      operationId: createComposedRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobPostRequestBody'
+      responses:
+        '200': {description: ok}
+  /moves:
+    post:
+      operationId: moveRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveRequest'
+      responses:
+        '200': {description: ok}
+  /direct-moves:
+    post:
+      operationId: moveRecordDirect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DirectMoveRequest'
+      responses:
+        '200': {description: ok}
+  /nodes:
+    post:
+      operationId: createNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Node'
+      responses:
+        '200': {description: ok}
+  /long-records:
+    post:
+      operationId: createLongRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LongJob'
+      responses:
+        '200': {description: ok}
+  /anonymous-records:
+    post:
+      operationId: createAnonymousRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnonymousJob'
+      responses:
+        '200': {description: ok}
+  /shipments:
+    post:
+      operationId: createShipment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Shipment'
+      responses:
+        '200': {description: ok}
+  /chains:
+    post:
+      operationId: createChain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChainA'
+      responses:
+        '200': {description: ok}
+  /orders:
+    post:
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200': {description: ok}
+components:
+  schemas:
+    Job:
+      type: object
+      required: [kind]
+      properties:
+        id: {type: integer}
+        kind: {type: string}
+        parentJob:
+          $ref: '#/components/schemas/Job'
+    JobAllOf:
+      type: object
+      required: [kind]
+      properties:
+        id: {type: integer}
+        kind: {type: string}
+        parentJob:
+          allOf:
+            - $ref: '#/components/schemas/JobAllOf'
+    JobPostRequestBody:
+      required: [kind]
+      allOf:
+        - $ref: '#/components/schemas/JobAllOf'
+    MoveRequest:
+      type: object
+      required: [destination]
+      properties:
+        destination: {type: string}
+        job:
+          allOf:
+            - $ref: '#/components/schemas/JobAllOf'
+    DirectMoveRequest:
+      type: object
+      required: [destination]
+      properties:
+        destination: {type: string}
+        job:
+          $ref: '#/components/schemas/Job'
+    Node:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        other:
+          allOf:
+            - $ref: '#/components/schemas/Other'
+    Other:
+      type: object
+      properties:
+        label: {type: string}
+        node:
+          allOf:
+            - $ref: '#/components/schemas/Node'
+    LongJob:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string}
+        parentBackgroundJob:
+          allOf:
+            - $ref: '#/components/schemas/LongJob'
+    AnonymousJob:
+      allOf:
+        - type: object
+          properties:
+            kind: {type: string}
+            parentJob:
+              allOf:
+                - $ref: '#/components/schemas/AnonymousJob'
+    Shipment:
+      type: object
+      properties:
+        billing:
+          $ref: '#/components/schemas/Address'
+        shipping:
+          $ref: '#/components/schemas/Address'
+    Address:
+      type: object
+      properties:
+        city: {type: string}
+        country: {type: string}
+    ChainA:
+      type: object
+      properties:
+        b:
+          $ref: '#/components/schemas/ChainB'
+    ChainB:
+      type: object
+      properties:
+        c:
+          $ref: '#/components/schemas/ChainC'
+    ChainC:
+      type: object
+      properties:
+        a:
+          $ref: '#/components/schemas/ChainA'
+    Envelope:
+      type: object
+      properties:
+        order:
+          type: object
+          properties:
+            item:
+              type: object
+              properties:
+                sku: {type: string}
+`
+
+func TestParseNestedNonASCIIBodyKeyKeepsWireName(t *testing.T) {
+	warnings := captureWarnings(t, func() {
+		parsed, err := Parse([]byte(nestedNonASCIIBodySpec))
+		require.NoError(t, err)
+
+		plain := bodyFields(t, parsed, "/places")
+		details := fieldByName(t, plain, "details")
+		assert.True(t, details.Required)
+		cafe := fieldByWireName(t, details.Fields, "café")
+		assert.Equal(t, "café", cafe.BodyWireName())
+		assert.Equal(t, "café", cafe.BodyName)
+		assert.Equal(t, "cafe", cafe.Name)
+		assert.True(t, cafe.Required)
+		assert.Equal(t, "string", cafe.Type)
+
+		city := fieldByName(t, details.Fields, "city")
+		assert.Equal(t, "city", city.BodyWireName())
+		assert.Empty(t, city.BodyName)
+		assert.True(t, city.Required)
+
+		note := fieldByName(t, details.Fields, "note")
+		assert.Equal(t, "note", note.BodyWireName())
+		assert.Empty(t, note.BodyName)
+		assert.False(t, note.Required)
+
+		parent := fieldByName(t, details.Fields, "parent")
+		assert.Equal(t, "object", parent.Type)
+		assert.Empty(t, parent.Fields)
+
+		composed := bodyFields(t, parsed, "/composed")
+		composedDetails := fieldByName(t, composed, "details")
+		composedCafe := fieldByWireName(t, composedDetails.Fields, "café")
+		assert.Equal(t, "café", composedCafe.BodyWireName())
+		assert.True(t, composedCafe.Required)
+		assert.Empty(t, fieldByName(t, composedDetails.Fields, "parent").Fields)
+	})
+
+	assert.Contains(t, warnings, "details.parent")
+	assert.NotContains(t, warnings, "café")
+	assert.NotContains(t, warnings, "details.cafe")
+}
+
+const nestedNonASCIIBodySpec = `
+openapi: 3.0.3
+info:
+  title: Accent API
+  version: 1.0.0
+paths:
+  /places:
+    post:
+      operationId: createPlace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [details]
+              properties:
+                details:
+                  $ref: '#/components/schemas/Details'
+      responses:
+        '200': {description: ok}
+  /composed:
+    post:
+      operationId: createComposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [details]
+              properties:
+                details:
+                  allOf:
+                    - $ref: '#/components/schemas/Details'
+      responses:
+        '200': {description: ok}
+components:
+  schemas:
+    Details:
+      type: object
+      required: [café, city]
+      properties:
+        café:
+          type: string
+        city:
+          type: string
+        note:
+          type: string
+        parent:
+          $ref: '#/components/schemas/Details'
+`
+
 func TestParseOneOfRequestBodyEmitsJSONFallback(t *testing.T) {
 	t.Parallel()
 

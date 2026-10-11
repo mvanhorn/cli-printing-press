@@ -5146,7 +5146,8 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
-	if collectAllOfProperties(media.Schema, properties, required, map[*openapi3.Schema]struct{}{}) {
+	declaredBy := map[string]*openapi3.Schema{}
+	if collectAllOfProperties(media.Schema, properties, required, declaredBy, map[*openapi3.Schema]struct{}{}, foldBodyNames) {
 		// oneOf/anyOf at the body root cannot be flattened to named flags.
 		// Only enable the --body-json fallback for JSON-shaped content
 		// types; the runtime decode path is wired through the JSON branch
@@ -5164,6 +5165,8 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		return nil, "", false, false, false
 	}
 	inferCSVArrays := isJSONContentType(requestContentType)
+	walk := newBodyFieldWalk(method, path, inferCSVArrays)
+	rootSchema := schemaRefValue(media.Schema)
 
 	names := make([]string, 0, len(properties))
 	for name := range properties {
@@ -5196,11 +5199,19 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 			Type:              mapBodyParamType(paramSchema, inferCSVArrays),
 			Required:          isRequired(required, name),
 			Description:       description,
-			Fields:            mapBodyFields(paramSchema, inferCSVArrays),
 			Enum:              schemaEnum(paramSchema),
 			EnumUnsatisfiable: schemaEnumUnsatisfiable(paramSchema),
 			Format:            schemaFormat(paramSchema),
 			Example:           schemaExample(paramSchema),
+		}
+		if walk.repeats(schema, declaredBy[name]) {
+			walk.warnCycle(name, properties[name])
+		} else {
+			walk.prefix = append(walk.prefix, name)
+			added := walk.push(walk.closure(rootSchema))
+			param.Fields = walk.fields(schema, 0)
+			walk.pop(added)
+			walk.prefix = walk.prefix[:len(walk.prefix)-1]
 		}
 		if schemaHasCompositeUnionAlternative(paramSchema, map[*openapi3.Schema]struct{}{}) {
 			param.Type = "string"
@@ -5343,7 +5354,7 @@ func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
 
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
-	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, properties, required, map[*openapi3.Schema]struct{}{}) || len(properties) == 0 {
+	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, properties, required, nil, map[*openapi3.Schema]struct{}{}, foldBodyNames) || len(properties) == 0 {
 		return schema
 	}
 
@@ -5594,39 +5605,150 @@ func enumValueKey(value any) string {
 	return "o:" + fmt.Sprint(value)
 }
 
-func mapBodyFields(schema *openapi3.Schema, inferCSVArrays bool) []spec.Param {
-	return mapBodyFieldsDepth(schema, inferCSVArrays, map[*openapi3.Schema]struct{}{}, 0)
-}
-
 const maxBodyFieldDepth = 8
 
-func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited map[*openapi3.Schema]struct{}, depth int) []spec.Param {
-	if !isObjectSchema(schema) || len(schema.Properties) == 0 {
-		return nil
-	}
-	if depth >= maxBodyFieldDepth {
-		return nil
-	}
-	if _, ok := visited[schema]; ok {
-		return nil
-	}
-	visited[schema] = struct{}{}
-	defer delete(visited, schema)
+// bodyFieldWalk flattens one request body. ancestors is the path of schemas
+// already entered; closures memoizes allOf identity so a merged copy is not
+// required to notice a cycle.
+type bodyFieldWalk struct {
+	inferCSVArrays bool
+	method         string
+	endpoint       string
+	ancestors      map[*openapi3.Schema]struct{}
+	closures       map[*openapi3.Schema]map[*openapi3.Schema]struct{}
+	warned         map[string]struct{}
+	prefix         []string
+}
 
-	names := make([]string, 0, len(schema.Properties))
-	for name := range schema.Properties {
+func newBodyFieldWalk(method, endpoint string, inferCSVArrays bool) *bodyFieldWalk {
+	return &bodyFieldWalk{
+		inferCSVArrays: inferCSVArrays,
+		method:         method,
+		endpoint:       endpoint,
+		ancestors:      map[*openapi3.Schema]struct{}{},
+		closures:       map[*openapi3.Schema]map[*openapi3.Schema]struct{}{},
+		warned:         map[string]struct{}{},
+	}
+}
+
+// repeats reports a writable cycle: the property's schema is already on the
+// path, or the property points back at the schema that declared it (the
+// declarer sits in that schema's allOf closure). allOf merges allocate a new
+// schema per visit, so pointer identity on the merged copy never hits.
+func (w *bodyFieldWalk) repeats(schema, declaredBy *openapi3.Schema) bool {
+	if w == nil || schema == nil {
+		return false
+	}
+	for target := range w.closure(schema) {
+		if _, ok := w.ancestors[target]; ok {
+			return true
+		}
+		if declaredBy != nil {
+			if _, ok := w.closure(target)[declaredBy]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (w *bodyFieldWalk) warnCycle(name string, ref *openapi3.SchemaRef) {
+	if w == nil {
+		return
+	}
+	parts := append(append([]string{}, w.prefix...), name)
+	label := strings.Join(parts, ".")
+	if _, ok := w.warned[label]; ok {
+		return
+	}
+	w.warned[label] = struct{}{}
+	target := "a schema already on this path"
+	if ref != nil && ref.Ref != "" {
+		target = ref.Ref
+	}
+	where := ""
+	if w.method != "" || w.endpoint != "" {
+		where = fmt.Sprintf("%s %q: ", strings.ToUpper(w.method), w.endpoint)
+	}
+	warnf("%srequest body field %q repeats %s; omitting nested flags (pass that object as JSON, or the full body with --stdin)", where, label, target)
+}
+
+// closure is schema plus the allOf members it is composed of. Property
+// schemas are not included; those are nested values, not this object's identity.
+func (w *bodyFieldWalk) closure(schema *openapi3.Schema) map[*openapi3.Schema]struct{} {
+	if schema == nil {
+		return nil
+	}
+	if cached, ok := w.closures[schema]; ok {
+		return cached
+	}
+	out := map[*openapi3.Schema]struct{}{}
+	w.closures[schema] = out
+	var walk func(*openapi3.Schema)
+	walk = func(s *openapi3.Schema) {
+		if s == nil {
+			return
+		}
+		if _, ok := out[s]; ok {
+			return
+		}
+		out[s] = struct{}{}
+		for _, sub := range s.AllOf {
+			walk(schemaRefValue(sub))
+		}
+	}
+	walk(schema)
+	return out
+}
+
+func (w *bodyFieldWalk) push(schemas map[*openapi3.Schema]struct{}) []*openapi3.Schema {
+	if len(schemas) == 0 {
+		return nil
+	}
+	added := make([]*openapi3.Schema, 0, len(schemas))
+	for schema := range schemas {
+		if schema == nil {
+			continue
+		}
+		if _, ok := w.ancestors[schema]; ok {
+			continue
+		}
+		w.ancestors[schema] = struct{}{}
+		added = append(added, schema)
+	}
+	return added
+}
+
+func (w *bodyFieldWalk) pop(added []*openapi3.Schema) {
+	for _, schema := range added {
+		delete(w.ancestors, schema)
+	}
+}
+
+func (w *bodyFieldWalk) fields(schema *openapi3.Schema, depth int) []spec.Param {
+	if w == nil || schema == nil || depth >= maxBodyFieldDepth {
+		return nil
+	}
+	props := map[string]*openapi3.SchemaRef{}
+	required := map[string]struct{}{}
+	declared := map[string]*openapi3.Schema{}
+	// Keep spec property names. Folding them here renames the JSON key and
+	// misses required, which is declared against the original name.
+	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, props, required, declared, map[*openapi3.Schema]struct{}{}, keepBodyNames) || len(props) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(props))
+	for name := range props {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
-	required := map[string]struct{}{}
-	for _, name := range schema.Required {
-		required[name] = struct{}{}
-	}
-
+	here := w.closure(schema)
 	fields := make([]spec.Param, 0, len(names))
 	for _, name := range names {
-		propertySchema := schemaRefValue(schema.Properties[name])
+		propertyRef := props[name]
+		propertySchema := schemaRefValue(propertyRef)
 		if bodySchemaReadOnly(propertySchema) {
 			continue
 		}
@@ -5638,21 +5760,31 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 		if description == "" {
 			description = humanizeFieldName(name)
 		}
+		publicName, bodyName := nestedBodyPublicName(name)
 		field := spec.Param{
-			Name:              name,
-			Type:              mapBodyParamType(fieldSchema, inferCSVArrays),
+			Name:              publicName,
+			BodyName:          bodyName,
+			Type:              mapBodyParamType(fieldSchema, w.inferCSVArrays),
 			Required:          isRequired(required, name),
 			Description:       description,
-			Fields:            mapBodyFieldsDepth(fieldSchema, inferCSVArrays, visited, depth+1),
 			Enum:              schemaEnum(fieldSchema),
 			EnumUnsatisfiable: schemaEnumUnsatisfiable(fieldSchema),
 			Format:            schemaFormat(fieldSchema),
+		}
+		if w.repeats(propertySchema, declared[name]) {
+			w.warnCycle(name, propertyRef)
+		} else {
+			w.prefix = append(w.prefix, name)
+			added := w.push(here)
+			field.Fields = w.fields(propertySchema, depth+1)
+			w.pop(added)
+			w.prefix = w.prefix[:len(w.prefix)-1]
 		}
 		if schemaHasCompositeUnionAlternative(fieldSchema, map[*openapi3.Schema]struct{}{}) {
 			field.Type = "string"
 			field.Format = "json_or_scalar"
 		}
-		if inferCSVArrays && isStringArraySchema(fieldSchema) {
+		if w.inferCSVArrays && isStringArraySchema(fieldSchema) {
 			field.ItemType = "string"
 		}
 		assignBodySchemaDefault(&field, fieldSchema)
@@ -5676,11 +5808,29 @@ func assignBodySchemaDefault(param *spec.Param, schema *openapi3.Schema) {
 	}
 }
 
+const (
+	foldBodyNames = true
+	keepBodyNames = false
+)
+
+func nestedBodyPublicName(wireName string) (publicName, bodyName string) {
+	publicName = naming.ASCIIFold(wireName)
+	if publicName == "" {
+		publicName = wireName
+	}
+	if publicName != wireName {
+		bodyName = wireName
+	}
+	return publicName, bodyName
+}
+
 func collectAllOfProperties(
 	schemaRef *openapi3.SchemaRef,
 	properties map[string]*openapi3.SchemaRef,
 	required map[string]struct{},
+	declaredBy map[string]*openapi3.Schema,
 	visited map[*openapi3.Schema]struct{},
+	foldNames bool,
 ) bool {
 	if schemaRef == nil || schemaRef.Value == nil {
 		return false
@@ -5697,7 +5847,7 @@ func collectAllOfProperties(
 	}
 
 	for _, sub := range schema.AllOf {
-		if collectAllOfProperties(sub, properties, required, visited) {
+		if collectAllOfProperties(sub, properties, required, declaredBy, visited, foldNames) {
 			return true
 		}
 	}
@@ -5708,7 +5858,14 @@ func collectAllOfProperties(
 		if prop == nil {
 			continue
 		}
-		properties[naming.ASCIIFold(name)] = prop
+		key := name
+		if foldNames {
+			key = naming.ASCIIFold(name)
+		}
+		properties[key] = prop
+		if declaredBy != nil {
+			declaredBy[key] = schema
+		}
 	}
 
 	return false
