@@ -79,6 +79,74 @@ func TestTailExampleWithoutPollTargetIsDiscovery(t *testing.T) {
 	assert.NotContains(t, tailCommandExample(data), "events")
 }
 
+func TestTailPollResourcesSkipsGetsThatNeedQueryArgs(t *testing.T) {
+	t.Parallel()
+
+	api := &spec.APISpec{
+		Name: "tail-required",
+		Resources: map[string]spec.Resource{
+			"availability": tailResourceWithParams("/availability", spec.Param{
+				Name: "source", In: "query", Type: "string", Required: true,
+				Enum: []string{"united", "delta", "aeroplan"},
+			}),
+			"catalog": tailResourceWithParams("/catalog", spec.Param{
+				Name: "source", In: "query", Required: true, Default: "united",
+			}),
+			"items": tailListResource("/items"),
+			"pages": tailResourceWithParams("/pages", spec.Param{
+				Name: "limit", In: "query", Required: true,
+			}),
+			"routes": tailResourceWithParams("/routes",
+				spec.Param{Name: "origin_airport", In: "query", Required: true},
+				spec.Param{Name: "destination_airport", In: "query", Required: true},
+			),
+			"seats": tailResourceWithParams("/availability?source=united", spec.Param{
+				Name: "source", In: "query", Required: true,
+			}),
+			"widgets": tailResourceWithParams("/widgets", spec.Param{
+				Name: "X-Request-Id", In: "header", Required: true,
+			}),
+		},
+	}
+	data := visionRenderData{
+		APISpec: api,
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "availability", Path: "/availability", Method: "GET"},
+			{Name: "catalog", Path: "/catalog", Method: "GET"},
+			{Name: "routes", Path: "/routes", Method: "GET"},
+			{Name: "pages", Path: "/pages", Method: "GET"},
+			{Name: "items", Path: "/items", Method: "GET"},
+			{Name: "seats", Path: "/availability?source=united", Method: "GET"},
+			{Name: "widgets", Path: "/widgets", Method: "GET"},
+		},
+	}
+
+	assert.Equal(t, []string{"items", "seats", "widgets"}, tailPollResources(data))
+	assert.Equal(t, "items", tailPrimaryResource(data))
+	assert.Equal(t, "resource=items;--follow=false", tailHappyArgs(data))
+	args, err := shellargs.ArgsAfterBinary(firstTailExampleLine(tailCommandExample(data)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tail", "items", "--follow=false"}, args)
+
+	onlyRequired := visionRenderData{
+		APISpec: &spec.APISpec{
+			Name: "tail-required-only",
+			Resources: map[string]spec.Resource{
+				"availability": api.Resources["availability"],
+			},
+		},
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "availability", Path: "/availability", Method: "GET"},
+		},
+	}
+	assert.Empty(t, tailPollResources(onlyRequired))
+	assert.Empty(t, tailPrimaryResource(onlyRequired))
+	assert.Empty(t, tailHappyArgs(onlyRequired))
+	hiddenArgs, err := shellargs.ArgsAfterBinary(firstTailExampleLine(tailCommandExample(onlyRequired)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"tail", "--json"}, hiddenArgs)
+}
+
 func TestGeneratedTailExamplesUseSyncableResources(t *testing.T) {
 	t.Parallel()
 
@@ -151,6 +219,82 @@ func TestGeneratedTailWithoutSyncableResourcesStaysCompilable(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedTailExampleSkipsRequiredQueryResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "tail-query",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"availability": tailResourceWithParams("/availability", spec.Param{
+				Name:     "source",
+				In:       "query",
+				Type:     "string",
+				Required: true,
+				Enum:     []string{"united", "delta", "aeroplan"},
+			}),
+			"items": tailListResource("/items"),
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Tail: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	tailSrc := readTailExampleFile(t, outputDir)
+	assert.Contains(t, tailSrc, `"pp:happy-args"] = "resource=items;--follow=false"`)
+	assert.Contains(t, tailSrc, "tail items --follow=false")
+	assert.NotContains(t, tailSrc, "tail availability")
+	assert.NotContains(t, tailSrc, "cmd.Hidden = true")
+	assert.Contains(t, tailSrc, `"availability"`)
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "tail_example_behavior_test.go"), []byte(tailRequiredQueryBehaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestGeneratedTail", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedTailHidesWhenEveryGetNeedsQueryArgs(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "tail-query-only",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"availability": tailResourceWithParams("/availability", spec.Param{
+				Name:     "source",
+				In:       "query",
+				Type:     "string",
+				Required: true,
+				Enum:     []string{"united", "delta", "aeroplan"},
+			}),
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Tail: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	tailSrc := readTailExampleFile(t, outputDir)
+	assert.Contains(t, tailSrc, "cmd.Hidden = true")
+	assert.NotContains(t, tailSrc, "pp:happy-args")
+	assert.Contains(t, tailSrc, "tail --json")
+	assert.NotContains(t, tailSrc, "tail availability")
+	assert.Contains(t, tailSrc, `"availability"`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func tailResourceWithParams(path string, params ...spec.Param) spec.Resource {
+	resource := tailListResource(path)
+	endpoint := resource.Endpoints["list"]
+	endpoint.Params = append([]spec.Param(nil), params...)
+	resource.Endpoints["list"] = endpoint
+	return resource
+}
+
 func tailListResource(path string) spec.Resource {
 	return spec.Resource{
 		Endpoints: map[string]spec.Endpoint{
@@ -165,7 +309,7 @@ func tailListResource(path string) spec.Resource {
 }
 
 func firstTailExampleLine(example string) string {
-	for _, line := range strings.Split(example, "\n") {
+	for line := range strings.SplitSeq(example, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -181,6 +325,89 @@ func readTailExampleFile(t *testing.T, outputDir string) string {
 	require.NoError(t, err)
 	return string(data)
 }
+
+const tailRequiredQueryBehaviorTest = `package cli
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestGeneratedTailPollsItemWithoutRequiredQuery(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+
+	cmd := newTailCmd(&rootFlags{})
+	if cmd.Hidden {
+		t.Fatal("tail must stay visible when another resource needs no query arguments")
+	}
+	if got := cmd.Annotations["pp:happy-args"]; got != "resource=items;--follow=false" {
+		t.Fatalf("pp:happy-args = %q", got)
+	}
+	first := ""
+	for _, line := range strings.Split(cmd.Example, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		first = line
+		break
+	}
+	if !strings.Contains(first, "tail items --follow=false") {
+		t.Fatalf("first example = %q\nfull:\n%s", first, cmd.Example)
+	}
+	if strings.Contains(cmd.Example, "tail availability") {
+		t.Fatalf("example polls a resource that needs query arguments:\n%s", cmd.Example)
+	}
+
+	var gotPath, gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `[{"id":"item-1"}]` + "`" + `)
+	}))
+	defer server.Close()
+	t.Setenv("TAIL_QUERY_BASE_URL", server.URL)
+
+	orig := os.Stdout
+	readEnd, writeEnd, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	os.Stdout = writeEnd
+	poll := newTailCmd(&rootFlags{})
+	poll.SetOut(io.Discard)
+	poll.SetErr(io.Discard)
+	poll.SetArgs([]string{"items", "--follow=false"})
+	done := make(chan error, 1)
+	go func() { done <- poll.Execute() }()
+	select {
+	case execErr := <-done:
+		os.Stdout = orig
+		_ = writeEnd.Close()
+		_, _ = io.Copy(io.Discard, readEnd)
+		if execErr != nil {
+			t.Fatalf("tail items --follow=false: %v", execErr)
+		}
+	case <-time.After(5 * time.Second):
+		os.Stdout = orig
+		_ = writeEnd.Close()
+		t.Fatal("tail items --follow=false did not return")
+	}
+	if gotPath != "/items" {
+		t.Fatalf("path = %q, want /items", gotPath)
+	}
+	if gotQuery != "" {
+		t.Fatalf("query = %q, want empty", gotQuery)
+	}
+}
+`
 
 const tailSyncableBehaviorTest = `package cli
 
