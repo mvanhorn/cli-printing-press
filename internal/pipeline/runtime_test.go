@@ -1521,6 +1521,16 @@ func TestClassifyCommandKindUsesEndpointMutationAnnotations(t *testing.T) {
 	assert.Equal(t, "read", readOnlyPost.Kind)
 }
 
+func TestDryRunProbeEnvSetsVerifyOnlyForLive(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "PRINTING_PRESS_VERIFY=", "KEEP=1"}
+
+	assert.Equal(t, base, dryRunProbeEnv("mock", base))
+
+	live := dryRunProbeEnv("live", base)
+	assert.Equal(t, []string{"PATH=/usr/bin", "KEEP=1", "PRINTING_PRESS_VERIFY=1"}, live)
+	assert.Equal(t, []string{"PATH=/usr/bin", "PRINTING_PRESS_VERIFY=", "KEEP=1"}, base, "live probe must not mutate the execute env")
+}
+
 func TestRunCommandTestsSkipsLiveWriteExecuteUnlessAllowed(t *testing.T) {
 	binary := buildHappyArgsProbeBinary(t)
 	logFile := filepath.Join(t.TempDir(), "probe.log")

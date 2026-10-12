@@ -522,7 +522,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Test 2: --dry-run (skip for local/data-layer commands that don't make API calls)
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
 		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--dry-run")
-		err := runCLI(binary, args, env, 10*time.Second)
+		err := runCLI(binary, args, dryRunProbeEnv(mode, env), 10*time.Second)
 		result.DryRun = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	} else {
 		result.DryRun = true // skip = pass
@@ -557,6 +557,28 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	result.Score = score
 
 	return result
+}
+
+// dryRunProbeEnv opts a live verify dry-run into PRINTING_PRESS_VERIFY.
+// Mock mode already sets that var on every subprocess. Live mode does
+// not, and generated required-input checks waive only under verify or
+// dogfood. The dry-run probe supplies no real flag values, so without
+// this it would fail every command that has a required flag. Execute
+// keeps the caller's env. An inherited verify assignment is replaced so
+// the probe cannot be left on a non-"1" value that appears first.
+func dryRunProbeEnv(mode string, env []string) []string {
+	if mode != "live" {
+		return env
+	}
+	const key = "PRINTING_PRESS_VERIFY="
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, key) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "PRINTING_PRESS_VERIFY=1")
 }
 
 func buildRuntimeTestArgs(cmdName string, positionalArgs, flags []string, extra ...string) []string {

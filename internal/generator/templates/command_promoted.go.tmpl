@@ -108,7 +108,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- if and $isRaw .Endpoint.BodyRequired}}
-			if rawBodyFile == "" && !stdinBody && !flags.dryRun {
+			if rawBodyFile == "" && !stdinBody && !requiredInputWaived() {
 				return fmt.Errorf("raw request body required: pass --file <path> or --stdin")
 			}
 {{- end}}

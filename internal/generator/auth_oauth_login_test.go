@@ -1,11 +1,13 @@
 package generator
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
@@ -69,13 +71,36 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.Error(t, err, "top-level login --no-input should fail when no credentials are available")
 	require.Contains(t, string(noInputOut), "OAUTH_LOGIN_PROMPTS_CLIENT_ID")
 
-	dryRunOut, err := exec.Command(binPath, "--config", configPath, "--no-input", "--dry-run", "login").CombinedOutput()
-	require.NoError(t, err, "top-level login --dry-run should not require credentials: %s", string(dryRunOut))
-	require.JSONEq(t, `{"status":"dry_run","action":"auth login","would":"start OAuth2 authorization-code flow (PKCE without client secret), open browser, capture loopback callback"}`, string(dryRunOut))
+	dryRunCtx, dryRunCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer dryRunCancel()
+	dryRun := exec.CommandContext(dryRunCtx, binPath, "--config", configPath, "--no-input", "--dry-run", "login")
+	dryRun.Env = harnessFreeEnv()
+	dryRunOut, err := dryRun.CombinedOutput()
+	require.Error(t, err, "top-level login --dry-run should require credentials the same way as a real login: %s", string(dryRunOut))
+	require.Contains(t, string(dryRunOut), "OAUTH_LOGIN_PROMPTS_CLIENT_ID")
+
+	const credentialFreeDryRun = `{"status":"dry_run","action":"auth login","would":"start OAuth2 authorization-code flow (PKCE without client secret), open browser, capture loopback callback"}`
+	for _, harness := range []string{"PRINTING_PRESS_VERIFY=1", "PRINTING_PRESS_DOGFOOD=1"} {
+		probe := exec.Command(binPath, "--config", configPath, "--no-input", "--dry-run", "login")
+		probe.Env = append(harnessFreeEnv(), harness)
+		probeOut, probeErr := probe.CombinedOutput()
+		require.NoError(t, probeErr, "%s login --dry-run should stay credential-free: %s", harness, string(probeOut))
+		require.JSONEq(t, credentialFreeDryRun, string(probeOut))
+	}
 
 	require.NoError(t, os.WriteFile(configPath, []byte("client_id = \"saved-id\"\n"), 0o600))
+	userDryCtx, userDryCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer userDryCancel()
+	userDry := exec.CommandContext(userDryCtx, binPath, "--config", configPath, "--no-input", "--dry-run", "login")
+	userDry.Env = harnessFreeEnv()
+	userDryOut, err := userDry.CombinedOutput()
+	require.NoError(t, err, "login --dry-run with a client ID should print the authorize URL: %s", string(userDryOut))
+	require.Contains(t, string(userDryOut), "would launch: https://accounts.example.com/oauth/authorize?")
+	require.Contains(t, string(userDryOut), "client_id=saved-id")
+	require.NotContains(t, string(userDryOut), "Opening browser")
+
 	configuredProbe := exec.Command(binPath, "--config", configPath, "--no-input", "--dry-run", "login")
-	configuredProbe.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	configuredProbe.Env = append(harnessFreeEnv(), "PRINTING_PRESS_VERIFY=1")
 	configuredProbeOut, err := configuredProbe.CombinedOutput()
 	require.NoError(t, err, "configured OAuth login probe failed: %s", string(configuredProbeOut))
 	require.Contains(t, string(configuredProbeOut), "would launch: https://accounts.example.com/oauth/authorize?")
