@@ -179,7 +179,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- if and $isRaw .Endpoint.BodyRequired}}
-			if rawBodyFile == "" && !stdinBody && !flags.dryRun {
+			if rawBodyFile == "" && !stdinBody && !requiredInputWaived() {
 				return fmt.Errorf("raw request body required: pass --file <path> or --stdin")
 			}
 {{- end}}

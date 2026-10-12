@@ -305,6 +305,14 @@ func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
 }
 
+// Sweeps dry-run commands without real values. Mock verify sets
+// PRINTING_PRESS_VERIFY; live dogfood sets PRINTING_PRESS_DOGFOOD and
+// strips the verify var. A user's --dry-run sets neither, so missing
+// required flags and body fields still fail like a real call.
+func requiredInputWaived() bool {
+	return cliutil.IsVerifyEnv() || cliutil.IsDogfoodEnv()
+}
+
 type dryRunResult struct {
 	DryRun bool   `json:"dry_run"`
 	Action string `json:"action"`
