@@ -522,7 +522,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Test 2: --dry-run (skip for local/data-layer commands that don't make API calls)
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
 		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--dry-run")
-		err := runCLI(binary, args, env, 10*time.Second)
+		err := runCLI(binary, args, dryRunProbeEnv(mode, env), 10*time.Second)
 		result.DryRun = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	} else {
 		result.DryRun = true // skip = pass
@@ -557,6 +557,25 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	result.Score = score
 
 	return result
+}
+
+// Live verify's dry-run probe has no real flag values, and required-input
+// checks waive only when PRINTING_PRESS_VERIFY=1. Mock mode already sets
+// that on every subprocess. Execute keeps the caller's env, and an
+// inherited verify assignment is replaced so a non-"1" value cannot win.
+func dryRunProbeEnv(mode string, env []string) []string {
+	if mode != "live" {
+		return env
+	}
+	const key = "PRINTING_PRESS_VERIFY="
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, key) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "PRINTING_PRESS_VERIFY=1")
 }
 
 func buildRuntimeTestArgs(cmdName string, positionalArgs, flags []string, extra ...string) []string {

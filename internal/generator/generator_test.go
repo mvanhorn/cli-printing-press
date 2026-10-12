@@ -1813,11 +1813,11 @@ func TestGenerateOAuth2LoginVerifyEnvShortCircuitBeforeBrowserLaunch(t *testing.
 	require.NoError(t, err)
 	body := string(authBytes)
 
-	verifyIdx := strings.Index(body, "if cliutil.IsVerifyEnv() {")
+	verifyIdx := strings.Index(body, "dryRunOK(flags) || requiredInputWaived()")
 	wouldLaunchIdx := strings.Index(body, `fmt.Fprintf(w, "would launch: %s\n",`)
 	openBrowserIdx := strings.Index(body, "openBrowser(fullURL)")
 	listenIdx := strings.Index(body, `net.Listen("tcp"`)
-	require.NotEqual(t, -1, verifyIdx, "oauth2 login must short-circuit in verify mode")
+	require.NotEqual(t, -1, verifyIdx, "oauth2 login must short-circuit in verify mode and on --dry-run")
 	require.NotEqual(t, -1, wouldLaunchIdx, "oauth2 login verify short-circuit must print launch URL")
 	require.NotEqual(t, -1, openBrowserIdx, "oauth2 login should still launch browser outside verify mode")
 	require.NotEqual(t, -1, listenIdx, "oauth2 login binds a callback listener outside verify mode")
@@ -14038,13 +14038,13 @@ func TestGeneratedOutput_NoMarkFlagRequired(t *testing.T) {
 		}
 
 		// Track whether we find the RunE-based validation
-		if strings.Contains(content, `!flags.dryRun`) && strings.Contains(content, `required flag`) {
+		if strings.Contains(content, `!requiredInputWaived()`) && strings.Contains(content, `required flag`) {
 			foundRunEValidation = true
 		}
 	}
 
 	// The petstore spec has required params, so we should find RunE validation
-	assert.True(t, foundRunEValidation, "required params should use RunE validation with dryRun guard")
+	assert.True(t, foundRunEValidation, "required params should use RunE validation waived only under a harness")
 }
 
 func TestGeneratedOutput_PromotedNoImportGuards(t *testing.T) {
@@ -20179,7 +20179,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, findSource, `StringVar(&flagS, "address", "", "Street address")`)
 	assert.Contains(t, findSource, `StringVar(&flagS, "s", "", "Street address")`)
 	assert.Contains(t, findSource, `_ = cmd.Flags().MarkHidden("s")`)
-	assert.Contains(t, findSource, `if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && flagS == "" && !flags.dryRun`)
+	assert.Contains(t, findSource, `if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && flagS == "" && !requiredInputWaived()`)
 	assert.Contains(t, findSource, `params["s"] = formatCLIParamValue(flagS)`)
 	assert.NotContains(t, findSource, `required flag "s" not set`)
 

@@ -2386,7 +2386,7 @@ func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
 	}
 	assert.NotContains(t, help, "--data-data-")
 
-	cmd := exec.Command(binaryPath, "tasks", "123", "--data-html-notes", "<body>foo</body>", "--dry-run")
+	cmd := exec.Command(binaryPath, "tasks", "123", "--data-name", "Task", "--data-html-notes", "<body>foo</body>", "--dry-run")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	bodyJSON := extractDryRunBody(t, string(out))

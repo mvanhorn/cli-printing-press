@@ -43,13 +43,13 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 				}
 				return cmd.Help()
 			}
-			if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && flagS == "" && !flags.dryRun {
+			if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && flagS == "" && !requiredInputWaived() {
 				return fmt.Errorf("required flag \"%s\" not set", "address")
 			}
-			if !(cmd.Flags().Changed("city") || cmd.Flags().Changed("c")) && flagC == "" && !flags.dryRun {
+			if !(cmd.Flags().Changed("city") || cmd.Flags().Changed("c")) && flagC == "" && !requiredInputWaived() {
 				return fmt.Errorf("required flag \"%s\" not set", "city")
 			}
-			if !cmd.Flags().Changed("location-id") && flagLocationId == "" && !flags.dryRun {
+			if !cmd.Flags().Changed("location-id") && flagLocationId == "" && !requiredInputWaived() {
 				return fmt.Errorf("required flag \"%s\" not set", "location-id")
 			}
 			path := "/power/store-locator"
