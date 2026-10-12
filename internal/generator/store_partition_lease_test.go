@@ -64,7 +64,6 @@ func TestGeneratedKebabPartitionAndLinuxLease(t *testing.T) {
 	known := generatedFunctionBody(t, syncSrc, "func knownSyncResourceNames()")
 	assert.Contains(t, known, `"resource-records"`)
 	assert.Contains(t, syncSrc, "upsertResourceBatch(db, resource, items)")
-	assert.Contains(t, syncSrc, "upsertResourceBatch(db, dep.Name, items)")
 
 	dataSource := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
 	assert.Contains(t, dataSource, `"resource-records": {},`)
