@@ -559,13 +559,10 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	return result
 }
 
-// dryRunProbeEnv opts a live verify dry-run into PRINTING_PRESS_VERIFY.
-// Mock mode already sets that var on every subprocess. Live mode does
-// not, and generated required-input checks waive only under verify or
-// dogfood. The dry-run probe supplies no real flag values, so without
-// this it would fail every command that has a required flag. Execute
-// keeps the caller's env. An inherited verify assignment is replaced so
-// the probe cannot be left on a non-"1" value that appears first.
+// Live verify's dry-run probe has no real flag values, and required-input
+// checks waive only when PRINTING_PRESS_VERIFY=1. Mock mode already sets
+// that on every subprocess. Execute keeps the caller's env, and an
+// inherited verify assignment is replaced so a non-"1" value cannot win.
 func dryRunProbeEnv(mode string, env []string) []string {
 	if mode != "live" {
 		return env
