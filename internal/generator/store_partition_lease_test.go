@@ -102,7 +102,9 @@ func TestGeneratedKebabPartitionAndLinuxLease(t *testing.T) {
 	require.Contains(t, output, "--- PASS: TestLegacyLowercaseCamelCaseStillMigrates")
 	if runtime.GOOS == "linux" {
 		require.Contains(t, output, "--- PASS: TestAdoptDefersWhenWriteLeaseRefused")
-		require.Contains(t, output, "--- PASS: TestAdoptProceedsWhenWriteLeaseSucceeds")
+		if !strings.Contains(output, "--- PASS: TestAdoptProceedsWhenWriteLeaseSucceeds") {
+			require.Contains(t, output, "--- SKIP: TestAdoptProceedsWhenWriteLeaseSucceeds")
+		}
 	}
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -359,8 +361,29 @@ func TestAdoptDefersWhenWriteLeaseRefused(t *testing.T) {
 	}
 }
 
+func writeLeaseSupported(t *testing.T, dir string) bool {
+	t.Helper()
+	path := filepath.Join(dir, "lease-probe")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_SETLEASE, unix.F_WRLCK); err != nil {
+		return false
+	}
+	_, _ = unix.FcntlInt(f.Fd(), unix.F_SETLEASE, unix.F_UNLCK)
+	return true
+}
+
 func TestAdoptProceedsWhenWriteLeaseSucceeds(t *testing.T) {
 	dir := t.TempDir()
+	if !writeLeaseSupported(t, dir) {
+		t.Skip("F_SETLEASE is refused on this filesystem")
+	}
 	stable := filepath.Join(dir, "data-stable.db")
 	legacy := filepath.Join(dir, "data-legacy.db")
 	seedClosedSQLite(t, legacy, "one")
