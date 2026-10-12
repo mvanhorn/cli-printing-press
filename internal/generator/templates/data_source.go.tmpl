@@ -665,13 +665,28 @@ func writeMutationResponseToStore(ctx context.Context, resourceType string, data
 	_, _, _ = db.UpsertBatch(storedType, items)
 }
 
-// Sync and resourceIDFieldOverrides use the snake_case resource name, so an
-// empty store must not start a second table under the raw name. A populated
-// legacy spelling is moved onto that name before the write; leaving the rows
-// behind lets the new table hide them on the next read. A failed move keeps
-// the write on the table that already has the rows.
+// Partitions sync passes to UpsertBatch (profiler resource name and dependent
+// Name). A lowercase kebab-case key is stored unchanged; snake_case is not
+// that name.
+var syncOwnedPartitions = map[string]struct{}{
+{{- if .HasSync}}
+{{- range syncOwnedPartitionNames .SyncableResources .DependentSyncResources}}
+	{{printf "%q" .}}: {},
+{{- end}}
+{{- end}}
+}
+
+// Sync upserts the profiler resource name, so a lowercase kebab-case key stays
+// kebab-case. That partition is canonical: renaming it to snake_case lets the
+// next sync repopulate the original name and hide the moved rows. A mixed-case
+// key still uses snake_case, and a populated legacy spelling that differs from
+// the requested key (resourcerecords for resourceRecords) moves onto it. A
+// failed move keeps the write on the table that already has the rows.
 func localWriteResourceType(db *store.Store, resourceType string) string {
 	canonical := localCanonicalResourceType(resourceType)
+	if syncOwnsPartition(resourceType) {
+		canonical = resourceType
+	}
 	if db == nil {
 		return canonical
 	}
@@ -683,7 +698,10 @@ func localWriteResourceType(db *store.Store, resourceType string) string {
 	if err != nil || n == 0 {
 		return canonical
 	}
-	if stored == canonical {
+	// The requested key is the partition the caller named. It is never a
+	// legacy spelling of itself, even when that string is also the lowercased
+	// form a kebab-case key already has.
+	if stored == canonical || stored == resourceType {
 		return stored
 	}
 	if stored == strings.ToLower(resourceType) {
@@ -693,6 +711,11 @@ func localWriteResourceType(db *store.Store, resourceType string) string {
 		return canonical
 	}
 	return stored
+}
+
+func syncOwnsPartition(resourceType string) bool {
+	_, ok := syncOwnedPartitions[resourceType]
+	return ok
 }
 
 func localCanonicalResourceType(resourceType string) string {
@@ -940,8 +963,9 @@ func localPathHasSegment(parts []string, snake string) bool {
 	return false
 }
 
-// localResourceSnake matches spec.ToSnakeCase so a camelCase path segment
-// resolves to the snake_case resource_type sync stored.
+// localResourceSnake matches spec.ToSnakeCase so camelCase, kebab-case, and
+// snake_case path segments compare equal. Sync itself stores the profiler
+// resource name, which keeps a lowercase kebab-case key unchanged.
 func localResourceSnake(s string) string {
 	s = strings.ReplaceAll(s, ".", "_")
 	s = strings.ReplaceAll(s, "-", "_")

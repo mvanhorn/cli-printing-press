@@ -18,9 +18,10 @@ import (
 // claimClosedStore pins legacy and its sidecars so they can be published only
 // while no other process has them open. A write lease fails when any other
 // descriptor has the file, including an idle SQLite connection between
-// transactions, and blocks new opens until release. Kernels with leases
-// disabled fall back to a descriptor scan and skip the move when that scan
-// cannot show the file is unused.
+// transactions, and blocks new opens until release. A disabled lease and a
+// busy file return the same error. A point-in-time descriptor scan cannot
+// stop a later open of the legacy name, so a refused lease defers adoption
+// until a run where the lease succeeds.
 func claimClosedStore(legacy string) (func(), func() bool, bool) {
 	paths, ok := legacyStoreAdoptPaths(legacy)
 	if !ok {
@@ -77,9 +78,24 @@ func (p storeFilePin) stillClosed() bool {
 	return storeFileUnusedByOthers(p.f)
 }
 
+// storeWriteLeaseHook replaces F_SETLEASE in tests. Production leaves it nil.
+// A disabled lease and a busy file return the same error, so the caller
+// cannot tell them apart and must not treat a refusal as "closed".
+var storeWriteLeaseHook func(fd uintptr) error
+
+func setStoreWriteLease(fd uintptr) error {
+	if storeWriteLeaseHook != nil {
+		return storeWriteLeaseHook(fd)
+	}
+	_, err := unix.FcntlInt(fd, unix.F_SETLEASE, unix.F_WRLCK)
+	return err
+}
+
 func pinClosedStoreFile(path string) (storeFilePin, bool) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
+		// No writable descriptor, so a write lease cannot be taken. This scan
+		// is not the fallback for a refused lease on a file we could write.
 		f, err = os.Open(path)
 		if err != nil {
 			return storeFilePin{}, false
@@ -90,14 +106,14 @@ func pinClosedStoreFile(path string) (storeFilePin, bool) {
 		}
 		return storeFilePin{f: f}, true
 	}
-	if _, err := unix.FcntlInt(f.Fd(), unix.F_SETLEASE, unix.F_WRLCK); err == nil {
-		return storeFilePin{f: f, leased: true}, true
-	}
-	if !storeFileUnusedByOthers(f) {
+	if err := setStoreWriteLease(f.Fd()); err != nil {
+		// A disabled lease and a busy file return the same error. A scan
+		// cannot stop a later open of this name, so leave the legacy path
+		// in place until a lease succeeds.
 		_ = f.Close()
 		return storeFilePin{}, false
 	}
-	return storeFilePin{f: f}, true
+	return storeFilePin{f: f, leased: true}, true
 }
 
 func storeFileUnusedByOthers(f *os.File) bool {
@@ -126,9 +142,10 @@ func storeFileUnusedByOthers(f *os.File) bool {
 		fdDir := filepath.Join("/proc", ent.Name(), "fd")
 		fds, readErr := os.ReadDir(fdDir)
 		if readErr != nil {
-			// A disabled lease and a busy file return the same error, so this
-			// scan has to see descriptors in this process too. Skipping them
-			// would publish a database this process already has open.
+			// This process's own descriptors could not be listed. Skipping
+			// them would treat a database this process already has open as
+			// unused. A disabled lease is not handled here: that error
+			// defers adoption before any scan.
 			if pid == selfPID || !ownerOnly || procSameUID(pid) {
 				return false
 			}

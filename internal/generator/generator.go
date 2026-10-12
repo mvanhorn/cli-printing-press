@@ -541,6 +541,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"substackPublicationIDTemplatePath":        substackPublicationIDTemplatePath,
 		"safeName":                                 safeSQLName,
 		"resourceIDFieldOverrideEntries":           resourceIDFieldOverrideEntries,
+		"syncOwnedPartitionNames":                  syncOwnedPartitionNames,
 		"resourceIDBaseOverrideEntries":            resourceIDBaseOverrideEntries,
 		"resourceParentKeyColumnEntries":           resourceParentKeyColumnEntries,
 		"criticalResourceEntries":                  criticalResourceEntries,
@@ -4957,6 +4958,32 @@ func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []
 		entries[i] = defaults[key]
 	}
 	return entries
+}
+
+// syncOwnedPartitionNames is the resource strings sync passes to UpsertBatch.
+// Write-through uses the same set so it cannot rename a partition sync refills.
+func syncOwnedPartitionNames(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []string {
+	seen := make(map[string]struct{}, len(syncable)+len(dependent))
+	names := make([]string, 0, len(syncable)+len(dependent))
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for _, resource := range syncable {
+		add(resource.Name)
+	}
+	for _, resource := range dependent {
+		add(resource.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
