@@ -107,10 +107,11 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err != nil {
 		return err
 	}
-	// Credential-free probes cannot construct an authorize URL. Keep supplied
-	// or configured client IDs on the detailed verify path below so it still
-	// emits PKCE params.
-	if (dryRunOK(flags) || cliutil.IsVerifyEnv()) && clientID == "" && cfg.ClientID == "" {
+	// Credential-free harness probes cannot construct an authorize URL.
+	// A user's --dry-run still resolves credentials, so a missing client
+	// ID fails the same way as a real login. Supplied or configured client
+	// IDs stay on the detailed path below so it still emits PKCE params.
+	if requiredInputWaived() && clientID == "" && cfg.ClientID == "" {
 		fmt.Fprintln(w, `{"status":"dry_run","action":"auth login","would":"start OAuth2 authorization-code flow (PKCE without client secret), open browser, capture loopback callback"}`)
 		return nil
 	}
@@ -156,13 +157,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		params.Set("scope", strings.Join(scopes, " "))
 	}
 
-	// Short-circuit BEFORE binding the callback port or opening a browser, so
-	// verify / validate-narrative neither binds 127.0.0.1:<port> (which would
-	// EADDRINUSE on a parallel run or occupied port) nor launches a browser
-	// (which would time out). The redirect_uri shown here is informational and
-	// derived from the configured --port; the live flow below uses the actual
-	// bound port, which the OS assigns when --port 0 is passed.
-	if cliutil.IsVerifyEnv() {
+	// Short-circuit before binding the callback port or opening a browser.
+	// Verify and dogfood must not bind 127.0.0.1 or launch a browser. A
+	// user's --dry-run has already resolved credentials and prints the
+	// authorize URL instead of starting the flow. The redirect_uri here is
+	// informational and uses the configured --port; the live flow below
+	// uses the port the listener actually binds.
+	if dryRunOK(flags) || requiredInputWaived() {
 		params.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d/callback", port))
 		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+cliutil.EncodeQuery(params))
 		return nil
