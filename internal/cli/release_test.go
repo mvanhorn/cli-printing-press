@@ -88,6 +88,7 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 	// TestPrintingPressSkillVersionMatchesBinaryFloor).
 	majorFloor := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
 	const liveHappyPathFloor = "4.33.0"
+	const dogfoodHoldReceiptFloor = "4.33.5"
 	paths := []struct {
 		frontmatter string
 		setup       string
@@ -120,6 +121,8 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 			if paths.frontmatter == "../../skills/printing-press/SKILL.md" {
 				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+liveHappyPathFloor) < 0,
 					"printing-press min-binary-version must cover pp:live-happy-path (%s)", liveHappyPathFloor)
+				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+dogfoodHoldReceiptFloor) < 0,
+					"printing-press min-binary-version must cover the dogfood hold archive handoff (%s)", dogfoodHoldReceiptFloor)
 				assign := assignRe.FindStringSubmatch(string(setupData))
 				require.Len(t, assign, 2, "setup contract must assign _min_binary_version")
 				assert.Equal(t, frontmatter[1], assign[1])

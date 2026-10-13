@@ -191,9 +191,11 @@ keep PII out of the acceptance report from the moment you write it.
 ```bash
 "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
 ```
-The working copy remains in `$CLI_WORK_DIR`. Proceed to [Phase 5.6](20-promote-and-archive.md) to archive
-manuscripts (archiving still happens on hold). Tag the failure reason in the
-acceptance report so the next run can learn from it.
+The working copy remains in `$CLI_WORK_DIR`. Record the `18→20` hold handoff in
+the completion block below, then proceed to [Phase 5.6](20-promote-and-archive.md)
+to archive manuscripts (archiving still happens on hold). Do not follow the
+canonical `Next:` pointer. Tag the failure reason in the acceptance report so
+the next run can learn from it.
 
 See [references/dogfood-testing.md](../references/dogfood-testing.md) for additional
 guidance on common failure patterns and what NOT to test.
@@ -327,9 +329,22 @@ the LAN-only carve-out above. Do **not** use missing API key
 session-handshake auth; inject the session, or rely on the runner-emitted
 `cookie-auth-no-harness-session` skip when none is available.
 
-Before following `Next:`, record the durable handoff and point `--evidence` at
-the live dogfood acceptance JSON. If dogfood used an allowed skip, record it
-with `--skip --note "<allowed reason>"` and point at the skip marker instead:
+**Run exactly one of the two completion blocks.**
+
+On a hold, after the gate still fails and the lock is released, record the
+archive handoff instead of following `Next:`. Point `--evidence` at the failed
+acceptance marker:
+
+```bash
+"$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --next "20-promote-and-archive" --evidence "$PROOFS_DIR/phase5-acceptance.json" --note "hold: <one-line reason>"
+```
+
+Then proceed to [Phase 5.6](20-promote-and-archive.md).
+
+On a pass, or an allowed skip, record the canonical handoff before following
+`Next:`. Point `--evidence` at the live dogfood acceptance JSON. If dogfood used
+an allowed skip, record it with `--skip --note "<allowed reason>"` and point at
+the skip marker instead:
 
 ```bash
 "$PRINTING_PRESS_BIN" phase-receipt complete --file "$PHASE_RECEIPT_LOG" --run-id "$RUN_ID" --phase "18-dogfood-testing" --evidence "$PROOFS_DIR/phase5-acceptance.json"

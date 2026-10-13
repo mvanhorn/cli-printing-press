@@ -8,7 +8,7 @@
 
 ### Acceptance gate check
 
-This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A `hold` run reaches this phase from [12-shipcheck](12-shipcheck.md) with no dogfood markers by design — it skips promotion entirely, archives manuscripts, and completes canonically to [21-next-steps](21-next-steps.md). A hold must NOT take the backtrack to [18-dogfood-testing](18-dogfood-testing.md) below; its missing markers are expected. The binary rejects `20→18` when this visit arrived on the `12→20` hold jump.
+This gate guards **promotion**, so it applies only when the shipcheck verdict is `ship` or `ship-with-gaps`. A shipcheck `hold` reaches this phase from [12-shipcheck](12-shipcheck.md) with no dogfood markers by design — it skips promotion entirely, archives manuscripts, and completes canonically to [21-next-steps](21-next-steps.md). A dogfood `fail` reaches this phase from [18-dogfood-testing](18-dogfood-testing.md) on the `18→20` hold handoff with a `status: "fail"` marker and does the same: archive, do not promote, and do not backtrack. A hold must NOT take the backtrack to [18-dogfood-testing](18-dogfood-testing.md) below. A shipcheck hold's missing markers are expected, and a dogfood hold already has its failure marker. The binary rejects `20→18` when this visit arrived on the `12→20` hold jump.
 
 For a ship-verdict run, verify the [Phase 5](18-dogfood-testing.md) JSON gate marker before promoting:
 
@@ -200,7 +200,7 @@ fi
 
 `ship-with-gaps` is promoted (on either path) because the verdict means "the CLI is shippable with documented, non-blocking gaps" — the gaps are recorded in the README's `## Known Gaps` block and the user opts in via [Phase 6](21-next-steps.md)'s publish prompt. Treating ship-with-gaps as un-promotable would strand the verified working copy and leave the library on a stale prior run.
 
-If the shipcheck verdict is `hold`, the lock was already released in [Phase 4](12-shipcheck.md). Do NOT promote on either path. The working copy stays in `$CLI_WORK_DIR` and is not copied to the library.
+If the shipcheck verdict is `hold`, the lock was already released in [Phase 4](12-shipcheck.md). Do NOT promote on either path. The working copy stays in `$CLI_WORK_DIR` and is not copied to the library. A dogfood hold is the same outcome: [Phase 5](18-dogfood-testing.md) already released the lock, and a `status: "fail"` marker must not promote.
 
 ### Archive Manuscripts
 

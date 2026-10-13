@@ -300,6 +300,55 @@ func TestPhaseReceiptsAllowShipcheckHoldHandoff(t *testing.T) {
 	assert.Equal(t, PhaseReceiptEntered, entered.Event)
 }
 
+func TestPhaseReceiptsAllowDogfoodHoldHandoff(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	enterAfterCanonicalChain(t, path, phaseDogfoodTesting)
+
+	hold := receiptOptions(t, path, phaseDogfoodTesting)
+	hold.Next = phasePromoteAndArchive
+	hold.Note = "hold: dogfood still fails after two fix loops"
+	receipt, recorded, err := CompletePhase(hold, false)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, phasePromoteAndArchive, receipt.Next)
+
+	retried, recorded, err := CompletePhase(hold, false)
+	require.NoError(t, err)
+	assert.False(t, recorded)
+	assert.Equal(t, phasePromoteAndArchive, retried.Next)
+
+	conflict := hold
+	conflict.Next = "19-polish"
+	_, _, err = CompletePhase(conflict, false)
+	require.ErrorContains(t, err, "already completed with next")
+
+	promote := receiptOptions(t, path, phasePromoteAndArchive)
+	entered, recorded, err := EnterPhase(promote)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, PhaseReceiptEntered, entered.Event)
+
+	archived, recorded, err := CompletePhase(promote, false)
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	assert.Equal(t, "21-next-steps", archived.Next)
+}
+
+func TestPhaseReceiptsRejectNextStepsHandoffToDogfood(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "phase-receipts.jsonl")
+	enterAfterCanonicalChain(t, path, "21-next-steps")
+
+	retry := receiptOptions(t, path, "21-next-steps")
+	retry.Next = phaseDogfoodTesting
+	retry.Note = "polish recovered a dogfood hold"
+	_, _, err := CompletePhase(retry, false)
+	require.ErrorContains(t, err, `phase "21-next-steps" cannot hand off to "18-dogfood-testing"`)
+}
+
 func TestPhaseReceiptsAllowBuildInfeasibleReturnAndReplayLoop(t *testing.T) {
 	t.Parallel()
 

@@ -22,6 +22,7 @@ At each phase boundary:
    - rework return — `06-browser-sniff-gate` back to the gate that ordered it, and only that gate: the binary reads the ordering handoff out of the ledger (`06→08`, `06→09`)
    - build infeasible — `11-build-the-goat` back to `08-ecosystem-absorb-gate` (`11→08`)
    - shipcheck hold — `12-shipcheck` straight to `20-promote-and-archive` (`12→20`)
+   - dogfood hold — `18-dogfood-testing` straight to `20-promote-and-archive` (`18→20`) when the gate still fails after two fix loops
    - scope change in review — `17-local-code-review` back to `08-ecosystem-absorb-gate` (`17→08`)
    - promote backtrack — `20-promote-and-archive` back to `18-dogfood-testing` (`20→18`), refused after a `12→20` hold
 3. Do the phase work only after the entry receipt succeeds.
