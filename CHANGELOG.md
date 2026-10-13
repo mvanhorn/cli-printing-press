@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.33.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.4...v4.33.5) (2026-10-13)
+
+
+### Bug Fixes
+
+* **cli:** clean up publish validate binaries for relative --dir ([#5007](https://github.com/mvanhorn/cli-printing-press/issues/5007)) ([2873999](https://github.com/mvanhorn/cli-printing-press/commit/28739991b48fa09c1f29d423ffeffeeb368c21dd))
+* **cli:** keep description on single-object --agent output ([#5006](https://github.com/mvanhorn/cli-printing-press/issues/5006)) ([ceb70b3](https://github.com/mvanhorn/cli-printing-press/commit/ceb70b328554e04573f8d3980c92c39dbfe480b1))
+* **cli:** keep synced kebab-case store partitions and defer adoption when the Linux lease is refused ([#5017](https://github.com/mvanhorn/cli-printing-press/issues/5017)) ([1010a54](https://github.com/mvanhorn/cli-printing-press/commit/1010a54c9213c46823255b8f6e43cee7ec6035ab))
+* **cli:** make --dry-run enforce required flags and body fields ([#5016](https://github.com/mvanhorn/cli-printing-press/issues/5016)) ([2262c70](https://github.com/mvanhorn/cli-printing-press/commit/2262c70a58704b2f5de9518a948709eaa8621e69))
+* **cli:** record dogfood holds on the archive handoff ([#4990](https://github.com/mvanhorn/cli-printing-press/issues/4990)) ([b1e8dd9](https://github.com/mvanhorn/cli-printing-press/commit/b1e8dd9ac78fdc20a5b8f525357c0fd9444239dc)), closes [#4956](https://github.com/mvanhorn/cli-printing-press/issues/4956)
+* **cli:** stop flattening cyclic request-body schemas ([#5009](https://github.com/mvanhorn/cli-printing-press/issues/5009)) ([7293e5b](https://github.com/mvanhorn/cli-printing-press/commit/7293e5b8d42620805d60d1810b60c6ef46f189bb))
+* **cli:** use real resources in generated tail examples ([#5008](https://github.com/mvanhorn/cli-printing-press/issues/5008)) ([decbb02](https://github.com/mvanhorn/cli-printing-press/commit/decbb028bc07999d6dce39d6b340fedb60f3ee03))
+
 ## [4.33.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.3...v4.33.4) (2026-10-10)
 
 
