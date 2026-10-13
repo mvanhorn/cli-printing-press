@@ -230,7 +230,7 @@ func TestCompactFieldsPreservesSoleVerbosePayloadArray(t *testing.T) {
 	input := json.RawMessage(`+"`"+`{
 		"id": "issue-1",
 		"title": "Bug",
-		"description": "verbose metadata",
+		"description": "issue text",
 		"comments": [{"id":"comment-1","body":"comment payload"}]
 	}`+"`"+`)
 
@@ -238,8 +238,8 @@ func TestCompactFieldsPreservesSoleVerbosePayloadArray(t *testing.T) {
 	if _, ok := got["comments"].([]any); !ok {
 		t.Fatalf("sole payload comments array was stripped: %#v", got)
 	}
-	if _, ok := got["description"]; ok {
-		t.Fatalf("scalar description should remain blocklisted: %#v", got)
+	if got["description"] != "issue text" {
+		t.Fatalf("description is a single object's payload and must survive: %#v", got)
 	}
 }
 
@@ -279,7 +279,7 @@ func TestCompactFieldsKeepsObjectBlocklistForDetailObjectsWithArrays(t *testing.
 	input := json.RawMessage(`+"`"+`{
 		"id": "issue-1",
 		"title": "Bug",
-		"description": "verbose metadata",
+		"description": "issue text",
 		"body": "primary payload",
 		"comments": [
 			{"id":"comment-1","body":"verbose comment"}
@@ -294,10 +294,11 @@ func TestCompactFieldsKeepsObjectBlocklistForDetailObjectsWithArrays(t *testing.
 	if got["body"] != "primary payload" {
 		t.Fatalf("detail object should preserve primary body payload: %#v", got)
 	}
-	for _, key := range []string{"description", "comments"} {
-		if _, ok := got[key]; ok {
-			t.Fatalf("detail object kept object-path blocklisted %s field: %#v", key, got)
-		}
+	if got["description"] != "issue text" {
+		t.Fatalf("detail object should preserve its description payload: %#v", got)
+	}
+	if _, ok := got["comments"]; ok {
+		t.Fatalf("detail object kept object-path blocklisted comments field: %#v", got)
 	}
 	if _, ok := got["tags"].([]any); !ok {
 		t.Fatalf("detail object lost competing payload tags: %#v", got)

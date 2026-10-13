@@ -2782,12 +2782,12 @@ var compactVerboseListFields = map[string]bool{
 }
 
 // compactVerboseObjectFields are metadata fields stripped from single-object
-// responses. "body"/"content"/"html"/"markdown" are intentionally absent:
-// for a `get` command those fields are the primary payload, and stripping
-// them under `--agent`/`--compact` silently emits a useless envelope.
-// Use `--select` to drop them explicitly.
+// responses. "body"/"content"/"description"/"html"/"markdown" are
+// intentionally absent: for a `get` command those fields are the primary
+// payload (issue trackers keep an issue's text in "description"), and
+// stripping them under `--agent`/`--compact` silently emits a useless
+// envelope. Use `--select` to drop them explicitly.
 var compactVerboseObjectFields = map[string]bool{
-	"description": true,
 	"comments":    true,
 	"attachments": true,
 }
@@ -3115,10 +3115,11 @@ func isCompactScalar(v any) bool {
 }
 
 // compactObjectFields strips known-verbose metadata fields from single-object
-// responses. The blocklist deliberately excludes "body"/"content"/"html"/
-// "markdown" — those fields are payload on `get` commands and stripping them
-// under `--agent`/`--compact` is a silent loss; agents who want to omit them
-// can pass `--select` to specify only the fields they need.
+// responses. The blocklist deliberately excludes "body"/"content"/
+// "description"/"html"/"markdown" — those fields are payload on `get`
+// commands and stripping them under `--agent`/`--compact` is a silent loss;
+// agents who want to omit them can pass `--select` to specify only the
+// fields they need.
 func compactObjectFields(obj map[string]any, keep []string, documentedFields ...map[string]bool) json.RawMessage {
 	if compacted, ok := compactListEnvelopeObjectAtDepth(obj, 0, keep, documentedFields...); ok {
 		result, _ := json.Marshal(compacted)

@@ -8570,11 +8570,11 @@ func TestCompactObjectFieldsPreservesPayloadFields(t *testing.T) {
 	require.GreaterOrEqual(t, objEnd, 0, "compactVerboseObjectFields map literal must close")
 	objBody := body[objStart : objEnd+1]
 
-	for _, payload := range []string{`"body"`, `"content"`, `"html"`, `"markdown"`} {
+	for _, payload := range []string{`"body"`, `"content"`, `"description"`, `"html"`, `"markdown"`} {
 		assert.NotContains(t, objBody, payload,
 			"compactVerboseObjectFields must not list %s — those fields are the primary payload on single-object get responses", payload)
 	}
-	for _, metadata := range []string{`"description"`, `"comments"`, `"attachments"`} {
+	for _, metadata := range []string{`"comments"`, `"attachments"`} {
 		assert.Contains(t, objBody, metadata,
 			"compactVerboseObjectFields must still strip %s — that field is metadata on single-object responses, not payload", metadata)
 	}
