@@ -71,6 +71,7 @@ func TestGraphQLPromotedMutationEmitsFailureDetector(t *testing.T) {
 	require.Contains(t, root, "allow-partial-failure")
 	_, err := os.Stat(filepath.Join(outputDir, "internal", "cli", "checkout_start.go"))
 	require.True(t, os.IsNotExist(err), "promoted endpoint must not also emit a standalone command file")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGraphQLMutationWithStoreCompiles(t *testing.T) {
@@ -302,6 +303,76 @@ func TestGraphQLMutationFailuresExitNonZero(t *testing.T) {
 		require.NotContains(t, out, "partial_failure")
 		require.NotContains(t, out, `"success"`)
 	})
+
+	const failureBody = `{"errors":[{"message":"boom"}],"id":"note-1","secret":"drop-me","comments":"long comment","attachments":["file-a"]}`
+	const successBody = `{"id":"note-1","secret":"drop-me","comments":"long comment","attachments":["file-a"]}`
+	selected := map[string]any{"id": "note-1"}
+	compacted := map[string]any{"id": "note-1", "secret": "drop-me"}
+	failureCompacted := map[string]any{
+		"errors": []any{map[string]any{"message": "boom"}},
+		"id":     "note-1",
+		"secret": "drop-me",
+	}
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{name: "notes", args: []string{"notes", "create", "--title", "t"}},
+		{name: "checkout", args: []string{"checkout", "--cart-id", "c1"}},
+	}
+	for _, cmd := range commands {
+		t.Run(cmd.name+" filters", func(t *testing.T) {
+			code, env, out := run(t, failureBody, append([]string{"--json"}, cmd.args...)...)
+			require.Equal(t, 6, code, out)
+			require.Equal(t, false, env["success"])
+			require.Contains(t, responseObject(t, env), "secret")
+			require.Contains(t, responseObject(t, env), "comments")
+
+			code, failure, out := run(t, failureBody, append([]string{"--json", "--select", "id"}, cmd.args...)...)
+			require.Equal(t, 6, code, out)
+			require.Equal(t, false, failure["success"])
+			require.Equal(t, "errors", partialField(t, failure))
+			code, success, out := run(t, successBody, append([]string{"--json", "--select", "id"}, cmd.args...)...)
+			require.Equal(t, 0, code, out)
+			require.Equal(t, selected, responseObject(t, success), out)
+			require.Equal(t, responseObject(t, success), responseObject(t, failure))
+
+			code, failure, out = run(t, failureBody, append([]string{"--json", "--compact"}, cmd.args...)...)
+			require.Equal(t, 6, code, out)
+			require.Equal(t, failureCompacted, responseObject(t, failure), out)
+			code, success, out = run(t, successBody, append([]string{"--json", "--compact"}, cmd.args...)...)
+			require.Equal(t, 0, code, out)
+			require.Equal(t, compacted, responseObject(t, success), out)
+
+			code, failure, out = run(t, failureBody, append([]string{"--json", "--select", "id", "--compact"}, cmd.args...)...)
+			require.Equal(t, 6, code, out)
+			require.Equal(t, selected, responseObject(t, failure), out)
+
+			code, failure, out = run(t, failureBody, append([]string{"--agent", "--select", "id"}, cmd.args...)...)
+			require.Equal(t, 6, code, out)
+			_, hasData := failure["data"]
+			require.False(t, hasData, out)
+			require.Equal(t, selected, responseObject(t, failure), out)
+
+			code, failure, out = run(t, failureBody, append([]string{"--allow-partial-failure", "--json", "--select", "id"}, cmd.args...)...)
+			require.Equal(t, 0, code, out)
+			require.Equal(t, true, failure["success"])
+			require.Equal(t, "errors", partialField(t, failure))
+			require.Equal(t, selected, responseObject(t, failure), out)
+			require.Contains(t, out, "warning: partial failure detected")
+
+			code, failure, out = run(t, failureBody, append([]string{"--allow-partial-failure", "--json", "--compact"}, cmd.args...)...)
+			require.Equal(t, 0, code, out)
+			require.Equal(t, true, failure["success"])
+			require.Equal(t, failureCompacted, responseObject(t, failure), out)
+
+			code, _, out = run(t, failureBody, append([]string{"--json", "--select", "not-a-field"}, cmd.args...)...)
+			require.Equal(t, 6, code, out)
+			code, _, out = run(t, failureBody, append([]string{"--allow-partial-failure", "--json", "--select", "not-a-field"}, cmd.args...)...)
+			require.Equal(t, 2, code, out)
+			require.Contains(t, out, "matched no fields")
+		})
+	}
 }
 
 func TestRESTCommandsIgnoreGraphQLFailureShapes(t *testing.T) {
@@ -470,6 +541,26 @@ func decodeCLIObject(t *testing.T, out string) map[string]any {
 	var m map[string]any
 	require.NoError(t, dec.Decode(&m), "output:\n%s", out)
 	return m
+}
+
+func responseObject(t *testing.T, env map[string]any) map[string]any {
+	t.Helper()
+	if _, ok := env["action"]; ok {
+		for _, key := range []string{"results", "data"} {
+			raw, exists := env[key]
+			if !exists {
+				continue
+			}
+			payload, ok := raw.(map[string]any)
+			require.True(t, ok, "%s type %T in %#v", key, raw, env)
+			return payload
+		}
+		t.Fatalf("failure envelope missing data/results: %#v", env)
+	}
+	if raw, ok := env["results"].(map[string]any); ok {
+		return raw
+	}
+	return env
 }
 
 func partialField(t *testing.T, env map[string]any) string {

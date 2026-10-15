@@ -93,9 +93,20 @@ func newCheckoutPromotedCmd(flags *rootFlags) *cobra.Command {
 						envelope["meta"] = map[string]any{"source": "live"}
 					}
 					envelope["partial_failure"] = partialFailure
-					if len(data) > 0 {
+					// SYNC: field filters match the mutation JSON path in command_endpoint.go.tmpl.
+					// --select wins over --compact. Unwrap a single-key collection so
+					// the filter sees rows, including when --allow-partial-failure exits 0.
+					var selectErr error
+					filtered := unwrapSingleKeyArray(data)
+					if flags.selectFields != "" {
+						filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
+						selectErr = selectErrorForDryRun(selectErr, flags, data)
+					} else if flags.compact {
+						filtered = compactFields(filtered, nil)
+					}
+					if len(filtered) > 0 {
 						var parsed any
-						if err := json.Unmarshal(data, &parsed); err == nil {
+						if err := json.Unmarshal(filtered, &parsed); err == nil {
 							if flags.agent {
 								envelope["results"] = parsed
 							} else {
@@ -121,7 +132,7 @@ func newCheckoutPromotedCmd(flags *rootFlags) *cobra.Command {
 					if !flags.allowPartialFailure {
 						return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "checkout", partialFailure.Message))
 					}
-					return nil
+					return selectErr
 				}
 				if !flags.allowPartialFailure {
 					printErr := printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"}, nil)
