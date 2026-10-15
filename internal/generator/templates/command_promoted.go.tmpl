@@ -12,6 +12,9 @@
 {{- /* Same gate as command_endpoint.go.tmpl $isMutationOutput. */}}
 {{- $isMutationOutput := and (not .IsReadOnly) (not (or (eq $method "GET") (eq $method "HEAD")))}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse)}}
+{{- /* GraphQL mutations fail the command on errors[] / error typenames, including a promoted single-endpoint write that has no store write-back. */}}
+{{- $graphqlMutationFailure := and (isGraphQL .APISpec) $isMutationOutput (not .Endpoint.UsesBinaryResponse) (not .Endpoint.UsesTextResponse) (or $isWriteVerb (eq $method "DELETE"))}}
+{{- $capturePartialStatus := or $canWriteBack $graphqlMutationFailure}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk") (eq $method "GET") .IsReadOnly}}
 {{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
@@ -346,23 +349,23 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{if .IsReadOnly}}SendRawRead{{else}}SendRaw{{end}}(cmd.Context(), "DELETE", path, params, rawBody, rawContentType, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}})
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{if .IsReadOnly}}SendRawRead{{else}}SendRaw{{end}}(cmd.Context(), "DELETE", path, params, rawBody, rawContentType, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}})
 {{- else if $hasJSONBody}}
 {{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
 			var body any = []any{}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{else}}
 			bodyMap := map[string]any{}
 			{{declareJSONBodyMap .Endpoint "bodyMap" "body"}}
-{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if $hasHeaderOverrides}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
-{{else}}			data, _, err := c.DeleteWithBodyAndHeaders(cmd.Context(), path, body, headerOverrides)
-{{end}}{{else}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)
-{{else}}			data, _, err := c.DeleteWithBody(cmd.Context(), path, body)
+{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if $hasHeaderOverrides}}{{if endpointHasRequestParams .Endpoint}}			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{else}}			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.DeleteWithBodyAndHeaders(cmd.Context(), path, body, headerOverrides)
+{{end}}{{else}}{{if endpointHasRequestParams .Endpoint}}			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)
+{{else}}			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.DeleteWithBody(cmd.Context(), path, body)
 {{end}}{{end}}
 {{- else}}
 {{- if $hasHeaderOverrides}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.DeleteWithParamsAndHeaders(cmd.Context(), path, params, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.DeleteWithParamsAndHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.DeleteWithParams(cmd.Context(), path, params)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.DeleteWithParams(cmd.Context(), path, params)
 {{- end}}
 {{- end}}
 {{- else if or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")}}
@@ -371,26 +374,26 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{if .IsReadOnly}}SendRawRead{{else}}SendRaw{{end}}(cmd.Context(), "{{upper .Endpoint.Method}}", path, params, rawBody, rawContentType, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}})
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{if .IsReadOnly}}SendRawRead{{else}}SendRaw{{end}}(cmd.Context(), "{{upper .Endpoint.Method}}", path, params, rawBody, rawContentType, {{if $hasHeaderOverrides}}headerOverrides{{else}}nil{{end}})
 {{- else if $isMultipart}}
 			fields := map[string]string{}
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if $hasHeaderOverrides}}
 {{- if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryMultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PutQueryMultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
 {{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryMultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PatchQueryMultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
 {{- else}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
 {{- end}}
 {{- else}}
 {{- if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PutQueryMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 {{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PatchQueryMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 {{- else}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(cmd.Context(), path, params, fields, fileFields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 {{- end}}
 {{- end}}
 {{- else if $isForm}}
@@ -398,23 +401,23 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if $hasHeaderOverrides}}
 {{- if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PostQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PostQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PutQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PatchQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- else}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- end}}
 {{- else}}
 {{- if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PostQueryFormWithParams(cmd.Context(), path, params, fields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PostQueryFormWithParams(cmd.Context(), path, params, fields)
 {{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryFormWithParams(cmd.Context(), path, params, fields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PutQueryFormWithParams(cmd.Context(), path, params, fields)
 {{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryFormWithParams(cmd.Context(), path, params, fields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.PatchQueryFormWithParams(cmd.Context(), path, params, fields)
 {{- else}}
-			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(cmd.Context(), path, params, fields)
+			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(cmd.Context(), path, params, fields)
 {{- end}}
 {{- end}}
 {{- else}}
@@ -429,8 +432,8 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			{{declareJSONBodyMap .Endpoint "bodyMap" "body"}}
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if .IsReadOnly}}{{if $hasHeaderOverrides}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}QueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}QueryWithParams(cmd.Context(), path, params, body)
-{{end}}{{else}}{{if $hasHeaderOverrides}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
-{{else}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)
+{{end}}{{else}}{{if $hasHeaderOverrides}}			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{else}}			data, {{if $capturePartialStatus}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)
 {{end}}{{end}}
 {{- end}}
 {{- else}}
@@ -458,14 +461,94 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .HasStore (ne (upper .Endpoint.Method) "GET") (not $supportsAllPagination)}}
 			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
 {{- end}}
-{{- if $canWriteBack}}
+{{- if or $canWriteBack $graphqlMutationFailure}}
 			var partialFailure *partialFailureReport
 			if !flags.dryRun && statusCode >= 200 && statusCode < 300 {
 				partialFailure = detectPartialFailure(data)
+{{- if $graphqlMutationFailure}}
+				if partialFailure != nil {
+					fmt.Fprintf(os.Stderr, "warning: partial failure detected in %s response: %s\n", "{{.ResourceName}}", partialFailure.Message)
+					if len(partialFailure.ResourceNames) > 0 {
+						fmt.Fprintf(os.Stderr, "         succeeded: %d operation(s)\n", len(partialFailure.ResourceNames))
+					}
+				}
+{{- end}}
 			}
+{{- if $canWriteBack}}
 			if !flags.dryRun && statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure) {
 				writeMutationResponseToStore(cmd.Context(), {{printf "%q" .ResourceName}}, data, {{printf "%q" .Endpoint.ResponsePath}})
 			}
+{{- end}}
+{{- if $graphqlMutationFailure}}
+			if partialFailure != nil {
+				if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
+					if flags.quiet {
+						if !flags.allowPartialFailure {
+							return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+						}
+						return nil
+					}
+					envelope := map[string]any{
+						"action":   "{{lower .Endpoint.Method}}",
+						"resource": "{{.ResourceName}}",
+						"path":     path,
+						"status":   statusCode,
+						"success":  statusCode >= 200 && statusCode < 300 && flags.allowPartialFailure,
+					}
+					if flags.agent {
+						envelope["meta"] = map[string]any{"source": "live"}
+					}
+					envelope["partial_failure"] = partialFailure
+					// SYNC: field filters match the mutation JSON path in command_endpoint.go.tmpl.
+					// --select wins over --compact. Unwrap a single-key collection so
+					// the filter sees rows, including when --allow-partial-failure exits 0.
+					var selectErr error
+					filtered := unwrapSingleKeyArray(data)
+					if flags.selectFields != "" {
+						filtered, selectErr = filterFieldsChecked(filtered, flags.selectFields)
+						selectErr = selectErrorForDryRun(selectErr, flags, data)
+					} else if flags.compact {
+						filtered = compactFields(filtered, {{$documentedFields}})
+					}
+					if len(filtered) > 0 {
+						var parsed any
+						if err := json.Unmarshal(filtered, &parsed); err == nil {
+							if flags.agent {
+								envelope["results"] = parsed
+							} else {
+								envelope["data"] = parsed
+							}
+						}
+					}
+					envelopeJSON, err := json.Marshal(envelope)
+					if err != nil {
+						return err
+					}
+					resultKey := "data"
+					if flags.agent {
+						resultKey = "results"
+					}
+					structured, err := wrapPlatformStructuredOutput(json.RawMessage(envelopeJSON), flags, resultKey, true)
+					if err != nil {
+						return err
+					}
+					if perr := printOutput(cmd.OutOrStdout(), structured, true); perr != nil {
+						return perr
+					}
+					if !flags.allowPartialFailure {
+						return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+					}
+					return selectErr
+				}
+				if !flags.allowPartialFailure {
+					printErr := printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"}, {{$documentedFields}})
+					if printErr != nil {
+						return printErr
+					}
+					return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+				}
+			}
+{{- end}}
 {{- end}}
 {{- if .Endpoint.UsesTextResponse}}
 			_ = os.Stderr

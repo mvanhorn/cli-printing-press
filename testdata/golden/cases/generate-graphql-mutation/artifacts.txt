@@ -1,0 +1,3 @@
+graphql-mutation-golden/internal/cli/graphql_failure.go
+graphql-mutation-golden/internal/cli/notes_create.go
+graphql-mutation-golden/internal/cli/promoted_checkout.go
