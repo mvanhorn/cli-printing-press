@@ -1,0 +1,37 @@
+name: graphql-mutation-golden
+description: Golden fixture for GraphQL mutation failure detection. Locks the errors-array and error-typename detector, including a promoted single-endpoint mutation.
+version: "0.1.0"
+base_url: https://api.graphql-mutation.example
+auth:
+  type: none
+learn:
+  disabled: true
+resources:
+  notes:
+    description: Notes
+    endpoints:
+      list:
+        method: POST
+        path: /graphql
+        description: List issues
+      create:
+        method: POST
+        path: /graphql
+        description: Create an issue
+        body:
+          - name: title
+            type: string
+            required: true
+            description: Issue title
+  checkout:
+    description: Checkout
+    endpoints:
+      start:
+        method: POST
+        path: /graphql
+        description: Start checkout
+        body:
+          - name: cartId
+            type: string
+            required: true
+            description: Cart id

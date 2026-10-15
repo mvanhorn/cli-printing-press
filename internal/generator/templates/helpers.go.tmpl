@@ -713,6 +713,11 @@ func detectPartialFailure(data []byte) *partialFailureReport {
 		}
 		return report
 	}
+{{- if isGraphQL .APISpec}}
+	if report := detectGraphQLFailure(top); report != nil {
+		return report
+	}
+{{- end}}
 	return nil
 }
 {{- end}}

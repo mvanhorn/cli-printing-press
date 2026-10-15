@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/graphql-mutation.yaml --output "$CASE_ACTUAL_DIR/graphql-mutation-golden" --force --validate=false

@@ -990,15 +990,38 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 		scan(originalResource, promotedEndpointNames[resourceName])
 	}
 
+	graphQL := isGraphQLSpec(apiSpec)
 	for _, command := range promotedCommands {
 		if promotedCommandCanDetectPartialFailure(command, hasStore) {
-			// command_promoted.go.tmpl detects partial failures for store
-			// write-back only; it never calls partialFailureErr.
+			// Store write-back detects partial failures but does not call
+			// partialFailureErr. GraphQL mutations below do.
 			hasSupport = true
+		}
+		if graphQL && promotedGraphQLMutationReportsFailure(command) {
+			hasSupport = true
+			hasTypedErr = true
 		}
 	}
 
 	return hasSupport, hasTypedErr
+}
+
+// GraphQL mutations report failure inside HTTP 200. A promoted single-endpoint
+// mutation has no command_endpoint.go caller, so the promoted command itself
+// must call partialFailureErr.
+func promotedGraphQLMutationReportsFailure(command PromotedCommand) bool {
+	if command.Endpoint.UsesBinaryResponse() || command.Endpoint.UsesTextResponse() {
+		return false
+	}
+	if endpointIsReadCommand(command.Endpoint, command.EndpointName) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(command.Endpoint.Method)) {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return true
+	default:
+		return false
+	}
 }
 
 // The dry-run helpers are dead code unless command_promoted.go.tmpl calls
@@ -2985,6 +3008,13 @@ func (g *Generator) renderSingleFiles() error {
 		singleFiles["chrome_test.go.tmpl"] = filepath.Join("internal", "client", "chrome_test.go")
 		if g.Spec.UsesBrowserHTTP3Transport() {
 			singleFiles["chrome_h3.go.tmpl"] = filepath.Join("internal", "client", "chrome_h3.go")
+		}
+	}
+	if isGraphQLSpec(g.Spec) {
+		hFlags := computeHelperFlags(g.Spec)
+		applyPartialFailureFlags(&hFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.hasDataLayer())
+		if hFlags.HasMutationEndpoints {
+			singleFiles["graphql_failure.go.tmpl"] = filepath.Join("internal", "cli", "graphql_failure.go")
 		}
 	}
 
