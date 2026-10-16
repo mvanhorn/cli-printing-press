@@ -113,6 +113,39 @@ func TestPromoteWorkingCLI_PreservesPatchedMCPManifests(t *testing.T) {
 		assertPromoteBundleManifest(t, work)
 	})
 
+	t.Run("library-only manifest patch", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("PRINTING_PRESS_HOME", home)
+		work := clonePromoteMCPCLI(t, template)
+		stampPromoteManifestHandEdits(t, work)
+		keepPromoteBinariesCurrent(t, work)
+
+		lib := filepath.Join(PublishedLibraryRoot(), promoteManifestAPI)
+		writePatchRecordFile(t, filepath.Join(lib, PatchesDirName), "manifest-hand-edit.json", PatchRecord{
+			SchemaVersion: CurrentPatchesIndexSchemaVersion,
+			ID:            "manifest-hand-edit",
+			Files:         []string{MCPBManifestFilename},
+			CallSites:     []string{mcpManifestHandEdit},
+		})
+
+		beforeManifest := mustReadFile(t, filepath.Join(work, MCPBManifestFilename))
+		require.Contains(t, string(beforeManifest), mcpManifestHandEdit)
+		require.Contains(t, string(beforeManifest), `"hand_edited_prompt"`)
+		_, err := os.Stat(filepath.Join(work, PatchesDirName, "manifest-hand-edit.json"))
+		require.True(t, os.IsNotExist(err))
+
+		require.NoError(t, PromoteWorkingCLI(promoteManifestCLI, work, NewMinimalState(promoteManifestCLI, work)))
+
+		assert.Equal(t, beforeManifest, mustReadFile(t, filepath.Join(lib, MCPBManifestFilename)))
+		assert.Equal(t, beforeManifest, mustReadFile(t, filepath.Join(work, MCPBManifestFilename)))
+		tools := string(mustReadFile(t, filepath.Join(lib, ToolsManifestFilename)))
+		assert.NotContains(t, tools, toolsManifestHandEdit)
+		assert.Contains(t, tools, "https://api.example.com")
+		assert.FileExists(t, filepath.Join(lib, PatchesDirName, "manifest-hand-edit.json"))
+		assertPromoteBundleManifest(t, lib)
+		assertPromoteBundleManifest(t, work)
+	})
+
 	t.Run("tools patch still reconciles manifest", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("PRINTING_PRESS_HOME", home)
