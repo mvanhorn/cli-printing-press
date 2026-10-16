@@ -105,8 +105,8 @@ func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe
 	chromeSrc := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
 	require.NotContains(t, chromeSrc, "chromeHeaderTripper",
 		"content-type flip evidence must suppress the Chrome header overlay")
-	require.Contains(t, chromeSrc, `chromeALPN = []string{"h2"}`,
-		"the sniffed browser transport default should still force HTTP/2")
+	require.Contains(t, chromeSrc, `chromeALPN = []string{"h2", "http/1.1"}`,
+		"the sniffed browser transport default must fall back to HTTP/1.1")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")

@@ -218,6 +218,16 @@ func TestGoogleServiceAccountAuthHeader(t *testing.T) {
 	if requests != 2 {
 		t.Fatalf("token endpoint requests after expiry = %%d, want 2", requests)
 	}
+
+	c.DryRun = true
+	c.Config.TokenExpiry = time.Now().Add(-time.Minute)
+	before := requests
+	if _, err = c.authHeader(ctx); err != nil {
+		t.Fatalf("dry-run auth header: %%v", err)
+	}
+	if requests != before {
+		t.Fatalf("dry-run exchanged a service-account token: requests = %%d, want %%d", requests, before)
+	}
 }
 
 `, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath)

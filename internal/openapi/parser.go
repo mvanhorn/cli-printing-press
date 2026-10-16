@@ -4270,8 +4270,6 @@ func assignAliasesForEndpoints(endpoints map[string]spec.Endpoint) {
 }
 
 func computeAlias(method, path, endpointName string) string {
-	_ = endpointName
-
 	hasPathParam := strings.Contains(path, "{")
 	switch strings.ToUpper(method) {
 	case "GET":
@@ -4280,7 +4278,10 @@ func computeAlias(method, path, endpointName string) string {
 		}
 		return "list"
 	case "POST":
-		return "create"
+		if spec.CreateShapedPOST(path, endpointName) {
+			return "create"
+		}
+		return ""
 	case "PUT", "PATCH":
 		return "update"
 	case "DELETE":
