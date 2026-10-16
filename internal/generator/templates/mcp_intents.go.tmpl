@@ -229,7 +229,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	}
 {{- range .Args}}
 {{- if .Static}}
-	args = append(args, {{printf "%q" .Token}})
+	args = appendRecipeStatic(args, {{printf "%q" .Token}})
 {{- else if .Param.Positional}}
 	var missing{{.Param.GoName}} bool
 	args, missing{{.Param.GoName}} = appendRecipePositional(args, input[{{printf "%q" .Param.InputName}}], {{.Param.Required}})
@@ -259,7 +259,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 
 	out, err := cobratree.RunCLICommand(ctx, recipeCLIPath, args)
 	if err != nil {
-		return mcplib.NewToolResultError(err.Error()), nil
+		return cobratree.ToolResultFromCLIFailure(out), nil
 	}
 	return cobratree.ToolResultFromCLICommand(out), nil
 }
@@ -466,7 +466,47 @@ func appendRecipePositional(args []string, value any, required bool) ([]string, 
 	if selected == "" {
 		return args, required
 	}
+	// A value that looks like a flag is placed after `--` so pflag keeps it
+	// as data. The same shape as joining `--key=value`: the CLI still runs,
+	// and the value cannot set another flag.
+	if recipePositionalNeedsSeparator(selected) && recipeEndOfFlagsIndex(args) < 0 {
+		args = append(args, "--")
+	}
 	return append(args, selected), false
+}
+
+func recipePositionalNeedsSeparator(value string) bool {
+	return value != "-" && strings.HasPrefix(value, "-")
+}
+
+func recipeEndOfFlagsIndex(args []string) int {
+	for i, arg := range args {
+		if arg == "--" {
+			return i
+		}
+	}
+	return -1
+}
+
+// Flags appended after a protected positional must land before `--`.
+// Everything after that separator is positional.
+func insertRecipeBeforeEndOfFlags(args []string, tokens ...string) []string {
+	i := recipeEndOfFlagsIndex(args)
+	if i < 0 {
+		return append(args, tokens...)
+	}
+	out := make([]string, 0, len(args)+len(tokens))
+	out = append(out, args[:i]...)
+	out = append(out, tokens...)
+	out = append(out, args[i:]...)
+	return out
+}
+
+func appendRecipeStatic(args []string, token string) []string {
+	if token != "-" && token != "--" && strings.HasPrefix(token, "-") {
+		return insertRecipeBeforeEndOfFlags(args, token)
+	}
+	return append(args, token)
 }
 
 func appendRecipeStringFlag(args []string, name string, value any, defaultValue string, required bool, useEquals bool) ([]string, bool) {
@@ -478,9 +518,9 @@ func appendRecipeStringFlag(args []string, name string, value any, defaultValue 
 		return args, required
 	}
 	if useEquals {
-		return append(args, "--"+name+"="+selected), false
+		return insertRecipeBeforeEndOfFlags(args, "--"+name+"="+selected), false
 	}
-	return append(args, "--"+name, selected), false
+	return insertRecipeBeforeEndOfFlags(args, "--"+name, selected), false
 }
 
 func appendRecipeBoolFlag(args []string, name string, value any, defaultValue bool) []string {
@@ -489,7 +529,7 @@ func appendRecipeBoolFlag(args []string, name string, value any, defaultValue bo
 		selected = v
 	}
 	if selected {
-		return append(args, "--"+name)
+		return insertRecipeBeforeEndOfFlags(args, "--"+name)
 	}
 	return args
 }

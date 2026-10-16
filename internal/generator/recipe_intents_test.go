@@ -362,12 +362,15 @@ func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {
 	intents := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
 	require.Contains(t, intents, `mcplib.WithString("url"`)
 	require.Contains(t, intents, `appendRecipePositional(args, input["url"], true)`)
+	require.Contains(t, intents, `appendRecipeStatic(args, "advice")`)
+	require.Contains(t, intents, `recipePositionalNeedsSeparator`)
+	require.Contains(t, intents, `cobratree.ToolResultFromCLIFailure(out)`)
 	require.NotContains(t, intents, `mcplib.WithString("args"`)
 	require.NotContains(t, intents, "https://example.com")
-	adviceIdx := strings.Index(intents, `args = append(args, "advice")`)
+	adviceIdx := strings.Index(intents, `args = appendRecipeStatic(args, "advice")`)
 	urlIdx := strings.Index(intents, `appendRecipePositional(args, input["url"], true)`)
 	copyIdx := strings.Index(intents, `appendRecipeBoolFlag(args, "copy", input["copy"], true)`)
-	jsonIdx := strings.Index(intents, `args = append(args, "--json")`)
+	jsonIdx := strings.Index(intents, `args = appendRecipeStatic(args, "--json")`)
 	require.NotEqual(t, -1, adviceIdx)
 	require.NotEqual(t, -1, urlIdx)
 	require.NotEqual(t, -1, copyIdx)
@@ -376,7 +379,12 @@ func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {
 	require.Less(t, urlIdx, copyIdx)
 	require.Less(t, copyIdx, jsonIdx)
 
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp")
+	output, err := runGoCommandOutput(t, outputDir, "test", "./internal/mcp", "-count=1", "-v", "-run", "TestRecipeIntent_ScanSite_|TestAppendRecipePositional")
+	require.NoError(t, err, output)
+	require.Contains(t, output, "--- PASS: TestRecipeIntent_ScanSite_OrdinaryPositional")
+	require.Contains(t, output, "--- PASS: TestRecipeIntent_ScanSite_Url_FlagLikePositional")
+	require.Contains(t, output, "--- PASS: TestAppendRecipePositionalDashSafety")
+	require.Contains(t, output, "--- PASS: TestAppendRecipePositionalKeepsLaterFlagsBeforeSeparator")
 }
 
 func TestRecipeIntentDerivationSkipsShellVariables(t *testing.T) {
