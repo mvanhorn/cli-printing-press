@@ -19,17 +19,41 @@ func TestGeneratedMCPJoinsFlagValuesAndSplitsVariadicRawArgs(t *testing.T) {
 	shellout := readGenerated(t, outputDir, "internal", "mcp", "cobratree", "shellout.go")
 	assert.Contains(t, shellout, `out = append(out, "--"+k+"="+tv)`)
 	assert.Contains(t, shellout, `out = append(out, "--"+k+"="+strconv.FormatFloat(tv, 'f', -1, 64))`)
-	assert.Contains(t, shellout, `out = append(out, "--"+k+"="+strings.Join(parts, ","))`)
+	assert.Contains(t, shellout, `out = append(out, "--"+k+"="+part)`)
+	assert.NotContains(t, shellout, `strings.Join(parts, ",")`)
 	assert.Contains(t, shellout, `out = append(out, "--"+k+"="+fmt.Sprintf("%v", v))`)
 	assert.NotContains(t, shellout, `out = append(out, "--"+k, tv)`)
 	assert.NotContains(t, shellout, `out = append(out, "--"+k, strconv.FormatFloat`)
+	assert.Contains(t, shellout, `return ToolResultFromCLIFailure(out, err), nil`)
 	assert.Contains(t, shellout, `!positionals[0].Variadic`)
 
 	typemap := readGenerated(t, outputDir, "internal", "mcp", "cobratree", "typemap.go")
 	assert.Contains(t, typemap, "Variadic  bool")
+	assert.Contains(t, typemap, `case "stringSlice", "stringArray":`)
+	assert.Contains(t, typemap, `mcplib.WithStringItems()`)
+	assert.Contains(t, typemap, `return mcplib.WithArray(flag.Name, propOpts...)`)
+	assert.Contains(t, typemap, `case "string", "duration":`)
+	assert.NotContains(t, typemap, `"stringSlice", "stringArray", "duration"`)
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(CliArgsFromMCP_ValueCannotSmuggleBlockedFlag|PositionalArgsFromRawArgsField|ShellOutVariadicRawArgsSplits|ShellOutStructuredThenRawOverflowPreservesOrder|ShellOutSinglePositionalArgsFieldPreservesWhitespace)$", "-count=1")
+	output, err := runGoCommandOutput(t, outputDir, "test", "./internal/mcp/cobratree", "-count=1", "-v", "-run", "^Test(CliArgsFromMCP_ValueCannotSmuggleBlockedFlag|CliArgsFromMCP_AllowsPerCommandFlags|CliArgsFromMCP_RepeatableArrayExpandsToFlagOccurrences|StringArrayAndSliceFlagsUseArraySchema|StringArrayEmptyItemReachesCobra|ShellOutRepeatableStringArrayReachesCLI|ShellOutNonZeroExitSurfacesStdoutAndStderr|ToolResultFromCLIFailureUsesCauseWhenSilent|ToolResultFromCLIFailureKeepsStdoutFirst|ShellOutSilentFailureSurfacesExecError|RunCLICommandFailureKeepsStdoutBesideStderr|RunCLICommandReportsStderrOnFailure|RunCLICommandFallsBackToStdoutOnFailureWithoutStderr|PositionalArgsFromRawArgsField|ShellOutVariadicRawArgsSplits|ShellOutStructuredThenRawOverflowPreservesOrder|ShellOutSinglePositionalArgsFieldPreservesWhitespace)$")
+	require.NoError(t, err, output)
+	for _, name := range []string{
+		"TestCliArgsFromMCP_AllowsPerCommandFlags",
+		"TestCliArgsFromMCP_RepeatableArrayExpandsToFlagOccurrences",
+		"TestStringArrayAndSliceFlagsUseArraySchema",
+		"TestStringArrayEmptyItemReachesCobra",
+		"TestShellOutRepeatableStringArrayReachesCLI",
+		"TestShellOutNonZeroExitSurfacesStdoutAndStderr",
+		"TestToolResultFromCLIFailureUsesCauseWhenSilent",
+		"TestToolResultFromCLIFailureKeepsStdoutFirst",
+		"TestShellOutSilentFailureSurfacesExecError",
+		"TestRunCLICommandFailureKeepsStdoutBesideStderr",
+		"TestRunCLICommandReportsStderrOnFailure",
+		"TestRunCLICommandFallsBackToStdoutOnFailureWithoutStderr",
+	} {
+		assert.Contains(t, output, "--- PASS: "+name)
+	}
 }
 
 func TestGeneratedWindowsShelloutLargeOutputUsesPowerShell(t *testing.T) {

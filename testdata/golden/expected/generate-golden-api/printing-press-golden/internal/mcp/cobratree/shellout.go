@@ -77,7 +77,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		out, err := RunCLICommand(ctx, lookupPath, finalArgs)
 		if err != nil {
-			return boundedToolResultError(err.Error()), nil
+			return ToolResultFromCLIFailure(out, err), nil
 		}
 		return ToolResultFromCLICommand(out), nil
 	}
@@ -303,12 +303,15 @@ func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 				out = append(out, "--"+k+"="+tv)
 			}
 		case []any:
-			if len(tv) > 0 {
-				parts := make([]string, 0, len(tv))
-				for _, item := range tv {
-					parts = append(parts, fmt.Sprintf("%v", item))
+			// One --flag=value per item, including "". Comma-joining would
+			// collapse a stringArray (it does not split on commas) into one
+			// value, and dropping an empty item would leave a nonempty default.
+			for _, item := range tv {
+				if item == nil {
+					continue
 				}
-				out = append(out, "--"+k+"="+strings.Join(parts, ","))
+				part := fmt.Sprintf("%v", item)
+				out = append(out, "--"+k+"="+part)
 			}
 		default:
 			if v != nil {
@@ -360,6 +363,9 @@ func SplitShellArgs(s string) []string {
 type CLICommandResult struct {
 	Stdout      string
 	StderrHints []string
+	// Stderr is the full child stderr on a non-zero exit. Success leaves it
+	// empty and reports operator hints through StderrHints only.
+	Stderr string
 }
 
 // ToolResultFromCLICommand keeps stdout in the first content block and places
@@ -369,6 +375,30 @@ func ToolResultFromCLICommand(result CLICommandResult) *mcplib.CallToolResult {
 	toolResult := mcplib.NewToolResultText(bound.Text(result.Stdout))
 	if len(result.StderrHints) > 0 {
 		toolResult.Content = append(toolResult.Content, mcplib.NewTextContent(bound.Text(strings.Join(result.StderrHints, "\n"))))
+	}
+	return toolResult
+}
+
+// ToolResultFromCLIFailure marks the call as an error and keeps stdout in the
+// first content block. Cobra writes "Error:" to stderr on a non-zero exit, so
+// a stderr-only result would drop a JSON envelope or typed-exit receipt.
+// When both streams are empty, err is the exec failure from RunCLICommand.
+func ToolResultFromCLIFailure(result CLICommandResult, err error) *mcplib.CallToolResult {
+	stdout := strings.TrimSpace(result.Stdout)
+	stderr := strings.TrimSpace(result.Stderr)
+	first := stdout
+	if first == "" {
+		first = stderr
+	}
+	if first == "" && err != nil && err.Error() != "" {
+		first = err.Error()
+	}
+	if first == "" {
+		first = "command failed"
+	}
+	toolResult := mcplib.NewToolResultError(bound.Text(first))
+	if stdout != "" && stderr != "" {
+		toolResult.Content = append(toolResult.Content, mcplib.NewTextContent(bound.Text(stderr)))
 	}
 	return toolResult
 }
@@ -390,20 +420,28 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (CLIComma
 	}
 	if err != nil {
 		stderrText := strings.TrimSpace(stderr.String())
-		msg := stderrText
-		if msg == "" {
-			msg = strings.TrimSpace(stdoutText)
+		stdoutTrim := strings.TrimSpace(stdoutText)
+		result.Stderr = stderrText
+		detail := cliFailureDetail(stdoutTrim, stderrText)
+		if detail == "" {
+			return result, fmt.Errorf("cli %s: %w", binPath, err)
 		}
-		if msg != "" {
-			label := "stderr"
-			if stderrText == "" {
-				label = "output"
-			}
-			return result, fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, bound.Text(msg))
-		}
-		return result, fmt.Errorf("cli %s: %w", binPath, err)
+		return result, fmt.Errorf("cli %s: %w (%s)", binPath, err, bound.Text(detail))
 	}
 	return result, nil
+}
+
+func cliFailureDetail(stdout, stderr string) string {
+	switch {
+	case stdout != "" && stderr != "":
+		return "stdout: " + stdout + "\nstderr: " + stderr
+	case stderr != "":
+		return "stderr: " + stderr
+	case stdout != "":
+		return "output: " + stdout
+	default:
+		return ""
+	}
 }
 
 func stderrHintLines(stderr string) []string {

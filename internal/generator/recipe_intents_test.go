@@ -335,7 +335,7 @@ func TestRecipeIntentGenerationBindsColonRefPositional(t *testing.T) {
 
 	intents := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
 	require.Contains(t, intents, `mcplib.WithString("ref"`)
-	require.Contains(t, intents, `appendRecipePositional(args, input["ref"], true)`)
+	require.Contains(t, intents, `appendRecipePositional(args, input["ref"], true, &recipeEnd)`)
 	require.NotContains(t, intents, "zenodo:1261813")
 	require.Contains(t, intents, `mcplib.WithOpenWorldHintAnnotation(true)`)
 
@@ -361,13 +361,17 @@ func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {
 
 	intents := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
 	require.Contains(t, intents, `mcplib.WithString("url"`)
-	require.Contains(t, intents, `appendRecipePositional(args, input["url"], true)`)
+	require.Contains(t, intents, `appendRecipePositional(args, input["url"], true, &recipeEnd)`)
+	require.Contains(t, intents, `appendRecipeStatic(args, "advice", &recipeEnd)`)
+	require.Contains(t, intents, `recipeSeparatorIndex`)
+	require.Contains(t, intents, `recipePositionalNeedsSeparator`)
+	require.Contains(t, intents, `cobratree.ToolResultFromCLIFailure(out, err)`)
 	require.NotContains(t, intents, `mcplib.WithString("args"`)
 	require.NotContains(t, intents, "https://example.com")
-	adviceIdx := strings.Index(intents, `args = append(args, "advice")`)
-	urlIdx := strings.Index(intents, `appendRecipePositional(args, input["url"], true)`)
-	copyIdx := strings.Index(intents, `appendRecipeBoolFlag(args, "copy", input["copy"], true)`)
-	jsonIdx := strings.Index(intents, `args = append(args, "--json")`)
+	adviceIdx := strings.Index(intents, `args = appendRecipeStatic(args, "advice", &recipeEnd)`)
+	urlIdx := strings.Index(intents, `appendRecipePositional(args, input["url"], true, &recipeEnd)`)
+	copyIdx := strings.Index(intents, `appendRecipeBoolFlag(args, "copy", input["copy"], true, &recipeEnd)`)
+	jsonIdx := strings.Index(intents, `args = appendRecipeStatic(args, "--json", &recipeEnd)`)
 	require.NotEqual(t, -1, adviceIdx)
 	require.NotEqual(t, -1, urlIdx)
 	require.NotEqual(t, -1, copyIdx)
@@ -376,7 +380,13 @@ func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {
 	require.Less(t, urlIdx, copyIdx)
 	require.Less(t, copyIdx, jsonIdx)
 
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp")
+	output, err := runGoCommandOutput(t, outputDir, "test", "./internal/mcp", "-count=1", "-v", "-run", "TestRecipeIntent_ScanSite_|TestAppendRecipePositional")
+	require.NoError(t, err, output)
+	require.Contains(t, output, "--- PASS: TestRecipeIntent_ScanSite_OrdinaryPositional")
+	require.Contains(t, output, "--- PASS: TestRecipeIntent_ScanSite_Url_FlagLikePositional")
+	require.Contains(t, output, "--- PASS: TestAppendRecipePositionalDashSafety")
+	require.Contains(t, output, "--- PASS: TestAppendRecipePositionalKeepsLaterFlagsBeforeSeparator")
+	require.Contains(t, output, "--- PASS: TestAppendRecipePositionalDashValueKeepsLaterFlag")
 }
 
 func TestRecipeIntentDerivationSkipsShellVariables(t *testing.T) {

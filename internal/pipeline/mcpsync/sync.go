@@ -443,7 +443,7 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 				recipeHandlers[node.Name.Name] = true
 				recipeDecls = append(recipeDecls, node)
 			}
-			if node.Name.Name == "init" || strings.HasPrefix(node.Name.Name, "appendRecipe") || node.Name.Name == "recipeValueString" || node.Name.Name == "recipeDestinationBlocked" || node.Name.Name == "recipeCommandPath" {
+			if isMCPRecipeHelperFunc(node.Name.Name) {
 				recipeDecls = append(recipeDecls, node)
 			}
 		case *ast.GenDecl:
@@ -455,6 +455,10 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 			}
 		}
 	}
+	// Helpers the handlers call (dash-safety, flag insertion) are not all
+	// named appendRecipe*. Pull every same-file function they reference so
+	// the preserved recipe file still compiles after the split.
+	includeReferencedRecipeFuncs(file, &recipeDecls)
 	if registerIntents == nil || len(recipeHandlers) == 0 {
 		return nil, fmt.Errorf("intents.go contains recipe markers but no extractable recipe handlers")
 	}
@@ -500,6 +504,41 @@ func extractMCPRecipeIntentSource(source, modulePath string) ([]byte, error) {
 		return nil, fmt.Errorf("formatting recipe_intents.go: %w", err)
 	}
 	return formatted, nil
+}
+
+// Recipe helpers move with the handlers. Prefixes cover the generated
+// argv builders; a new helper that does not follow them is still pulled
+// in by includeReferencedRecipeFuncs when a preserved decl calls it.
+func isMCPRecipeHelperFunc(name string) bool {
+	return name == "init" ||
+		strings.HasPrefix(name, "appendRecipe") ||
+		strings.HasPrefix(name, "insertRecipe") ||
+		strings.HasPrefix(name, "recipe")
+}
+
+func includeReferencedRecipeFuncs(file *ast.File, recipeDecls *[]ast.Decl) {
+	included := make(map[ast.Decl]bool, len(*recipeDecls))
+	for _, decl := range *recipeDecls {
+		included[decl] = true
+	}
+	for {
+		added := false
+		for _, decl := range file.Decls {
+			node, ok := decl.(*ast.FuncDecl)
+			if !ok || node.Name == nil || node.Name.Name == "RegisterIntents" || included[decl] {
+				continue
+			}
+			if !declsContainIdentifier(*recipeDecls, node.Name.Name) {
+				continue
+			}
+			*recipeDecls = append(*recipeDecls, decl)
+			included[decl] = true
+			added = true
+		}
+		if !added {
+			return
+		}
+	}
 }
 
 func declsContainIdentifier(decls []ast.Decl, name string) bool {
