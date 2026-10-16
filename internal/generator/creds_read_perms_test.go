@@ -34,15 +34,28 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	evalSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_eval.go")
 	require.Contains(t, evalSrc, "func evalCredsSecurity", "pure SDDL evaluator must be emitted")
+	require.Contains(t, evalSrc, "func evalCredsSecurityResolved", "evaluator must resolve machine-local SDDL aliases before comparing trustees")
+	require.Contains(t, evalSrc, "NO_ACCESS_CONTROL", "NULL DACL must be rejected from DACL flags, not only a prefix")
+	require.Contains(t, evalSrc, "func trusteeSID", "trustees must be compared as SIDs")
 
 	winSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_windows.go")
 	require.Contains(t, winSrc, "func VerifyCredsPerms", "Windows read-time guard must be emitted")
+	require.Contains(t, winSrc, "func resolveSDDLAlias", "Windows shell must resolve machine-local aliases such as LA")
+	require.Contains(t, winSrc, "evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias)", "Windows guard must pass the alias resolver into the evaluator")
+
+	winTestSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_windows_test.go")
+	require.Contains(t, winTestSrc, "//go:build windows", "Windows resolver test must be Windows-only")
+	require.Contains(t, winTestSrc, `resolveSDDLAlias("LA")`, "Windows resolver test must call the real LA resolver")
+	require.Contains(t, winTestSrc, `resolveSDDLAlias("BA")`, "Windows resolver test must call the real BA resolver")
+	require.Contains(t, winTestSrc, `resolveSDDLAlias("SY")`, "Windows resolver test must call the real SY resolver")
+	require.Contains(t, winTestSrc, "LookupAccount", "Windows resolver test must check the resolved account")
 
 	unixSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_unix.go")
 	require.Contains(t, unixSrc, "func VerifyCredsPerms", "POSIX read-time guard must be emitted")
 
-	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_eval_test.go"))
-	require.NoError(t, err, "pure evaluator unit test must be emitted")
+	evalTestSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_eval_test.go")
+	require.Contains(t, evalTestSrc, "PAINO_ACCESS_CONTROL", "evaluator tests must reject a flags-first NULL DACL")
+	require.Contains(t, evalTestSrc, "builtin admin owner LA", "evaluator tests must accept the built-in Administrator's own ACE")
 
 	// A3: the read-time guard must be wired into config.Load's read path. The
 	// persisted token file is canonicalized (EvalSymlinks) then perms-checked
@@ -95,6 +108,8 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	pathsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "paths.go")
 	require.Contains(t, pathsSrc, "renamePrivateFileWithRetryFunc", "private-file publication must expose a testable bounded retry path")
 	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestEvalCredsSecurity", "-count=1")
+	runGeneratedWindowsCLIUtilBuild(t, outputDir)
 
 	// A5: creds_perms_windows.go imports golang.org/x/sys/windows, which makes
 	// golang.org/x/sys a DIRECT dependency of a token-bearing bundle. The
@@ -115,6 +130,35 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	require.NotEmpty(t, sysLine, "go.mod must require golang.org/x/sys for a token-bearing spec")
 	require.NotContains(t, sysLine, "// indirect",
 		"golang.org/x/sys must be a DIRECT require for a token-bearing spec (creds_perms_windows.go imports golang.org/x/sys/windows)")
+}
+
+func runGeneratedWindowsCLIUtilBuild(t *testing.T, outputDir string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	runGeneratedWindowsGo(t, outputDir, "build", "./internal/cliutil")
+	// go build skips *_test.go, so a resolver test that does not compile would
+	// still leave this check green. Compile and vet the Windows test binary.
+	bin := filepath.Join(t.TempDir(), "cliutil.test.exe")
+	runGeneratedWindowsGo(t, outputDir, "test", "-c", "-o", bin, "./internal/cliutil")
+	runGeneratedWindowsGo(t, outputDir, "vet", "./internal/cliutil")
+}
+
+func runGeneratedWindowsGo(t *testing.T, outputDir string, args ...string) {
+	t.Helper()
+	goArgs := append([]string{args[0], "-mod=mod"}, args[1:]...)
+	cmd := exec.Command("go", goArgs...)
+	cmd.Dir = outputDir
+	var output []byte
+	err := withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "GOCACHE="+cacheDir)
+		cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
+	require.NoError(t, err, "go %s for generated Windows cliutil failed:\n%s", strings.Join(args, " "), output)
 }
 
 func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T) {
@@ -250,6 +294,8 @@ func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_eval.go"))
 	require.True(t, os.IsNotExist(err), "creds_perms_eval.go must not be emitted for a non-auth spec")
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_windows_test.go"))
+	require.True(t, os.IsNotExist(err), "Windows resolver test must not be emitted for a non-auth spec")
 
 	winSrc := readGeneratedFile(t, outputDir, "internal", "platform", "perms_windows.go")
 	require.Contains(t, winSrc, "func verifyPrivatePerms")

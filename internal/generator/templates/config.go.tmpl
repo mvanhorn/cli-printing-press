@@ -410,7 +410,10 @@ func Load(configPath string) (*Config, error) {
 	// reach Cobra instead of hitting buildURL's actionable error first.
 	// Placeholders with a spec-declared default (server-URL variables) skip
 	// the verify branch; the default is a real value that lets verify probe
-	// a real-shaped URL.
+	// a real-shaped URL. Precedence is the env override, then a value already
+	// stored in template_vars, then the spec default. Applying the default
+	// whenever the env var is unset would send a saved credential to the
+	// default host and the next save would erase the user's value.
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}
 	}
@@ -421,7 +424,7 @@ func Load(configPath string) (*Config, error) {
 {{- if endpointTemplateDefault .}}
 	if v := strings.TrimSpace(cliutil.EnvOverride("{{endpointTemplateEnvName .}}")); v != "" {
 		cfg.TemplateVars["{{.}}"] = normalizeEndpointTemplateValue(v)
-	} else {
+	} else if strings.TrimSpace(cfg.TemplateVars["{{.}}"]) == "" {
 		cfg.TemplateVars["{{.}}"] = {{printf "%q" (endpointTemplateDefault .)}}
 	}
 {{- else}}
