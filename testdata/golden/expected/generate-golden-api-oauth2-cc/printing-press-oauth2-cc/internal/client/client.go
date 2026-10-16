@@ -1644,7 +1644,9 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	}
 	// 60s window avoids in-flight requests racing the expiry boundary.
 	// Double-checked lock so only one goroutine mints under contention.
-	if c.needsClientCredentialsMint() {
+	// --dry-run must not mint: do() resolves this header before returning
+	// the preview, and a missing token stays empty until a live call.
+	if !c.DryRun && c.needsClientCredentialsMint() {
 		if c.ccMu == nil {
 			c.ccMu = &sync.Mutex{}
 		}

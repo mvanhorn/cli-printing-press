@@ -42,12 +42,17 @@ func TestFrameworkCommandsHonorDryRun(t *testing.T) {
 				Description: "List items",
 				Response:    spec.ResponseDef{Type: "array"},
 			},
+			"create": {
+				Method:      "POST",
+				Path:        "/items",
+				Description: "Create an item",
+			},
 		},
 	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Import: true}
 	require.NoError(t, gen.Generate())
 
 	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
@@ -119,6 +124,66 @@ func TestFrameworkCommandsHonorDryRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, sentinel, kept, "workflow archive --dry-run --full must not open or rewrite the store")
 
+	var hooks atomic.Int64
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hooks.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hookSrv.Close)
+
+	deliverDir := t.TempDir()
+	deliverPath := filepath.Join(deliverDir, "out.json")
+	deliverSentinel := []byte("sentinel")
+	require.NoError(t, os.WriteFile(deliverPath, deliverSentinel, 0o600))
+	before = hits.Load()
+	_, stderr = run("items", "list", "--dry-run", "--json", "--deliver", "file:"+deliverPath)
+	require.Equal(t, before, hits.Load(), "items list --dry-run --deliver must not dial the API")
+	kept, err = os.ReadFile(deliverPath)
+	require.NoError(t, err)
+	require.Equal(t, deliverSentinel, kept, "items list --dry-run --deliver file: must not rewrite the sink")
+	require.Contains(t, stderr, "dry-run: would deliver to file:")
+
+	missingDeliver := filepath.Join(t.TempDir(), "missing-out.json")
+	_, _ = run("items", "list", "--dry-run", "--json", "--deliver", "file:"+missingDeliver)
+	_, err = os.Stat(missingDeliver)
+	require.ErrorIs(t, err, os.ErrNotExist, "--dry-run --deliver file: must not create the sink")
+
+	before = hits.Load()
+	beforeHooks := hooks.Load()
+	_, stderr = run("doctor", "--dry-run", "--json", "--deliver", "webhook:"+hookSrv.URL)
+	require.Equal(t, before, hits.Load(), "doctor --dry-run --deliver must not dial the API")
+	require.Equal(t, beforeHooks, hooks.Load(), "doctor --dry-run --deliver webhook: must not POST")
+	require.Contains(t, stderr, "dry-run: would deliver to webhook:")
+
+	inputPath := filepath.Join(t.TempDir(), "rows.jsonl")
+	require.NoError(t, os.WriteFile(inputPath, []byte("{\"name\":\"one\"}\n"), 0o600))
+	importDeliver := filepath.Join(t.TempDir(), "import-out.json")
+	before = hits.Load()
+	_, stderr = run("import", "items", "--input", inputPath, "--dry-run", "--json", "--deliver", "file:"+importDeliver)
+	require.Equal(t, before, hits.Load(), "import --dry-run must not dial the API")
+	_, err = os.Stat(importDeliver)
+	require.ErrorIs(t, err, os.ErrNotExist, "import --dry-run must not deliver; a shadowed local flag leaves the root guard off")
+	require.Contains(t, stderr, "dry-run: would deliver to file:")
+
+	feedbackEnv := append(append([]string{}, env...), naming.EnvPrefix(apiSpec.Name)+"_FEEDBACK_ENDPOINT="+hookSrv.URL)
+	feedbackFile := filepath.Join(home, ".local", "share", naming.CLI(apiSpec.Name), "feedback.jsonl")
+	runEnv := func(cmdEnv []string, args ...string) (string, string) {
+		t.Helper()
+		return runFrameworkBinary(t, binaryPath, cmdEnv, args...)
+	}
+	beforeHooks = hooks.Load()
+	stdout, _ = runEnv(feedbackEnv, "feedback", "--send", "--dry-run", "--json", "nope")
+	assertDryRunEnvelope(t, stdout, "feedback")
+	require.Equal(t, beforeHooks, hooks.Load(), "feedback --send --dry-run must not POST")
+	_, err = os.Stat(feedbackFile)
+	require.ErrorIs(t, err, os.ErrNotExist, "feedback --dry-run must not append feedback.jsonl")
+
+	autoEnv := append(append([]string{}, feedbackEnv...), naming.EnvPrefix(apiSpec.Name)+"_FEEDBACK_AUTO_SEND=true")
+	beforeHooks = hooks.Load()
+	stdout, _ = runEnv(autoEnv, "feedback", "--dry-run", "--json", "auto")
+	assertDryRunEnvelope(t, stdout, "feedback")
+	require.Equal(t, beforeHooks, hooks.Load(), "feedback auto-send --dry-run must not POST")
+
 	before = hits.Load()
 	stdout, _ = run("doctor", "--json")
 	require.Greater(t, hits.Load(), before, "doctor without --dry-run must still probe the API")
@@ -143,6 +208,22 @@ func TestFrameworkCommandsHonorDryRun(t *testing.T) {
 	info, err := os.Stat(liveArchiveDB)
 	require.NoError(t, err)
 	require.Greater(t, info.Size(), int64(0))
+
+	liveDeliver := filepath.Join(t.TempDir(), "live-out.json")
+	beforeHooks = hooks.Load()
+	_, _ = run("items", "list", "--json", "--deliver", "webhook:"+hookSrv.URL)
+	require.Greater(t, hooks.Load(), beforeHooks, "deliver webhook without --dry-run must still POST")
+	_, _ = run("items", "list", "--json", "--deliver", "file:"+liveDeliver)
+	info, err = os.Stat(liveDeliver)
+	require.NoError(t, err)
+	require.Greater(t, info.Size(), int64(0), "deliver file without --dry-run must still write")
+
+	beforeHooks = hooks.Load()
+	_, _ = runEnv(feedbackEnv, "feedback", "--send", "ship it")
+	require.Greater(t, hooks.Load(), beforeHooks, "feedback --send without --dry-run must still POST")
+	info, err = os.Stat(feedbackFile)
+	require.NoError(t, err)
+	require.Greater(t, info.Size(), int64(0), "feedback --send without --dry-run must still append the ledger")
 }
 
 func frameworkDryRunEnv(t *testing.T, home, prefix string) []string {

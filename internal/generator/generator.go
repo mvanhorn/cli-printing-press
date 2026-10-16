@@ -4094,7 +4094,7 @@ func parentCommandActions(endpoints map[string]spec.Endpoint) string {
 	}
 	seen := make(map[string]bool, len(endpoints))
 	for name, endpoint := range endpoints {
-		if action := endpointActionVerb(name, endpoint.Method); action != "" {
+		if action := endpointActionVerb(name, endpoint.Method, endpoint.Path); action != "" {
 			seen[action] = true
 		}
 	}
@@ -4108,7 +4108,7 @@ func parentCommandActions(endpoints map[string]spec.Endpoint) string {
 	return joinCommandActions(actions)
 }
 
-func endpointActionVerb(name, method string) string {
+func endpointActionVerb(name, method, path string) string {
 	head := strings.ToLower(name)
 	if i := strings.IndexAny(head, "-_"); i > 0 {
 		head = head[:i]
@@ -4121,7 +4121,12 @@ func endpointActionVerb(name, method string) string {
 	case "GET":
 		return "get"
 	case "POST":
-		return "create"
+		// Action POSTs keep their own name. Claiming create here makes
+		// the parent advertise a verb the command does not have.
+		if spec.CreateShapedPOST(path, name) {
+			return "create"
+		}
+		return ""
 	case "PUT", "PATCH":
 		return "update"
 	case "DELETE":
