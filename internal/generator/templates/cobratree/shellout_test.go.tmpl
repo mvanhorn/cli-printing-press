@@ -1938,9 +1938,11 @@ func TestShellOutSilentFailureSurfacesExecError(t *testing.T) {
 		}
 	})
 	t.Run("permission", func(t *testing.T) {
-		text := shellOutFailureText(t, t.TempDir(), context.Background())
-		if !strings.Contains(text, "permission denied") {
-			t.Fatalf("text = %q, want permission denied", text)
+		dir := t.TempDir()
+		cause := directoryStartError(t, dir)
+		text := shellOutFailureText(t, dir, context.Background())
+		if !strings.Contains(text, cause) {
+			t.Fatalf("text = %q, want exec error %q", text, cause)
 		}
 	})
 	t.Run("canceled", func(t *testing.T) {
@@ -1952,6 +1954,21 @@ func TestShellOutSilentFailureSurfacesExecError(t *testing.T) {
 			t.Fatalf("text = %q, want context canceled", text)
 		}
 	})
+}
+
+// directoryStartError is the OS error from starting a directory. The tool
+// result must keep that text; Unix and Windows phrase it differently.
+func directoryStartError(t *testing.T, dir string) string {
+	t.Helper()
+	err := exec.CommandContext(context.Background(), dir).Run()
+	if err == nil {
+		t.Fatalf("starting %s succeeded", dir)
+	}
+	msg := err.Error()
+	if strings.TrimSpace(msg) == "" {
+		t.Fatalf("starting %s returned an empty error", dir)
+	}
+	return msg
 }
 
 func shellOutFailureText(t *testing.T, bin string, ctx context.Context) string {
