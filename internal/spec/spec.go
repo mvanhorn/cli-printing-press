@@ -1012,19 +1012,18 @@ func (s *APISpec) EffectiveHTTPTransport() string {
 	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return s.HTTPTransport
 	}
-	// Defaults map to the explicit -h2 variant. The bare "browser-chrome"
-	// enum means "no version force"; default-sniffed and
-	// browser-auth-for-HTML specs surface their H/2 force through the
-	// explicit "-h2" enum so the spec field always names the wire
-	// protocol the runtime will pick. browser-sniff overrides this with
-	// HAR-driven mapping in ApplyReachabilityDefaults before
-	// EffectiveHTTPTransport runs.
+	// browser-chrome negotiates h2 and falls back to HTTP/1.1.
+	// browser-chrome-h2 is h2-only and stays opt-in: an explicit field
+	// wins above, cookie/composed HTML auth keeps it, and browser-sniff
+	// writes it from HAR in ApplyReachabilityDefaults before this runs.
+	// Community and sniffed specs with an empty field must still reach
+	// HTTP/1.1-only origins.
 	if s.usesBrowserAuthForHTML() {
 		return HTTPTransportBrowserChromeH2
 	}
 	switch s.SpecSource {
 	case "community", "sniffed":
-		return HTTPTransportBrowserChromeH2
+		return HTTPTransportBrowserChrome
 	default:
 		return HTTPTransportStandard
 	}

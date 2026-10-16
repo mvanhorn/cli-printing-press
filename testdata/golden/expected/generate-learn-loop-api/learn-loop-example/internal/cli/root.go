@@ -189,9 +189,7 @@ func Execute() (retErr error) {
 	}
 	envelopeWritten := writeCredentialSaveErrorEnvelope(envelopeWriter, &flags, err)
 	if envelopeWritten && flags.deliverBuf != nil {
-		if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
-		}
+		_ = deliverCapturedOutput(&flags)
 	}
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
@@ -218,8 +216,7 @@ func Execute() (retErr error) {
 		}
 	}
 	if err == nil && flags.deliverBuf != nil {
-		if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
+		if derr := deliverCapturedOutput(&flags); derr != nil {
 			return derr
 		}
 	}
@@ -233,6 +230,23 @@ func Execute() (retErr error) {
 		return usageErr(err)
 	}
 	return err
+}
+
+// deliverCapturedOutput ships buffered output. --dry-run previews the sink
+// and does not open it: a webhook POST or a file write is a side effect.
+func deliverCapturedOutput(flags *rootFlags) error {
+	if flags == nil || flags.deliverBuf == nil {
+		return nil
+	}
+	if flags.dryRun {
+		fmt.Fprintf(os.Stderr, "dry-run: would deliver to %s:%s\n", flags.deliverSink.Scheme, flags.deliverSink.Target)
+		return nil
+	}
+	if err := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, err)
+		return err
+	}
+	return nil
 }
 
 func writeCredentialSaveErrorEnvelope(w io.Writer, flags *rootFlags, err error) bool {

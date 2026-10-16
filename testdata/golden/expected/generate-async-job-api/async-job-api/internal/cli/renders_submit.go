@@ -23,7 +23,6 @@ func newRendersSubmitCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:         "submit",
-		Aliases:     []string{"create"},
 		Short:       "Submit a render job",
 		Example:     "  async-job-pp-cli renders submit",
 		Args:        cobra.NoArgs,

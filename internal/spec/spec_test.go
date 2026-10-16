@@ -4834,7 +4834,9 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	sniffed := base
 	sniffed.SpecSource = "sniffed"
-	assert.Equal(t, HTTPTransportBrowserChromeH2, sniffed.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
+	assert.True(t, sniffed.UsesBrowserHTTPTransport())
+	assert.False(t, sniffed.UsesBrowserHTTP2Transport())
 	require.NoError(t, sniffed.Validate())
 
 	browserHTTP := base
@@ -4847,7 +4849,14 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	community := base
 	community.SpecSource = "community"
-	assert.Equal(t, HTTPTransportBrowserChromeH2, community.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
+	assert.True(t, community.UsesBrowserHTTPTransport())
+	assert.False(t, community.UsesBrowserHTTP2Transport())
+
+	communityH2 := community
+	communityH2.HTTPTransport = HTTPTransportBrowserChromeH2
+	assert.Equal(t, HTTPTransportBrowserChromeH2, communityH2.EffectiveHTTPTransport())
+	assert.True(t, communityH2.UsesBrowserHTTP2Transport())
 
 	browserChrome := base
 	browserChrome.HTTPTransport = HTTPTransportBrowserChrome

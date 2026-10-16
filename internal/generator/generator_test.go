@@ -2166,6 +2166,8 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"client_credentials spec initializes the shared unknown-expiry cap")
 	assert.Contains(t, body, "c.ccMu.Lock()",
 		"authHeader takes the mint mutex before re-checking the window")
+	assert.Contains(t, body, "!c.DryRun && c.needsClientCredentialsMint()",
+		"--dry-run must not mint a client-credentials token")
 }
 
 func TestGenerateOAuth2AuthorizationCodeClientRefreshUnchanged(t *testing.T) {
@@ -2931,8 +2933,7 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	assert.Contains(t, clientGo, "return chromeClient(timeout, jar, skipTLSVerify)")
 
 	chromeGo := readGeneratedFile(t, outputDir, "internal", "client", "chrome.go")
-	assert.Contains(t, chromeGo, `chromeALPN = []string{"h2"}`)
-	assert.NotContains(t, chromeGo, `"http/1.1"`)
+	assert.Contains(t, chromeGo, `chromeALPN = []string{"h2", "http/1.1"}`)
 	assert.Contains(t, chromeGo, "chromeHeaderTripper{")
 	assert.Contains(t, chromeGo, "context.AfterFunc")
 	assert.Contains(t, chromeGo, "httpproxy.FromEnvironment()")

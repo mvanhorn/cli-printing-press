@@ -77,6 +77,10 @@ func TestGeneratedRESTImportStaysREST(t *testing.T) {
 		"REST import.go must keep issuing POST requests")
 	assert.NotContains(t, importGo, "import is not supported for",
 		"REST import.go must not carry the GraphQL unsupported error")
+	assert.NotContains(t, importGo, `cmd.Flags().BoolVar(&dryRun, "dry-run"`,
+		"REST import must use the root --dry-run flag so deliver and auth see the same guard")
+	assert.Contains(t, importGo, "--dry-run",
+		"REST import examples still document the root dry-run flag")
 
 	requireGeneratedCompiles(t, outputDir)
 }
