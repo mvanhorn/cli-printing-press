@@ -131,6 +131,8 @@ func TestGeneratedSyncDisambiguatesDependentFromUnresolvedCollection(t *testing.
 	assert.Contains(t, syncSrc, `{Name: "groups_users_get", ParentTable: "groups", ParentIDParam: "group_id", PathTemplate: "/groups/{group_id}/users"`)
 	assert.NotContains(t, syncSrc, `{Name: "groups_users", ParentTable: "groups"`)
 	assert.Contains(t, syncSrc, `{Name: "messages", ParentTable: "channels"`)
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func groupMembersCollisionSpec() *spec.APISpec {
