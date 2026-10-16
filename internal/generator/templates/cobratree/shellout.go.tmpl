@@ -77,7 +77,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		out, err := RunCLICommand(ctx, lookupPath, finalArgs)
 		if err != nil {
-			return ToolResultFromCLIFailure(out), nil
+			return ToolResultFromCLIFailure(out, err), nil
 		}
 		return ToolResultFromCLICommand(out), nil
 	}
@@ -296,16 +296,14 @@ func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 				out = append(out, "--"+k+"="+tv)
 			}
 		case []any:
-			// One --flag=value per item. Comma-joining would collapse a
-			// stringArray (it does not split on commas) into a single value.
+			// One --flag=value per item, including "". Comma-joining would
+			// collapse a stringArray (it does not split on commas) into one
+			// value, and dropping an empty item would leave a nonempty default.
 			for _, item := range tv {
 				if item == nil {
 					continue
 				}
 				part := fmt.Sprintf("%v", item)
-				if part == "" {
-					continue
-				}
 				out = append(out, "--"+k+"="+part)
 			}
 		default:
@@ -377,12 +375,16 @@ func ToolResultFromCLICommand(result CLICommandResult) *mcplib.CallToolResult {
 // ToolResultFromCLIFailure marks the call as an error and keeps stdout in the
 // first content block. Cobra writes "Error:" to stderr on a non-zero exit, so
 // a stderr-only result would drop a JSON envelope or typed-exit receipt.
-func ToolResultFromCLIFailure(result CLICommandResult) *mcplib.CallToolResult {
+// When both streams are empty, err is the exec failure from RunCLICommand.
+func ToolResultFromCLIFailure(result CLICommandResult, err error) *mcplib.CallToolResult {
 	stdout := strings.TrimSpace(result.Stdout)
 	stderr := strings.TrimSpace(result.Stderr)
 	first := stdout
 	if first == "" {
 		first = stderr
+	}
+	if first == "" && err != nil && err.Error() != "" {
+		first = err.Error()
 	}
 	if first == "" {
 		first = "command failed"
