@@ -166,9 +166,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +4: store_adopt_{linux,darwin,windows,other}.go. Not always-emitted:
 		// only a local store plus credential auth. All three fixtures qualify.
 		// +2: cliutil.EncodeQuery and its test.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 187},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 191},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 188},
+		// +1: creds_perms_windows_test.go, the Windows SDDL alias resolver
+		// test. Auth-gated, so it lands for every token-bearing spec.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 188},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 192},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 189},
 	}
 
 	for _, tt := range tests {
