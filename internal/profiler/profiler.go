@@ -814,9 +814,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	// Unresolved collections are syncable names too. Reserving them first
+	// forces a colliding dependent onto a suffix instead of aborting later.
+	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	uniquifyDependentResourceNames(p.DependentSyncResources, syncable)
 	sortDependentResources(p.DependentSyncResources, nil)
-	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
 	warnUndeterminablePagination(p.SyncableResources, p.DependentSyncResources)
 	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
