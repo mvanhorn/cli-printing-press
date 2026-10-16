@@ -814,9 +814,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	// Unresolved collections are syncable names too. Reserving them first
+	// forces a colliding dependent onto a suffix instead of aborting later.
+	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	uniquifyDependentResourceNames(p.DependentSyncResources, syncable)
 	sortDependentResources(p.DependentSyncResources, nil)
-	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
 	warnUndeterminablePagination(p.SyncableResources, p.DependentSyncResources)
 	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
@@ -1936,18 +1938,20 @@ func uniquifyDependentResourceNames(deps []DependentResource, syncable map[strin
 	for name := range syncable {
 		used[name] = true
 	}
+	// flatSyncResources drops flat entries whose names match a dependent, so a
+	// singleton that reuses a top-level name has to be renamed like a duplicate.
 	for name, count := range counts {
-		if count == 1 {
+		if _, collides := syncable[name]; count == 1 && !collides {
 			used[name] = true
 		}
 	}
 
 	for _, name := range sortedKeys(counts) {
-		count := counts[name]
-		if count < 2 {
+		_, collides := syncable[name]
+		if counts[name] < 2 && !collides {
 			continue
 		}
-		indices := make([]int, 0, count)
+		indices := make([]int, 0, counts[name])
 		for i := range deps {
 			if deps[i].Name == name {
 				indices = append(indices, i)

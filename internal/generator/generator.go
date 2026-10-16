@@ -2879,6 +2879,9 @@ func (g *Generator) prepareOutput() error {
 		g.resetHTMLSyncStubCache()
 	}
 	promoteSyncPathContextVars(g.Spec, g.profile)
+	if err := g.validateDependentSyncNames(); err != nil {
+		return err
+	}
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -6194,6 +6197,36 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	}
 
 	return nil
+}
+
+// validateDependentSyncNames fails generation when a dependent resource
+// keeps the name of a top-level sync resource. flatSyncResources would
+// then drop that top-level resource and report a successful empty sync.
+func (g *Generator) validateDependentSyncNames() error {
+	if g == nil || g.profile == nil {
+		return nil
+	}
+	syncable := make(map[string]struct{}, len(g.profile.SyncableResources))
+	for _, resource := range g.profile.SyncableResources {
+		syncable[resource.Name] = struct{}{}
+	}
+	var collisions []string
+	seen := make(map[string]struct{})
+	for _, dep := range g.profile.DependentSyncResources {
+		if _, ok := syncable[dep.Name]; !ok {
+			continue
+		}
+		if _, dup := seen[dep.Name]; dup {
+			continue
+		}
+		seen[dep.Name] = struct{}{}
+		collisions = append(collisions, dep.Name)
+	}
+	if len(collisions) == 0 {
+		return nil
+	}
+	sort.Strings(collisions)
+	return fmt.Errorf("dependent sync resource name collides with a top-level sync resource: %s", strings.Join(collisions, ", "))
 }
 
 func (g *Generator) validateFreshnessCommandCoverage() error {

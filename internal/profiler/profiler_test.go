@@ -2169,6 +2169,190 @@ func TestUniquifyDependentResourceNamesUsesDeterministicFallbacks(t *testing.T) 
 	assert.Equal(t, "root_beta_child", deps[1].Name)
 }
 
+func TestUniquifyDependentResourceNamesRenamesSyncableCollision(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "groups", ParentResource: "groups", Path: "/groups/{group_id}/users", Method: "GET"},
+		{Name: "messages", ParentResource: "channels", Path: "/channels/{channel_id}/messages", Method: "GET"},
+		{Name: "roles", ParentResource: "groups", Path: "/groups/{group_id}/users/{user_id}/roles", parentPath: "/groups/{group_id}/users", Method: "GET"},
+		{Name: "policies", ParentResource: "groups", Path: "/groups/{group_id}/policies", parentPath: "/groups", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{
+		"groups":   {Path: "/groups"},
+		"channels": {Path: "/channels"},
+	})
+
+	assert.Equal(t, "groups_users", deps[0].Name)
+	assert.Equal(t, "messages", deps[1].Name, "a dependent that does not collide keeps its name")
+	assert.Equal(t, "groups_users", deps[2].ParentResource)
+	assert.Equal(t, "groups", deps[3].ParentResource, "children of the top-level resource stay parented there")
+}
+
+func TestUniquifyDependentResourceNamesSuffixesTakenSyncableCandidate(t *testing.T) {
+	deps := []DependentResource{
+		{Name: "groups_users", ParentResource: "directories", Path: "/directories/{directory_id}/groups_users", Method: "GET"},
+		{Name: "groups", ParentResource: "groups", Path: "/groups/{group_id}/users", Method: "GET"},
+	}
+
+	uniquifyDependentResourceNames(deps, map[string]syncableMeta{
+		"groups": {Path: "/groups"},
+	})
+
+	assert.Equal(t, "groups_users", deps[0].Name)
+	assert.Equal(t, "groups_users_get", deps[1].Name)
+}
+
+func TestProfileDependentNamedLikeSyncableResource(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "group-members",
+		Resources: map[string]spec.Resource{
+			"groups": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/groups",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+					"users": {
+						Method:     "GET",
+						Path:       "/groups/{group_id}/users",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "group_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channel_id}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "channel_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncable := map[string]bool{}
+	for _, resource := range profile.SyncableResources {
+		syncable[resource.Name] = !resource.SkipDefaultSync
+	}
+	assert.True(t, syncable["groups"], "the top-level groups list stays syncable")
+	assert.True(t, syncable["channels"])
+	assert.NotContains(t, syncable, "groups_users")
+
+	depsByPath := map[string]DependentResource{}
+	for _, dep := range profile.DependentSyncResources {
+		depsByPath[dep.Path] = dep
+		assert.NotContains(t, syncable, dep.Name, "dependent %s must not reuse a syncable name", dep.Path)
+	}
+	require.Contains(t, depsByPath, "/groups/{group_id}/users")
+	assert.Equal(t, "groups_users", depsByPath["/groups/{group_id}/users"].Name)
+	assert.Equal(t, "groups", depsByPath["/groups/{group_id}/users"].ParentResource)
+	require.Contains(t, depsByPath, "/channels/{channel_id}/messages")
+	assert.Equal(t, "messages", depsByPath["/channels/{channel_id}/messages"].Name)
+	assert.Equal(t, "channels", depsByPath["/channels/{channel_id}/messages"].ParentResource)
+}
+
+func TestProfileUnresolvedCollectionReservesDependentName(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "group-members",
+		Resources: map[string]spec.Resource{
+			"groups": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/groups",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+					"users": {
+						Method:     "GET",
+						Path:       "/groups/{group_id}/users",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "group_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"groups_users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/projects/{project_id}/members",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "project_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channel_id}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "channel_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "groups")
+	assert.False(t, byName["groups"].SkipDefaultSync)
+	assert.Equal(t, "/groups", byName["groups"].Path)
+	require.Contains(t, byName, "groups_users")
+	assert.True(t, byName["groups_users"].SkipDefaultSync, "unresolved parent path stays opt-in")
+	assert.Equal(t, "/projects/{project_id}/members", byName["groups_users"].Path)
+
+	depsByPath := map[string]DependentResource{}
+	for _, dep := range profile.DependentSyncResources {
+		depsByPath[dep.Path] = dep
+		_, collides := byName[dep.Name]
+		assert.Falsef(t, collides, "dependent %s name %s collides with a top-level resource", dep.Path, dep.Name)
+	}
+	require.Contains(t, depsByPath, "/groups/{group_id}/users")
+	assert.Equal(t, "groups_users_get", depsByPath["/groups/{group_id}/users"].Name)
+	assert.Equal(t, "groups", depsByPath["/groups/{group_id}/users"].ParentResource)
+	require.Contains(t, depsByPath, "/channels/{channel_id}/messages")
+	assert.Equal(t, "messages", depsByPath["/channels/{channel_id}/messages"].Name)
+	assert.NotContains(t, depsByPath, "/projects/{project_id}/members")
+}
+
 // TestProfileDependentResources_MultiParamParentPath confirms the walk-context
 // parent (from the SubResources tree) wins over the path-param heuristic when
 // the path has multiple params and the first one does not match a syncable
