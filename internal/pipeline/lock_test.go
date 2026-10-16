@@ -820,8 +820,10 @@ func TestPromoteWorkingCLI_PatchUnionFailureLeavesLibraryUntouched(t *testing.T)
 
 	_, err := PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "preserving library-only patches")
+	assert.Contains(t, err.Error(), PatchesDirName)
+	assert.Contains(t, err.Error(), "not a directory")
 	assert.FileExists(t, filepath.Join(libDir, "sentinel.txt"))
+	assert.FileExists(t, filepath.Join(libPatches, "library-only.json"))
 	_, statErr := os.Stat(libDir + ".promoting")
 	assert.True(t, os.IsNotExist(statErr))
 }

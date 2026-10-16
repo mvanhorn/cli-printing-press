@@ -256,7 +256,7 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		return nil, err
 	}
 	if !sameTarget {
-		if _, err := refreshPromoteArtifacts(workingDir, cliName); err != nil {
+		if err := refreshPromoteArtifactsKeepingPatchedManifests(workingDir, cliName, libraryDir); err != nil {
 			return nil, fmt.Errorf("refreshing staged artifacts: %w", err)
 		}
 	}
@@ -282,7 +282,7 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("copying to staging directory: %w", err))
 	}
 	if sameTarget {
-		if _, err := refreshPromoteArtifacts(stagingDir, cliName); err != nil {
+		if err := refreshPromoteArtifactsKeepingPatchedManifests(stagingDir, cliName, libraryDir); err != nil {
 			_ = os.RemoveAll(stagingDir)
 			return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("refreshing staged artifacts: %w", err))
 		}
@@ -321,6 +321,16 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("staging runstate manuscripts: %w", err))
 	}
 
+	// Snapshot after the patch gate and before spec regeneration. writeCLIManifest
+	// replaces tools-manifest.json and EnsureMCPBManifest replaces manifest.json;
+	// a recorded hand-fix that just passed the gate has to be put back or the
+	// library copy ships the regenerated file.
+	patchedManifests, err := snapshotPatchedMCPManifests(stagingDir)
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("reading patched MCP manifests: %w", err))
+	}
+
 	// Update state to reflect promotion.
 	state.PublishedDir = libraryDir
 
@@ -345,9 +355,20 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		_ = os.RemoveAll(stagingDir)
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("writing MCPB manifest to staging: %w", err))
 	}
+	if err := restorePatchedMCPManifests(stagingDir, patchedManifests); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("restoring patched MCP manifests: %w", err))
+	}
 	if _, err := syncPromoteBundle(stagingDir, cliName); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("syncing MCPB bundle in staging: %w", err))
+	}
+	// The gate above ran on the pre-regeneration tree. Check the tree that
+	// is about to be swapped in so a later writer cannot drop a recorded
+	// call site and still promote.
+	if err := ValidatePatchRecords(stagingDir); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("recorded patches no longer match the tree being promoted: %w", err))
 	}
 
 	// Remove any stale backup from a prior successful swap before we create a
@@ -392,6 +413,96 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 	_ = os.RemoveAll(backupDir)
 
 	return finishPromote(cliName, libraryDir, state, preservedPatches)
+}
+
+// refreshPromoteArtifactsKeepingPatchedManifests runs the promote artifact
+// refresh, then puts back manifest.json when a recorded patch claims it.
+// The refresh rewrites that file and packs it into the .mcpb before the
+// patch gate runs; without the restore, the gate fails on a hand-fix that
+// was present when promote started. libraryDir is consulted only for patch
+// records that dir does not have yet: those records are copied in after
+// this refresh, so a hand-fix they describe has to be snapshotted now.
+func refreshPromoteArtifactsKeepingPatchedManifests(dir, cliName, libraryDir string) error {
+	extra, err := libraryOnlyPatchRecords(libraryDir, dir)
+	if err != nil {
+		return err
+	}
+	snaps, err := snapshotPatchedMCPManifestsFrom(dir, extra)
+	if err != nil {
+		return err
+	}
+	if _, err := refreshPromoteArtifacts(dir, cliName); err != nil {
+		if restoreErr := restorePatchedMCPManifests(dir, snaps); restoreErr != nil {
+			return fmt.Errorf("%w; restoring patched MCP manifests: %v", err, restoreErr)
+		}
+		return err
+	}
+	if err := restorePatchedMCPManifests(dir, snaps); err != nil {
+		return err
+	}
+	if _, ok := snaps[MCPBManifestFilename]; !ok {
+		return nil
+	}
+	if _, err := syncPromoteBundle(dir, cliName); err != nil {
+		return fmt.Errorf("repacking MCPB bundle after restoring patched manifest: %w", err)
+	}
+	return nil
+}
+
+// snapshotPatchedMCPManifests copies manifest.json and tools-manifest.json
+// when a patch record lists them. Other patched paths are left to the
+// patch gate; these two are the files promote regenerates from the spec.
+func snapshotPatchedMCPManifests(dir string) (map[string][]byte, error) {
+	return snapshotPatchedMCPManifestsFrom(dir, nil)
+}
+
+// snapshotPatchedMCPManifestsFrom is snapshotPatchedMCPManifests with extra
+// claims. File bytes still come from dir, not from the record's source tree.
+func snapshotPatchedMCPManifestsFrom(dir string, extra []PatchRecord) (map[string][]byte, error) {
+	records, err := LoadPatchRecords(dir)
+	if err != nil {
+		return nil, err
+	}
+	records = append(records, extra...)
+	claimed := make(map[string]struct{})
+	for _, rec := range records {
+		for _, raw := range rec.Files {
+			rel, pathErr := safePatchRelPath(raw)
+			if pathErr != nil || !isRegeneratedMCPManifest(rel) {
+				continue
+			}
+			claimed[rel] = struct{}{}
+		}
+	}
+	if len(claimed) == 0 {
+		return nil, nil
+	}
+	snaps := make(map[string][]byte, len(claimed))
+	for name := range claimed {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading %s: %w", name, err)
+		}
+		snaps[name] = data
+	}
+	return snaps, nil
+}
+
+func isRegeneratedMCPManifest(rel string) bool {
+	return rel == MCPBManifestFilename || rel == ToolsManifestFilename
+}
+
+func restorePatchedMCPManifests(dir string, snaps map[string][]byte) error {
+	for name, data := range snaps {
+		path := filepath.Join(dir, name)
+		if err := writeFileAtomic(path, data, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func sameDirectory(a, b string) (bool, error) {
@@ -466,6 +577,58 @@ type PromoteResult struct {
 // do not need promote details.
 func PromoteWorkingCLIWithResult(cliName, workingDir string, state *PipelineState) (*PromoteResult, error) {
 	return promoteWorkingCLI(cliName, workingDir, state)
+}
+
+// libraryOnlyPatchRecords returns patch files that preserveLibraryOnlyPatches
+// will copy from libraryDir into workingDir. The working tree can already
+// contain the edited manifest those records describe; the refresh that runs
+// before the copy has to see the records or it erases that edit.
+func libraryOnlyPatchRecords(libraryDir, workingDir string) ([]PatchRecord, error) {
+	if libraryDir == "" {
+		return nil, nil
+	}
+	workingPatches := filepath.Join(workingDir, PatchesDirName)
+	info, err := os.Stat(workingPatches)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err == nil && !info.IsDir() {
+		// preserveLibraryOnlyPatches reports this path. Reading the library
+		// records here would replace that error with a parse failure.
+		return nil, nil
+	}
+
+	libraryPatches := filepath.Join(libraryDir, PatchesDirName)
+	entries, err := os.ReadDir(libraryPatches)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var records []PatchRecord
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || name == PatchesGitKeepName || name == PatchesMetadataFilename {
+			continue
+		}
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(workingPatches, name)); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		rel := filepath.ToSlash(filepath.Join(PatchesDirName, name))
+		rec, err := loadPatchRecordFile(filepath.Join(libraryPatches, name), rel)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, rec)
+	}
+	return records, nil
 }
 
 func preserveLibraryOnlyPatches(libraryDir, stagingDir string) ([]string, error) {
