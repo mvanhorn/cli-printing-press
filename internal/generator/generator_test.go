@@ -166,9 +166,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +4: store_adopt_{linux,darwin,windows,other}.go. Not always-emitted:
 		// only a local store plus credential auth. All three fixtures qualify.
 		// +2: cliutil.EncodeQuery and its test.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 187},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 191},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 188},
+		// +1: creds_perms_windows_test.go, the Windows SDDL alias resolver
+		// test. Auth-gated, so it lands for every token-bearing spec.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 188},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 192},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 189},
 	}
 
 	for _, tt := range tests {
@@ -18822,12 +18824,14 @@ func freshserviceTemplateVarsTestSpec() *spec.APISpec {
 // base-URL substitution path. When servers[0].url declares a `{var}`
 // placeholder with a `default:` value, config.Load must:
 //   - substitute the env-var value (normalized) into Config.TemplateVars
-//     when the env var is set, and
-//   - fall back to the spec-declared default when the env var is unset,
+//     when the env var is set,
+//   - keep a value already stored in template_vars when the env var is unset, and
+//   - fall back to the spec-declared default only when neither is set,
 //
 // so doctor and verify probe a real-shaped URL instead of one with a
 // literal {domain} in it. The normalizer strips scheme + trailing slash
-// because users routinely paste browser-bar URLs into shell exports.
+// because users routinely paste browser-bar URLs into shell exports. A later
+// save must persist the saved host, not the spec default.
 func TestGenerateEndpointTemplateVarsDefaultFallback(t *testing.T) {
 	t.Parallel()
 
@@ -18841,6 +18845,8 @@ func TestGenerateEndpointTemplateVarsDefaultFallback(t *testing.T) {
 	configGoStr := string(configGo)
 	assert.Contains(t, configGoStr, `cfg.TemplateVars["domain"] = "yourcompany.freshservice.com"`,
 		"config.Load must bake the spec default as the env-var-unset fallback")
+	assert.Contains(t, configGoStr, `strings.TrimSpace(cfg.TemplateVars["domain"]) == ""`,
+		"a value already stored in template_vars must win over the spec default")
 	assert.Contains(t, configGoStr, "normalizeEndpointTemplateValue",
 		"config.go must emit the normalizer helper when a server-URL default is present")
 	assert.NotContains(t, configGoStr, `BaseURL: "https://yourcompany.freshservice.com/api/v2"`,
@@ -18856,6 +18862,7 @@ func TestGenerateEndpointTemplateVarsDefaultFallback(t *testing.T) {
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18892,6 +18899,74 @@ func TestLoadDomainEnvVarOverridesDefault(t *testing.T) {
 	}
 }
 
+func TestLoadDomainSavedValueBeatsSpecDefault(t *testing.T) {
+	clearFreshserviceEnv(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	body := "[template_vars]\ndomain = \"acme.freshservice.com\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "acme.freshservice.com" {
+		t.Fatalf("saved template var = %q, want acme.freshservice.com", got)
+	}
+	if err := cfg.save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "acme.freshservice.com") {
+		t.Fatalf("save dropped the saved host:\n%s", text)
+	}
+	if strings.Contains(text, "yourcompany.freshservice.com") {
+		t.Fatalf("save persisted the spec default:\n%s", text)
+	}
+	again, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := again.TemplateVars["domain"]; got != "acme.freshservice.com" {
+		t.Fatalf("reload template var = %q, want acme.freshservice.com", got)
+	}
+}
+
+func TestLoadDomainBlankSavedValueUsesSpecDefault(t *testing.T) {
+	clearFreshserviceEnv(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[template_vars]\ndomain = \"   \"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "yourcompany.freshservice.com" {
+		t.Fatalf("blank saved value = %q, want spec default", got)
+	}
+}
+
+func TestLoadDomainEnvBeatsSavedValue(t *testing.T) {
+	clearFreshserviceEnv(t)
+	t.Setenv("FRESHSERVICE_DOMAIN", "https://from-env.freshservice.com/")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[template_vars]\ndomain = \"acme.freshservice.com\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "from-env.freshservice.com" {
+		t.Fatalf("env var = %q, want normalized env host", got)
+	}
+}
+
 func TestLoadDomainNormalizesPastedURL(t *testing.T) {
 	cases := []struct {
 		input string
@@ -18925,6 +19000,43 @@ func TestLoadDomainNormalizesPastedURL(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "config", "domain_fallback_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadDomain")
+
+	clientTest := strings.ReplaceAll(`package client
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	cfgpkg "__MODULE__/internal/config"
+)
+
+func TestRequestURLUsesSavedDomain(t *testing.T) {
+	t.Setenv("FRESHSERVICE_DOMAIN", "")
+	t.Setenv("FRESHSERVICE_BASE_URL", "")
+	t.Setenv("FRESHSERVICE_CONFIG", "")
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[template_vars]\ndomain = \"acme.freshservice.com\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := buildURL(cfg.BaseURL, "/tickets", cfg.TemplateVars)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	const want = "https://acme.freshservice.com/api/v2/tickets"
+	if got != want {
+		t.Fatalf("request URL = %q, want %q", got, want)
+	}
+}
+`, "__MODULE__", generatedModulePath(t, outputDir))
+	clientTestPath := filepath.Join(outputDir, "internal", "client", "saved_domain_url_test.go")
+	require.NoError(t, os.WriteFile(clientTestPath, []byte(clientTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestRequestURLUsesSavedDomain", "-count=1")
 }
 
 // TestGenerateEndpointTemplateDefaultIsEscaped guards against a malicious
