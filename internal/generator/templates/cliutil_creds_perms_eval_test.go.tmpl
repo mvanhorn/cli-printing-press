@@ -7,33 +7,71 @@ package cliutil
 import "testing"
 
 func TestEvalCredsSecurity(t *testing.T) {
-	const me = "S-1-5-21-1-2-3-1000"
+	const ordinary = "S-1-5-21-1-2-3-1000"
+	const builtinAdmin = "S-1-5-21-1-2-3-500"
+	// LA is the built-in Administrator on this synthetic machine. A real
+	// Windows shell resolves it with ConvertStringSidToSid; tests inject the
+	// mapping so the check runs on any OS.
+	resolveLA := func(alias string) (string, bool) {
+		if alias == "LA" {
+			return builtinAdmin, true
+		}
+		return "", false
+	}
 	cases := []struct {
 		name    string
 		sddl    string
+		user    string
+		resolve sddlAliasResolver
 		wantErr bool
 	}{
-		{"owner-me restrictive DACL", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
-		{"deny ACE does not grant access", "O:S-1-5-21-1-2-3-1000D:(D;;FR;;;WD)(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
-		{"object-deny ACE does not grant access", "O:S-1-5-21-1-2-3-1000D:(OD;;FR;;;WD)(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
-		{"broad group Everyone", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;WD)", true},
-		{"broad group Users by SID", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-32-545)", true},
-		{"foreign owner", "O:S-1-5-21-9-9-9-500D:(A;;FA;;;S-1-5-21-1-2-3-1000)", true},
-		{"foreign named user ACE", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-2000)", true},
-		{"admins owner carve-out", "O:BAD:(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
-		{"null DACL", "O:S-1-5-21-1-2-3-1000D:NO_ACCESS_CONTROL", true},
-		{"unparseable conditional ACE", "O:S-1-5-21-1-2-3-1000D:(XA;;FA;;;S-1-5-21-1-2-3-1000;(Member_of{SID(BA)}))", true},
+		{"owner-me restrictive DACL", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-1000)", ordinary, nil, false},
+		{"deny ACE does not grant access", "O:S-1-5-21-1-2-3-1000D:(D;;FR;;;WD)(A;;FA;;;S-1-5-21-1-2-3-1000)", ordinary, nil, false},
+		{"object-deny ACE does not grant access", "O:S-1-5-21-1-2-3-1000D:(OD;;FR;;;WD)(A;;FA;;;S-1-5-21-1-2-3-1000)", ordinary, nil, false},
+		{"broad group Everyone", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;WD)", ordinary, nil, true},
+		{"broad group Users by SID", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-32-545)", ordinary, nil, true},
+		{"foreign owner", "O:S-1-5-21-9-9-9-500D:(A;;FA;;;S-1-5-21-1-2-3-1000)", ordinary, nil, true},
+		{"foreign named user ACE", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-2000)", ordinary, nil, true},
+		{"admins owner carve-out", "O:BAD:(A;;FA;;;S-1-5-21-1-2-3-1000)", ordinary, nil, false},
+		{"null DACL", "O:S-1-5-21-1-2-3-1000D:NO_ACCESS_CONTROL", ordinary, nil, true},
+		{"null DACL protected auto-inherit flags", "O:S-1-5-21-1-2-3-1000D:PAINO_ACCESS_CONTROL", ordinary, nil, true},
+		{"null DACL protected flag", "O:S-1-5-21-1-2-3-1000D:PNO_ACCESS_CONTROL", ordinary, nil, true},
+		{"null DACL auto-inherit flag", "O:S-1-5-21-1-2-3-1000D:AINO_ACCESS_CONTROL", ordinary, nil, true},
+		{"empty DACL with null SACL", "O:BAD:S:NO_ACCESS_CONTROL", ordinary, nil, false},
+		{"unparseable conditional ACE", "O:S-1-5-21-1-2-3-1000D:(XA;;FA;;;S-1-5-21-1-2-3-1000;(Member_of{SID(BA)}))", ordinary, nil, true},
+		{"unparseable DACL flags", "O:S-1-5-21-1-2-3-1000D:ZZ(A;;FA;;;S-1-5-21-1-2-3-1000)", ordinary, nil, true},
+		{"ACE with extra field", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-1000;extra)", ordinary, nil, true},
+		{"unresolvable alias ACE", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;ZZ)", ordinary, resolveLA, true},
 		// Captured-real-SDDL pin: the shape GetNamedSecurityInfo emits for an
 		// owner-locked file — G: group field, D:PAI protected-auto-inherit flag,
 		// plus SYSTEM + Administrators ACEs.
-		{"real protected DACL (PAI + SYSTEM/Admins)", "O:S-1-5-21-1-2-3-1000G:S-1-5-21-1-2-3-513D:PAI(A;;FA;;;S-1-5-21-1-2-3-1000)(A;;FA;;;SY)(A;;FA;;;BA)", false},
+		{"real protected DACL (PAI + SYSTEM/Admins)", "O:S-1-5-21-1-2-3-1000G:S-1-5-21-1-2-3-513D:PAI(A;;FA;;;S-1-5-21-1-2-3-1000)(A;;FA;;;SY)(A;;FA;;;BA)", ordinary, nil, false},
+		{"builtin admin owner LA", "O:LAD:PAI(A;;FA;;;LA)", builtinAdmin, resolveLA, false},
+		{"builtin admin inherited SYSTEM/BA/LA", "O:BAD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;LA)", builtinAdmin, resolveLA, false},
+		{"builtin admin LA compared as text", "O:BAD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;LA)", builtinAdmin, nil, true},
+		{"builtin admin LA plus another user", "O:LAD:PAI(A;;FA;;;LA)(A;;FA;;;S-1-5-21-9-9-9-1000)", builtinAdmin, resolveLA, true},
+		{"builtin admin LA plus Everyone", "O:LAD:PAI(A;;FA;;;LA)(A;;FA;;;WD)", builtinAdmin, resolveLA, true},
+		{"builtin admin LA plus Users", "O:LAD:PAI(A;;FA;;;LA)(A;;FA;;;BU)", builtinAdmin, resolveLA, true},
+		{"builtin admin null DACL flags first", "O:LAD:PAINO_ACCESS_CONTROL", builtinAdmin, resolveLA, true},
+		{"ordinary user LA owner", "O:LAD:PAI(A;;FA;;;LA)", ordinary, resolveLA, true},
+		{"ordinary user LA ace", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-1000)(A;;FA;;;LA)", ordinary, resolveLA, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := evalCredsSecurity(c.sddl, me)
+			err := evalCredsSecurityResolved(c.sddl, c.user, c.resolve)
 			if (err != nil) != c.wantErr {
-				t.Fatalf("evalCredsSecurity(%q) err=%v want wantErr=%v", c.sddl, err, c.wantErr)
+				t.Fatalf("evalCredsSecurityResolved(%q) err=%v want wantErr=%v", c.sddl, err, c.wantErr)
 			}
 		})
+	}
+}
+
+func TestEvalCredsSecurityNilResolver(t *testing.T) {
+	const builtinAdmin = "S-1-5-21-1-2-3-500"
+	if err := evalCredsSecurity("O:BAD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;LA)", builtinAdmin); err == nil {
+		t.Fatal("nil resolver accepted the built-in Administrator alias LA as text")
+	}
+	if err := evalCredsSecurity("O:S-1-5-21-1-2-3-1000D:PAINO_ACCESS_CONTROL", "S-1-5-21-1-2-3-1000"); err == nil {
+		t.Fatal("nil resolver accepted a flags-first NULL DACL")
 	}
 }

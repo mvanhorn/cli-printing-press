@@ -7,11 +7,14 @@
 // S1 (Windows): refuse to load a persisted token/credentials file whose owner or
 // DACL is unsafe. `chmod 0600` is a no-op on NTFS, so we read the security
 // descriptor, render it to SDDL, derive the current-user SID from the process
-// token, and delegate to the pure evalCredsSecurity evaluator.
+// token, and delegate to the pure evalCredsSecurityResolved evaluator.
+// Machine-local SDDL aliases (LA for the built-in Administrator) are resolved
+// to SIDs here; the evaluator compares SIDs, not alias text.
 package cliutil
 
 import (
 	"fmt"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -30,6 +33,27 @@ func currentUserSID() (string, error) {
 	return u.User.Sid.String(), nil
 }
 
+// resolveSDDLAlias maps an SDDL alias to a SID via ConvertStringSidToSid.
+// The alias counts only when rendering that SID back to SDDL produces the same
+// alias. A resolver/renderer mismatch fails closed instead of matching a
+// different account.
+func resolveSDDLAlias(alias string) (string, bool) {
+	sid, err := windows.StringToSid(alias)
+	if err != nil {
+		return "", false
+	}
+	s := sid.String()
+	sd, err := windows.SecurityDescriptorFromString("O:" + s)
+	if err != nil {
+		return "", false
+	}
+	m := ownerRe.FindStringSubmatch(sd.String())
+	if m == nil || !strings.EqualFold(m[1], alias) {
+		return "", false
+	}
+	return s, true
+}
+
 // VerifyCredsPerms returns a non-nil error if path's owner/DACL is unsafe for a
 // secret file. The error names remediation only — NEVER the file contents (S3).
 func VerifyCredsPerms(path string) error {
@@ -45,5 +69,5 @@ func VerifyCredsPerms(path string) error {
 	if err != nil {
 		return fmt.Errorf("cannot resolve current user SID: %w", err)
 	}
-	return evalCredsSecurity(sd.String(), me)
+	return evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias)
 }
