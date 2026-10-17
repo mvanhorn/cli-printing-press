@@ -101,7 +101,7 @@ If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), i
 
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -184,6 +184,15 @@ learn-disabled-example-pp-cli doctor
 
 Under `LEARN_DISABLED_EXAMPLE_HOME=/srv/learn-disabled-example`, the four dirs resolve to `/srv/learn-disabled-example/config`, `/srv/learn-disabled-example/data`, `/srv/learn-disabled-example/state`, and `/srv/learn-disabled-example/cache`.
 
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:LEARN_DISABLED_EXAMPLE_HOME = "C:\srv\learn-disabled-example"
+learn-disabled-example-pp-cli doctor
+```
+
+Under `$env:LEARN_DISABLED_EXAMPLE_HOME = "C:\srv\learn-disabled-example"`, the four dirs resolve to `C:\srv\learn-disabled-example\config`, `C:\srv\learn-disabled-example\data`, `C:\srv\learn-disabled-example\state`, and `C:\srv\learn-disabled-example\cache`.
+
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
 ```json
@@ -256,7 +265,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Run `learn-disabled-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `LEARN_DISABLED_EXAMPLE_HOME`, and per-kind env vars can relocate it.
+Run `learn-disabled-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `` on macOS/Linux and `%USERPROFILE%\.config\learn-disabled-example-pp-cli\config.json` on Windows; `--home`, `LEARN_DISABLED_EXAMPLE_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

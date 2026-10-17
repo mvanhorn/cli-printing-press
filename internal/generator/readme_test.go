@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -720,4 +721,84 @@ func TestGeneratedREADMEPathsSectionFollowsAuthSurface(t *testing.T) {
 		assert.Contains(t, content, "check path warnings in automation",
 			"no-auth migration paragraph keeps the doctor automation hint")
 	})
+}
+
+// TestGeneratedREADMENamesWindowsPathsBesideUnix asserts a rendered README
+// keeps the macOS/Unix setup strings and names the Windows forms beside
+// them. The Windows config path follows the emitted resolver
+// (os.UserHomeDir + .config + <name>-pp-cli + config.<format>), including
+// the empty-format fallback to json.
+func TestGeneratedREADMENamesWindowsPathsBesideUnix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		format     string
+		configPath string
+		wantFile   string
+	}{
+		{
+			name:       "toml-default",
+			format:     "toml",
+			configPath: "~/.config/toml-default-pp-cli/config.toml",
+			wantFile:   "config.toml",
+		},
+		{
+			name:       "json-format",
+			format:     "json",
+			configPath: "~/.config/json-format-pp-cli/config.json",
+			wantFile:   "config.json",
+		},
+		{
+			name:     "format-fallback",
+			format:   "",
+			wantFile: "config.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tt.name)
+			apiSpec.Config.Format = tt.format
+			apiSpec.Config.Path = tt.configPath
+			outputDir := filepath.Join(t.TempDir(), tt.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+			require.NoError(t, err)
+			content := string(readme)
+
+			const macOSClaude = "~/Library/Application Support/Claude/claude_desktop_config.json"
+			const windowsClaude = `%APPDATA%\Claude\claude_desktop_config.json`
+			macOSAt := strings.Index(content, macOSClaude)
+			windowsAt := strings.Index(content, windowsClaude)
+			require.NotEqual(t, -1, macOSAt, "macOS Claude Desktop path must stay")
+			require.NotEqual(t, -1, windowsAt, "Windows Claude Desktop path must be named")
+			assert.Less(t, macOSAt, windowsAt, "Windows Claude path follows the macOS path")
+
+			envPrefix := naming.EnvPrefix(tt.name)
+			bashExport := "export " + envPrefix + "_HOME=/srv/" + tt.name
+			bashAt := strings.Index(content, bashExport)
+			require.NotEqual(t, -1, bashAt, "bash relocation example must stay")
+			assert.Contains(t, content,
+				"Under `"+envPrefix+"_HOME=/srv/"+tt.name+"`, the four dirs resolve to `/srv/"+tt.name+"/config`, `/srv/"+tt.name+"/data`, `/srv/"+tt.name+"/state`, and `/srv/"+tt.name+"/cache`.",
+				"macOS/Linux relocation resolution sentence must stay")
+
+			psAssign := `$env:` + envPrefix + `_HOME = "C:\srv\` + tt.name + `"`
+			psAt := strings.Index(content, psAssign)
+			require.NotEqual(t, -1, psAt, "PowerShell relocation example must be named")
+			assert.Less(t, bashAt, psAt, "PowerShell example follows the bash example")
+			assert.Contains(t, content, "```powershell\n"+psAssign+"\n"+tt.name+"-pp-cli doctor\n```")
+			assert.Contains(t, content,
+				"Under `"+psAssign+"`, the four dirs resolve to `C:\\srv\\"+tt.name+"\\config`, `C:\\srv\\"+tt.name+"\\data`, `C:\\srv\\"+tt.name+"\\state`, and `C:\\srv\\"+tt.name+"\\cache`.")
+
+			windowsConfig := `%USERPROFILE%\.config\` + tt.name + `-pp-cli\` + tt.wantFile
+			unixClause := "The platform-default config path is `" + tt.configPath + "` on macOS/Linux and `" + windowsConfig + "` on Windows;"
+			assert.Contains(t, content, unixClause)
+			assert.NotContains(t, content, `%APPDATA%\`+tt.name,
+				"platform-default config dir is the user profile .config tree, not APPDATA")
+		})
+	}
 }

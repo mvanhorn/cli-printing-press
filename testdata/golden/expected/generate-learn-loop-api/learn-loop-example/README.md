@@ -104,7 +104,7 @@ If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), i
 
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -186,6 +186,15 @@ learn-loop-example-pp-cli doctor
 ```
 
 Under `LEARN_LOOP_EXAMPLE_HOME=/srv/learn-loop-example`, the four dirs resolve to `/srv/learn-loop-example/config`, `/srv/learn-loop-example/data`, `/srv/learn-loop-example/state`, and `/srv/learn-loop-example/cache`.
+
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:LEARN_LOOP_EXAMPLE_HOME = "C:\srv\learn-loop-example"
+learn-loop-example-pp-cli doctor
+```
+
+Under `$env:LEARN_LOOP_EXAMPLE_HOME = "C:\srv\learn-loop-example"`, the four dirs resolve to `C:\srv\learn-loop-example\config`, `C:\srv\learn-loop-example\data`, `C:\srv\learn-loop-example\state`, and `C:\srv\learn-loop-example\cache`.
 
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
@@ -282,7 +291,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Run `learn-loop-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `LEARN_LOOP_EXAMPLE_HOME`, and per-kind env vars can relocate it.
+Run `learn-loop-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `` on macOS/Linux and `%USERPROFILE%\.config\learn-loop-example-pp-cli\config.json` on Windows; `--home`, `LEARN_LOOP_EXAMPLE_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

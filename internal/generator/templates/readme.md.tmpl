@@ -175,7 +175,7 @@ go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.N
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 {{- end}}
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -457,6 +457,15 @@ export {{envName .Name}}_HOME=/srv/{{.Name}}
 
 Under `{{envName .Name}}_HOME=/srv/{{.Name}}`, the four dirs resolve to `/srv/{{.Name}}/config`, `/srv/{{.Name}}/data`, `/srv/{{.Name}}/state`, and `/srv/{{.Name}}/cache`.
 
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:{{envName .Name}}_HOME = "C:\srv\{{.Name}}"
+{{.Name}}-pp-cli doctor
+```
+
+Under `$env:{{envName .Name}}_HOME = "C:\srv\{{.Name}}"`, the four dirs resolve to `C:\srv\{{.Name}}\config`, `C:\srv\{{.Name}}\data`, `C:\srv\{{.Name}}\state`, and `C:\srv\{{.Name}}\cache`.
+
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
 ```json
@@ -630,7 +639,8 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 
 ## Configuration
 
-Run `{{.Name}}-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `{{.Config.Path}}`; `--home`, `{{envName .Name}}_HOME`, and per-kind env vars can relocate it.
+{{/* Windows form matches cliutil defaultBase: os.UserHomeDir (USERPROFILE) joined with .config\<name>-pp-cli, not %APPDATA%. */ -}}
+Run `{{.Name}}-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `{{.Config.Path}}` on macOS/Linux and `%USERPROFILE%\.config\{{.Name}}-pp-cli\config.{{or .Config.Format "json"}}` on Windows; `--home`, `{{envName .Name}}_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 {{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}
