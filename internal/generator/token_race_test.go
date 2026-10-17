@@ -247,6 +247,7 @@ func TestTokenRaceCarrierMatchesClient(t *testing.T) {
 			for _, snippet := range tt.raceLacks {
 				require.NotContains(t, raceBody, snippet)
 			}
+			requireGeneratedCompiles(t, outputDir)
 		})
 	}
 }
@@ -295,6 +296,7 @@ func TestGeneratedConcurrentMintCarriers(t *testing.T) {
 			t.Parallel()
 			outputDir := filepath.Join(t.TempDir(), naming.CLI(tt.spec.Name))
 			require.NoError(t, New(tt.spec, outputDir).Generate())
+			requireGeneratedCompiles(t, outputDir)
 			out, err := runGoCommandOutput(t, outputDir, "test", "-race", "-count=1", "-v", "./internal/client", "-run", "^"+tt.testName+"$")
 			require.NoError(t, err, out)
 			require.Contains(t, out, "--- PASS: "+tt.testName)
