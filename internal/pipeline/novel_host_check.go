@@ -69,12 +69,12 @@ var (
 )
 
 var bareHostFileExt = map[string]bool{
-	"css": true, "csv": true, "gif": true, "go": true, "html": true, "jpeg": true,
-	"jpg": true, "js": true, "json": true, "lock": true, "m3u8": true, "m4s": true,
-	"md": true, "mod": true, "mp3": true, "mp4": true, "mpd": true, "pdf": true,
-	"png": true, "proto": true, "sum": true, "svg": true, "toml": true, "ts": true,
-	"tsv": true, "txt": true, "wav": true, "webp": true, "xml": true, "yaml": true,
-	"yml": true,
+	"css": true, "csv": true, "db": true, "gif": true, "go": true, "html": true, "jpeg": true,
+	"jpg": true, "js": true, "json": true, "jsonl": true, "lock": true, "log": true,
+	"m3u8": true, "m4s": true, "md": true, "mod": true, "mp3": true, "mp4": true,
+	"mpd": true, "pdf": true, "png": true, "proto": true, "sum": true, "svg": true,
+	"toml": true, "ts": true, "tsv": true, "txt": true, "wav": true, "webp": true,
+	"xml": true, "yaml": true, "yml": true,
 }
 
 var documentedURLListNames = map[string]bool{
@@ -563,6 +563,35 @@ func bareHostname(raw string) string {
 	}
 	last := host[strings.LastIndex(host, ".")+1:]
 	if bareHostFileExt[last] {
+		return ""
+	}
+	// Reject file-extension-shaped or version-number-shaped suffixes: the TLD
+	// must contain at least one letter (real TLDs are alphabetic; pure-digit
+	// suffixes like ".0" or ".1" are version components, not hostnames).
+	hasLetter := false
+	for _, c := range last {
+		if c >= 'a' && c <= 'z' {
+			hasLetter = true
+			break
+		}
+	}
+	if !hasLetter {
+		return ""
+	}
+	// Reject dotted-decimal IP-like strings (all labels numeric).
+	allNumeric := true
+	for _, label := range strings.Split(host, ".") {
+		for _, c := range label {
+			if c < '0' || c > '9' {
+				allNumeric = false
+				break
+			}
+		}
+		if !allNumeric {
+			break
+		}
+	}
+	if allNumeric {
 		return ""
 	}
 	return normalizeNovelHost(host)
