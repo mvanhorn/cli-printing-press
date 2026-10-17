@@ -93,7 +93,7 @@ If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), i
 
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -170,6 +170,15 @@ printing-press-golden-pp-cli doctor
 ```
 
 Under `PRINTING_PRESS_GOLDEN_HOME=/srv/printing-press-golden`, the four dirs resolve to `/srv/printing-press-golden/config`, `/srv/printing-press-golden/data`, `/srv/printing-press-golden/state`, and `/srv/printing-press-golden/cache`.
+
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:PRINTING_PRESS_GOLDEN_HOME = "C:\srv\printing-press-golden"
+printing-press-golden-pp-cli doctor
+```
+
+Under `$env:PRINTING_PRESS_GOLDEN_HOME = "C:\srv\printing-press-golden"`, the four dirs resolve to `C:\srv\printing-press-golden\config`, `C:\srv\printing-press-golden\data`, `C:\srv\printing-press-golden\state`, and `C:\srv\printing-press-golden\cache`.
 
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
@@ -309,7 +318,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Run `printing-press-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/printing-press-golden-pp-cli/config.toml`; `--home`, `PRINTING_PRESS_GOLDEN_HOME`, and per-kind env vars can relocate it.
+Run `printing-press-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/printing-press-golden-pp-cli/config.toml` on macOS/Linux and `%USERPROFILE%\.config\printing-press-golden-pp-cli\config.toml` on Windows; `--home`, `PRINTING_PRESS_GOLDEN_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

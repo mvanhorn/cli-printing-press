@@ -93,7 +93,7 @@ If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), i
 
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -170,6 +170,15 @@ printing-press-rich-pp-cli doctor
 ```
 
 Under `PRINTING_PRESS_RICH_HOME=/srv/printing-press-rich`, the four dirs resolve to `/srv/printing-press-rich/config`, `/srv/printing-press-rich/data`, `/srv/printing-press-rich/state`, and `/srv/printing-press-rich/cache`.
+
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:PRINTING_PRESS_RICH_HOME = "C:\srv\printing-press-rich"
+printing-press-rich-pp-cli doctor
+```
+
+Under `$env:PRINTING_PRESS_RICH_HOME = "C:\srv\printing-press-rich"`, the four dirs resolve to `C:\srv\printing-press-rich\config`, `C:\srv\printing-press-rich\data`, `C:\srv\printing-press-rich\state`, and `C:\srv\printing-press-rich\cache`.
 
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
@@ -260,7 +269,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Run `printing-press-rich-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/printing-press-rich-pp-cli/config.toml`; `--home`, `PRINTING_PRESS_RICH_HOME`, and per-kind env vars can relocate it.
+Run `printing-press-rich-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/printing-press-rich-pp-cli/config.toml` on macOS/Linux and `%USERPROFILE%\.config\printing-press-rich-pp-cli\config.toml` on Windows; `--home`, `PRINTING_PRESS_RICH_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

@@ -92,7 +92,7 @@ If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), i
 
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -157,6 +157,15 @@ public-param-golden-pp-cli doctor
 ```
 
 Under `PUBLIC_PARAM_GOLDEN_HOME=/srv/public-param-golden`, the four dirs resolve to `/srv/public-param-golden/config`, `/srv/public-param-golden/data`, `/srv/public-param-golden/state`, and `/srv/public-param-golden/cache`.
+
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:PUBLIC_PARAM_GOLDEN_HOME = "C:\srv\public-param-golden"
+public-param-golden-pp-cli doctor
+```
+
+Under `$env:PUBLIC_PARAM_GOLDEN_HOME = "C:\srv\public-param-golden"`, the four dirs resolve to `C:\srv\public-param-golden\config`, `C:\srv\public-param-golden\data`, `C:\srv\public-param-golden\state`, and `C:\srv\public-param-golden\cache`.
 
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
@@ -250,7 +259,7 @@ Verifies configuration and connectivity to the API.
 
 ## Configuration
 
-Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
+Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `` on macOS/Linux and `%USERPROFILE%\.config\public-param-golden-pp-cli\config.json` on Windows; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

@@ -92,7 +92,7 @@ If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), i
 
 Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -157,6 +157,15 @@ path-param-posts-pp-cli doctor
 ```
 
 Under `PATH_PARAM_POSTS_HOME=/srv/path-param-posts`, the four dirs resolve to `/srv/path-param-posts/config`, `/srv/path-param-posts/data`, `/srv/path-param-posts/state`, and `/srv/path-param-posts/cache`.
+
+On Windows, set the same variable in PowerShell:
+
+```powershell
+$env:PATH_PARAM_POSTS_HOME = "C:\srv\path-param-posts"
+path-param-posts-pp-cli doctor
+```
+
+Under `$env:PATH_PARAM_POSTS_HOME = "C:\srv\path-param-posts"`, the four dirs resolve to `C:\srv\path-param-posts\config`, `C:\srv\path-param-posts\data`, `C:\srv\path-param-posts\state`, and `C:\srv\path-param-posts\cache`.
 
 MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
 
@@ -257,7 +266,7 @@ Verifies configuration and connectivity to the API.
 
 ## Configuration
 
-Run `path-param-posts-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/path-param-posts-pp-cli/config.toml`; `--home`, `PATH_PARAM_POSTS_HOME`, and per-kind env vars can relocate it.
+Run `path-param-posts-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/path-param-posts-pp-cli/config.toml` on macOS/Linux and `%USERPROFILE%\.config\path-param-posts-pp-cli\config.toml` on Windows; `--home`, `PATH_PARAM_POSTS_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 
