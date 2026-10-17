@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.33.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.5...v4.33.6) (2026-10-17)
+
+
+### Bug Fixes
+
+* **cli:** dependent sync name must not collide with top-level resource ([#5042](https://github.com/mvanhorn/cli-printing-press/issues/5042)) ([24f3f1a](https://github.com/mvanhorn/cli-printing-press/commit/24f3f1a0b7e0e4cb19c0fa8be7dca9425a496758))
+* **cli:** finish press-auth login across tabs and on the completion cookie ([#5068](https://github.com/mvanhorn/cli-printing-press/issues/5068)) ([c37e4fb](https://github.com/mvanhorn/cli-printing-press/commit/c37e4fbdf2f5d316ae56179098fb34e3af277f15))
+* **cli:** GraphQL errors arrays and *Error typenames fail generated commands ([#5024](https://github.com/mvanhorn/cli-printing-press/issues/5024)) ([ba1584f](https://github.com/mvanhorn/cli-printing-press/commit/ba1584f08b2c6f4cd59969569010147533f4132e))
+* **cli:** keep saved base-URL template vars; Windows Admin creds SDDL ([#5041](https://github.com/mvanhorn/cli-printing-press/issues/5041)) ([2e84524](https://github.com/mvanhorn/cli-printing-press/commit/2e8452453c438270b5f6f9715b61ee5185e5b17f))
+* **cli:** lock promote must preserve patched MCP manifests ([#5043](https://github.com/mvanhorn/cli-printing-press/issues/5043)) ([a31b947](https://github.com/mvanhorn/cli-printing-press/commit/a31b947c2870e9f39db7048e6067dcf5db427988))
+* **cli:** MCP stringArray mirror + recipe positional dash-safety ([#5045](https://github.com/mvanhorn/cli-printing-press/issues/5045)) ([93c2c8c](https://github.com/mvanhorn/cli-printing-press/commit/93c2c8c29668b456e51f58dc84b0a4a42f66979b))
+* **cli:** POST create alias, dry-run no side effects, community transport fallback ([#5044](https://github.com/mvanhorn/cli-printing-press/issues/5044)) ([c161665](https://github.com/mvanhorn/cli-printing-press/commit/c16166534ffae0d22d6880493d44cb64a9ad8d22)), closes [#5035](https://github.com/mvanhorn/cli-printing-press/issues/5035) [#5030](https://github.com/mvanhorn/cli-printing-press/issues/5030) [#5037](https://github.com/mvanhorn/cli-printing-press/issues/5037)
+* **cli:** serialize OAuth token mint and header reads on the shared client ([#5069](https://github.com/mvanhorn/cli-printing-press/issues/5069)) ([93a1287](https://github.com/mvanhorn/cli-printing-press/commit/93a12878634a36f400e4feb3d4be8572320d7822))
+* **cli:** show Windows paths in generated READMEs ([#5052](https://github.com/mvanhorn/cli-printing-press/issues/5052)) ([ac73cbd](https://github.com/mvanhorn/cli-printing-press/commit/ac73cbd0ae2985f9b71bd42efb4aad9b64d5b7ba))
+
 ## [4.33.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.4...v4.33.5) (2026-10-13)
 
 
