@@ -302,6 +302,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"pathKindEnvSuffix":                   pathKindEnvSuffix,
 		"authPlacement":                       authPlacement,
 		"authParameterName":                   authParameterName,
+		"mintedAuthCarrier":                   mintedAuthCarrier,
 		"isBrowserCookieAuth":                 isBrowserCookieAuth,
 		"authCommandShort":                    authCommandShort,
 		"authHarvestedEnvHint":                authHarvestedEnvHint,
@@ -1467,6 +1468,48 @@ func authParameterName(auth spec.AuthConfig) string {
 		return "api_key"
 	}
 	return "Authorization"
+}
+
+const (
+	authCarrierHeader = "header"
+	authCarrierQuery  = "query"
+	authCarrierCookie = "cookie"
+)
+
+// authCarrier is where do() places the primary credential.
+type authCarrier struct {
+	Kind string
+	Name string
+}
+
+// mintedAuthCarrier follows do()'s attachment order. The mint test has to read
+// that same carrier; tier routing's query/header branch wins over in:cookie.
+func mintedAuthCarrier(data *clientTemplateData) authCarrier {
+	if data == nil || data.APISpec == nil {
+		return authCarrier{Kind: authCarrierHeader, Name: "Authorization"}
+	}
+	auth := data.Auth
+	switch {
+	case data.HasTierRouting() && authPlacement(auth) == authCarrierQuery:
+		return authCarrier{Kind: authCarrierQuery, Name: authParameterName(auth)}
+	case data.HasTierRouting():
+		return authCarrier{Kind: authCarrierHeader, Name: authParameterName(auth)}
+	case auth.In == authCarrierQuery:
+		return authCarrier{Kind: authCarrierQuery, Name: authParameterName(auth)}
+	case auth.In == authCarrierCookie && !isBrowserCookieAuth(auth):
+		return authCarrier{Kind: authCarrierCookie, Name: authCookieName(auth)}
+	default:
+		return authCarrier{Kind: authCarrierHeader, Name: authParameterName(auth)}
+	}
+}
+
+// Empty Header selects api_key. Trimming would disagree with the template's
+// non-empty check on the AddCookie name.
+func authCookieName(auth spec.AuthConfig) string {
+	if auth.Header != "" {
+		return auth.Header
+	}
+	return "api_key"
 }
 
 func isBrowserCookieAuth(auth spec.AuthConfig) bool {

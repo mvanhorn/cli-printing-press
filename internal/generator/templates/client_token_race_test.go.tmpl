@@ -40,10 +40,18 @@ func TestConcurrent{{if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}Clie
 			return
 		}
 		apiCalls.Add(1)
-{{- if eq (authPlacement .Auth) "query"}}
-		got := r.URL.Query().Get({{printf "%q" (authParameterName .Auth)}})
+{{- $carrier := mintedAuthCarrier .}}
+{{- if eq $carrier.Kind "query"}}
+		got := r.URL.Query().Get({{printf "%q" $carrier.Name}})
+{{- else if eq $carrier.Kind "cookie"}}
+		ck, err := r.Cookie({{printf "%q" $carrier.Name}})
+		if err != nil {
+			http.Error(w, "stale auth: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := ck.Value
 {{- else}}
-		got := r.Header.Get({{printf "%q" (authParameterName .Auth)}})
+		got := r.Header.Get({{printf "%q" $carrier.Name}})
 {{- end}}
 		// 401 would re-enter mint recovery and hide a stale credential on the wire.
 		if strings.Contains(got, "stale-token") || !strings.Contains(got, "fresh-token") {
