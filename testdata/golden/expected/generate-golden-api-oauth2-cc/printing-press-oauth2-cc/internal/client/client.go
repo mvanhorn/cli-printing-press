@@ -77,7 +77,6 @@ type Client struct {
 	// token-endpoint POST per process: a stored token with no recorded
 	// expiry is re-minted once instead of trusted forever. Pointer so
 	// WithTier's value copy shares the cap (and so copylocks stays clean).
-	// Atomic because the pre-lock fast-path check reads it outside ccMu.
 	ccMintedUnknownExpiry *atomic.Bool
 }
 
@@ -620,11 +619,15 @@ func (c *Client) validateCachedRequestAuth(ctx context.Context) error {
 	if c == nil || c.Config == nil {
 		return nil
 	}
+	c.lockTokenState()
 	clientID, clientSecret := resolveClientCredentials(c.Config)
 	if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
+		c.unlockTokenState()
 		return authPlaceholderCredentialError(c.Config)
 	}
-	if authHeaderLooksLikePlaceholderCredential(c.Config.AuthHeader()) {
+	header := c.Config.AuthHeader()
+	c.unlockTokenState()
+	if authHeaderLooksLikePlaceholderCredential(header) {
 		return authPlaceholderCredentialError(c.Config)
 	}
 	return nil
@@ -652,8 +655,9 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 			"|method=" + strings.ToUpper(method) + "|endpoint=" + path +
 			"|base_url=" + c.BaseURL
 	} else if c.Config != nil {
-		key += "|auth_source=" + c.Config.AuthSource
-		if authHeader := c.Config.AuthHeader(); authHeader != "" {
+		authSource, authHeader := c.cachedAuthIdentity()
+		key += "|auth_source=" + authSource
+		if authHeader != "" {
 			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
@@ -1470,27 +1474,24 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// an unauthorized response is a fresh mint: re-mint once and retry;
 		// a 401 that survives a fresh token surfaces as the real error.
 		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
-			if c.ccMu == nil {
-				c.ccMu = &sync.Mutex{}
-			}
 			// Resolve the credential pair, validate it, mint, and (without
 			// tier routing) read the refreshed header inside one critical
 			// section, so a concurrent mint persisting Config fields cannot
 			// interleave a stale or mismatched pair mid-recovery. The
 			// tier-routing variant re-derives auth via authForRequest after
-			// unlock instead, which takes ccMu internally.
-			c.ccMu.Lock()
+			// unlock instead, which takes the same lock internally.
+			c.lockTokenState()
 			clientID, clientSecret := resolveClientCredentials(c.Config)
 			if clientID != "" && clientSecret != "" {
 				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
-					c.ccMu.Unlock()
+					c.unlockTokenState()
 					return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
 				}
 				mintErr := c.mintClientCredentials(ctx, clientID, clientSecret)
 				if mintErr == nil {
 					authHeader = c.Config.AuthHeader()
 				}
-				c.ccMu.Unlock()
+				c.unlockTokenState()
 				if mintErr != nil {
 					return nil, resp.StatusCode, fmt.Errorf("re-minting access token after 401: %w", mintErr)
 				}
@@ -1498,7 +1499,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				lastErr = apiErr
 				continue
 			}
-			c.ccMu.Unlock()
+			c.unlockTokenState()
 		}
 
 		// Rate limited: classify before provider decoding. The server-driven
@@ -1634,37 +1635,57 @@ func (c *Client) ConfiguredTimeout() time.Duration {
 	return 60 * time.Second
 }
 
+// lockTokenState covers the expiry check, the token exchange, and the
+// following header read. An unlocked pre-check races Config writes from mint.
+func (c *Client) lockTokenState() {
+	if c == nil {
+		return
+	}
+	if c.ccMu == nil {
+		c.ccMu = &sync.Mutex{}
+	}
+	c.ccMu.Lock()
+}
+
+func (c *Client) unlockTokenState() {
+	if c == nil || c.ccMu == nil {
+		return
+	}
+	c.ccMu.Unlock()
+}
+
+func (c *Client) cachedAuthIdentity() (string, string) {
+	if c == nil || c.Config == nil {
+		return "", ""
+	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
+	return c.Config.CurrentAuthSource(), c.Config.AuthHeader()
+}
+
 func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
 	if c.Config.AccessToken == "" && cliutil.IsVerifyEnv() {
 		c.Config.AccessToken = "mock-token-for-testing"
 		return c.Config.AuthHeader(), nil
 	}
 	// 60s window avoids in-flight requests racing the expiry boundary.
-	// Double-checked lock so only one goroutine mints under contention.
 	// --dry-run must not mint: do() resolves this header before returning
 	// the preview, and a missing token stays empty until a live call.
 	if !c.DryRun && c.needsClientCredentialsMint() {
-		if c.ccMu == nil {
-			c.ccMu = &sync.Mutex{}
-		}
-		c.ccMu.Lock()
-		if c.needsClientCredentialsMint() {
-			clientID, clientSecret := resolveClientCredentials(c.Config)
-			if clientID != "" && clientSecret != "" {
-				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
-					c.ccMu.Unlock()
-					return "", authPlaceholderCredentialError(c.Config)
-				}
-				if err := c.mintClientCredentials(ctx, clientID, clientSecret); err != nil {
-					c.ccMu.Unlock()
-					return "", err
-				}
+		clientID, clientSecret := resolveClientCredentials(c.Config)
+		if clientID != "" && clientSecret != "" {
+			if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
+				return "", authPlaceholderCredentialError(c.Config)
+			}
+			if err := c.mintClientCredentials(ctx, clientID, clientSecret); err != nil {
+				return "", err
 			}
 		}
-		c.ccMu.Unlock()
 	}
 	authHeader := c.Config.AuthHeader()
 	if authHeader == "" && c.Config.HasCredentialRefusals() {
@@ -2179,12 +2200,14 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(value)
 	}
 	if c != nil && c.Config != nil {
+		c.lockTokenState()
 		addCredential(c.Config.AuthHeaderVal)
 		addCredential(c.Config.AuthHeader())
 		addCredential(c.Config.AccessToken)
 		addCredential(c.Config.RefreshToken)
 		addCredential(c.Config.ClientSecret)
 		addCredential(c.Config.PrintingPressOauth2ClientSecret)
+		c.unlockTokenState()
 	}
 	sort.SliceStable(masks, func(i, j int) bool {
 		return len(masks[i].needle) > len(masks[j].needle)

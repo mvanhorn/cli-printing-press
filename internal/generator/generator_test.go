@@ -1298,7 +1298,7 @@ func TestGenerateBearerRefreshDoctorCommand(t *testing.T) {
 	configContent := string(configGo)
 	assert.Regexp(t, `\bBearerTokenRefreshedAt\s+time\.Time\b`, configContent)
 	assert.Contains(t, configContent, "func (c *Config) SaveBearerToken(")
-	assert.Contains(t, configContent, `c.AuthSource = "bearer_refresh"`)
+	assert.Contains(t, configContent, `c.stampAuthSourceExact("bearer_refresh")`)
 	assert.Contains(t, configContent, "c.RefreshbearerPublicBearer = \"\"")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
@@ -2167,7 +2167,7 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 	assert.Contains(t, body, "ccMintedUnknownExpiry: &atomic.Bool{}",
 		"client_credentials spec initializes the shared unknown-expiry cap")
 	assert.Contains(t, body, "c.ccMu.Lock()",
-		"authHeader takes the mint mutex before re-checking the window")
+		"client_credentials mint and header read share ccMu")
 	assert.Contains(t, body, "!c.DryRun && c.needsClientCredentialsMint()",
 		"--dry-run must not mint a client-credentials token")
 }

@@ -21,6 +21,9 @@ import (
 	"regexp"
 {{- end}}
 	"strings"
+{{- if authHeaderStampsSource .Auth}}
+	"sync"
+{{- end}}
 {{- if .HasAuthCommand}}
 	"time"
 {{- end}}
@@ -549,6 +552,44 @@ func normalizeEndpointTemplateValue(v string) string {
 }
 {{- end}}
 
+{{- if authHeaderStampsSource .Auth}}
+// authSourceMu guards AuthSource. AuthHeader stamps the branch that produced
+// the header, and concurrent callers (several requests on one shared client)
+// would otherwise race that write.
+var authSourceMu sync.Mutex
+
+func (c *Config) stampAuthSource(source string, upgradeEnv bool) {
+	if c == nil {
+		return
+	}
+	authSourceMu.Lock()
+	defer authSourceMu.Unlock()
+	if c.AuthSource == "" || (upgradeEnv && strings.HasPrefix(c.AuthSource, "env:")) {
+		c.AuthSource = source
+	}
+}
+
+{{- if and .BearerRefresh.Enabled (not (oauth2AccessTokenAuth .Auth)) (ne .Auth.Subtype "google_service_account")}}
+func (c *Config) stampAuthSourceExact(source string) {
+	if c == nil {
+		return
+	}
+	authSourceMu.Lock()
+	defer authSourceMu.Unlock()
+	c.AuthSource = source
+}
+{{- end}}
+
+func (c *Config) CurrentAuthSource() string {
+	if c == nil {
+		return ""
+	}
+	authSourceMu.Lock()
+	defer authSourceMu.Unlock()
+	return c.AuthSource
+}
+{{- end}}
+
 func (c *Config) AuthHeader() string {
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $isAuthEnvVarORCase := .Auth.IsAuthEnvVarORCase}}
@@ -703,9 +744,7 @@ func (c *Config) AuthHeader() string {
 	// GOOGLE_OAUTH_ACCESS_TOKEN is a pre-minted bearer override. A service
 	// account key is exchanged by the generated client instead.
 	if token := c.{{resolveEnvVarField "GOOGLE_OAUTH_ACCESS_TOKEN"}}; token != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:GOOGLE_OAUTH_ACCESS_TOKEN"
-		}
+		c.stampAuthSource("env:GOOGLE_OAUTH_ACCESS_TOKEN", false)
 		return "Bearer " + token
 	}
 	return ""
@@ -716,9 +755,7 @@ func (c *Config) AuthHeader() string {
 	// the client_id as Authorization: Bearer surfaces as token_rejected at
 	// the API.
 	if c.AccessToken != "" {
-		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "{{oauth2AuthSource .Auth}}"
-		}
+		c.stampAuthSource("{{oauth2AuthSource .Auth}}", true)
 		{{- if .Auth.Format}}
 		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -752,7 +789,7 @@ func (c *Config) AuthHeader() string {
 	// Refreshed public bearer tokens must win over stale generated env-var
 	// fields so a successful refresh changes subsequent API calls.
 	if c.AccessToken != "" {
-		c.AuthSource = "bearer_refresh"
+		c.stampAuthSourceExact("bearer_refresh")
 		{{- if .Auth.Format}}
 		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -765,9 +802,7 @@ func (c *Config) AuthHeader() string {
 	// Bearer-shaped spec declares them, auth login stores the usable token in
 	// AccessToken, so it must win before considering any per-call fallbacks.
 	if c.AccessToken != "" {
-		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "{{oauth2AuthSource .Auth}}"
-		}
+		c.stampAuthSource("{{oauth2AuthSource .Auth}}", true)
 		{{- if .Auth.Format}}
 		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -782,9 +817,7 @@ func (c *Config) AuthHeader() string {
 {{- range .Auth.EnvVarSpecs}}
 {{- if eq .Kind "per_call"}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		{{- if $.Auth.Format}}
 		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -807,9 +840,7 @@ func (c *Config) AuthHeader() string {
 {{- range .Auth.EnvVarSpecs}}
 {{- if eq .Kind "per_call"}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		{{- if $.Auth.Format}}
 		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -830,9 +861,7 @@ func (c *Config) AuthHeader() string {
 {{- else}}
 {{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		{{- if $.Auth.Format}}
 		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -853,9 +882,7 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if and (not .BearerRefresh.Enabled) (not $hasNonRequestEnvVars) (not $hasAccessTokenRequestEnvVar)}}
 	if c.AccessToken != "" {
-		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "{{oauth2AuthSource .Auth}}"
-		}
+		c.stampAuthSource("{{oauth2AuthSource .Auth}}", true)
 		{{- if .Auth.Format}}
 		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -870,9 +897,7 @@ func (c *Config) AuthHeader() string {
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		{{- if $.Auth.Format}}
 		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -892,9 +917,7 @@ func (c *Config) AuthHeader() string {
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		{{- if $.Auth.Format}}
 		return applyAuthFormat({{printf "%q" $.Auth.Format}}, map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -913,9 +936,7 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 {{- end}}
 	if c.AccessToken != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "browser"
-		}
+		c.stampAuthSource("browser", false)
 		{{- if .Auth.Format}}
 		return applyAuthFormat({{printf "%q" .Auth.Format}}, map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -928,26 +949,20 @@ func (c *Config) AuthHeader() string {
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 {{- end}}
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "env:{{.Name}}"
-		}
+		c.stampAuthSource("env:{{.Name}}", false)
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 	{{- end}}
 {{- end}}
 	if c.AccessToken != "" {
-		if c.AuthSource == "" {
-			c.AuthSource = "chrome-composed"
-		}
+		c.stampAuthSource("chrome-composed", false)
 		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
 	}
 	return ""
@@ -1173,7 +1188,7 @@ func (c *Config) UsePersistedCookieJar() bool {
 	if c == nil {
 		return true
 	}
-	if strings.HasPrefix(c.AuthSource, "env:") {
+	if strings.HasPrefix(c.CurrentAuthSource(), "env:") {
 		return false
 	}
 	if c.CredentialSource == "credentials file" || c.CredentialSource == "agentcookie" {
@@ -1274,7 +1289,7 @@ func ensureAuthScheme(scheme, token string) string {
 
 func (c *Config) AgentcookieManagedByExternalStore() bool {
 {{- if hasNonCookieAuth .Auth}}
-	if c.AgentcookieManaged || c.AuthSource == "agentcookie" || c.CredentialSource == "agentcookie" {
+	if c.AgentcookieManaged || {{if authHeaderStampsSource .Auth}}c.CurrentAuthSource(){{else}}c.AuthSource{{end}} == "agentcookie" || c.CredentialSource == "agentcookie" {
 		return true
 	}
 	if c.Path == "" {

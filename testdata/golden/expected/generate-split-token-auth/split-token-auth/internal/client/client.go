@@ -643,7 +643,7 @@ func (c *Client) validateCachedRequestAuth(ctx context.Context) error {
 	if c == nil || c.Config == nil {
 		return nil
 	}
-	if authHeaderLooksLikePlaceholderCredential(c.Config.AuthHeader()) {
+	if authHeaderLooksLikePlaceholderCredential(c.cachedAuthHeader()) {
 		return authPlaceholderCredentialError(c.Config)
 	}
 	return nil
@@ -671,8 +671,9 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 			"|method=" + strings.ToUpper(method) + "|endpoint=" + path +
 			"|base_url=" + c.BaseURL
 	} else if c.Config != nil {
-		key += "|auth_source=" + c.Config.AuthSource
-		if authHeader := c.Config.AuthHeader(); authHeader != "" {
+		authSource, authHeader := c.cachedAuthIdentity()
+		key += "|auth_source=" + authSource
+		if authHeader != "" {
 			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
@@ -1831,10 +1832,29 @@ func (c *Client) ConfiguredTimeout() time.Duration {
 	return 60 * time.Second
 }
 
+func (c *Client) lockTokenState() {}
+
+func (c *Client) unlockTokenState() {}
+
+func (c *Client) cachedAuthIdentity() (string, string) {
+	if c == nil || c.Config == nil {
+		return "", ""
+	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
+	return c.Config.AuthSource, c.Config.AuthHeader()
+}
+func (c *Client) cachedAuthHeader() string {
+	_, header := c.cachedAuthIdentity()
+	return header
+}
+
 func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
 	authHeader := c.Config.AuthHeader()
 	if authHeader == "" && c.Config.HasCredentialRefusals() {
 		return "", c.Config.CredentialRefusalError()
@@ -2169,6 +2189,7 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(value)
 	}
 	if c != nil && c.Config != nil {
+		c.lockTokenState()
 		addCredential(c.Config.AuthHeaderVal)
 		addCredential(c.Config.AuthHeader())
 		addCredential(c.Config.AccessToken)
@@ -2176,6 +2197,7 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(c.Config.ClientSecret)
 		addCredential(c.Config.SplitTokenServerToken)
 		addCredential(c.Config.SplitTokenAccountToken)
+		c.unlockTokenState()
 	}
 	sort.SliceStable(masks, func(i, j int) bool {
 		return len(masks[i].needle) > len(masks[j].needle)

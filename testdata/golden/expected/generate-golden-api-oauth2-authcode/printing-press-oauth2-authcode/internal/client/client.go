@@ -68,6 +68,10 @@ type Client struct {
 	platformLimiterMu sync.Mutex
 	platformLimiters  map[string]*platform.EndpointLimiter
 	platformBudgets   map[string]platform.EndpointBudget
+	// refreshMu serializes refresh-token exchanges so the expiry check and
+	// header read cannot race the Config writes. Pointer so WithTier copies
+	// share one lock.
+	refreshMu *sync.Mutex
 }
 
 func (c *Client) IsDryRun() bool {
@@ -432,6 +436,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    newRateLimiter(rateLimit),
+		refreshMu:  &sync.Mutex{},
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound
@@ -607,7 +612,7 @@ func (c *Client) validateCachedRequestAuth(ctx context.Context) error {
 	if c == nil || c.Config == nil {
 		return nil
 	}
-	if authHeaderLooksLikePlaceholderCredential(c.Config.AuthHeader()) {
+	if authHeaderLooksLikePlaceholderCredential(c.cachedAuthHeader()) {
 		return authPlaceholderCredentialError(c.Config)
 	}
 	return nil
@@ -635,8 +640,9 @@ func (c *Client) cacheKeyFor(method, path string, params map[string]string, head
 			"|method=" + strings.ToUpper(method) + "|endpoint=" + path +
 			"|base_url=" + c.BaseURL
 	} else if c.Config != nil {
-		key += "|auth_source=" + c.Config.AuthSource
-		if authHeader := c.Config.AuthHeader(); authHeader != "" {
+		authSource, authHeader := c.cachedAuthIdentity()
+		key += "|auth_source=" + authSource
+		if authHeader != "" {
 			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
@@ -1450,20 +1456,27 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 		// OAuth providers can expire tokens early, omit expires_in, or disagree
 		// with the local clock. Retry one unauthorized response after refreshing.
-		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
-			if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
-				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+			c.lockTokenState()
+			if c.Config.RefreshToken != "" {
+				if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
+					c.unlockTokenState()
+					return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+				}
+				if err := c.refreshAccessToken(ctx); err != nil {
+					c.unlockTokenState()
+					return nil, resp.StatusCode, fmt.Errorf("refreshing access token after 401: %w", err)
+				}
+				authHeader = c.Config.AuthHeader()
+				c.unlockTokenState()
+				if authHeaderLooksLikePlaceholderCredential(authHeader) {
+					return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+				}
+				refreshedAfterUnauthorized = true
+				lastErr = apiErr
+				continue
 			}
-			if err := c.refreshAccessToken(ctx); err != nil {
-				return nil, resp.StatusCode, fmt.Errorf("refreshing access token after 401: %w", err)
-			}
-			authHeader = c.Config.AuthHeader()
-			if authHeaderLooksLikePlaceholderCredential(authHeader) {
-				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
-			}
-			refreshedAfterUnauthorized = true
-			lastErr = apiErr
-			continue
+			c.unlockTokenState()
 		}
 
 		// Rate limited: classify before provider decoding. The server-driven
@@ -1599,10 +1612,44 @@ func (c *Client) ConfiguredTimeout() time.Duration {
 	return 60 * time.Second
 }
 
+// lockTokenState covers the expiry check, the token exchange, and the
+// following header read. An unlocked pre-check races Config writes from refresh.
+func (c *Client) lockTokenState() {
+	if c == nil {
+		return
+	}
+	if c.refreshMu == nil {
+		c.refreshMu = &sync.Mutex{}
+	}
+	c.refreshMu.Lock()
+}
+
+func (c *Client) unlockTokenState() {
+	if c == nil || c.refreshMu == nil {
+		return
+	}
+	c.refreshMu.Unlock()
+}
+
+func (c *Client) cachedAuthIdentity() (string, string) {
+	if c == nil || c.Config == nil {
+		return "", ""
+	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
+	return c.Config.CurrentAuthSource(), c.Config.AuthHeader()
+}
+func (c *Client) cachedAuthHeader() string {
+	_, header := c.cachedAuthIdentity()
+	return header
+}
+
 func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
 	if !c.DryRun && c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
 		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
 			return "", authPlaceholderCredentialError(c.Config)
@@ -2016,12 +2063,14 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(value)
 	}
 	if c != nil && c.Config != nil {
+		c.lockTokenState()
 		addCredential(c.Config.AuthHeaderVal)
 		addCredential(c.Config.AuthHeader())
 		addCredential(c.Config.AccessToken)
 		addCredential(c.Config.RefreshToken)
 		addCredential(c.Config.ClientSecret)
 		addCredential(c.Config.PrintingPressOauth2Oauth2AuthCode)
+		c.unlockTokenState()
 	}
 	sort.SliceStable(masks, func(i, j int) bool {
 		return len(masks[i].needle) > len(masks[j].needle)

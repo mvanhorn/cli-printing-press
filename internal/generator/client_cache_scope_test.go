@@ -29,10 +29,13 @@ func TestClientCacheKeyScopesByBaseURLAndAuthIdentity(t *testing.T) {
 	body := clientCacheKeyForBody(t, client)
 
 	require.Contains(t, body, `"|base_url=" + c.BaseURL`, "cache keys must isolate staging/prod or per-tenant base URLs")
-	require.Contains(t, body, `"|auth_source=" + c.Config.AuthSource`, "cache keys should distinguish env/config/profile auth sources")
-	require.Contains(t, body, `authHeader := c.Config.AuthHeader()`, "cache keys should capture AuthHeader() once")
+	require.Contains(t, body, `authSource, authHeader := c.cachedAuthIdentity()`, "cache keys should read auth source and header together")
+	require.Contains(t, body, `"|auth_source=" + authSource`, "cache keys should distinguish env/config/profile auth sources")
+	identity := clientFuncBody(t, client, "func (c *Client) cachedAuthIdentity(")
+	require.Contains(t, identity, `c.Config.CurrentAuthSource()`, "cache identity should read the stamped auth source")
+	require.Equal(t, 1, strings.Count(identity, `c.Config.AuthHeader()`), "cache identity should capture AuthHeader() once")
 	require.Contains(t, body, `sha256.Sum256([]byte(authHeader))`, "cache keys should include an auth fingerprint without storing the raw token")
-	require.NotContains(t, body, `sha256.Sum256([]byte(c.Config.AuthHeader()))`, "cache keys should reuse the captured authHeader, not call AuthHeader() twice")
+	require.NotContains(t, body, `c.Config.AuthHeader()`, "cache keys should reuse the captured authHeader, not call AuthHeader() directly")
 	require.Contains(t, body, `query := url.Values{}`, "cache keys should encode query params with structured delimiters")
 	require.Contains(t, body, `key += "|query=" + query.Encode()`, "cache keys should use url.Values.Encode for deterministic query boundaries")
 	require.Contains(t, body, `key += "|tenant=" + canonicalTenantSelectingHeaders(c.Config, headers)`,

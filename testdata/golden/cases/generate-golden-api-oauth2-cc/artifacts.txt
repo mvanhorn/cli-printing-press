@@ -6,7 +6,8 @@
 #   generator.go   → auth_client_credentials.go.tmpl selected (not auth.go.tmpl)
 #   config.go.tmpl → AuthHeader emits AccessToken-first (the gated branch)
 #   client.go.tmpl → emits needsClientCredentialsMint, mintClientCredentials,
-#                    ccMu sync.Mutex, double-checked lock in authHeader
+#                    ccMu sync.Mutex, expiry check + mint + header read under ccMu,
+#                    and token_race_test.go for go test -race
 #
 # If a future refactor regresses the parser branch, template selection,
 # or the gating, these files either disappear or contain the wrong
@@ -17,9 +18,13 @@
 printing-press-oauth2-cc/internal/cli/auth.go
 
 # client.go carries the mint helpers + the mutex + the gated authHeader
-# path. The presence of needsClientCredentialsMint, ccMu, and the
-# double-checked-lock pattern in this file is the load-bearing contract.
+# path. The presence of needsClientCredentialsMint, ccMu, and the locked
+# expiry-check + mint + header-read in this file is the load-bearing contract.
 printing-press-oauth2-cc/internal/client/client.go
+
+# token_race_test.go is the emitted go test -race proof: several goroutines
+# call Get across one client_credentials mint.
+printing-press-oauth2-cc/internal/client/token_race_test.go
 
 # Token-endpoint POSTs must use the same-origin redirect client so a
 # cross-host 307/308 cannot replay client_secret in the body.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -305,6 +306,31 @@ func (c *Config) CredentialRefusalError() error {
 	return fmt.Errorf("stored credentials refused: %s", strings.Join(summaries, "; "))
 }
 
+// authSourceMu guards AuthSource. AuthHeader stamps the branch that produced
+// the header, and concurrent callers (several requests on one shared client)
+// would otherwise race that write.
+var authSourceMu sync.Mutex
+
+func (c *Config) stampAuthSource(source string, upgradeEnv bool) {
+	if c == nil {
+		return
+	}
+	authSourceMu.Lock()
+	defer authSourceMu.Unlock()
+	if c.AuthSource == "" || (upgradeEnv && strings.HasPrefix(c.AuthSource, "env:")) {
+		c.AuthSource = source
+	}
+}
+
+func (c *Config) CurrentAuthSource() string {
+	if c == nil {
+		return ""
+	}
+	authSourceMu.Lock()
+	defer authSourceMu.Unlock()
+	return c.AuthSource
+}
+
 func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
@@ -315,9 +341,7 @@ func (c *Config) AuthHeader() string {
 	// the client_id as Authorization: Bearer surfaces as token_rejected at
 	// the API.
 	if c.AccessToken != "" {
-		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "oauth2"
-		}
+		c.stampAuthSource("oauth2", true)
 		return "Bearer " + c.AccessToken
 	}
 	return ""
@@ -448,7 +472,7 @@ func (c *Config) CredentialConfigured() bool {
 }
 
 func (c *Config) AgentcookieManagedByExternalStore() bool {
-	if c.AgentcookieManaged || c.AuthSource == "agentcookie" || c.CredentialSource == "agentcookie" {
+	if c.AgentcookieManaged || c.CurrentAuthSource() == "agentcookie" || c.CredentialSource == "agentcookie" {
 		return true
 	}
 	if c.Path == "" {

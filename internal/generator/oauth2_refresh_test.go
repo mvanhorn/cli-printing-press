@@ -35,7 +35,7 @@ func TestGenerateOAuth2RefreshAuth(t *testing.T) {
 	readme := readGeneratedFile(t, outputDir, "README.md")
 	skill := readGeneratedFile(t, outputDir, "SKILL.md")
 
-	assert.Contains(t, configSrc, `c.AuthSource = "oauth2_refresh"`)
+	assert.Contains(t, configSrc, `c.stampAuthSource("oauth2_refresh", true)`)
 	assert.Contains(t, configSrc, `return "Bearer " + c.AccessToken`)
 	assert.NotContains(t, configSrc, `c.AuthSource = "bearer_refresh"`)
 	assert.Contains(t, clientSrc, `"grant_type":    {"refresh_token"}`)

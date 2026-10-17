@@ -606,7 +606,7 @@ func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
 				"%s auth AccessToken path should wrap return in ensureAuthScheme:\n%s", tt.authType, content)
 
 			// Confirm AuthSource label preserved (no behavior regression on which branch we took).
-			require.Contains(t, content, `c.AuthSource = "`+tt.authSource+`"`)
+			require.Contains(t, content, `c.stampAuthSource("`+tt.authSource+`", false)`)
 
 			// Generated config must compile and pass its own tests.
 			runGoCommand(t, outputDir, "test", "./internal/config")
