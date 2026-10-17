@@ -419,4 +419,46 @@ func TestDependentSyncDeadlineIsError(t *testing.T) {
 	}
 	assertModuleWatermark(t, db, wantSynced, 0)
 }
+func TestDependentSyncParentQueryErrorIsError(t *testing.T) {
+	db := seedFailureProjects(t, 1)
+	wantSynced := seedModuleWatermark(t, db)
+	// Remove both places ListIDs reads parents from, leaving sync_state
+	// writable, so only the parent enumeration fails.
+	for _, stmt := range []string{"DROP TABLE projects", "ALTER TABLE resources RENAME TO resources_gone"} {
+		if _, err := db.DB().Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	fake := &failingDependentGetter{
+		respond: func(context.Context, string, map[string]string) (json.RawMessage, error) {
+			t.Fatal("fetched a child after the parent query failed")
+			return nil, nil
+		},
+	}
+	var events bytes.Buffer
+	res := syncDependentResource(context.Background(), fake, db, failureModulesDep(), "", false, 0, false, false, nil, &events, 1)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "querying parent table projects") {
+		t.Fatalf("Err = %v, want a parent-query error", res.Err)
+	}
+	if !strings.Contains(events.String(), "\"event\":\"sync_error\"") {
+		t.Fatalf("events missing sync_error: %s", events.String())
+	}
+	if strings.Contains(events.String(), "sync_complete") {
+		t.Fatalf("events included sync_complete: %s", events.String())
+	}
+	assertModuleWatermark(t, db, wantSynced, 0)
+}
+
+func TestDependentSyncEmptyParentTableIsNotError(t *testing.T) {
+	db := seedFailureProjects(t, 0)
+	fake := &failingDependentGetter{}
+	var events bytes.Buffer
+	res := syncDependentResource(context.Background(), fake, db, failureModulesDep(), "", false, 0, false, false, nil, &events, 1)
+	if res.Err != nil || res.Warn != nil {
+		t.Fatalf("Err = %v, Warn = %v, want neither for an empty parent table", res.Err, res.Warn)
+	}
+	if strings.Contains(events.String(), "sync_error") {
+		t.Fatalf("empty parent table emitted sync_error: %s", events.String())
+	}
+}
 `
