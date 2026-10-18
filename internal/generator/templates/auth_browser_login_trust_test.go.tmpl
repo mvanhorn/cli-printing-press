@@ -237,6 +237,6 @@ func requestCarriesToken(r *http.Request, token string) bool {
 	if r == nil || token == "" {
 		return false
 	}
-	blob := r.Header.Get("Authorization") + "\n" + r.Header.Get("Cookie") + "\n" + r.URL.RequestURI()
+	blob := r.Header.Get("Authorization") + "\n" + r.Header.Get("Cookie") + "\n" + r.URL.RequestURI(){{if and .Auth.Header (ne (lower .Auth.Header) "authorization") (ne (lower .Auth.Header) "cookie")}} + "\n" + r.Header.Get({{printf "%q" .Auth.Header}}){{end}}
 	return strings.Contains(blob, token)
 }
