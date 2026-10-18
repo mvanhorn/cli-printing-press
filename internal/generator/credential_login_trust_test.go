@@ -52,27 +52,49 @@ func TestGenerate_BrowserLoginKeepsFreshCredential(t *testing.T) {
 		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
 	}
 
-	apiSpec := minimalSpec("browser-login-trust")
-	apiSpec.BaseURL = "https://app.example.com"
-	apiSpec.Auth = spec.AuthConfig{
-		Type:                           "cookie",
-		Header:                         "Cookie",
-		In:                             "cookie",
-		CookieDomain:                   ".example.com",
-		EnvVars:                        []string{"BROWSER_LOGIN_TRUST_COOKIES"},
-		RequiresBrowserSession:         true,
-		BrowserSessionValidationPath:   "/api/items",
-		BrowserSessionValidationMethod: "GET",
+	for _, tc := range []struct {
+		name   string
+		source string
+	}{
+		{name: "stdlib", source: ""},
+		{name: "browser", source: "sniffed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			apiSpec := minimalSpec("browser-login-trust")
+			apiSpec.BaseURL = "https://app.example.com"
+			apiSpec.SpecSource = tc.source
+			// Cookies wires the jar that attaches a saved session. An empty
+			// list emits no jar, so login can store the token and still send nothing.
+			apiSpec.Auth = spec.AuthConfig{
+				Type:                           "cookie",
+				Header:                         "Cookie",
+				In:                             "cookie",
+				CookieDomain:                   ".example.com",
+				Cookies:                        []string{"session"},
+				EnvVars:                        []string{"BROWSER_LOGIN_TRUST_COOKIES"},
+				RequiresBrowserSession:         true,
+				BrowserSessionValidationPath:   "/api/items",
+				BrowserSessionValidationMethod: "GET",
+			}
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+			require.Contains(t, authSrc, "cfg.CredentialRouteBlocked()")
+			require.Contains(t, authSrc, "config.Load(cfg.Path)")
+			trustSrc := readGeneratedFile(t, outputDir, "internal", "cli", "browser_login_trust_test.go")
+			require.Contains(t, trustSrc, "TestBrowserLoginKeepsFreshCredentialOnLooseConfig")
+			require.Contains(t, trustSrc, "httptest.NewTLSServer")
+			require.Contains(t, trustSrc, "missing credential")
+			if tc.source == "sniffed" {
+				require.Contains(t, trustSrc, "SKIP_TLS_VERIFY")
+			} else {
+				require.NotContains(t, trustSrc, "SKIP_TLS_VERIFY")
+			}
+
+			runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestBrowserLoginKeepsFreshCredentialOnLooseConfig", "-count=1", "-timeout", "180s")
+		})
 	}
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
-	require.Contains(t, authSrc, "cfg.CredentialRouteBlocked()")
-	require.Contains(t, authSrc, "config.Load(cfg.Path)")
-	require.Contains(t, readGeneratedFile(t, outputDir, "internal", "cli", "browser_login_trust_test.go"), "TestBrowserLoginKeepsFreshCredentialOnLooseConfig")
-
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestBrowserLoginKeepsFreshCredentialOnLooseConfig", "-count=1", "-timeout", "180s")
 }
 
 func clientCredentialsSpec(name, tokenURL string) *spec.APISpec {
