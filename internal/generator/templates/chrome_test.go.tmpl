@@ -47,11 +47,16 @@ func TestChromeClientBindsTimeoutAndJar(t *testing.T) {
 }
 
 func chromeInnerTransport(c *http.Client) http.RoundTripper {
+	next := c.Transport
+	if allow, ok := next.(*chromeAllowTripper); ok {
+		next = allow.next
+	}
 {{- if .UseChromeImpersonation}}
-	return c.Transport.(chromeHeaderTripper).next
-{{- else}}
-	return c.Transport
+	if hdr, ok := next.(chromeHeaderTripper); ok {
+		next = hdr.next
+	}
 {{- end}}
+	return next
 }
 {{- if .UseChromeImpersonation}}
 

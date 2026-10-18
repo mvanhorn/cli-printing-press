@@ -41,11 +41,9 @@ import (
 	"unicode"
 
 	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/client"
 {{- if or .HasRequiredRoles (and .Auth.Type (ne .Auth.Type "none"))}}
 	"{{modulePath}}/internal/config"
-{{- end}}
-{{- if or .HasSyncHelpers (and .Auth.Type (ne .Auth.Type "none"))}}
-	"{{modulePath}}/internal/client"
 {{- end}}
 	"{{modulePath}}/internal/platform"
 	"github.com/spf13/cobra"
@@ -433,6 +431,17 @@ func usageErr(err error) error    { return &cliError{code: 2, err: err} }
 func notFoundErr(err error) error { return &cliError{code: 3, err: err} }
 {{- if or .HasRequiredRoles .HasAuthCommand}}
 func authErr(err error) error     { return &cliError{code: 4, err: err} }
+{{- if or (and (eq (.Auth.EffectiveOAuth2Grant) "client_credentials") .Auth.TokenURL) (and (eq (.Auth.EffectiveOAuth2Grant) "device_code") .Auth.DeviceAuthorizationURL .Auth.TokenURL) .Auth.AuthorizationURL}}
+
+// authTransportErr keeps a refused plaintext credential on the config exit.
+// authErr would hide that code, and auth commands never reach classifyAPIErrorOnly.
+func authTransportErr(err error) error {
+	if errors.Is(err, client.ErrPlaintextCredential) {
+		return configErr(fmt.Errorf("%w\nhint: use https so credentials are not sent in plaintext", err))
+	}
+	return authErr(err)
+}
+{{- end}}
 {{- end}}
 func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
@@ -1459,6 +1468,8 @@ func classifyAPIErrorOnly(err error) error {
 
 	msg := err.Error()
 	switch {
+	case errors.Is(err, client.ErrPlaintextCredential):
+		return configErr(fmt.Errorf("%w\nhint: use https so credentials are not sent in plaintext", err))
 	case strings.Contains(msg, "HTTP 409"):
 		return apiErr(err)
 {{- if and .Auth.Type (ne .Auth.Type "none")}}

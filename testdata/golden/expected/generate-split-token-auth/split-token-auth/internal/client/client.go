@@ -21,6 +21,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -302,20 +304,25 @@ var ErrRedirectUnsupportedScheme = errors.New("refusing redirect: unsupported sc
 // ErrRedirectProtocolDowngrade is returned when any hop in the chain moves from https to http.
 var ErrRedirectProtocolDowngrade = errors.New("refusing redirect: https to http downgrade")
 
-// ErrRedirectPrivateDestination is returned when a redirect leaves the origin for a local IP literal.
+// ErrRedirectPrivateDestination is returned when a redirect leaves the origin
+// for a loopback, private, link-local, or unspecified address.
 var ErrRedirectPrivateDestination = errors.New("refusing redirect: loopback, private, link-local, or unspecified address")
+
+// ErrPlaintextCredential is returned when a request would send a credential
+// to an http:// host that is not localhost or a loopback address.
+var ErrPlaintextCredential = errors.New("refusing to send credentials over plaintext http")
 
 // A followed redirect can change scheme or land on a local address the caller
 // never asked to reach. Only http and https are allowed. An https-to-http
 // downgrade on any earlier hop is refused. An off-origin hop is refused when
-// the target host is a loopback, private, link-local, or unspecified IP
-// literal. Same-origin hops, including a local base URL and an omitted
-// default port, still proceed.
+// its host is a loopback, private, link-local, or unspecified address.
+// Same-origin hops, including a local base URL and an omitted default port,
+// still proceed.
 //
-// The address check parses the URL host with net.ParseIP and does not resolve DNS.
-// A hostname that later points at a local address is not caught.
-// Resolving before dial invites DNS rebinding; closing that gap needs a
-// dialer Control hook, which this client does not install.
+// IP literals are refused here. An off-origin hostname is resolved, and the
+// hop is refused when any address is in that class. The dialer repeats the
+// check and connects to those resolved addresses, so a later DNS answer
+// cannot slip through to a blocked address.
 func redirectDestinationRefused(next *url.URL, via []*http.Request) error {
 	if next == nil {
 		return ErrRedirectUnsupportedScheme
@@ -398,6 +405,593 @@ func redirectHostIsBlockedLiteral(host string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
+func plaintextCredentialError(u *url.URL, credentialed bool) error {
+	if !credentialed || u == nil || !strings.EqualFold(u.Scheme, "http") {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "" || plaintextLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("%w to %s; use https", ErrPlaintextCredential, host)
+}
+
+func plaintextLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.Unmap().IsLoopback()
+}
+
+func redirectGuard(req *http.Request, via []*http.Request) error {
+	if req == nil {
+		return ErrRedirectUnsupportedScheme
+	}
+	if err := redirectDestinationRefused(req.URL, via); err != nil {
+		return err
+	}
+	return redirectResolvedDestinationRefused(req.Context(), req.URL, via)
+}
+
+// redirectPlaintextRefused runs after the hop's credential policy. An
+// off-origin hop that has already dropped its headers is not carrying a
+// header secret. A replayed body still is: bodyCredential was decided from
+// the full original body, so a redirect re-read that stops early cannot
+// hide a password past that prefix. Same-origin hops keep the original
+// credential flag.
+func redirectPlaintextRefused(req *http.Request, via []*http.Request, jar http.CookieJar) error {
+	if req == nil || req.URL == nil {
+		return nil
+	}
+	g := dialGuardFrom(req.Context())
+	cred := requestCarriesCredential(req, jar, "", redirectCredentialBody(req))
+	if requestReplaysBody(req) && g.bodyCredential {
+		cred = true
+	}
+	if !redirectTargetLeavesOrigin(req.URL, via) && g.credentialed {
+		cred = true
+	}
+	return plaintextCredentialError(req.URL, cred)
+}
+
+func requestReplaysBody(req *http.Request) bool {
+	return req != nil && req.Body != nil && req.Body != http.NoBody
+}
+
+func redirectCredentialBody(req *http.Request) []byte {
+	if req == nil || req.GetBody == nil {
+		return nil
+	}
+	rc, err := req.GetBody()
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
+// Off-origin hostnames are resolved once here so a name such as localhost is
+// refused before the hop. A lookup failure is not a private-destination
+// signal; the dialer enforces that case. Same-origin hops and IP literals
+// do not look up DNS.
+func redirectResolvedDestinationRefused(ctx context.Context, next *url.URL, via []*http.Request) error {
+	if next == nil || !redirectTargetLeavesOrigin(next, via) {
+		return nil
+	}
+	host := next.Hostname()
+	if host == "" || net.ParseIP(host) != nil {
+		return nil
+	}
+	ips, err := lookupDialIPs(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+	for _, ip := range ips {
+		if redirectHostIsBlockedLiteral(ip.String()) {
+			return fmt.Errorf("%w: %s", ErrRedirectPrivateDestination, host)
+		}
+	}
+	return nil
+}
+
+type dialGuard struct {
+	allow          string
+	credentialed   bool
+	bodyCredential bool
+}
+
+type dialGuardKey struct{}
+
+func dialGuardFrom(ctx context.Context) dialGuard {
+	if ctx == nil {
+		return dialGuard{}
+	}
+	g, _ := ctx.Value(dialGuardKey{}).(dialGuard)
+	return g
+}
+
+func dialAllowKey(u *url.URL) string {
+	_, host, port, ok := redirectEffectiveOrigin(u)
+	if !ok {
+		return ""
+	}
+	return net.JoinHostPort(host, port)
+}
+
+type dialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// dialResolve and dialPinnedConn are replaceable so tests can prove a blocked
+// address is refused without opening a socket.
+var (
+	dialHooksMu sync.Mutex
+	dialResolve = func(ctx context.Context, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip", host)
+	}
+	dialPinnedConn = defaultDialPinned
+)
+
+func swapDialResolve(fn func(context.Context, string) ([]net.IP, error)) func() {
+	dialHooksMu.Lock()
+	prev := dialResolve
+	if fn != nil {
+		dialResolve = fn
+	}
+	dialHooksMu.Unlock()
+	return func() {
+		dialHooksMu.Lock()
+		dialResolve = prev
+		dialHooksMu.Unlock()
+	}
+}
+
+func swapDialPinned(fn dialContextFunc) func() {
+	dialHooksMu.Lock()
+	prev := dialPinnedConn
+	if fn != nil {
+		dialPinnedConn = fn
+	}
+	dialHooksMu.Unlock()
+	return func() {
+		dialHooksMu.Lock()
+		dialPinnedConn = prev
+		dialHooksMu.Unlock()
+	}
+}
+
+func lookupDialIPs(ctx context.Context, host string) ([]net.IP, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	dialHooksMu.Lock()
+	resolve := dialResolve
+	dialHooksMu.Unlock()
+	return resolve(ctx, host)
+}
+
+func defaultDialPinned(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   refuseBlockedDialControl,
+	}
+	return d.DialContext(ctx, network, addr)
+}
+
+func refuseBlockedDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	if redirectHostIsBlockedLiteral(host) {
+		return fmt.Errorf("%w: %s", ErrRedirectPrivateDestination, host)
+	}
+	return nil
+}
+
+func dialPinned(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialHooksMu.Lock()
+	fn := dialPinnedConn
+	dialHooksMu.Unlock()
+	return fn(ctx, network, addr)
+}
+
+func dialDirect(ctx context.Context, network, addr string, prev dialContextFunc) (net.Conn, error) {
+	if prev != nil {
+		return prev(ctx, network, addr)
+	}
+	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return d.DialContext(ctx, network, addr)
+}
+
+func dialTargetAllowed(addr, allow string) bool {
+	if allow == "" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ah, ap, err := net.SplitHostPort(allow)
+	if err != nil {
+		return strings.EqualFold(host, allow)
+	}
+	return strings.EqualFold(host, ah) && port == ap
+}
+
+func dialAddrIsConfiguredProxy(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "http://" + raw
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		p := u.Port()
+		if p == "" {
+			switch strings.ToLower(u.Scheme) {
+			case "https":
+				p = "443"
+			case "socks5", "socks5h":
+				p = "1080"
+			default:
+				p = "80"
+			}
+		}
+		if strings.EqualFold(u.Hostname(), host) && p == port {
+			return true
+		}
+	}
+	return false
+}
+
+// guardedDial allows the original request's host:port and a configured proxy.
+// Every other destination is resolved first. A blocked address is returned
+// without a dial; a public hostname is dialed at the resolved IP so a second
+// DNS answer cannot move the connection.
+func guardedDial(ctx context.Context, network, addr, allow string, prev dialContextFunc) (net.Conn, error) {
+	if dialTargetAllowed(addr, allow) || dialAddrIsConfiguredProxy(addr) {
+		return dialDirect(ctx, network, addr, prev)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if redirectHostIsBlockedLiteral(host) {
+		return nil, fmt.Errorf("%w: %s", ErrRedirectPrivateDestination, host)
+	}
+	if net.ParseIP(host) != nil {
+		return dialPinned(ctx, network, addr)
+	}
+	ips, err := lookupDialIPs(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("lookup %s: no addresses", host)
+	}
+	for _, ip := range ips {
+		if redirectHostIsBlockedLiteral(ip.String()) {
+			return nil, fmt.Errorf("%w: %s", ErrRedirectPrivateDestination, host)
+		}
+	}
+	var firstErr error
+	for _, ip := range ips {
+		conn, err := dialPinned(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("dial %s: no address connected", host)
+	}
+	return nil, firstErr
+}
+
+func installDialGuard(tr *http.Transport, allow string) {
+	if tr == nil {
+		return
+	}
+	prev := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		key := dialGuardFrom(ctx).allow
+		if key == "" {
+			// No stamped origin means the caller dialed this address
+			// itself. Redirects keep the original request's allow key,
+			// so an empty key is not a followed hop.
+			if host, port, err := net.SplitHostPort(addr); err == nil {
+				key = net.JoinHostPort(host, port)
+			} else {
+				key = allow
+			}
+		}
+		return guardedDial(ctx, network, addr, key, prev)
+	}
+}
+
+type chromeAllowState struct {
+	mu   sync.Mutex
+	host string
+}
+
+type chromeAllowTripper struct {
+	next  http.RoundTripper
+	state *chromeAllowState
+}
+
+func (t *chromeAllowTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t == nil || t.next == nil {
+		return nil, errors.New("nil chrome transport")
+	}
+	if req == nil {
+		return nil, errors.New("nil request")
+	}
+	g := dialGuardFrom(req.Context())
+	if g.allow == "" && t.state != nil {
+		t.state.mu.Lock()
+		// A bare chrome client dials before guardOutbound. Pin the first
+		// host so a later hop cannot retarget the allow key: Client.Do
+		// copies the original context, not the one RoundTrip attaches.
+		if t.state.host == "" {
+			t.state.host = dialAllowKey(req.URL)
+		}
+		g.allow = t.state.host
+		t.state.mu.Unlock()
+		if g.allow != "" {
+			req = req.WithContext(context.WithValue(req.Context(), dialGuardKey{}, g))
+		}
+	}
+	return t.next.RoundTrip(req)
+}
+
+func guardHTTPClient(c *http.Client, baseURL string) {
+	if c == nil {
+		return
+	}
+	allow := ""
+	if u, err := url.Parse(strings.TrimSpace(baseURL)); err == nil {
+		allow = dialAllowKey(u)
+	}
+	// Browser transports pin the first dialled host in chromeAllowTripper.
+	// Pre-seeding the configured base would refuse a direct dial to another
+	// local server. guardOutbound still stamps the origin onto redirects.
+	switch tr := c.Transport.(type) {
+	case *http.Transport:
+		installDialGuard(tr, allow)
+	case nil:
+		cloned := http.DefaultTransport.(*http.Transport).Clone()
+		c.Transport = cloned
+		installDialGuard(cloned, allow)
+	}
+	if c.CheckRedirect == nil {
+		jar := c.Jar
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if err := redirectGuard(req, via); err != nil {
+				return err
+			}
+			return redirectPlaintextRefused(req, via, jar)
+		}
+	}
+}
+
+// PrepareRequest stamps the original dial allow-host onto req and refuses a
+// credentialed plaintext target before Client.Do. Redirects keep that allow key.
+func PrepareRequest(httpClient *http.Client, req *http.Request) (*http.Request, error) {
+	var jar http.CookieJar
+	if httpClient != nil {
+		jar = httpClient.Jar
+	}
+	return guardOutbound(req, jar, "", nil)
+}
+
+// GuardTokenRequest applies the same plaintext refusal to a token-endpoint
+// POST. body is the encoded form, including client_secret or refresh_token,
+// which the Authorization header alone does not carry.
+func GuardTokenRequest(httpClient *http.Client, req *http.Request, body []byte) (*http.Request, error) {
+	var jar http.CookieJar
+	if httpClient != nil {
+		jar = httpClient.Jar
+	}
+	return guardOutbound(req, jar, "", body)
+}
+
+// NewPlainHTTPClient is the non-browser probe client with the same dial guard
+// as the API client.
+func NewPlainHTTPClient(timeout time.Duration) *http.Client {
+	c := &http.Client{Timeout: timeout}
+	guardHTTPClient(c, "")
+	return c
+}
+
+func guardOutbound(req *http.Request, jar http.CookieJar, authHeader string, body []byte) (*http.Request, error) {
+	if req == nil {
+		return nil, errors.New("nil request")
+	}
+	ct := ""
+	if req.Header != nil {
+		ct = req.Header.Get("Content-Type")
+	}
+	bodyCred := bodyHasPassword(body, ct)
+	carries := requestCarriesCredential(req, jar, authHeader, body)
+	if err := plaintextCredentialError(req.URL, carries); err != nil {
+		return nil, err
+	}
+	ctx := req.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	g := dialGuardFrom(ctx)
+	if g.allow == "" {
+		g.allow = dialAllowKey(req.URL)
+	}
+	if bodyCred {
+		g.bodyCredential = true
+	}
+	if carries {
+		g.credentialed = true
+	}
+	return req.WithContext(context.WithValue(ctx, dialGuardKey{}, g)), nil
+}
+
+func requestCarriesCredential(req *http.Request, jar http.CookieJar, authHeader string, body []byte) bool {
+	if strings.TrimSpace(authHeader) != "" {
+		return true
+	}
+	if req == nil {
+		return bodyHasPassword(body, "")
+	}
+	if req.URL != nil {
+		if user := req.URL.User; user != nil {
+			if pw, ok := user.Password(); ok && pw != "" {
+				return true
+			}
+		}
+		if valuesHavePassword(req.URL.Query()) {
+			return true
+		}
+	}
+	if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+		return true
+	}
+	if additionalCredentialOnRequest(req) {
+		return true
+	}
+	if jar != nil && req.URL != nil && len(jar.Cookies(req.URL)) > 0 {
+		return true
+	}
+	ct := ""
+	if req.Header != nil {
+		ct = req.Header.Get("Content-Type")
+	}
+	return bodyHasPassword(body, ct)
+}
+func additionalCredentialOnRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	if req.Header.Get("X-Account-Token") != "" {
+		return true
+	}
+	return false
+}
+
+func valuesHavePassword(vals url.Values) bool {
+	for key, values := range vals {
+		if !isPasswordField(key) {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isPasswordField(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "password" || n == "client_secret" || n == "refresh_token" || n == "code_verifier" || n == "device_code" ||
+		strings.HasSuffix(n, "_password") || strings.HasSuffix(n, "-password")
+}
+
+func bodyHasPassword(body []byte, contentType string) bool {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return false
+	}
+	ct := strings.ToLower(contentType)
+	if strings.Contains(ct, "json") || len(body) > 0 && body[0] == '{' {
+		if jsonObjectHasPassword(body) {
+			return true
+		}
+	}
+	if strings.Contains(ct, "application/x-www-form-urlencoded") || strings.Contains(ct, "form-urlencoded") {
+		vals, err := url.ParseQuery(string(body))
+		if err == nil && valuesHavePassword(vals) {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonObjectHasPassword(body []byte) bool {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return false
+	}
+	return jsonMapHasPassword(obj, 0)
+}
+
+func jsonMapHasPassword(obj map[string]any, depth int) bool {
+	for key, value := range obj {
+		if isPasswordField(key) {
+			if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
+				return true
+			}
+		}
+		if depth == 0 {
+			if child, ok := value.(map[string]any); ok && jsonMapHasPassword(child, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func terminalTransportRefusal(err error) bool {
+	return errors.Is(err, ErrPlaintextCredential) ||
+		errors.Is(err, ErrRedirectPrivateDestination) ||
+		errors.Is(err, ErrRedirectProtocolDowngrade) ||
+		errors.Is(err, ErrRedirectUnsupportedScheme)
+}
+
+func terminalSentinel(err error) error {
+	switch {
+	case errors.Is(err, ErrPlaintextCredential):
+		return ErrPlaintextCredential
+	case errors.Is(err, ErrRedirectPrivateDestination):
+		return ErrRedirectPrivateDestination
+	case errors.Is(err, ErrRedirectProtocolDowngrade):
+		return ErrRedirectProtocolDowngrade
+	case errors.Is(err, ErrRedirectUnsupportedScheme):
+		return ErrRedirectUnsupportedScheme
+	default:
+		return err
+	}
+}
+
 // redirectLeavesOrigin reports whether a redirect hop should drop custom
 // credentials. Host is compared against the original request so a foreign
 // hop (A -> B -> B) cannot re-stamp A's credential onto B. Same-host
@@ -440,6 +1034,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	// returns a fresh value for those schemes and the same static value
 	// for Bearer/api_key, so post-redirect headers are byte-identical for
 	// static auth and freshly-signed for nonce-bound auth.
+	guardHTTPClient(httpClient, c.BaseURL)
 	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			// Match Go's defaultCheckRedirect: a plain error so Client.Do
@@ -449,7 +1044,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		if err := redirectDestinationRefused(req.URL, via); err != nil {
+		if err := redirectGuard(req, via); err != nil {
 			return err
 		}
 		redirectScheme := ""
@@ -498,7 +1093,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 				req.Header.Del("X-Account-Token")
 			}
 		}
-		return nil
+		return redirectPlaintextRefused(req, via, httpClient.Jar)
 	}
 	return c
 }
@@ -520,6 +1115,11 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 	}
 	binaryResponse := c.wantsBinaryResponse(headers)
 	cacheEnabled := c.responseCacheEnabled(binaryResponse)
+	// A credentialed plaintext target is refused before the wire. A cached
+	// body would hide that refusal.
+	if cacheEnabled && c.plaintextCredentialTarget(path, params, headers) {
+		cacheEnabled = false
+	}
 	// Check cache for GET requests
 	if cacheEnabled {
 		if cached, ok := c.readCacheWithHeaders(path, params, headers); ok {
@@ -585,6 +1185,63 @@ func (c *Client) GetWithHeadersNoCacheValues(ctx context.Context, path string, p
 
 func (c *Client) responseCacheEnabled(binaryResponse bool) bool {
 	return !binaryResponse && !c.NoCache && !c.DryRun && c.cacheDir != ""
+}
+
+func (c *Client) plaintextCredentialTarget(path string, params map[string]string, headers map[string]string) bool {
+	if c == nil {
+		return false
+	}
+	target := path
+	if !strings.HasPrefix(path, "https://") && !strings.HasPrefix(path, "http://") {
+		base := c.BaseURL
+		target = base + path
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	if len(params) > 0 {
+		q := u.Query()
+		for k, v := range params {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		u.RawQuery = q.Encode()
+	}
+	if plaintextCredentialError(u, true) == nil {
+		return false
+	}
+	req := &http.Request{URL: u, Header: make(http.Header)}
+	if c.Config != nil {
+		for k, v := range c.Config.Headers {
+			req.Header.Set(k, v)
+		}
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	var jar http.CookieJar
+	if c.HTTPClient != nil {
+		jar = c.HTTPClient.Jar
+	}
+	return c.likelyCredentialed(u) || requestCarriesCredential(req, jar, "", nil)
+}
+
+func (c *Client) likelyCredentialed(u *url.URL) bool {
+	if c == nil || c.Config == nil {
+		return false
+	}
+	if strings.TrimSpace(c.Config.AuthHeader()) != "" {
+		return true
+	}
+	if c.HTTPClient != nil && c.HTTPClient.Jar != nil && u != nil && len(c.HTTPClient.Jar.Cookies(u)) > 0 {
+		return true
+	}
+	if strings.TrimSpace(c.Config.SplitTokenAccountToken) != "" {
+		return true
+	}
+	return false
 }
 
 // The response cache stores text/JSON bodies as <hash>.json. Binary callers
@@ -1613,12 +2270,25 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			uploadClient.Timeout += uploadAllowance
 			httpClient = &uploadClient
 		}
+		var jar http.CookieJar
+		if httpClient != nil {
+			jar = httpClient.Jar
+		}
+		guarded, guardErr := guardOutbound(req, jar, authHeader, bodyBytes)
+		if guardErr != nil {
+			return nil, 0, guardErr
+		}
+		req = guarded
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, 0, ctxErr
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, c.displayURL(path, authHeader), c.maskError(err, authHeader))
+			// A redirect or plaintext refusal will not succeed on replay.
+			if terminalTransportRefusal(err) {
+				return nil, 0, fmt.Errorf("%s %s: %s: %w", method, c.displayURL(path, authHeader), c.maskCredentialText(err.Error(), authHeader), terminalSentinel(err))
+			}
 			// Transient network failure (connection reset, DNS blip, request
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt

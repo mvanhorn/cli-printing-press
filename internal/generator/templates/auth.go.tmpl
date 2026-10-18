@@ -24,10 +24,8 @@ import (
 	"time"
 
 	"{{modulePath}}/internal/cliutil"
-	"{{modulePath}}/internal/config"
-{{- if or (authURLNeedsTemplateSubstitution .Auth.TokenURL) (authURLNeedsTemplateSubstitution .Auth.AuthorizationURL)}}
 	"{{modulePath}}/internal/client"
-{{- end}}
+	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -328,6 +326,10 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		return fmt.Errorf("building token request: %w", err)
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenReq, err = client.GuardTokenRequest(nil, tokenReq, []byte(tokenParams.Encode()))
+	if err != nil {
+		return authTransportErr(err)
+	}
 	tokenClient := cliutil.OAuthTokenHTTPClient(&http.Client{Timeout: 30 * time.Second})
 	resp, err := tokenClient.Do(tokenReq)
 	if err != nil {

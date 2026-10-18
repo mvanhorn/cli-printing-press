@@ -40,6 +40,7 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	auth := string(authSrc)
+	require.Contains(t, auth, "return authTransportErr(err)")
 	require.Contains(t, auth, "func runOAuthLogin(")
 	require.Contains(t, auth, "clientIDFromFlag := clientID != \"\"")
 	require.Contains(t, auth, "clientSecretFromFlag := clientSecret != \"\"")

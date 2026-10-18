@@ -58,7 +58,7 @@ func TestGeneratedBrowserClearanceAuthLoginSucceedsAsGenerated(t *testing.T) {
 
 	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientGo, "func NewProbeHTTPClient(timeout time.Duration, skipTLSVerify bool) *http.Client")
-	assert.Contains(t, clientGo, "return newHTTPClient(timeout, nil, skipTLSVerify)")
+	assert.Contains(t, clientGo, "newHTTPClient(timeout, nil, skipTLSVerify)")
 
 	requireGeneratedCompiles(t, outputDir)
 

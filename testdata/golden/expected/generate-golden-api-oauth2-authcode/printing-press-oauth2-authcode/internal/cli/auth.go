@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"printing-press-oauth2-pp-cli/internal/client"
 	"printing-press-oauth2-pp-cli/internal/cliutil"
 	"printing-press-oauth2-pp-cli/internal/config"
 )
@@ -253,6 +254,10 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		return fmt.Errorf("building token request: %w", err)
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenReq, err = client.GuardTokenRequest(nil, tokenReq, []byte(tokenParams.Encode()))
+	if err != nil {
+		return authTransportErr(err)
+	}
 	tokenClient := cliutil.OAuthTokenHTTPClient(&http.Client{Timeout: 30 * time.Second})
 	resp, err := tokenClient.Do(tokenReq)
 	if err != nil {

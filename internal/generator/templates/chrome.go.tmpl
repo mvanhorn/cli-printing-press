@@ -41,6 +41,7 @@ func chromeClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool)
 {{- if .UseChromeImpersonation}}
 	rt = chromeHeaderTripper{next: rt}
 {{- end}}
+	rt = &chromeAllowTripper{next: rt, state: &chromeAllowState{}}
 	return &http.Client{Timeout: timeout, Jar: jar, Transport: rt}
 }
 {{- if .UseChromeImpersonation}}
@@ -113,6 +114,9 @@ func newChromeTransport(timeout time.Duration, skipTLSVerify bool) http.RoundTri
 		h1.MaxIdleConns = maxIdleConnsPerHost
 	}
 	h1.ResponseHeaderTimeout = timeout
+	h1.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return guardedDial(ctx, network, addr, dialGuardFrom(ctx).allow, nil)
+	}
 	h1.DialTLSContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
 		return chromeDialTLS(ctx, addr, []string{"http/1.1"}, skipTLSVerify)
 	}
@@ -186,13 +190,12 @@ func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerif
 }
 
 func chromeDialTCP(ctx context.Context, addr string, skipTLSVerify bool) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	proxyURL, err := httpproxy.FromEnvironment().ProxyFunc()(&url.URL{Scheme: "https", Host: addr})
 	if err != nil {
 		return nil, err
 	}
 	if proxyURL == nil {
-		return dialer.DialContext(ctx, "tcp", addr)
+		return guardedDial(ctx, "tcp", addr, dialGuardFrom(ctx).allow, nil)
 	}
 	switch proxyURL.Scheme {
 	case "http", "https":
@@ -207,7 +210,9 @@ func chromeDialTCP(ctx context.Context, addr string, skipTLSVerify bool) (net.Co
 		}
 		proxyAddr = net.JoinHostPort(proxyAddr, port)
 	}
-	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
+	// The proxy address is the dial target. Exempt it so a private proxy
+	// still connects; the origin is checked before the hop.
+	conn, err := guardedDial(ctx, "tcp", proxyAddr, proxyAddr, nil)
 	if err != nil {
 		return nil, err
 	}

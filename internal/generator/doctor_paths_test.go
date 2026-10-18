@@ -349,6 +349,9 @@ func doctorEnv(home, prefix string) []string {
 	env := os.Environ()
 	clears := []string{
 		"HOME=" + home,
+		// os.UserHomeDir reads USERPROFILE on Windows. HOME alone would
+		// let a login test save credentials into the real profile.
+		"USERPROFILE=" + home,
 		prefix + "_CONFIG=",
 		prefix + "_CONFIG_DIR=",
 		prefix + "_DATA_DIR=",

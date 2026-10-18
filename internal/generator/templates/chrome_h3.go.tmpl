@@ -12,6 +12,9 @@ import (
 )
 
 func chromeH3RoundTripper(skipTLSVerify bool) http.RoundTripper {
+	// HTTP/3 has no TCP dial hook. Off-origin redirects are still refused
+	// before the hop; a DNS answer that changes before the QUIC handshake
+	// is not pinned on this transport.
 	return &http3.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify},
 	}

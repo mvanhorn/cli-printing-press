@@ -156,7 +156,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 			interval := time.Duration(device.Interval) * time.Second
 			tok, err := oauth.PollDeviceToken(pollCtx, nil, tokenURL, clientID, device.DeviceCode, interval)
 			if err != nil {
-				return authErr(err)
+				return authTransportErr(err)
 			}
 			expiry := time.Time{}
 			if tok.ExpiresIn > 0 {
@@ -218,7 +218,7 @@ func newAuthPollCmd(flags *rootFlags) *cobra.Command {
 			}
 			tok, err := oauth.PollDeviceToken(ctx, nil, tokenURL, clientID, state.DeviceCode, 0)
 			if err != nil {
-				return authErr(err)
+				return authTransportErr(err)
 			}
 			expiry := time.Time{}
 			if tok.ExpiresIn > 0 {
@@ -261,7 +261,7 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 			}
 			tok, err := oauth.RefreshToken(cmd.Context(), nil, tokenURL, cfg.ClientID, cfg.ClientSecret, cfg.RefreshToken)
 			if err != nil {
-				return authErr(err)
+				return authTransportErr(err)
 			}
 			refreshToken := cfg.RefreshToken
 			if tok.RefreshToken != "" {
