@@ -3725,6 +3725,11 @@ func (g *Generator) Generate() error {
 			return err
 		}
 	}
+	if g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials {
+		if err := g.renderTemplate("client_untrusted_mint_test.go.tmpl", filepath.Join("internal", "client", "untrusted_mint_test.go"), g.clientTemplateData()); err != nil {
+			return err
+		}
+	}
 	if err := g.renderOptionalSupportFiles(); err != nil {
 		return err
 	}

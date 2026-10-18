@@ -300,6 +300,8 @@ func (c *Config) acceptOpenedConfig(opened cliutil.OpenedConfig, path, owner str
 
 func (c *Config) dropUntrustedRouting(defaultBase string) {
 	c.Headers = nil
+	// A loose file must not choose the endpoint a stored secret is posted to.
+	// Same-server profiles still drop these; only the mode bits were untrusted.
 	if strings.TrimSpace(c.BaseURL) == strings.TrimSpace(defaultBase) {
 		return
 	}
@@ -424,6 +426,13 @@ func (c *Config) credentialRouteBlocked() bool {
 		return false
 	}
 	return strings.TrimSpace(cliutil.EnvOverride("PRINTING_PRESS_GOLDEN_BASE_URL")) == ""
+}
+
+// CredentialRouteBlocked reports that an untrusted profile named a different
+// server than the default and the operator did not set the base URL explicitly.
+// Callers must not mint or send a credential while this is true.
+func (c *Config) CredentialRouteBlocked() bool {
+	return c.credentialRouteBlocked()
 }
 
 func (c *Config) envHasCredential() bool {

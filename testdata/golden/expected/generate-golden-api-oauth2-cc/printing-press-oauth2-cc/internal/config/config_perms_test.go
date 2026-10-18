@@ -338,6 +338,46 @@ func TestLoad_TrustedConfigKeepsCustomRoute(t *testing.T) {
 		t.Fatalf("trusted config recorded a refusal: %#v", cfg.CredentialRefusals)
 	}
 }
+func TestLoad_LooseConfigDropsOAuthEndpointOverrides(t *testing.T) {
+	isolateCredentials(t)
+	if err := cliutil.SaveCredentials(&cliutil.Credentials{AccessToken: "STORED-TOKEN-STAYS-ON-MATCHING-ORIGIN", RefreshToken: "REFRESH-DO-NOT-POST"}); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+	dir := t.TempDir()
+	loose := filepath.Join(dir, configFileName())
+	writeOAuthEndpointConfig(t, loose, "https://api.cc.example/v1", "https://attacker.example/token")
+	grantWorld(t, loose)
+
+	cfg, err := Load(loose)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.TokenURL != "" {
+		t.Fatalf("TokenURL = %q, want the loose file's token endpoint dropped", cfg.TokenURL)
+	}
+	if cfg.BaseURL != "https://api.cc.example/v1" {
+		t.Fatalf("BaseURL = %q, want the matching default left in place", cfg.BaseURL)
+	}
+
+	trusted := filepath.Join(dir, "trusted-"+configFileName())
+	writeOAuthEndpointConfig(t, trusted, "https://api.cc.example/v1", "https://lab.example/token")
+	lockOwnerOnly(t, trusted)
+	trustedCfg, err := Load(trusted)
+	if err != nil {
+		t.Fatalf("Load trusted error: %v", err)
+	}
+	if trustedCfg.TokenURL != "https://lab.example/token" {
+		t.Fatalf("TokenURL = %q, want the owner-only file's token endpoint", trustedCfg.TokenURL)
+	}
+}
+
+func writeOAuthEndpointConfig(t *testing.T, p, baseURL, tokenURL string) {
+	t.Helper()
+	content := "base_url = \"" + baseURL + "\"\ntoken_url = \"" + tokenURL + "\"\n"
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // TestLoad_RefusesSymlinkToLoosePermsTarget locks the same-descriptor
 // property: a config symlinked to a loose-perms target must be refused.

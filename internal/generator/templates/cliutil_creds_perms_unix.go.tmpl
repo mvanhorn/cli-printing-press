@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // VerifyCredsPerms returns a non-nil error if path is group- or world-accessible
@@ -176,7 +178,8 @@ func readVerifiedCredential(f *os.File, path string) ([]byte, error) {
 }
 
 func openatNoFollow(dirfd int, name string, flags int) (*os.File, error) {
-	fd, err := syscall.Openat(dirfd, name, flags|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0) // #nosec G304 -- name is a single path component under an already-opened directory.
+	// x/sys/unix, not syscall: darwin's syscall package has no Openat.
+	fd, err := unix.Openat(dirfd, name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0) // #nosec G304 -- name is a single path component under an already-opened directory.
 	if err != nil {
 		if isSymlinkOpenErr(err) {
 			return nil, &credentialTrustError{msg: fmt.Sprintf("%s is a symlink", name), present: true}
