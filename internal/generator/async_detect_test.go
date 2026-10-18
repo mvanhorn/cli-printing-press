@@ -397,6 +397,54 @@ func TestFindStatusSiblingRanking(t *testing.T) {
 			wantRes: "renders", wantEP: "status",
 		},
 		{
+			name: "same-resource compound name beats a generic status name",
+			spec: &spec.APISpec{Resources: map[string]spec.Resource{
+				"renders": {Endpoints: map[string]spec.Endpoint{
+					"submit_render":      {Method: "POST", Path: "/renders"},
+					"submit_render_poll": get("/renders/{id}/poll"),
+					"aaa_status":         get("/renders/{id}/status"),
+				}},
+			}},
+			resource: "renders", endpoint: "submit_render",
+			wantRes: "renders", wantEP: "submit_render_poll",
+		},
+		{
+			name: "same-resource hyphenated compound name is separator-bounded",
+			spec: &spec.APISpec{Resources: map[string]spec.Resource{
+				"renders": {Endpoints: map[string]spec.Endpoint{
+					"submit-render":      {Method: "POST", Path: "/renders"},
+					"submit-render-poll": get("/renders/{id}/poll"),
+					"aaa_status":         get("/renders/{id}/status"),
+				}},
+			}},
+			resource: "renders", endpoint: "submit-render",
+			wantRes: "renders", wantEP: "submit-render-poll",
+		},
+		{
+			name: "same-resource partial compound does not count as a name match",
+			spec: &spec.APISpec{Resources: map[string]spec.Resource{
+				"renders": {Endpoints: map[string]spec.Endpoint{
+					"submit_render":        {Method: "POST", Path: "/renders"},
+					"submit_renderer_poll": get("/renders/{id}/poll"),
+					"aaa_status":           get("/renders/{id}/status"),
+				}},
+			}},
+			resource: "renders", endpoint: "submit_render",
+			wantRes: "renders", wantEP: "aaa_status",
+		},
+		{
+			name: "cross-resource compound name beats an unrelated better probe",
+			spec: &spec.APISpec{Resources: map[string]spec.Resource{
+				"order_events": {Endpoints: map[string]spec.Endpoint{"create": {Method: "POST", Path: "/order-events"}}},
+				"aaa-jobs":     {Endpoints: map[string]spec.Endpoint{"get": get("/aaa-jobs/{id}")}},
+				"backup-order-events-tasks": {Endpoints: map[string]spec.Endpoint{
+					"fetch-status": get("/backup/{id}/status"),
+				}},
+			}},
+			resource: "order_events", endpoint: "create",
+			wantRes: "backup-order-events-tasks", wantEP: "fetch-status",
+		},
+		{
 			name: "same-resource token match beats a generic status name",
 			spec: &spec.APISpec{Resources: map[string]spec.Resource{
 				"renders": {Endpoints: map[string]spec.Endpoint{

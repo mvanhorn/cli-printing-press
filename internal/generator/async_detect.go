@@ -235,17 +235,18 @@ const (
 //  1. Same resource, first conventional probe that exists: get, status,
 //     show, retrieve. The submitting endpoint is skipped.
 //  2. Same resource, a name containing "status" or "poll". Prefer a name
-//     that includes the submitting endpoint as its own token (split on
-//     non-alphanumeric runs, case-insensitive), then a name containing
-//     "status" over one that only contains "poll", then the
-//     lexicographically smaller endpoint name.
+//     that includes the submitting endpoint as a separator-bounded whole
+//     (non-alphanumeric runs are separators, case-insensitive), so
+//     submit_render matches submit_render_poll and not submit_renderer.
+//     Then a name containing "status" over one that only contains "poll",
+//     then the lexicographically smaller endpoint name.
 //  3. A different resource whose name contains status, job, task, or
 //     operation, with an endpoint whose name contains get, status, show,
 //     or retrieve. Prefer an exact "<name>_<marker>" or "<marker>_<name>"
 //     resource, using the submitting resource's full name and then its
 //     singular stem (a trailing "s" dropped, or a trailing "ies" rewritten
-//     to "y"). Next, a name that contains the full name as a token, then
-//     the singular stem, then any other qualifying resource. Endpoint names
+//     to "y"). Next, a name that contains that full name or stem as a
+//     separator-bounded whole, then any other qualifying resource. Endpoint names
 //     prefer exact get, status, show, retrieve, then those words as
 //     substrings, in that order. Remaining ties break on resource name,
 //     then endpoint name.
@@ -441,7 +442,10 @@ func normalizedIdentHasToken(name, token string) bool {
 	if token == "" || name == "" {
 		return false
 	}
-	return slices.Contains(strings.Split(name, "_"), token)
+	if name == token || strings.HasPrefix(name, token+"_") || strings.HasSuffix(name, "_"+token) {
+		return true
+	}
+	return strings.Contains(name, "_"+token+"_")
 }
 
 func preferFirst(ok bool) int {
