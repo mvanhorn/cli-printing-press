@@ -5,9 +5,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/subtle"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +40,9 @@ import (
 const (
 	defaultHTTPAddr = "127.0.0.1:7777"
 	httpTokenEnvVar = "PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN"
+
+	mcpHTTPMaxBodyBytes     = 4 << 20
+	mcpHTTPBodyReadDeadline = 30 * time.Second
 )
 
 // version is the printed MCP server's version, overridable at build time via ldflags.
@@ -85,11 +92,7 @@ func main() {
 			os.Exit(1)
 		}
 		inner := server.NewStreamableHTTPServer(s)
-		httpSrv := &http.Server{
-			Addr:              bindAddr,
-			Handler:           requireBearerAuth(token, inner),
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+		httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))
 		fmt.Fprintf(os.Stderr, "printing-press-golden-pp-mcp serving MCP over streamable HTTP at %s (Authorization: Bearer $%s)\n", bindAddr, httpTokenEnvVar)
 		if *tlsCert != "" {
 			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
@@ -167,15 +170,98 @@ func requireTLSForNonLoopback(addr string, loopback bool, certFile, keyFile stri
 	return nil
 }
 
+// Server-wide read and write deadlines stay unset. They are not cleared for
+// a response and would cut off long-lived SSE streams. POST bodies are capped
+// and timed out in the handler instead. Idle keep-alives are reaped.
+func newMCPHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+}
+
 func requireBearerAuth(expected string, next http.Handler) http.Handler {
+	return requireBearerAuthWithLimits(expected, next, mcpHTTPMaxBodyBytes, mcpHTTPBodyReadDeadline)
+}
+
+func requireBearerAuthWithLimits(expected string, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !bearerTokenMatches(r.Header.Get("Authorization"), expected) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if err := bufferMCPRequestBody(w, r, maxBytes, readTimeout); err != nil {
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func bufferMCPRequestBody(w http.ResponseWriter, r *http.Request, maxBytes int64, readTimeout time.Duration) error {
+	if r.Method != http.MethodPost || r.Body == nil {
+		return nil
+	}
+	if r.ContentLength > maxBytes {
+		rejectMCPHTTPRequest(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return fmt.Errorf("request body too large")
+	}
+	rc := http.NewResponseController(w)
+	deadlineSet := false
+	if readTimeout > 0 {
+		if err := rc.SetReadDeadline(time.Now().Add(readTimeout)); err == nil {
+			deadlineSet = true
+		}
+	}
+	limited := http.MaxBytesReader(nil, r.Body, maxBytes)
+	body, err := io.ReadAll(limited)
+	_ = limited.Close()
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			rejectMCPHTTPRequest(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return err
+		}
+		if isMCPBodyReadTimeout(err) {
+			rejectMCPHTTPRequest(w, http.StatusRequestTimeout, "request body read timed out")
+			return err
+		}
+		rejectMCPHTTPRequest(w, http.StatusBadRequest, "reading request body")
+		return err
+	}
+	if deadlineSet {
+		_ = rc.SetReadDeadline(time.Time{})
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return nil
+}
+
+func isMCPBodyReadTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func rejectMCPHTTPRequest(w http.ResponseWriter, status int, message string) {
+	body := message + "\n"
+	conn, bufrw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		w.Header().Set("Connection", "close")
+		http.Error(w, message, status)
+		return
+	}
+	fmt.Fprintf(bufrw, "HTTP/1.1 %d %s\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
+		status, http.StatusText(status), len(body), body)
+	_ = bufrw.Flush()
+	_ = conn.Close()
 }
 
 func bearerTokenMatches(header, expected string) bool {

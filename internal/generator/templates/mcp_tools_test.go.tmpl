@@ -11,6 +11,9 @@ import (
 	"os"
 {{- end}}
 	"path/filepath"
+{{- if .VisionSet.Search}}
+	"strconv"
+{{- end}}
 	"strings"
 	"testing"
 {{- if or .VisionSet.Search .VisionSet.Store}}
@@ -360,6 +363,117 @@ func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 		t.Fatalf("empty-store next_step should tell the operator how to populate the store: %s", text)
 	}
 {{- end}}
+}
+
+func TestMCPSearchLimitIsCappedAndCancellable(t *testing.T) {
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	for i := 0; i < bound.MaxItems+5; i++ {
+		id := "item-" + strconv.Itoa(i)
+		if err := db.Upsert("items", id, []byte(`{"name":"common item"}`)); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := server.NewMCPServer("{{.Name}}", "test")
+	RegisterTools(s)
+	searchTool := s.ListTools()["search"]
+	if searchTool == nil {
+		t.Fatal("search tool missing")
+	}
+	prop, ok := searchTool.Tool.InputSchema.Properties["limit"].(map[string]any)
+	if !ok {
+		t.Fatalf("limit property = %#v", searchTool.Tool.InputSchema.Properties["limit"])
+	}
+	switch maximum := prop["maximum"].(type) {
+	case int:
+		if maximum != bound.MaxItems {
+			t.Fatalf("limit maximum = %d, want %d", maximum, bound.MaxItems)
+		}
+	case int64:
+		if int(maximum) != bound.MaxItems {
+			t.Fatalf("limit maximum = %d, want %d", maximum, bound.MaxItems)
+		}
+	case float64:
+		if int(maximum) != bound.MaxItems {
+			t.Fatalf("limit maximum = %v, want %d", maximum, bound.MaxItems)
+		}
+	case json.Number:
+		n, err := maximum.Int64()
+		if err != nil || int(n) != bound.MaxItems {
+			t.Fatalf("limit maximum = %v, want %d", maximum, bound.MaxItems)
+		}
+	default:
+		t.Fatalf("limit maximum type = %T (%#v)", prop["maximum"], prop["maximum"])
+	}
+
+	capped := callSearch(t, map[string]any{"query": "common", "limit": float64(1e6)})
+	if count := searchEnvelopeCount(t, capped); count != bound.MaxItems {
+		t.Fatalf("capped count = %d, want %d", count, bound.MaxItems)
+	}
+	if capped["limit_capped"] != true {
+		t.Fatalf("limit_capped = %#v, want true", capped["limit_capped"])
+	}
+
+	small := callSearch(t, map[string]any{"query": "common", "limit": float64(10)})
+	if count := searchEnvelopeCount(t, small); count != 10 {
+		t.Fatalf("small count = %d, want 10", count)
+	}
+	if _, ok := small["limit_capped"]; ok {
+		t.Fatalf("limit 10 set limit_capped: %#v", small["limit_capped"])
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := handleSearch(ctx, mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "common", "limit": float64(10)},
+	}})
+	if err != nil {
+		t.Fatalf("handleSearch returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("cancelled search IsError = %v, want true", result != nil && result.IsError)
+	}
+	if text := mcpTextContent(t, result); !strings.Contains(text, "search cancelled") {
+		t.Fatalf("cancelled search error = %q", text)
+	}
+}
+
+func callSearch(t *testing.T, args map[string]any) map[string]any {
+	t.Helper()
+	result, err := handleSearch(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: args,
+	}})
+	if err != nil {
+		t.Fatalf("handleSearch returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleSearch IsError = %v, text %s", result != nil && result.IsError, mcpTextContent(t, result))
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(mcpTextContent(t, result)), &envelope); err != nil {
+		t.Fatalf("search result must be JSON: %v", err)
+	}
+	return envelope
+}
+
+func searchEnvelopeCount(t *testing.T, envelope map[string]any) int {
+	t.Helper()
+	count, ok := envelope["count"].(float64)
+	if !ok {
+		t.Fatalf("count = %#v", envelope["count"])
+	}
+	return int(count)
 }
 {{- end}}
 

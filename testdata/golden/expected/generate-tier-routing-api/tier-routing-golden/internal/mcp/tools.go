@@ -74,7 +74,7 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("search",
 			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
+			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25, at most "+strconv.Itoa(bound.MaxItems)+")"), mcplib.Max(bound.MaxItems)),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
@@ -589,8 +589,14 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	}
 
 	limit := 25
+	limitCapped := false
 	if v, ok := args["limit"].(float64); ok && v > 0 {
-		limit = int(v)
+		if v > float64(bound.MaxItems) {
+			limit = bound.MaxItems
+			limitCapped = true
+		} else {
+			limit = int(v)
+		}
 	}
 
 	path, err := mcpDBPath()
@@ -603,8 +609,13 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	}
 	defer db.Close()
 
-	results, err := db.Search(query, limit)
+	queryCtx, cancel := bound.WithSQLQueryDeadline(ctx)
+	defer cancel()
+	results, err := db.SearchContext(queryCtx, query, limit)
 	if err != nil {
+		if queryCtx.Err() != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("search cancelled: %v. MCP search queries are bounded to %s.", queryCtx.Err(), bound.SQLQueryTimeout)), nil
+		}
 		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 	storeStatus, err := mcpStoreStatus(db)
@@ -612,10 +623,10 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		return mcplib.NewToolResultError(fmt.Sprintf("reading store status: %v", err)), nil
 	}
 
-	return toolResultJSON(mcpSearchEnvelope(results, storeStatus))
+	return toolResultJSON(mcpSearchEnvelope(results, storeStatus, limitCapped))
 }
 
-func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind) map[string]any {
+func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind, limitCapped bool) map[string]any {
 	if results == nil {
 		results = []json.RawMessage{}
 	}
@@ -624,6 +635,9 @@ func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind
 		"results":      results,
 		"store_status": storeStatus,
 		"resumable":    false,
+	}
+	if limitCapped {
+		out["limit_capped"] = true
 	}
 	if storeStatus == mcpStoreStatusPartial {
 		out["warning"] = "Local data may be incomplete because the latest sync attempt did not finish."

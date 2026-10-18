@@ -290,7 +290,7 @@ func TestIsMCPExecutionReadOnly(t *testing.T) {
 		return err
 	}
 	mainSrc := strings.Replace(string(mainData),
-		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t}",
+		"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))",
 		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
 		1)
 	if mainSrc == string(mainData) {
@@ -546,4 +546,92 @@ func TestLoadNovelFeaturesPrefersBuiltList(t *testing.T) {
 	got := loadNovelFeatures(cliDir)
 	require.Len(t, got, 1)
 	assert.Equal(t, "health", got[0].Command)
+}
+
+func TestSyncPreservesAssignedHTTPTimeout(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := handAuthoredMCPSpec()
+	cliDir := filepath.Join(t.TempDir(), "handmcp")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true, Store: true}
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	mainData, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	const anchor = "httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))"
+	const assignment = anchor + "\n\thttpSrv.ReadTimeout = 30 * time.Second"
+	planted := strings.Replace(string(mainData), anchor, assignment, 1)
+	require.NotEqual(t, string(mainData), planted)
+	require.NoError(t, os.WriteFile(mainPath, []byte(planted), 0o644))
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	mainAfter, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(mainAfter), "httpSrv.ReadTimeout = 30 * time.Second")
+}
+
+func TestSyncUpgradesOldStoreSearchForMCP(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := handAuthoredMCPSpec()
+	list := apiSpec.Resources["operations"].Endpoints["list"]
+	list.Pagination = &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"}
+	ops := apiSpec.Resources["operations"]
+	ops.Endpoints["list"] = list
+	apiSpec.Resources["operations"] = ops
+
+	cliDir := filepath.Join(t.TempDir(), "handmcp")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true, Store: true, Search: true}
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	tools, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(tools), "db.SearchContext(")
+
+	storePath := filepath.Join(cliDir, "internal", "store", "store.go")
+	store, err := os.ReadFile(storePath)
+	require.NoError(t, err)
+	legacy := strings.Replace(string(store),
+		"func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json.RawMessage, error) {\n\treturn s.SearchContext(context.Background(), query, limit, resourceTypes...)\n}\n\nfunc (s *Store) SearchContext(ctx context.Context, query string, limit int, resourceTypes ...string) ([]json.RawMessage, error) {\n\tif ctx == nil {\n\t\tctx = context.Background()\n\t}\n",
+		"func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json.RawMessage, error) {\n",
+		1)
+	legacy = strings.Replace(legacy, "s.db.QueryContext(ctx, q, args...)", "s.db.Query(q, args...)", 1)
+	require.NotContains(t, legacy, "SearchContext")
+	require.Contains(t, legacy, "s.db.Query(q, args...)")
+	require.NoError(t, os.WriteFile(storePath, []byte(legacy), 0o644))
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	upgraded, err := os.ReadFile(storePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(upgraded), "func (s *Store) SearchContext(")
+	assert.Contains(t, string(upgraded), "s.db.QueryContext(ctx, q, args...)")
+	assert.Contains(t, string(upgraded), "return s.SearchContext(context.Background(), query, limit, resourceTypes...)")
+
+	build := exec.Command("go", "test", "-mod=mod", "-c", "-o", os.DevNull, "./internal/mcp")
+	build.Dir = cliDir
+	output, err := build.CombinedOutput()
+	require.NoError(t, err, "synced MCP package must compile against the upgraded store: %s", output)
 }

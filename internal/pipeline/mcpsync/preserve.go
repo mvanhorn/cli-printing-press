@@ -135,35 +135,85 @@ func hasHandAuthoredMCPBehavior(src []byte) bool {
 	if bytes.Contains(src, []byte("localWrite := isMCPLocalWrite")) {
 		return true
 	}
-	// The MCP HTTP template emits exactly one server timeout. Any other
-	// timeout, including a ReadHeaderTimeout other than the generated
-	// field value, is hand-authored and must survive a reprint.
-	if bytes.Contains(src, []byte("ReadTimeout")) || bytes.Contains(src, []byte("WriteTimeout")) || bytes.Contains(src, []byte("IdleTimeout")) {
+	// Generated HTTP servers set ReadHeaderTimeout and IdleTimeout to fixed
+	// literals and leave server-wide read/write deadlines unset. A different
+	// field value, or any read/write deadline field, is hand-authored.
+	// Missing IdleTimeout is not: older prints should receive the new value.
+	code := mcpCodeWithoutComments(src)
+	if readTimeoutField.Match(code) || writeTimeoutField.Match(code) || timeoutAssignment.Match(code) {
 		return true
 	}
-	if hasNonGeneratedReadHeaderTimeout(src) {
+	if hasNonGeneratedTimeoutValue(code, readHeaderTimeoutField, generatedMCPReadHeaderTimeoutValue) {
 		return true
 	}
-	return handAuthoredDBFlag.Match(src)
+	if hasNonGeneratedTimeoutValue(code, idleTimeoutField, generatedMCPIdleTimeoutValue) {
+		return true
+	}
+	// The db marker is itself a string literal. Timeout scanning drops string
+	// contents; the db scan has to keep them or the generated map entry and a
+	// hand-added one both disappear.
+	return hasHandAuthoredDBFlag(mcpCodeKeepingStrings(src))
 }
 
-const generatedMCPReadHeaderTimeoutValue = "10 * time.Second"
+const (
+	generatedMCPReadHeaderTimeoutValue = "10 * time.Second"
+	generatedMCPIdleTimeoutValue       = "2 * time.Minute"
+)
 
-var readHeaderTimeoutField = regexp.MustCompile(`\bReadHeaderTimeout\s*:\s*([^,\n}]+)`)
+var (
+	readHeaderTimeoutField = regexp.MustCompile(`\bReadHeaderTimeout\s*:\s*([^,\n}]+)`)
+	idleTimeoutField       = regexp.MustCompile(`\bIdleTimeout\s*:\s*([^,\n}]+)`)
+	readTimeoutField       = regexp.MustCompile(`\bReadTimeout\s*:`)
+	writeTimeoutField      = regexp.MustCompile(`\bWriteTimeout\s*:`)
+	// Generated servers set timeouts in the struct literal. An assignment
+	// (httpSrv.ReadTimeout = ...) is a hand edit the field-colon check misses.
+	timeoutAssignment = regexp.MustCompile(`\b(?:ReadTimeout|WriteTimeout|IdleTimeout|ReadHeaderTimeout)\s*=`)
+)
 
-func hasNonGeneratedReadHeaderTimeout(src []byte) bool {
-	code := mcpCodeWithoutComments(src)
-	for _, match := range readHeaderTimeoutField.FindAllSubmatch(code, -1) {
-		if strings.TrimSpace(string(match[1])) != generatedMCPReadHeaderTimeoutValue {
+func hasNonGeneratedTimeoutValue(code []byte, field *regexp.Regexp, generated string) bool {
+	for _, match := range field.FindAllSubmatch(code, -1) {
+		if strings.TrimSpace(string(match[1])) != generated {
 			return true
 		}
 	}
 	return false
 }
 
+// The generated blockedDestinationFlags map contains one "db" entry. A db
+// entry outside that map is a hand-extended blocklist and must survive reprint.
+func hasHandAuthoredDBFlag(code []byte) bool {
+	for _, match := range handAuthoredDBFlag.FindAllIndex(code, -1) {
+		if !generatedDestinationDB(code, match[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+func generatedDestinationDB(code []byte, idx int) bool {
+	mapIdx := bytes.LastIndex(code[:idx], []byte("var blockedDestinationFlags"))
+	if mapIdx < 0 {
+		return false
+	}
+	between := code[mapIdx:idx]
+	if bytes.Contains(between, []byte("\nvar ")) || bytes.Contains(between, []byte("\nfunc ")) || bytes.Contains(between, []byte("\nconst ")) {
+		return false
+	}
+	return true
+}
+
 // mcpCodeWithoutComments drops comments and string contents so a note that
 // quotes the generated timeout cannot hide a different field value.
 func mcpCodeWithoutComments(src []byte) []byte {
+	return stripMCPComments(src, true)
+}
+
+// mcpCodeKeepingStrings drops comments and leaves string literals intact.
+func mcpCodeKeepingStrings(src []byte) []byte {
+	return stripMCPComments(src, false)
+}
+
+func stripMCPComments(src []byte, dropStrings bool) []byte {
 	var b bytes.Buffer
 	b.Grow(len(src))
 	i := 0
@@ -174,16 +224,26 @@ func mcpCodeWithoutComments(src []byte) []byte {
 			i++
 			if quote == '`' {
 				for i < len(src) && src[i] != '`' {
+					if !dropStrings {
+						b.WriteByte(src[i])
+					}
 					i++
 				}
 			} else {
 				for i < len(src) {
 					if src[i] == '\\' && i+1 < len(src) {
+						if !dropStrings {
+							b.WriteByte(src[i])
+							b.WriteByte(src[i+1])
+						}
 						i += 2
 						continue
 					}
 					if src[i] == quote || src[i] == '\n' {
 						break
+					}
+					if !dropStrings {
+						b.WriteByte(src[i])
 					}
 					i++
 				}

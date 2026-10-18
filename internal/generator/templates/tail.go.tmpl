@@ -71,14 +71,21 @@ native streaming instead of polling.`,
 				return fmt.Errorf("unknown resource %q; known resources: %v", resource, tailKnownResources())
 			}
 
+			// Reject a tight follow interval before curtailing follow. An MCP
+			// child and live dogfood poll once, so a sub-second interval must
+			// not hide behind that single poll or spin until the process dies.
+			if follow && interval < time.Second {
+				return usageErr(fmt.Errorf("--interval must be at least 1s in follow mode"))
+			}
+			if cliutil.IsDogfoodEnv() || cliutil.IsMCPChildEnv() {
+				follow = false
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 			c.NoCache = true
-			if cliutil.IsDogfoodEnv() {
-				follow = false
-			}
 
 			path, err := resourceReadPath(resource)
 			if err != nil {
@@ -130,7 +137,7 @@ native streaming instead of polling.`,
 {{- end}}
 
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource type to tail")
-	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval")
+	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval (at least 1s when --follow is set)")
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
 
 	return cmd

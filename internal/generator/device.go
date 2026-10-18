@@ -320,6 +320,7 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 		"copyrightHolder":                func() string { return "contributors" },
 		"envPrefix":                      naming.EnvPrefix,
 		"mcpBlockedDestinationFlagNames": mcpBlockedDestinationFlagNames,
+		"mcpBlockedInputFlagNames":       mcpBlockedInputFlagNames,
 		"modulePath":                     func() string { return naming.CLI(g.Spec.Name) },
 		"cliName":                        naming.CLI,
 		"mcpName":                        naming.MCP,

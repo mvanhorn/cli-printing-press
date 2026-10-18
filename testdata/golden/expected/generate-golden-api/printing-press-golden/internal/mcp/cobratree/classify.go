@@ -46,6 +46,13 @@ const (
 	// is a different flag. Separate names with commas, semicolons, or
 	// whitespace. A leading "--" is ignored.
 	FlagWriteSinksAnnotation = "mcp:write-flags"
+	// FlagInputSinksAnnotation lists Cobra flag names whose values are
+	// filesystem paths opened for reading. The walker drops them from the
+	// MCP schema and rejects them as arguments. Inheritance matches
+	// mcp:write-flags: an ancestor annotation covers a persistent flag that
+	// ancestor supplies, and a nearer redeclaration of that name is a
+	// different flag. Separate names with commas, semicolons, or whitespace.
+	FlagInputSinksAnnotation = "mcp:read-flags"
 	// ReadOnlyUnlessFlagsAnnotation lists Cobra flag names that turn an
 	// otherwise readable command into a write. With the MCP read-only switch
 	// on, the walker still registers the command, drops those flags, and
@@ -157,11 +164,19 @@ func annotationListParts(raw string) []string {
 }
 
 func flagWriteSinkNames(cmd *cobra.Command) map[string]bool {
+	return flagScopedAnnotationNames(cmd, FlagWriteSinksAnnotation)
+}
+
+func flagReadSinkNames(cmd *cobra.Command) map[string]bool {
+	return flagScopedAnnotationNames(cmd, FlagInputSinksAnnotation)
+}
+
+func flagScopedAnnotationNames(cmd *cobra.Command, key string) map[string]bool {
 	if cmd == nil {
 		return nil
 	}
 	out := map[string]bool{}
-	for name := range annotationFlagNames(cmd.Annotations) {
+	for name := range annotationNamedFlags(cmd.Annotations, key) {
 		out[name] = true
 	}
 	// Persistent flags show up on the child, but the annotation stays on the
@@ -170,7 +185,7 @@ func flagWriteSinkNames(cmd *cobra.Command) map[string]bool {
 	// redeclares the persistent name supplies the flag the child inherits,
 	// so a more distant annotation does not apply.
 	for parent := cmd.Parent(); parent != nil; parent = parent.Parent() {
-		for name := range annotationFlagNames(parent.Annotations) {
+		for name := range annotationNamedFlags(parent.Annotations, key) {
 			if inheritedWriteSink(cmd, name) && persistentFlagSupplier(cmd, name) == parent {
 				out[name] = true
 			}
@@ -180,10 +195,6 @@ func flagWriteSinkNames(cmd *cobra.Command) map[string]bool {
 		return nil
 	}
 	return out
-}
-
-func annotationFlagNames(annotations map[string]string) map[string]bool {
-	return annotationNamedFlags(annotations, FlagWriteSinksAnnotation)
 }
 
 func annotationNamedFlags(annotations map[string]string, key string) map[string]bool {
@@ -285,6 +296,17 @@ func DestinationFlagBlocked(cmd *cobra.Command, flagName string) bool {
 		return true
 	}
 	return flagWriteSinkNames(cmd)[flagName]
+}
+
+// InputFlagBlocked reports whether flagName is a filesystem path opened for
+// reading. Unambiguous names are blocked on every command, including a nil
+// cmd. mcp:read-flags on cmd, and on ancestors when the flag is inherited,
+// are blocked too.
+func InputFlagBlocked(cmd *cobra.Command, flagName string) bool {
+	if blockedInputFlags[flagName] {
+		return true
+	}
+	return flagReadSinkNames(cmd)[flagName]
 }
 
 func positionalWriteSinkIndexes(cmd *cobra.Command) map[int]bool {

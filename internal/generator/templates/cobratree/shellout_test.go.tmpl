@@ -544,6 +544,187 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	})
 }
 
+func TestInputPathFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	root := &cobra.Command{Use: "root"}
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+
+	teach := &cobra.Command{Use: "teach", Short: "Teach a query", RunE: noop}
+	teach.Flags().String("playbook-file", "", "playbook path")
+	teach.Flags().String("playbook-notes-file", "", "notes path")
+	teach.Flags().String("playbook-json", "", "inline playbook")
+	teach.Flags().String("notes", "", "inline notes")
+	teach.Flags().String("playbook-notes", "", "inline playbook notes")
+
+	playbook := &cobra.Command{Use: "teach-playbook", Short: "Record a playbook", RunE: noop}
+	playbook.Flags().String("playbook-file", "", "playbook path")
+	playbook.Flags().String("notes-file", "", "notes path")
+	playbook.Flags().String("playbook-json", "", "inline playbook")
+	playbook.Flags().String("notes", "", "inline notes")
+
+	importCmd := &cobra.Command{Use: "import", Short: "Import rows", RunE: noop}
+	importCmd.Flags().String("input", "", "jsonl path")
+	importCmd.Flags().Int("batch-size", 1, "batch size")
+
+	ingest := &cobra.Command{
+		Use:   "ingest",
+		Short: "Ingest a secret file",
+		RunE:  noop,
+		Annotations: map[string]string{
+			FlagInputSinksAnnotation: "secret-file",
+		},
+	}
+	ingest.Flags().String("secret-file", "", "secret path")
+	ingest.Flags().String("file", "", "inline name")
+
+	parent := &cobra.Command{
+		Use: "archive",
+		Annotations: map[string]string{
+			FlagInputSinksAnnotation: "secret-file",
+		},
+	}
+	parent.PersistentFlags().String("secret-file", "", "secret path")
+	child := &cobra.Command{Use: "bundle", Short: "Bundle", RunE: noop}
+	child.Flags().String("format", "json", "format")
+	parent.AddCommand(child)
+
+	shadowParent := &cobra.Command{
+		Use: "shadow",
+		Annotations: map[string]string{
+			FlagInputSinksAnnotation: "secret-file",
+		},
+	}
+	shadowParent.PersistentFlags().String("secret-file", "", "secret path")
+	near := &cobra.Command{Use: "near"}
+	near.PersistentFlags().String("secret-file", "", "label")
+	leaf := &cobra.Command{Use: "leaf", Short: "Leaf", RunE: noop}
+	leaf.Flags().String("format", "json", "format")
+	near.AddCommand(leaf)
+	shadowParent.AddCommand(near)
+
+	root.AddCommand(teach, playbook, importCmd, ingest, parent, shadowParent)
+
+	bin := writeArgvHelper(t)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	tools := s.ListTools()
+
+	t.Run("teach file flags", func(t *testing.T) {
+		entry := tools["teach"]
+		if entry == nil {
+			t.Fatalf("teach tool missing: %#v", tools)
+		}
+		assertInputFlags(t, entry, []string{"playbook-file", "playbook-notes-file"}, []string{"playbook-json", "notes", "playbook-notes"})
+		rejectMCPFlag(t, entry.Handler, map[string]any{"playbook-file": "/etc/passwd", "notes": "inline"}, "playbook-file")
+		result := callMCPTool(t, entry.Handler, map[string]any{"playbook-json": "{}", "notes": "inline", "playbook-notes": "more"})
+		argv := decodeArgvResult(t, result)
+		want := []string{"teach", "--notes=inline", "--playbook-json={}", "--playbook-notes=more"}
+		if !reflect.DeepEqual(argv, want) {
+			t.Fatalf("child argv = %#v, want %#v", argv, want)
+		}
+	})
+
+	t.Run("teach-playbook file flags", func(t *testing.T) {
+		entry := tools["teach_playbook"]
+		if entry == nil {
+			t.Fatalf("teach_playbook tool missing: %#v", tools)
+		}
+		assertInputFlags(t, entry, []string{"playbook-file", "notes-file"}, []string{"playbook-json", "notes"})
+		rejectMCPFlag(t, entry.Handler, map[string]any{"notes-file": "/tmp/notes.md", "notes": "inline"}, "notes-file")
+	})
+
+	t.Run("import input", func(t *testing.T) {
+		entry := tools["import"]
+		if entry == nil {
+			t.Fatalf("import tool missing: %#v", tools)
+		}
+		assertInputFlags(t, entry, []string{"input"}, []string{"batch-size"})
+		rejectMCPFlag(t, entry.Handler, map[string]any{"input": "/tmp/data.jsonl", "batch-size": float64(1)}, "input")
+		result := callMCPTool(t, entry.Handler, map[string]any{"batch-size": float64(2)})
+		argv := decodeArgvResult(t, result)
+		want := []string{"import", "--batch-size=2"}
+		if !reflect.DeepEqual(argv, want) {
+			t.Fatalf("child argv = %#v, want %#v", argv, want)
+		}
+	})
+
+	t.Run("annotated read flag", func(t *testing.T) {
+		entry := tools["ingest"]
+		if entry == nil {
+			t.Fatalf("ingest tool missing: %#v", tools)
+		}
+		assertInputFlags(t, entry, []string{"secret-file"}, []string{"file"})
+		rejectMCPFlag(t, entry.Handler, map[string]any{"secret-file": "/tmp/secret", "file": "in.csv"}, "secret-file")
+		result := callMCPTool(t, entry.Handler, map[string]any{"file": "in.csv"})
+		argv := decodeArgvResult(t, result)
+		want := []string{"ingest", "--file=in.csv"}
+		if !reflect.DeepEqual(argv, want) {
+			t.Fatalf("child argv = %#v, want %#v", argv, want)
+		}
+	})
+
+	t.Run("inherited read flag", func(t *testing.T) {
+		entry := tools["archive_bundle"]
+		if entry == nil {
+			t.Fatalf("archive_bundle tool missing: %#v", tools)
+		}
+		assertInputFlags(t, entry, []string{"secret-file"}, []string{"format"})
+		rejectMCPFlag(t, entry.Handler, map[string]any{"secret-file": "/tmp/secret", "format": "json"}, "secret-file")
+		if InputFlagBlocked(leaf, "secret-file") {
+			t.Fatal("a nearer persistent redeclaration was blocked as a read path")
+		}
+		shadowed := tools["shadow_near_leaf"]
+		if shadowed == nil {
+			t.Fatalf("shadow_near_leaf tool missing: %#v", tools)
+		}
+		if _, ok := shadowed.Tool.InputSchema.Properties["secret-file"]; !ok {
+			t.Fatalf("shadowed secret-file missing from schema: %#v", shadowed.Tool.InputSchema.Properties)
+		}
+	})
+}
+
+func TestInputFlagBlockedCoversGlobalNames(t *testing.T) {
+	for _, name := range []string{"cookies-file", "input", "input-file", "notes-file", "password-file", "playbook-file", "playbook-notes-file"} {
+		if !InputFlagBlocked(nil, name) {
+			t.Fatalf("InputFlagBlocked(nil, %q) = false", name)
+		}
+	}
+	for _, name := range []string{"file", "path", "notes", "playbook-json", "playbook-notes", "batch-size"} {
+		if InputFlagBlocked(nil, name) {
+			t.Fatalf("InputFlagBlocked(nil, %q) = true", name)
+		}
+	}
+}
+
+func assertInputFlags(t *testing.T, entry *server.ServerTool, hidden, kept []string) {
+	t.Helper()
+	props := entry.Tool.InputSchema.Properties
+	for _, name := range hidden {
+		if _, ok := props[name]; ok {
+			t.Fatalf("read-path flag %q is in the schema: %#v", name, props)
+		}
+	}
+	for _, name := range kept {
+		if _, ok := props[name]; !ok {
+			t.Fatalf("flag %q missing from schema: %#v", name, props)
+		}
+	}
+}
+
+func callMCPTool(t *testing.T, handler server.ToolHandlerFunc, args map[string]any) *mcplib.CallToolResult {
+	t.Helper()
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: args,
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("tool rejected kept flags: %s", toolResultText(result))
+	}
+	return result
+}
+
 func TestInheritedWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 	parent := &cobra.Command{
@@ -784,7 +965,7 @@ func rejectMCPFlag(t *testing.T, handler server.ToolHandlerFunc, args map[string
 		t.Fatalf("tool error = %q, want %q", got, want)
 	}
 	if strings.Contains(got, "cli ") {
-		t.Fatalf("destination flag %q reached the child CLI: %q", flag, got)
+		t.Fatalf("blocked flag %q reached the child CLI: %q", flag, got)
 	}
 }
 
@@ -2040,6 +2221,21 @@ func TestRunCLICommandFallsBackToStdoutOnFailureWithoutStderr(t *testing.T) {
 	}
 }
 
+func TestRunCLICommandSetsMCPChildEnv(t *testing.T) {
+	t.Setenv(cliutil.MCPChildEnvVar, "0")
+	bin := writeShelloutHelper(t, "print-env")
+	result, err := RunCLICommand(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("RunCLICommand: %v", err)
+	}
+	if !strings.Contains(result.Stdout, cliutil.MCPChildEnvVar+"=1") {
+		t.Fatalf("child env missing MCP child marker: %s", result.Stdout)
+	}
+	if strings.Contains(result.Stdout, cliutil.MCPChildEnvVar+"=0") {
+		t.Fatalf("child kept the parent MCP child marker: %s", result.Stdout)
+	}
+}
+
 func TestRunCLICommandBoundsFailureOutput(t *testing.T) {
 	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
 		t.Run(mode, func(t *testing.T) {
@@ -2081,6 +2277,8 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Error.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
 		case "fail-large-stdout":
 			body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write((New-Object string([char]0x78,70000)))\"\r\nexit /b 7\r\n"
+		case "print-env":
+			body = "@echo off\r\nset\r\n"
 		default:
 			t.Fatalf("unknown mode %q", mode)
 		}
@@ -2108,6 +2306,8 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		body = "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\000' x >&2\nexit 7\n"
 	case "fail-large-stdout":
 		body = "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\000' x\nexit 7\n"
+	case "print-env":
+		body = "#!/bin/sh\nenv\n"
 	default:
 		t.Fatalf("unknown mode %q", mode)
 	}

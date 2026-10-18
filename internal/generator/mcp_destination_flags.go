@@ -24,8 +24,12 @@ var mcpBlockedDestinationFlagSet = map[string]bool{
 }
 
 func mcpBlockedDestinationFlagNames() []string {
-	names := make([]string, 0, len(mcpBlockedDestinationFlagSet))
-	for name := range mcpBlockedDestinationFlagSet {
+	return sortedSetNames(mcpBlockedDestinationFlagSet)
+}
+
+func sortedSetNames(set map[string]bool) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
 		names = append(names, name)
 	}
 	sort.Strings(names)
