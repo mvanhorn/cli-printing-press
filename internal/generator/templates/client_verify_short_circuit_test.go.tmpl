@@ -40,7 +40,7 @@ func (r *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 func newClientWithRecorder(t *testing.T) (*Client, *recordingRoundTripper) {
 	t.Helper()
 	rec := &recordingRoundTripper{}
-	cfg := &config.Config{BaseURL: "http://example.test"}
+	cfg := &config.Config{BaseURL: "https://example.test"}
 	c := New(cfg, time.Second, 0)
 	c.HTTPClient = &http.Client{Transport: rec}
 	c.NoCache = true

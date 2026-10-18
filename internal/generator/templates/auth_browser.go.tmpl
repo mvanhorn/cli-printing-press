@@ -2347,8 +2347,12 @@ func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool
 {{- if .UsesBrowserHTTPTransport}}
 	httpClient := client.NewProbeHTTPClient(5*time.Second, false)
 {{- else}}
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	httpClient := client.NewPlainHTTPClient(5 * time.Second)
 {{- end}}
+	req, err = client.PrepareRequest(httpClient, req)
+	if err != nil {
+		return err
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil // network error, assume OK — don't block auth on connectivity

@@ -93,7 +93,7 @@ func TestGeneratedClientDecodesDeclaredAcceptEncoding(t *testing.T) {
 		[]byte(contentEncodingRedirectTestSource(modulePath)),
 		0o644,
 	))
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestDecodeContentEncoding|TestRedirectDestinationRefused|TestClientGzipJSONAndRedirectGuards", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestDecodeContentEncoding|TestRedirect|TestClientGzip", "-count=1")
 }
 
 func contentEncodingRedirectTestSource(modulePath string) string {
@@ -107,6 +107,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -195,6 +196,8 @@ func TestDecodeContentEncodingRejectsExpansionPastLimit(t *testing.T) {
 }
 
 func TestRedirectDestinationRefused(t *testing.T) {
+	// Hostnames are not IP literals. redirectResolvedDestinationRefused and the
+	// dialer refuse a name that resolves to a blocked address.
 	cases := []struct {
 		name    string
 		prior   []string
@@ -231,8 +234,8 @@ func TestRedirectDestinationRefused(t *testing.T) {
 		{name: "https loopback off origin", prior: []string{"https://example.com/a"}, next: "https://127.0.0.1/b", wantErr: ErrRedirectPrivateDestination},
 		{name: "file scheme", prior: []string{"https://api.example.com/a"}, next: "file:///etc/passwd", wantErr: ErrRedirectUnsupportedScheme},
 		{name: "empty target", prior: []string{"https://api.example.com/a"}, wantErr: ErrRedirectUnsupportedScheme},
-		{name: "hostname localhost is not a literal", prior: []string{"https://api.example.com/a"}, next: "https://localhost/b"},
-		{name: "metadata hostname is not a literal", prior: []string{"https://api.example.com/a"}, next: "https://metadata.google.internal/b"},
+		{name: "hostname localhost is not an IP literal", prior: []string{"https://api.example.com/a"}, next: "https://localhost/b"},
+		{name: "metadata hostname is not an IP literal", prior: []string{"https://api.example.com/a"}, next: "https://metadata.google.internal/b"},
 		{name: "cgnat is not private", prior: []string{"http://example.com/a"}, next: "http://100.64.1.1/b"},
 		{name: "decimal obfuscation is not a literal", prior: []string{"http://example.com/a"}, next: "http://2130706433/b"},
 		{name: "empty via fails closed on a literal", next: "http://127.0.0.1/b", wantErr: ErrRedirectPrivateDestination},
@@ -387,6 +390,174 @@ func TestClientGzipJSONAndRedirectGuards(t *testing.T) {
 	_, err = fileClient.Get(context.Background(), "/start", nil)
 	if !errors.Is(err, ErrRedirectUnsupportedScheme) {
 		t.Fatalf("file redirect = %v, want ErrRedirectUnsupportedScheme", err)
+	}
+}
+
+func TestRedirectLocalhostHostnameIsRefused(t *testing.T) {
+	var hits atomic.Int32
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(victim.Close)
+	_, port, err := net.SplitHostPort(victim.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost:"+port+"/admin", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+	c := newGuardClient(t, origin.URL)
+	_, err = c.Get(context.Background(), "/start", nil)
+	if !errors.Is(err, ErrRedirectPrivateDestination) {
+		t.Fatalf("localhost redirect = %v, want ErrRedirectPrivateDestination", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("localhost target was hit %d times", hits.Load())
+	}
+}
+
+func TestRedirectResolvedHostnameRefused(t *testing.T) {
+	restore := swapDialResolve(func(ctx context.Context, host string) ([]net.IP, error) {
+		switch host {
+		case "localhost":
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		case "metadata.google.internal":
+			return []net.IP{net.ParseIP("169.254.169.254")}, nil
+		default:
+			return nil, errors.New("unexpected lookup " + host)
+		}
+	})
+	defer restore()
+
+	viaURL, err := url.Parse("https://api.example.com/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	via := []*http.Request{{URL: viaURL}}
+	for _, raw := range []string{"https://localhost/b", "https://metadata.google.internal/b"} {
+		next, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = redirectResolvedDestinationRefused(context.Background(), next, via)
+		if !errors.Is(err, ErrRedirectPrivateDestination) {
+			t.Fatalf("%s = %v, want ErrRedirectPrivateDestination", raw, err)
+		}
+	}
+
+	lookups := 0
+	restoreSame := swapDialResolve(func(ctx context.Context, host string) ([]net.IP, error) {
+		lookups++
+		return []net.IP{net.ParseIP("192.0.2.1")}, nil
+	})
+	defer restoreSame()
+	same, err := url.Parse("https://api.example.com/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := redirectResolvedDestinationRefused(context.Background(), same, via); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 0 {
+		t.Fatalf("same-origin lookups = %d, want 0", lookups)
+	}
+}
+
+func TestRedirectDNSRebindRefusedAtDial(t *testing.T) {
+	var n atomic.Int32
+	var pinned atomic.Int32
+	restoreResolve := swapDialResolve(func(ctx context.Context, host string) ([]net.IP, error) {
+		if n.Add(1) == 1 {
+			return []net.IP{net.ParseIP("192.0.2.1")}, nil
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	})
+	defer restoreResolve()
+	restoreDial := swapDialPinned(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		pinned.Add(1)
+		return nil, errors.New("pinned dial " + addr)
+	})
+	defer restoreDial()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://rebind.example/secret", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+	c := newGuardClient(t, origin.URL)
+	_, err := c.Get(context.Background(), "/start", nil)
+	if !errors.Is(err, ErrRedirectPrivateDestination) {
+		t.Fatalf("rebind = %v, want ErrRedirectPrivateDestination", err)
+	}
+	if pinned.Load() != 0 {
+		t.Fatalf("pinned dials = %d, want 0", pinned.Load())
+	}
+}
+
+func TestRedirectMetadataHostnameIsRefused(t *testing.T) {
+	var pinned atomic.Int32
+	restoreResolve := swapDialResolve(func(ctx context.Context, host string) ([]net.IP, error) {
+		if host == "metadata.google.internal" {
+			return []net.IP{net.ParseIP("169.254.169.254")}, nil
+		}
+		return nil, errors.New("unexpected lookup " + host)
+	})
+	defer restoreResolve()
+	restoreDial := swapDialPinned(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		pinned.Add(1)
+		return nil, errors.New("pinned dial " + addr)
+	})
+	defer restoreDial()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://metadata.google.internal/latest", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+	c := newGuardClient(t, origin.URL)
+	_, err := c.Get(context.Background(), "/start", nil)
+	if !errors.Is(err, ErrRedirectPrivateDestination) {
+		t.Fatalf("metadata redirect = %v, want ErrRedirectPrivateDestination", err)
+	}
+	if pinned.Load() != 0 {
+		t.Fatalf("pinned dials = %d, want 0", pinned.Load())
+	}
+}
+
+func TestRedirectPublicHostnameIsFollowed(t *testing.T) {
+	var hits atomic.Int32
+	victim := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[{\"id\":\"pub\"}]"))
+	}))
+	t.Cleanup(victim.Close)
+	_, port, err := net.SplitHostPort(victim.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreResolve := swapDialResolve(func(ctx context.Context, host string) ([]net.IP, error) {
+		if host == "public.example.test" {
+			return []net.IP{net.ParseIP("192.0.2.1")}, nil
+		}
+		return nil, errors.New("unexpected lookup " + host)
+	})
+	defer restoreResolve()
+	restoreDial := swapDialPinned(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+	})
+	defer restoreDial()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://public.example.test:"+port+"/x", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+	c := newGuardClient(t, origin.URL)
+	if _, err := c.Get(context.Background(), "/start", nil); err != nil {
+		t.Fatalf("public hostname redirect: %v", err)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("public hostname redirect was not followed")
 	}
 }
 

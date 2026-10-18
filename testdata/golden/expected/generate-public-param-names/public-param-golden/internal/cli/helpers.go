@@ -824,6 +824,8 @@ func classifyAPIErrorOnly(err error) error {
 
 	msg := err.Error()
 	switch {
+	case errors.Is(err, client.ErrPlaintextCredential):
+		return configErr(fmt.Errorf("%w\nhint: use https so credentials are not sent in plaintext", err))
 	case strings.Contains(msg, "HTTP 409"):
 		return apiErr(err)
 	case strings.Contains(msg, "HTTP 401"):

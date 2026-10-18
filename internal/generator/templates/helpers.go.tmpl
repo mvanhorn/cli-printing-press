@@ -41,11 +41,9 @@ import (
 	"unicode"
 
 	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/client"
 {{- if or .HasRequiredRoles (and .Auth.Type (ne .Auth.Type "none"))}}
 	"{{modulePath}}/internal/config"
-{{- end}}
-{{- if or .HasSyncHelpers (and .Auth.Type (ne .Auth.Type "none"))}}
-	"{{modulePath}}/internal/client"
 {{- end}}
 	"{{modulePath}}/internal/platform"
 	"github.com/spf13/cobra"
@@ -1459,6 +1457,8 @@ func classifyAPIErrorOnly(err error) error {
 
 	msg := err.Error()
 	switch {
+	case errors.Is(err, client.ErrPlaintextCredential):
+		return configErr(fmt.Errorf("%w\nhint: use https so credentials are not sent in plaintext", err))
 	case strings.Contains(msg, "HTTP 409"):
 		return apiErr(err)
 {{- if and .Auth.Type (ne .Auth.Type "none")}}

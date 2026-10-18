@@ -396,16 +396,24 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							report["api"] = fmt.Sprintf("reachable (HTTP %d at /)", status)
 						}
 					default:
-						// Network-level failure: DNS, connection refused, TLS,
-						// transport init, etc. The transport itself didn't
-						// connect.
-						report["api"] = fmt.Sprintf("unreachable: %s", reachErr)
+						if errors.Is(reachErr, client.ErrPlaintextCredential) {
+							// Do not call the host unreachable: the probe was refused
+							// before a dial. "refused:" fails every --fail-on gate.
+							report["api"] = "refused: not probed (" + reachErr.Error() + ")"
+						} else {
+							// Network-level failure: DNS, connection refused, TLS,
+							// transport init, etc. The transport itself didn't
+							// connect.
+							report["api"] = fmt.Sprintf("unreachable: %s", reachErr)
+						}
 					}
 
 					// Step 2: Validate credentials with an authenticated probe.
 					authHeader := cfg.AuthHeader()
 					if authHeader == "" {
 						// No auth configured — skip credential validation
+					} else if errors.Is(reachErr, client.ErrPlaintextCredential) {
+						report["credentials"] = "not probed (plaintext HTTP); use https"
 					} else if reachErr != nil && !errors.As(reachErr, &reachAPIErr) {
 						report["credentials"] = "skipped (API unreachable)"
 					} else {
