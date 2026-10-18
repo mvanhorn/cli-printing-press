@@ -90,17 +90,37 @@ func grantBroad(t *testing.T, p string) {
 // refresh_token slot at 0600, in this bundle's serialization format.
 func writeTokenConfig(t *testing.T, p string) {
 	t.Helper()
-	content := "base_url = \"https://example.test/v1\"\n" +
-		"refresh_token = \"" + sampleReadPermsSecret + "\"\n"
+	writePermsConfig(t, p, "https://example.test/v1", sampleReadPermsSecret, "")
+}
+
+func writeCredentialFreeConfig(t *testing.T, p string) {
+	t.Helper()
+	writePermsConfig(t, p, "https://example.test/v1", "", "")
+}
+
+func writePermsConfig(t *testing.T, p, baseURL, token, headerValue string) {
+	t.Helper()
+	content := "base_url = \"" + baseURL + "\"\n"
+	if token != "" {
+		content += "refresh_token = \"" + token + "\"\n"
+	}
+	if headerValue != "" {
+		content += "[headers]\nX-Injected = \"" + headerValue + "\"\n"
+	}
 	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func writeCredentialFreeConfig(t *testing.T, p string) {
+// grantWorld makes p writable and readable by everyone else (POSIX 0666).
+// Windows has no mode-bit equivalent, so the broad Users ACE stands in.
+func grantWorld(t *testing.T, p string) {
 	t.Helper()
-	content := "base_url = \"https://example.test/v1\"\n"
-	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+	if runtime.GOOS == "windows" {
+		grantBroad(t, p)
+		return
+	}
+	if err := os.Chmod(p, 0o666); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -207,7 +227,9 @@ func TestLoad_ReseedsFromEnvAfterOverPermissiveRefusal(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_OAUTH2_CLIENT_ID", envValue)
 	dir := t.TempDir()
 	p := filepath.Join(dir, configFileName())
-	writeTokenConfig(t, p)
+	// The loose file's base URL matches the CLI default, so it is not steering
+	// the credential at a different server. The env credential may re-seed.
+	writePermsConfig(t, p, "https://api.cc.example/v1", sampleReadPermsSecret, "")
 	grantBroad(t, p)
 
 	cfg, err := Load(p)
@@ -230,7 +252,134 @@ func TestLoad_ReseedsFromEnvAfterOverPermissiveRefusal(t *testing.T) {
 	}
 }
 
-// TestLoad_RefusesSymlinkToLoosePermsTarget locks the canonicalize-first
+func TestLoad_LooseDifferentBaseURLDoesNotApplyEnvCredential(t *testing.T) {
+	const envValue = "PAT-FROM-ENV-MUST-NOT-FOLLOW"
+	isolateCredentials(t)
+	t.Setenv("PRINTING_PRESS_OAUTH2_CLIENT_ID", envValue)
+	dir := t.TempDir()
+	p := filepath.Join(dir, configFileName())
+	writePermsConfig(t, p, "https://attacker.example/collect", sampleReadPermsSecret, "from-loose-config")
+	grantWorld(t, p)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.hasCredentialFields() {
+		t.Fatal("env credential must not be attached to an untrusted config's base URL")
+	}
+	if strings.Contains(cfg.AuthHeader(), envValue) || strings.Contains(cfg.AuthHeader(), sampleReadPermsSecret) {
+		t.Fatalf("AuthHeader() = %q, want no credential", cfg.AuthHeader())
+	}
+	if cfg.Headers["X-Injected"] != "" {
+		t.Fatalf("untrusted config injected headers: %#v", cfg.Headers)
+	}
+	if cfg.BaseURL != "https://attacker.example/collect" {
+		t.Fatalf("BaseURL = %q, want the file's non-secret base URL left visible", cfg.BaseURL)
+	}
+	summary := strings.Join(cfg.CredentialRefusalSummaries(), "\n")
+	if !strings.Contains(summary, "https://attacker.example/collect") {
+		t.Fatalf("refusals = %q, want the untrusted base URL named", summary)
+	}
+}
+
+func TestLoad_LooseConfigDoesNotSteerStoredCredentialOrHeaders(t *testing.T) {
+	isolateCredentials(t)
+	if err := cliutil.SaveCredentials(&cliutil.Credentials{AccessToken: "STORED-TOKEN-DO-NOT-STEER"}); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, configFileName())
+	writePermsConfig(t, p, "https://attacker.example/collect", sampleReadPermsSecret, "from-loose-config")
+	grantWorld(t, p)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.hasCredentialFields() || cfg.AccessToken != "" || cfg.RefreshToken != "" {
+		t.Fatalf("untrusted config steered a credential: access=%q refresh=%q", cfg.AccessToken, cfg.RefreshToken)
+	}
+	if strings.Contains(cfg.AuthHeader(), "STORED-TOKEN-DO-NOT-STEER") || strings.Contains(cfg.AuthHeader(), sampleReadPermsSecret) {
+		t.Fatalf("AuthHeader() = %q, want no stored or file credential", cfg.AuthHeader())
+	}
+	if len(cfg.Headers) != 0 {
+		t.Fatalf("untrusted config injected headers: %#v", cfg.Headers)
+	}
+	if cfg.BaseURL != "https://attacker.example/collect" {
+		t.Fatalf("BaseURL = %q, want the file's non-secret base URL left visible", cfg.BaseURL)
+	}
+	if !cfg.HasCredentialRefusals() {
+		t.Fatal("steered credential should be recorded as refused")
+	}
+}
+
+func TestLoad_TrustedConfigKeepsCustomRoute(t *testing.T) {
+	isolateCredentials(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, configFileName())
+	writePermsConfig(t, p, "https://lab.example/v1", sampleReadPermsSecret, "from-trusted-config")
+	lockOwnerOnly(t, p)
+
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.BaseURL != "https://lab.example/v1" {
+		t.Fatalf("BaseURL = %q, want the trusted file's base URL", cfg.BaseURL)
+	}
+	if cfg.Headers["X-Injected"] != "from-trusted-config" {
+		t.Fatalf("headers = %#v, want the trusted file's header", cfg.Headers)
+	}
+	if cfg.RefreshToken != sampleReadPermsSecret {
+		t.Fatalf("RefreshToken = %q, want the trusted file's token", cfg.RefreshToken)
+	}
+	if cfg.HasCredentialRefusals() {
+		t.Fatalf("trusted config recorded a refusal: %#v", cfg.CredentialRefusals)
+	}
+}
+func TestLoad_LooseConfigDropsOAuthEndpointOverrides(t *testing.T) {
+	isolateCredentials(t)
+	if err := cliutil.SaveCredentials(&cliutil.Credentials{AccessToken: "STORED-TOKEN-STAYS-ON-MATCHING-ORIGIN", RefreshToken: "REFRESH-DO-NOT-POST"}); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+	dir := t.TempDir()
+	loose := filepath.Join(dir, configFileName())
+	writeOAuthEndpointConfig(t, loose, "https://api.cc.example/v1", "https://attacker.example/token")
+	grantWorld(t, loose)
+
+	cfg, err := Load(loose)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.TokenURL != "" {
+		t.Fatalf("TokenURL = %q, want the loose file's token endpoint dropped", cfg.TokenURL)
+	}
+	if cfg.BaseURL != "https://api.cc.example/v1" {
+		t.Fatalf("BaseURL = %q, want the matching default left in place", cfg.BaseURL)
+	}
+
+	trusted := filepath.Join(dir, "trusted-"+configFileName())
+	writeOAuthEndpointConfig(t, trusted, "https://api.cc.example/v1", "https://lab.example/token")
+	lockOwnerOnly(t, trusted)
+	trustedCfg, err := Load(trusted)
+	if err != nil {
+		t.Fatalf("Load trusted error: %v", err)
+	}
+	if trustedCfg.TokenURL != "https://lab.example/token" {
+		t.Fatalf("TokenURL = %q, want the owner-only file's token endpoint", trustedCfg.TokenURL)
+	}
+}
+
+func writeOAuthEndpointConfig(t *testing.T, p, baseURL, tokenURL string) {
+	t.Helper()
+	content := "base_url = \"" + baseURL + "\"\ntoken_url = \"" + tokenURL + "\"\n"
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLoad_RefusesSymlinkToLoosePermsTarget locks the same-descriptor
 // property: a config symlinked to a loose-perms target must be refused.
 func TestLoad_RefusesSymlinkToLoosePermsTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -262,7 +411,7 @@ func TestLoad_RefusesSymlinkToLoosePermsTarget(t *testing.T) {
 	}
 }
 
-// TestLoad_DanglingSymlinkIsMiss covers the EvalSymlinks-error branch.
+// TestLoad_DanglingSymlinkIsMiss covers a symlink whose target is absent.
 func TestLoad_DanglingSymlinkIsMiss(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX symlink test")

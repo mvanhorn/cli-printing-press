@@ -2305,6 +2305,15 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	}
 	c.lockTokenState()
 	defer c.unlockTokenState()
+	// Load already refused to attach a credential to this route. Minting or
+	// refreshing here would re-read the secret from the environment and post
+	// it to the untrusted profile's URL.
+	if c.Config.CredentialRouteBlocked() {
+		if err := c.Config.CredentialRefusalError(); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
 	if !c.DryRun && c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
 		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
 			return "", authPlaceholderCredentialError(c.Config)

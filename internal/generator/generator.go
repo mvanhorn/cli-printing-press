@@ -3730,6 +3730,11 @@ func (g *Generator) Generate() error {
 			return err
 		}
 	}
+	if g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials {
+		if err := g.renderTemplate("client_untrusted_mint_test.go.tmpl", filepath.Join("internal", "client", "untrusted_mint_test.go"), g.clientTemplateData()); err != nil {
+			return err
+		}
+	}
 	if err := g.renderOptionalSupportFiles(); err != nil {
 		return err
 	}
@@ -4464,6 +4469,12 @@ func (g *Generator) renderAuthFiles() error {
 	if err := g.renderTemplate(authTmpl, authPath, authData); err != nil {
 		return fmt.Errorf("rendering auth: %w", err)
 	}
+	if g.emitsBrowserLoginTrustTest(authTmpl) {
+		trustPath := filepath.Join("internal", "cli", "browser_login_trust_test.go")
+		if err := g.renderTemplate("auth_browser_login_trust_test.go.tmpl", trustPath, authData); err != nil {
+			return fmt.Errorf("rendering browser login trust test: %w", err)
+		}
+	}
 	if g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode {
 		oauthPath := filepath.Join("internal", "oauth", "device.go")
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "oauth"), 0o755); err != nil {
@@ -4504,6 +4515,21 @@ func (g *Generator) authTemplateName() string {
 	default:
 		return "auth_simple.go.tmpl"
 	}
+}
+
+// emitsBrowserLoginTrustTest reports whether this print validates a browser
+// session after saving. The emitted test needs a real base URL and a GET
+// validation path so it can prove a loose config does not erase that save.
+func (g *Generator) emitsBrowserLoginTrustTest(authTmpl string) bool {
+	if g == nil || g.Spec == nil || authTmpl != "auth_browser.go.tmpl" {
+		return false
+	}
+	auth := g.Spec.Auth
+	if !auth.RequiresBrowserSession || strings.TrimSpace(auth.BrowserSessionValidationPath) == "" || strings.TrimSpace(g.Spec.BaseURL) == "" {
+		return false
+	}
+	method := strings.ToUpper(strings.TrimSpace(auth.BrowserSessionValidationMethod))
+	return method == "" || method == "GET"
 }
 
 func (g *Generator) emitsStdinSecretReader() bool {

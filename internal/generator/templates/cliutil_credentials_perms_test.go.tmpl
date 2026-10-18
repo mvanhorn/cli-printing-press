@@ -16,8 +16,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -243,5 +245,260 @@ func TestSaveCredentialsVerifiesWrittenFile(t *testing.T) {
 	}
 	if err := SaveCredentials(&Credentials{AccessToken: credsSampleReadPermsToken}); err != nil {
 		t.Fatalf("SaveCredentials() on a normal POSIX file error = %v", err)
+	}
+}
+
+func TestCredentialOriginsMatch(t *testing.T) {
+	matches := [][2]string{
+		{"https://Example.COM", "https://example.com:443"},
+		{"https://example.com/v1/", "https://example.com/v1"},
+		{"http://example.com", "http://example.com:80"},
+		{"https://user:pass@example.com/v1?x=1#frag", "https://example.com/v1"},
+	}
+	for _, pair := range matches {
+		if !CredentialOriginsMatch(pair[0], pair[1]) {
+			t.Errorf("CredentialOriginsMatch(%q, %q) = false, want true", pair[0], pair[1])
+		}
+	}
+	mismatches := [][2]string{
+		{"https://example.com/v1", "https://example.com/V1"},
+		{"https://example.com/v1", "https://example.com/v2"},
+		{"https://prod.example", "https://lab.example"},
+		{"https://{shop}.example", "https://{shop}.example"},
+		{"", "https://example.com"},
+	}
+	for _, pair := range mismatches {
+		if CredentialOriginsMatch(pair[0], pair[1]) {
+			t.Errorf("CredentialOriginsMatch(%q, %q) = true, want false", pair[0], pair[1])
+		}
+	}
+}
+
+func TestLoadCredentials_RefusesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink test")
+	}
+	isolateCredsHome(t)
+	resetCredsPermsWarnings()
+	dir, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir() error = %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	foreign := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(foreign, []byte("access_token = \"stolen-secret\"\n"), 0o600); err != nil {
+		t.Fatalf("write foreign credentials: %v", err)
+	}
+	link := filepath.Join(dir, credentialsFileName)
+	if err := os.Symlink(foreign, link); err != nil {
+		t.Fatalf("symlink credentials: %v", err)
+	}
+
+	creds, status, err := LoadCredentialsWithStatus()
+	if err != nil {
+		t.Fatalf("LoadCredentialsWithStatus() error = %v", err)
+	}
+	if status.Loaded || creds != nil {
+		t.Fatalf("symlinked credentials = (%#v, %#v), want refusal", creds, status)
+	}
+	if status.Refusal == nil || !status.Refusal.CredentialsPresent {
+		t.Fatalf("symlinked credentials refusal = %#v, want a present refusal", status.Refusal)
+	}
+	if creds != nil && strings.Contains(creds.AccessToken, "stolen") {
+		t.Fatal("symlinked credentials loaded the target secret")
+	}
+}
+
+func TestLoadCredentialsForConfig_RefusesSymlinkedFileAndDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink test")
+	}
+	isolateCredsHome(t)
+	resetCredsPermsWarnings()
+
+	t.Run("file", func(t *testing.T) {
+		profile := t.TempDir()
+		configPath := filepath.Join(profile, "config.toml")
+		if err := os.WriteFile(configPath, []byte{}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(profile, "data"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		foreign := filepath.Join(t.TempDir(), "credentials.toml")
+		if err := os.WriteFile(foreign, []byte("access_token = \"stolen-secret\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(foreign, filepath.Join(profile, "data", credentialsFileName)); err != nil {
+			t.Fatal(err)
+		}
+		assertExplicitCredentialRefused(t, configPath)
+	})
+
+	t.Run("data-dir", func(t *testing.T) {
+		profile := t.TempDir()
+		configPath := filepath.Join(profile, "config.toml")
+		if err := os.WriteFile(configPath, []byte{}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		foreignData := filepath.Join(t.TempDir(), "data")
+		if err := os.MkdirAll(foreignData, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(foreignData, credentialsFileName), []byte("access_token = \"stolen-secret\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(foreignData, filepath.Join(profile, "data")); err != nil {
+			t.Fatal(err)
+		}
+		assertExplicitCredentialRefused(t, configPath)
+	})
+}
+
+func TestLoadCredentialsForConfig_RefusesGroupWritableDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX chmod test")
+	}
+	isolateCredsHome(t)
+	resetCredsPermsWarnings()
+	profile := t.TempDir()
+	configPath := filepath.Join(profile, "config.toml")
+	if err := os.WriteFile(configPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(profile, "data")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, credentialsFileName), []byte("access_token = \"sibling-secret\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dataDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	assertExplicitCredentialRefused(t, configPath)
+}
+
+func TestLoadCredentials_ReadUsesCheckedDescriptor(t *testing.T) {
+	isolateCredsHome(t)
+	resetCredsPermsWarnings()
+	if err := SaveCredentials(&Credentials{AccessToken: "original-token"}); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+	path, err := credentialsPath()
+	if err != nil {
+		t.Fatalf("credentialsPath() error = %v", err)
+	}
+	var hookErr error
+	credentialReadHook = func() {
+		if err := os.Rename(path, path+".kept"); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = os.WriteFile(path, []byte("access_token = \"stolen-token\"\n"), 0o600)
+	}
+	t.Cleanup(func() { credentialReadHook = nil })
+
+	creds, status, err := LoadCredentialsWithStatus()
+	if hookErr != nil {
+		t.Fatalf("swap hook: %v", hookErr)
+	}
+	if err != nil {
+		t.Fatalf("LoadCredentialsWithStatus() error = %v", err)
+	}
+	if !status.Loaded || creds == nil || creds.AccessToken != "original-token" {
+		t.Fatalf("checked descriptor returned creds=%#v status=%#v, want original-token", creds, status)
+	}
+}
+
+func TestReadOpenedConfig_ReadUsesCheckedDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	original := []byte("base_url = \"https://original.example\"\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var hookErr error
+	configReadHook = func() {
+		if err := os.Rename(path, path+".kept"); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = os.WriteFile(path, []byte("base_url = \"https://swapped.example\"\nheaders_injected = true\n"), 0o666)
+	}
+	t.Cleanup(func() { configReadHook = nil })
+
+	opened, err := ReadOpenedConfig(path)
+	if hookErr != nil {
+		t.Fatalf("swap hook: %v", hookErr)
+	}
+	if err != nil {
+		t.Fatalf("ReadOpenedConfig() error = %v", err)
+	}
+	if string(opened.Data) != string(original) {
+		t.Fatalf("ReadOpenedConfig data = %q, want the bytes from the checked descriptor", opened.Data)
+	}
+	if opened.PermErr != nil {
+		t.Fatalf("owner-locked config perm err = %v", opened.PermErr)
+	}
+}
+
+func TestLoadCredentials_RefusesForeignOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX owner check; Windows refuses a foreign owner through the file DACL")
+	}
+	isolateCredsHome(t)
+	resetCredsPermsWarnings()
+	if err := SaveCredentials(&Credentials{AccessToken: credsSampleReadPermsToken}); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+	path, err := credentialsPath()
+	if err != nil {
+		t.Fatalf("credentialsPath() error = %v", err)
+	}
+	foreignUID := 65534
+	if u, lookupErr := user.Lookup("nobody"); lookupErr == nil {
+		if id, convErr := strconv.Atoi(u.Uid); convErr == nil {
+			foreignUID = id
+		}
+	}
+	if os.Geteuid() == foreignUID {
+		t.Skip("process uid is the foreign owner")
+	}
+	if err := os.Chown(path, foreignUID, -1); err != nil {
+		t.Skipf("cannot chown: %v", err)
+	}
+
+	creds, status, err := LoadCredentialsWithStatus()
+	if err != nil {
+		t.Fatalf("LoadCredentialsWithStatus() error = %v", err)
+	}
+	if status.Loaded || creds != nil {
+		t.Fatalf("foreign-owned credentials = (%#v, %#v), want refusal", creds, status)
+	}
+	if status.Refusal == nil || !status.Refusal.CredentialsPresent {
+		t.Fatalf("foreign-owned refusal = %#v, want a present refusal", status.Refusal)
+	}
+	if !strings.Contains(status.Refusal.Error(), "not owned") {
+		t.Fatalf("refusal = %q, want an owner refusal", status.Refusal.Error())
+	}
+}
+
+func assertExplicitCredentialRefused(t *testing.T, configPath string) {
+	t.Helper()
+	creds, status, err := LoadCredentialsForConfigWithStatus(configPath)
+	if err != nil {
+		t.Fatalf("LoadCredentialsForConfigWithStatus() error = %v", err)
+	}
+	if status.Loaded || creds != nil {
+		t.Fatalf("explicit credentials = (%#v, %#v), want refusal", creds, status)
+	}
+	if status.Refusal == nil || !status.Refusal.CredentialsPresent {
+		t.Fatalf("explicit credentials refusal = %#v, want a present refusal", status.Refusal)
+	}
+	if creds != nil && strings.Contains(creds.AccessToken, "stolen") {
+		t.Fatal("refused credentials loaded a secret")
 	}
 }

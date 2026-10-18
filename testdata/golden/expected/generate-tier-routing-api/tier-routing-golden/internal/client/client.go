@@ -2394,6 +2394,15 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	}
 	c.lockTokenState()
 	defer c.unlockTokenState()
+	// Load already refused to attach a credential to this route. Minting or
+	// refreshing here would re-read the secret from the environment and post
+	// it to the untrusted profile's URL.
+	if c.Config.CredentialRouteBlocked() {
+		if err := c.Config.CredentialRefusalError(); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
 	authHeader := c.Config.AuthHeader()
 	if authHeader == "" && c.Config.HasCredentialRefusals() {
 		return "", c.Config.CredentialRefusalError()

@@ -14,6 +14,9 @@ package cliutil
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -70,4 +73,112 @@ func VerifyCredsPerms(path string) error {
 		return fmt.Errorf("cannot resolve current user SID: %w", err)
 	}
 	return evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias)
+}
+
+func verifyWindowsHandle(f *os.File, path string) error {
+	sd, err := windows.GetSecurityInfo(
+		windows.Handle(f.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return fmt.Errorf("cannot read credentials/token file ACL for %s: %w", path, err)
+	}
+	me, err := currentUserSID()
+	if err != nil {
+		return fmt.Errorf("cannot resolve current user SID: %w", err)
+	}
+	return evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias)
+}
+
+// ReadOpenedConfig opens path, judges that descriptor, and returns the bytes
+// read from it. The ACL verdict uses the same handle the bytes come from.
+func ReadOpenedConfig(path string) (OpenedConfig, error) {
+	f, err := os.Open(path) // #nosec G304 -- app-derived config path; verdict and bytes share this handle.
+	if err != nil {
+		return OpenedConfig{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return OpenedConfig{}, err
+	}
+	var permErr error
+	if !fi.Mode().IsRegular() {
+		permErr = fmt.Errorf("file is not a regular file: %s", path)
+	} else {
+		permErr = verifyWindowsHandle(f, path)
+	}
+	if configReadHook != nil {
+		configReadHook()
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return OpenedConfig{}, err
+	}
+	return OpenedConfig{Data: data, PermErr: permErr}, nil
+}
+
+func readGlobalCredentialBytes(path string) ([]byte, error) {
+	return readCredentialInRoot(filepath.Dir(path), filepath.Base(path), path)
+}
+
+func readExplicitCredentialBytes(path string) ([]byte, error) {
+	profileDir, dataName, fileName, err := explicitCredentialParts(path)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(profileDir) // #nosec G304 -- explicit profile directory chosen by --config.
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	dataInfo, err := root.Lstat(dataName)
+	if err != nil {
+		return nil, err
+	}
+	if dataInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, &credentialTrustError{msg: dataName + " is a symlink", present: true}
+	}
+	if !dataInfo.IsDir() {
+		return nil, &credentialTrustError{msg: dataName + " is not a directory", present: true}
+	}
+	// os.Root rejects OS separators, so the in-root name stays slash-separated
+	// even on Windows. Both components come from filepath.Base.
+	return readCredentialFromRoot(root, dataName+"/"+fileName, path)
+}
+
+func readCredentialInRoot(dir, name, path string) ([]byte, error) {
+	root, err := os.OpenRoot(dir) // #nosec G304 -- app-owned credentials directory.
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return readCredentialFromRoot(root, name, path)
+}
+
+func readCredentialFromRoot(root *os.Root, name, path string) ([]byte, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, &credentialTrustError{msg: fmt.Sprintf("credentials file %s is a symlink", path), present: true}
+	}
+	f, err := root.Open(name) // #nosec G304 -- credentials file inside the checked root.
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if err := verifyWindowsHandle(f, path); err != nil {
+		data, readErr := io.ReadAll(f)
+		if readErr != nil {
+			return nil, &credentialTrustError{msg: err.Error(), present: true}
+		}
+		return nil, &credentialTrustError{msg: err.Error(), present: credentialsBytesHaveValues(data)}
+	}
+	if credentialReadHook != nil {
+		credentialReadHook()
+	}
+	return io.ReadAll(f)
 }

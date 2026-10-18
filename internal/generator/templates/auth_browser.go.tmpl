@@ -2519,6 +2519,17 @@ func validateAndWriteBrowserSessionProof(ctx context.Context, cfg *config.Config
 		return fmt.Errorf("browser-session validation only supports GET endpoints for now (got %s)", method)
 	}
 
+	// SaveTokens publishes this file as owner-only but leaves the refusal Load
+	// recorded. Re-read it before the probe. A file that is still loose stays
+	// blocked, so a credential for another server is not sent.
+	if cfg != nil && cfg.CredentialRouteBlocked() && strings.TrimSpace(cfg.Path) != "" {
+		reloaded, err := config.Load(cfg.Path)
+		if err != nil {
+			return err
+		}
+		cfg = reloaded
+	}
+
 	authHeader := cfg.AuthHeader()
 	if authHeader == "" {
 		return fmt.Errorf("no browser session credentials were saved")

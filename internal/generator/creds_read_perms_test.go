@@ -52,19 +52,28 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	unixSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_unix.go")
 	require.Contains(t, unixSrc, "func VerifyCredsPerms", "POSIX read-time guard must be emitted")
+	require.Contains(t, unixSrc, "unix.Openat", "POSIX openat must use x/sys/unix so darwin builds")
+	require.NotContains(t, unixSrc, "syscall.Openat", "darwin's syscall package has no Openat")
+	require.Contains(t, unixSrc, "O_NOFOLLOW", "POSIX credentials open must refuse a swapped-in symlink")
+	require.Contains(t, unixSrc, "os.Geteuid()", "POSIX credentials open must check the owner on the descriptor it reads")
+	require.Contains(t, unixSrc, "func ReadOpenedConfig", "POSIX config open must judge and read one descriptor")
+	require.Contains(t, winSrc, "windows.GetSecurityInfo(", "Windows credentials open must check the ACL on the handle it reads")
+	require.Contains(t, winSrc, "func ReadOpenedConfig", "Windows config open must judge and read one handle")
 
 	evalTestSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_eval_test.go")
 	require.Contains(t, evalTestSrc, "PAINO_ACCESS_CONTROL", "evaluator tests must reject a flags-first NULL DACL")
 	require.Contains(t, evalTestSrc, "builtin admin owner LA", "evaluator tests must accept the built-in Administrator's own ACE")
 
 	// A3: the read-time guard must be wired into config.Load's read path. The
-	// persisted token file is canonicalized (EvalSymlinks) then perms-checked
-	// (cliutil.VerifyCredsPerms) before it is consumed, so an over-permissive
-	// token config is refused on READ (a silent miss), not only enforced 0600
-	// on write.
+	// permission verdict and the bytes come from the same open file, and a
+	// loose config must not steer credentials at a different base URL.
 	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
-	require.Contains(t, configSrc, "filepath.EvalSymlinks(", "config.Load must canonicalize the config path before the perms check")
-	require.Contains(t, configSrc, "cliutil.VerifyCredsPerms(", "config.Load must guard the persisted-token read with the perms check")
+	require.Contains(t, configSrc, "cliutil.ReadOpenedConfig(", "config.Load must judge and read the same open config file")
+	require.Contains(t, configSrc, "untrustedCredentialRoute", "a loose config must not steer credentials to a different base URL")
+	require.Contains(t, configSrc, "c.TokenURL = \"\"", "a loose config must not keep an OAuth token endpoint override")
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, clientSrc, "CredentialRouteBlocked()", "client credential mint must honor a blocked route before reading env secrets")
+	require.NotContains(t, configSrc, "cliutil.VerifyCredsPerms(", "config.Load must not check a path separately from the bytes it reads")
 	require.Contains(t, configSrc, "CredentialRefusals []cliutil.CredentialRefusal", "config.Load must preserve refused credential state")
 	require.Contains(t, configSrc, "func (c *Config) HasCredentialRefusals() bool", "diagnostics must distinguish refused credentials from absence")
 	require.Contains(t, configSrc, "credentialsRefused := false", "explicit config credential refusals must not fall through to another credentials home")
@@ -79,6 +88,7 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	require.Contains(t, configPermsSrc, "testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)", "config permission tests must isolate every user-directory lookup Load can use")
 	require.Contains(t, configPermsSrc, "t.Setenv(\""+naming.EnvPrefix(apiSpec.Name)+"_HOME\", home)", "config permission tests must point LoadCredentials at the sandbox via PREFIX_HOME")
 	require.Contains(t, configPermsSrc, "TestLoad_DoesNotRecordRefusalForCredentialFreeLooseConfig", "config permission tests must prove loose credential-free configs are not recorded as refused")
+	require.Contains(t, configPermsSrc, "TestLoad_LooseConfigDropsOAuthEndpointOverrides", "a loose config must drop token endpoint overrides even when base_url matches")
 	require.Contains(t, configPermsSrc, "CredentialRefusalSummaries", "config permission tests must assert refused state survives the soft miss")
 
 	// A4: cliutil.LoadCredentials reads a SEPARATE credentials file that also
@@ -109,7 +119,10 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	require.Contains(t, pathsSrc, "renamePrivateFileWithRetryFunc", "private-file publication must expose a testable bounded retry path")
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestEvalCredsSecurity", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoad_LooseConfigDropsOAuthEndpointOverrides", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestLooseConfigDoesNotMintClientCredentials", "-count=1")
 	runGeneratedWindowsCLIUtilBuild(t, outputDir)
+	runGeneratedDarwinCLIUtilBuild(t, outputDir)
 
 	// A5: creds_perms_windows.go imports golang.org/x/sys/windows, which makes
 	// golang.org/x/sys a DIRECT dependency of a token-bearing bundle. The
@@ -145,20 +158,34 @@ func runGeneratedWindowsCLIUtilBuild(t *testing.T, outputDir string) {
 	runGeneratedWindowsGo(t, outputDir, "vet", "./internal/cliutil")
 }
 
+func runGeneratedDarwinCLIUtilBuild(t *testing.T, outputDir string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	bin := filepath.Join(t.TempDir(), "cliutil.test")
+	runGeneratedCrossGo(t, outputDir, "darwin", "arm64", "test", "-c", "-o", bin, "./internal/cliutil")
+}
+
 func runGeneratedWindowsGo(t *testing.T, outputDir string, args ...string) {
+	t.Helper()
+	runGeneratedCrossGo(t, outputDir, "windows", "amd64", args...)
+}
+
+func runGeneratedCrossGo(t *testing.T, outputDir, goos, goarch string, args ...string) {
 	t.Helper()
 	goArgs := append([]string{args[0], "-mod=mod"}, args[1:]...)
 	cmd := exec.Command("go", goArgs...)
 	cmd.Dir = outputDir
 	var output []byte
 	err := withGoBuildCache(outputDir, func(cacheDir string) error {
-		cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "GOCACHE="+cacheDir)
+		cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0", "GOCACHE="+cacheDir)
 		cmd.Env = append(cmd.Env, sandboxHomeEnv(t)...)
 		var runErr error
 		output, runErr = cmd.CombinedOutput()
 		return runErr
 	})
-	require.NoError(t, err, "go %s for generated Windows cliutil failed:\n%s", strings.Join(args, " "), output)
+	require.NoError(t, err, "go %s for generated %s/%s cliutil failed:\n%s", strings.Join(args, " "), goos, goarch, output)
 }
 
 func TestGeneratedConfigPermissionTestsIgnoreSeededCredentialsStore(t *testing.T) {
