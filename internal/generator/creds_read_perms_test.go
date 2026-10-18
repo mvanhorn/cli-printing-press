@@ -52,19 +52,23 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	unixSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_unix.go")
 	require.Contains(t, unixSrc, "func VerifyCredsPerms", "POSIX read-time guard must be emitted")
+	require.Contains(t, unixSrc, "O_NOFOLLOW", "POSIX credentials open must refuse a swapped-in symlink")
+	require.Contains(t, unixSrc, "os.Geteuid()", "POSIX credentials open must check the owner on the descriptor it reads")
+	require.Contains(t, unixSrc, "func ReadOpenedConfig", "POSIX config open must judge and read one descriptor")
+	require.Contains(t, winSrc, "windows.GetSecurityInfo(", "Windows credentials open must check the ACL on the handle it reads")
+	require.Contains(t, winSrc, "func ReadOpenedConfig", "Windows config open must judge and read one handle")
 
 	evalTestSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_eval_test.go")
 	require.Contains(t, evalTestSrc, "PAINO_ACCESS_CONTROL", "evaluator tests must reject a flags-first NULL DACL")
 	require.Contains(t, evalTestSrc, "builtin admin owner LA", "evaluator tests must accept the built-in Administrator's own ACE")
 
 	// A3: the read-time guard must be wired into config.Load's read path. The
-	// persisted token file is canonicalized (EvalSymlinks) then perms-checked
-	// (cliutil.VerifyCredsPerms) before it is consumed, so an over-permissive
-	// token config is refused on READ (a silent miss), not only enforced 0600
-	// on write.
+	// permission verdict and the bytes come from the same open file, and a
+	// loose config must not steer credentials at a different base URL.
 	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
-	require.Contains(t, configSrc, "filepath.EvalSymlinks(", "config.Load must canonicalize the config path before the perms check")
-	require.Contains(t, configSrc, "cliutil.VerifyCredsPerms(", "config.Load must guard the persisted-token read with the perms check")
+	require.Contains(t, configSrc, "cliutil.ReadOpenedConfig(", "config.Load must judge and read the same open config file")
+	require.Contains(t, configSrc, "untrustedCredentialRoute", "a loose config must not steer credentials to a different base URL")
+	require.NotContains(t, configSrc, "cliutil.VerifyCredsPerms(", "config.Load must not check a path separately from the bytes it reads")
 	require.Contains(t, configSrc, "CredentialRefusals []cliutil.CredentialRefusal", "config.Load must preserve refused credential state")
 	require.Contains(t, configSrc, "func (c *Config) HasCredentialRefusals() bool", "diagnostics must distinguish refused credentials from absence")
 	require.Contains(t, configSrc, "credentialsRefused := false", "explicit config credential refusals must not fall through to another credentials home")
