@@ -346,6 +346,11 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err := restoreMCPRuntime(cliDir, runtimeSnap); err != nil {
 		return Result{}, fmt.Errorf("preserving hand-authored MCP behavior: %w", err)
 	}
+	// tools.go now calls Store.SearchContext. store.go is not part of the
+	// MCP surface, so an older print still has only Store.Search.
+	if err := ensureStoreSearchContext(cliDir); err != nil {
+		return Result{}, err
+	}
 	// Refresh .printing-press.json's spec-derived fields before regenerating
 	// manifest.json. WriteMCPBManifest reads provenance from disk, so
 	// without this step spec.yaml updates to auth.key_url, auth.optional,

@@ -140,7 +140,7 @@ func hasHandAuthoredMCPBehavior(src []byte) bool {
 	// field value, or any read/write deadline field, is hand-authored.
 	// Missing IdleTimeout is not: older prints should receive the new value.
 	code := mcpCodeWithoutComments(src)
-	if readTimeoutField.Match(code) || writeTimeoutField.Match(code) {
+	if readTimeoutField.Match(code) || writeTimeoutField.Match(code) || timeoutAssignment.Match(code) {
 		return true
 	}
 	if hasNonGeneratedTimeoutValue(code, readHeaderTimeoutField, generatedMCPReadHeaderTimeoutValue) {
@@ -165,6 +165,9 @@ var (
 	idleTimeoutField       = regexp.MustCompile(`\bIdleTimeout\s*:\s*([^,\n}]+)`)
 	readTimeoutField       = regexp.MustCompile(`\bReadTimeout\s*:`)
 	writeTimeoutField      = regexp.MustCompile(`\bWriteTimeout\s*:`)
+	// Generated servers set timeouts in the struct literal. An assignment
+	// (httpSrv.ReadTimeout = ...) is a hand edit the field-colon check misses.
+	timeoutAssignment = regexp.MustCompile(`\b(?:ReadTimeout|WriteTimeout|IdleTimeout|ReadHeaderTimeout)\s*=`)
 )
 
 func hasNonGeneratedTimeoutValue(code []byte, field *regexp.Regexp, generated string) bool {
