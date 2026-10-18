@@ -3656,6 +3656,10 @@ func shouldSanitizeCapturedResourceIDs(apiSpec *spec.APISpec) bool {
 
 func (g *Generator) Generate() error {
 	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	// CanonicalEnvVar fills EnvVarSpecs as a side effect. Single-file templates
+	// render in map order, so an env_vars-only spec otherwise emits different
+	// config depending on which file runs first.
+	g.Spec.NormalizeAuthEnvVarSpecs()
 	g.Spec.DropCollidingEndpointTemplateEnvOverrides()
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	// Fresh prints default the self-learning loop on (opt out with
