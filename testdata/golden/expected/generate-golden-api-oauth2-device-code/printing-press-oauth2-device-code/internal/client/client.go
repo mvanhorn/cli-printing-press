@@ -444,16 +444,27 @@ func redirectGuard(req *http.Request, via []*http.Request) error {
 
 // redirectPlaintextRefused runs after the hop's credential policy. An
 // off-origin hop that has already dropped its headers is not carrying a
-// secret; a replayed password body or a same-origin credential still is.
+// header secret. A replayed body still is: bodyCredential was decided from
+// the full original body, so a redirect re-read that stops early cannot
+// hide a password past that prefix. Same-origin hops keep the original
+// credential flag.
 func redirectPlaintextRefused(req *http.Request, via []*http.Request, jar http.CookieJar) error {
 	if req == nil || req.URL == nil {
 		return nil
 	}
+	g := dialGuardFrom(req.Context())
 	cred := requestCarriesCredential(req, jar, "", redirectCredentialBody(req))
-	if !redirectTargetLeavesOrigin(req.URL, via) && dialGuardFrom(req.Context()).credentialed {
+	if requestReplaysBody(req) && g.bodyCredential {
+		cred = true
+	}
+	if !redirectTargetLeavesOrigin(req.URL, via) && g.credentialed {
 		cred = true
 	}
 	return plaintextCredentialError(req.URL, cred)
+}
+
+func requestReplaysBody(req *http.Request) bool {
+	return req != nil && req.Body != nil && req.Body != http.NoBody
 }
 
 func redirectCredentialBody(req *http.Request) []byte {
@@ -497,8 +508,9 @@ func redirectResolvedDestinationRefused(ctx context.Context, next *url.URL, via 
 }
 
 type dialGuard struct {
-	allow        string
-	credentialed bool
+	allow          string
+	credentialed   bool
+	bodyCredential bool
 }
 
 type dialGuardKey struct{}
@@ -807,6 +819,17 @@ func PrepareRequest(httpClient *http.Client, req *http.Request) (*http.Request, 
 	return guardOutbound(req, jar, "", nil)
 }
 
+// GuardTokenRequest applies the same plaintext refusal to a token-endpoint
+// POST. body is the encoded form, including client_secret or refresh_token,
+// which the Authorization header alone does not carry.
+func GuardTokenRequest(httpClient *http.Client, req *http.Request, body []byte) (*http.Request, error) {
+	var jar http.CookieJar
+	if httpClient != nil {
+		jar = httpClient.Jar
+	}
+	return guardOutbound(req, jar, "", body)
+}
+
 // NewPlainHTTPClient is the non-browser probe client with the same dial guard
 // as the API client.
 func NewPlainHTTPClient(timeout time.Duration) *http.Client {
@@ -819,6 +842,11 @@ func guardOutbound(req *http.Request, jar http.CookieJar, authHeader string, bod
 	if req == nil {
 		return nil, errors.New("nil request")
 	}
+	ct := ""
+	if req.Header != nil {
+		ct = req.Header.Get("Content-Type")
+	}
+	bodyCred := bodyHasPassword(body, ct)
 	carries := requestCarriesCredential(req, jar, authHeader, body)
 	if err := plaintextCredentialError(req.URL, carries); err != nil {
 		return nil, err
@@ -830,6 +858,9 @@ func guardOutbound(req *http.Request, jar http.CookieJar, authHeader string, bod
 	g := dialGuardFrom(ctx)
 	if g.allow == "" {
 		g.allow = dialAllowKey(req.URL)
+	}
+	if bodyCred {
+		g.bodyCredential = true
 	}
 	if carries {
 		g.credentialed = true
@@ -883,7 +914,8 @@ func valuesHavePassword(vals url.Values) bool {
 
 func isPasswordField(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
-	return n == "password" || strings.HasSuffix(n, "_password") || strings.HasSuffix(n, "-password")
+	return n == "password" || n == "client_secret" || n == "refresh_token" || n == "code_verifier" || n == "device_code" ||
+		strings.HasSuffix(n, "_password") || strings.HasSuffix(n, "-password")
 }
 
 func bodyHasPassword(body []byte, contentType string) bool {
@@ -1044,7 +1076,7 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 	cacheEnabled := c.responseCacheEnabled(binaryResponse)
 	// A credentialed plaintext target is refused before the wire. A cached
 	// body would hide that refusal.
-	if cacheEnabled && c.plaintextCredentialTarget(path) {
+	if cacheEnabled && c.plaintextCredentialTarget(path, params, headers) {
 		cacheEnabled = false
 	}
 	// Check cache for GET requests
@@ -1112,7 +1144,7 @@ func (c *Client) responseCacheEnabled(binaryResponse bool) bool {
 	return !binaryResponse && !c.NoCache && !c.DryRun && c.cacheDir != ""
 }
 
-func (c *Client) plaintextCredentialTarget(path string) bool {
+func (c *Client) plaintextCredentialTarget(path string, params map[string]string, headers map[string]string) bool {
 	if c == nil {
 		return false
 	}
@@ -1122,10 +1154,35 @@ func (c *Client) plaintextCredentialTarget(path string) bool {
 		target = base + path
 	}
 	u, err := url.Parse(target)
-	if err != nil || plaintextCredentialError(u, true) == nil {
+	if err != nil {
 		return false
 	}
-	return c.likelyCredentialed(u)
+	if len(params) > 0 {
+		q := u.Query()
+		for k, v := range params {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		u.RawQuery = q.Encode()
+	}
+	if plaintextCredentialError(u, true) == nil {
+		return false
+	}
+	req := &http.Request{URL: u, Header: make(http.Header)}
+	if c.Config != nil {
+		for k, v := range c.Config.Headers {
+			req.Header.Set(k, v)
+		}
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	var jar http.CookieJar
+	if c.HTTPClient != nil {
+		jar = c.HTTPClient.Jar
+	}
+	return c.likelyCredentialed(u) || requestCarriesCredential(req, jar, "", nil)
 }
 
 func (c *Client) likelyCredentialed(u *url.URL) bool {
@@ -2347,12 +2404,15 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	if c.Config.ClientSecret != "" {
 		params.Set("client_secret", c.Config.ClientSecret)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))
 	if err != nil {
 		return fmt.Errorf("building refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req, err = guardOutbound(req, nil, "", []byte(params.Encode()))
+	if err != nil {
+		return err
+	}
 	resp, err := cliutil.OAuthTokenHTTPClient(c.HTTPClient).Do(req)
 	if err != nil {
 		return fmt.Errorf("refreshing access token: %w", err)

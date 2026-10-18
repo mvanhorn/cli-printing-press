@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,6 +19,15 @@ func TestGeneratedPlaintextCredentialAndDoctor(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_DOGFOOD", "0")
 
 	apiSpec := minimalSpec("plainsafe")
+	items := apiSpec.Resources["items"]
+	items.Endpoints["upload"] = spec.Endpoint{
+		Method:             "POST",
+		Path:               "/upload",
+		Description:        "Upload a login form",
+		RequestContentType: "multipart/form-data",
+		Body:               []spec.Param{{Name: "password", Type: "string"}},
+	}
+	apiSpec.Resources["items"] = items
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	requireGeneratedCompiles(t, outputDir)
@@ -365,6 +375,220 @@ func TestPlaintextCacheIsNotServed(t *testing.T) {
 	}
 	if strings.Contains(string(got), "cached") {
 		t.Fatalf("served cached body %s", got)
+	}
+}
+
+func TestPlaintextUncredentialedCacheStillServed(t *testing.T) {
+	testenv.Isolate(t, cliutil.CacheDir)
+	c := New(&config.Config{BaseURL: "http://api.example.com"}, time.Second, 0)
+	c.writeCache("/widgets", nil, json.RawMessage("{\"cached\":true}"))
+	got, err := c.Get(context.Background(), "/widgets", nil)
+	if err != nil {
+		t.Fatalf("uncredentialed cache Get: %v", err)
+	}
+	if !strings.Contains(string(got), "cached") {
+		t.Fatalf("body = %s, want cached", got)
+	}
+}
+
+func TestPlaintextCacheBypassedForHeaderAndQuery(t *testing.T) {
+	testenv.Isolate(t, cliutil.CacheDir)
+	c := New(&config.Config{BaseURL: "http://api.example.com"}, time.Second, 0)
+	headers := map[string]string{"Authorization": "Bearer secret"}
+	c.writeCacheWithHeaders("/widgets", nil, headers, json.RawMessage("{\"cached\":true}"))
+	got, err := c.GetWithHeaders(context.Background(), "/widgets", nil, headers)
+	if !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("header Get = %v body %s, want ErrPlaintextCredential", err, got)
+	}
+
+	c.writeCache("/widgets", map[string]string{"password": "secret"}, json.RawMessage("{\"cached\":true}"))
+	got, err = c.Get(context.Background(), "/widgets", map[string]string{"password": "secret"})
+	if !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("query Get = %v body %s, want ErrPlaintextCredential", err, got)
+	}
+
+	configured := New(&config.Config{
+		BaseURL: "http://api.example.com",
+		Headers: map[string]string{"Authorization": "Bearer secret"},
+	}, time.Second, 0)
+	configured.writeCache("/widgets", nil, json.RawMessage("{\"cached\":true}"))
+	got, err = configured.Get(context.Background(), "/widgets", nil)
+	if !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("config header Get = %v body %s, want ErrPlaintextCredential", err, got)
+	}
+}
+
+func TestPlaintextMultipartPasswordRefusedBeforeTransport(t *testing.T) {
+	rec := &plaintextRecorder{}
+	c := New(&config.Config{BaseURL: "http://api.example.com"}, time.Second, 0)
+	c.NoCache = true
+	c.HTTPClient.Transport = rec
+	_, _, err := c.PostMultipart(context.Background(), "/upload", map[string]string{"password": "secret"}, nil)
+	if !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("PostMultipart = %v, want ErrPlaintextCredential", err)
+	}
+	if rec.hits.Load() != 0 {
+		t.Fatalf("transport hits = %d, want 0", rec.hits.Load())
+	}
+
+	_, _, err = c.PostMultipart(context.Background(), "/upload", map[string]string{"password": ""}, nil)
+	if errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("empty multipart password was refused: %v", err)
+	}
+	if rec.hits.Load() == 0 {
+		t.Fatal("empty multipart password did not reach the transport")
+	}
+}
+
+func TestPlaintextLargePasswordBodyRedirectIsRefused(t *testing.T) {
+	var dials atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.com/landed", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+	c := New(&config.Config{BaseURL: origin.URL}, time.Second, 0)
+	c.NoCache = true
+	tr, ok := c.HTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport %T", c.HTTPClient.Transport)
+	}
+	prev := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, _ := net.SplitHostPort(addr)
+		if host == "example.com" {
+			dials.Add(1)
+			return nil, errors.New("dialed example.com")
+		}
+		if prev != nil {
+			return prev(ctx, network, addr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	pad := strings.Repeat("x", 2<<20)
+	_, _, err := c.Post(context.Background(), "/login", map[string]string{"note": pad, "password": "secret"})
+	if !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("large password redirect = %v, want ErrPlaintextCredential", err)
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("plaintext redirect target dials = %d", dials.Load())
+	}
+
+	dials.Store(0)
+	_, _, err = c.Post(context.Background(), "/login", map[string]string{"note": pad})
+	if errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("large non-password body was refused: %v", err)
+	}
+	if dials.Load() == 0 {
+		t.Fatal("large non-password redirect did not try the public target")
+	}
+}
+`
+}
+
+func TestGeneratedPlaintextTokenRequests(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "0")
+	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "0")
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "0")
+
+	apiSpec := minimalSpec("plaintok")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "bearer_token",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://auth.example.com/oauth/token",
+		EnvVars:     []string{"PLAINTOK_API_KEY", "PLAINTOK_SECRET_KEY"},
+	}
+	apiSpec.Config.Path = "~/.config/plaintok-pp-cli/config.toml"
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	modulePath := generatedModulePath(t, outputDir)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "client", "plaintext_token_test.go"),
+		[]byte(plaintextTokenTestSource(modulePath)),
+		0o644,
+	))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestPlaintextToken", "-count=1")
+}
+
+func plaintextTokenTestSource(modulePath string) string {
+	return `package client
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"` + modulePath + `/internal/config"
+)
+
+type plaintextTokenRecorder struct {
+	hits atomic.Int32
+}
+
+func (r *plaintextTokenRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.hits.Add(1)
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader("[]")),
+		ContentLength: 2,
+		Request:       req,
+	}, nil
+}
+
+func TestPlaintextTokenMintAndRefreshRefused(t *testing.T) {
+	rec := &plaintextTokenRecorder{}
+	c := New(&config.Config{
+		BaseURL:      "https://api.example.com",
+		TokenURL:     "http://auth.example.com/oauth/token",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		RefreshToken: "rt-secret",
+		Path:         filepath.Join(t.TempDir(), "config.toml"),
+	}, time.Second, 0)
+	c.HTTPClient.Transport = rec
+	if err := c.mintClientCredentials(context.Background(), "id", "secret"); !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("mint = %v, want ErrPlaintextCredential", err)
+	}
+	err := c.refreshAccessToken(context.Background())
+	if !errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("refresh = %v, want ErrPlaintextCredential", err)
+	}
+	if !strings.Contains(err.Error(), "auth.example.com") || !strings.Contains(err.Error(), "use https") {
+		t.Fatalf("refresh error = %q, want host and use https", err.Error())
+	}
+	if rec.hits.Load() != 0 {
+		t.Fatalf("transport hits = %d, want 0", rec.hits.Load())
+	}
+}
+
+func TestPlaintextTokenHTTPSStillSent(t *testing.T) {
+	rec := &plaintextTokenRecorder{}
+	c := New(&config.Config{
+		BaseURL:      "https://api.example.com",
+		TokenURL:     "https://auth.example.com/oauth/token",
+		ClientID:     "id",
+		ClientSecret: "secret",
+		RefreshToken: "rt-secret",
+		Path:         filepath.Join(t.TempDir(), "config.toml"),
+	}, time.Second, 0)
+	c.HTTPClient.Transport = rec
+	err := c.refreshAccessToken(context.Background())
+	if errors.Is(err, ErrPlaintextCredential) {
+		t.Fatalf("https refresh refused: %v", err)
+	}
+	if rec.hits.Load() == 0 {
+		t.Fatal("https refresh did not reach the transport")
 	}
 }
 `

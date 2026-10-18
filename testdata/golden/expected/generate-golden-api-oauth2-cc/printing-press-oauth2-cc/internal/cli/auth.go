@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"printing-press-oauth2-pp-cli/internal/client"
 	"printing-press-oauth2-pp-cli/internal/cliutil"
 	"printing-press-oauth2-pp-cli/internal/config"
 )
@@ -158,6 +159,10 @@ func mintClientCredentialsToken(httpClient *http.Client, tokenURL, clientID, cli
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", resolveClientCredentialsUserAgent())
 	req.SetBasicAuth(clientID, clientSecret)
+	req, err = client.GuardTokenRequest(httpClient, req, []byte(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := cliutil.OAuthTokenHTTPClient(httpClient).Do(req)
 	if err != nil {
