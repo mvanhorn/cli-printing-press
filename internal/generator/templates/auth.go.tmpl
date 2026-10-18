@@ -328,7 +328,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenReq, err = client.GuardTokenRequest(nil, tokenReq, []byte(tokenParams.Encode()))
 	if err != nil {
-		return err
+		return authTransportErr(err)
 	}
 	tokenClient := cliutil.OAuthTokenHTTPClient(&http.Client{Timeout: 30 * time.Second})
 	resp, err := tokenClient.Do(tokenReq)

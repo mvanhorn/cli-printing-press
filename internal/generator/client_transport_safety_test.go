@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -510,7 +511,85 @@ func TestGeneratedPlaintextTokenRequests(t *testing.T) {
 		[]byte(plaintextTokenTestSource(modulePath)),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "cli", "plaintext_auth_exit_test.go"),
+		[]byte(plaintextAuthExitTestSource(modulePath)),
+		0o644,
+	))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestPlaintextToken", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPlaintextAuthCommandExitCode", "-count=1")
+
+	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(authGo), "return authTransportErr(err)")
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	assertPlaintextAuthLoginExit(t, binaryPath, naming.EnvPrefix(apiSpec.Name))
+}
+
+func assertPlaintextAuthLoginExit(t *testing.T, binaryPath, prefix string) {
+	t.Helper()
+	run := func(tokenURL string) (int, string) {
+		t.Helper()
+		cmd := exec.Command(binaryPath, "auth", "login", "--client-id", "id", "--client-secret", "secret")
+		cmd.Env = append(doctorEnv(t.TempDir(), prefix), prefix+"_TOKEN_URL="+tokenURL)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return 0, string(out)
+		}
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
+		return exitErr.ExitCode(), string(out)
+	}
+
+	code, out := run("http://auth.example.com/oauth/token")
+	require.Equal(t, 10, code, out)
+	require.Contains(t, out, "auth.example.com")
+	require.Contains(t, out, "use https")
+	require.NotContains(t, out, "calling token endpoint")
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"tok","expires_in":3600}`))
+	}))
+	t.Cleanup(srv.Close)
+	code, out = run(srv.URL)
+	require.Equal(t, 0, code, out)
+	require.Contains(t, out, "Logged in")
+	require.Equal(t, 1, hits)
+}
+
+func plaintextAuthExitTestSource(modulePath string) string {
+	return `package cli
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"` + modulePath + `/internal/client"
+)
+
+func TestPlaintextAuthCommandExitCode(t *testing.T) {
+	authRefused := authTransportErr(fmt.Errorf("wrap: %w", client.ErrPlaintextCredential))
+	if got := ExitCode(authRefused); got != 10 {
+		t.Fatalf("auth ExitCode = %d, want 10 (%v)", got, authRefused)
+	}
+	if !errors.Is(authRefused, client.ErrPlaintextCredential) {
+		t.Fatalf("auth refusal does not unwrap to ErrPlaintextCredential: %v", authRefused)
+	}
+	if !strings.Contains(authRefused.Error(), "use https") {
+		t.Fatalf("auth refusal = %q, want use https", authRefused.Error())
+	}
+	if got := ExitCode(authTransportErr(errors.New("token endpoint returned HTTP 400"))); got != 4 {
+		t.Fatalf("other auth ExitCode = %d, want 4", got)
+	}
+}
+`
 }
 
 func plaintextTokenTestSource(modulePath string) string {

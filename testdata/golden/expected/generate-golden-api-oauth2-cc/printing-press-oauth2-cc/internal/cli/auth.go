@@ -93,7 +93,7 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 			}
 			tok, err := mintClientCredentialsToken(http.DefaultClient, tokenURL, clientID, clientSecret)
 			if err != nil {
-				return authErr(err)
+				return authTransportErr(err)
 			}
 
 			cfg.AuthHeaderVal = ""
