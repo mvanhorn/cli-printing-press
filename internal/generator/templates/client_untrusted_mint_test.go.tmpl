@@ -77,9 +77,11 @@ func TestLooseConfigDoesNotMintClientCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
+{{- if .Auth.TokenURL}}
 	if cfg.TokenURL != "" {
 		t.Fatalf("TokenURL = %q, want the loose file's token endpoint dropped", cfg.TokenURL)
 	}
+{{- end}}
 	if cfg.ClientID != "" || cfg.ClientSecret != "" || cfg.AccessToken != "" {
 		t.Fatalf("credentials attached to untrusted base: id=%q secret set=%t token=%q", cfg.ClientID, cfg.ClientSecret != "", cfg.AccessToken)
 	}
