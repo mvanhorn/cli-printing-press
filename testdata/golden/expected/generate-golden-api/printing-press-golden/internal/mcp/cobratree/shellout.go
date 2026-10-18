@@ -7,6 +7,7 @@ package cobratree
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -242,6 +243,20 @@ var blockedDestinationFlags = map[string]bool{
 	"receipt-file": true,
 }
 
+// MCP runs commands as the server account. A flag whose value is a path
+// opened for reading would let a tool read anything that account can read.
+// Unambiguous read-path names are listed here; a command declares any other
+// with mcp:read-flags. Names that are often not paths (file, path) stay out.
+var blockedInputFlags = map[string]bool{
+	"cookies-file":        true,
+	"input":               true,
+	"input-file":          true,
+	"notes-file":          true,
+	"password-file":       true,
+	"playbook-file":       true,
+	"playbook-notes-file": true,
+}
+
 // confirmationBypassYesFlag is the root flag that skips a command's own
 // confirmation prompt. It stays blocked even when a command redeclares the
 // same name. Per-command confirm flags (--force, --confirm, --launch) are
@@ -408,6 +423,9 @@ func ToolResultFromCLIFailure(result CLICommandResult, err error) *mcplib.CallTo
 // separately on success so they cannot corrupt JSON results.
 func RunCLICommand(ctx context.Context, binPath string, args []string) (CLICommandResult, error) {
 	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
+	// os.Getenv returns the first duplicate, so an inherited marker has to
+	// be replaced. A nil Env would inherit the parent and could not force it.
+	cmd.Env = mcpChildEnviron()
 	stdout := newCappedCapture()
 	stderr := newCappedCapture()
 	cmd.Stdout = stdout
@@ -429,6 +447,19 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (CLIComma
 		return result, fmt.Errorf("cli %s: %w (%s)", binPath, err, bound.Text(detail))
 	}
 	return result, nil
+}
+
+func mcpChildEnviron() []string {
+	prefix := cliutil.MCPChildEnvVar + "="
+	base := os.Environ()
+	env := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, prefix+"1")
 }
 
 func cliFailureDetail(stdout, stderr string) string {

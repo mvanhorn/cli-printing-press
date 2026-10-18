@@ -417,6 +417,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"humanName":                      naming.HumanName,
 		"envPrefix":                      naming.EnvPrefix,
 		"mcpBlockedDestinationFlagNames": mcpBlockedDestinationFlagNames,
+		"mcpBlockedInputFlagNames":       mcpBlockedInputFlagNames,
 		"mcpToolName":                    naming.SnakeIdentifier,
 		"lookupEndpoint": func(api *spec.APISpec, ref string) templateEndpoint {
 			e, _ := lookupEndpointForTemplate(api, ref)

@@ -437,15 +437,20 @@ func init() {
 }
 
 {{- if $anyRecipeFlag}}
-// recipeCommandRoot is the Cobra tree consulted for write-sink annotations.
-// Recipe text does not carry mcp:write-flags; the live command does.
+// recipeCommandRoot is the Cobra tree consulted for write-sink and read-path
+// annotations. Recipe text does not carry mcp:write-flags or mcp:read-flags;
+// the live command does.
 var recipeCommandRoot = cli.RootCmd
 
 func recipeDestinationBlocked(path []string, flagName string) bool {
-	if flagName == "" || recipeCommandRoot == nil {
-		return cobratree.DestinationFlagBlocked(nil, flagName)
+	if flagName == "" {
+		return false
 	}
-	return cobratree.DestinationFlagBlocked(cobratree.CommandAtPath(recipeCommandRoot(), recipeCommandPath(path)), flagName)
+	if recipeCommandRoot == nil {
+		return cobratree.DestinationFlagBlocked(nil, flagName) || cobratree.InputFlagBlocked(nil, flagName)
+	}
+	cmd := cobratree.CommandAtPath(recipeCommandRoot(), recipeCommandPath(path))
+	return cobratree.DestinationFlagBlocked(cmd, flagName) || cobratree.InputFlagBlocked(cmd, flagName)
 }
 
 // recipeCommandPath keeps the Cobra command words. Static flags such as

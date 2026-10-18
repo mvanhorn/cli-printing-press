@@ -64,7 +64,10 @@ func TestGeneratedTailShortCircuitsFollowUnderDogfood(t *testing.T) {
 	require.NoError(t, err)
 	tailSrc := string(tailGo)
 	assert.Contains(t, tailSrc, naming.CLI(apiSpec.Name)+`/internal/cliutil"`)
-	assert.Contains(t, tailSrc, "if cliutil.IsDogfoodEnv() {\n\t\t\t\tfollow = false\n\t\t\t}")
+	assert.Contains(t, tailSrc, "if cliutil.IsDogfoodEnv() || cliutil.IsMCPChildEnv() {\n\t\t\t\tfollow = false\n\t\t\t}")
+	assert.Contains(t, tailSrc, "at least 1s in follow mode")
+	assert.Less(t, strings.Index(tailSrc, "at least 1s in follow mode"), strings.Index(tailSrc, "flags.newClient()"),
+		"tail must reject a tight follow interval before constructing the client")
 	assert.Contains(t, tailSrc, "if !follow {\n\t\t\t\treturn nil\n\t\t\t}")
 	assert.Less(t, strings.Index(tailSrc, "if !follow {"), strings.Index(tailSrc, "ticker := time.NewTicker(interval)"),
 		"tail must return after one poll before creating the follow ticker")
