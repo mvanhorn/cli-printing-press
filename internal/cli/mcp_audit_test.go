@@ -96,7 +96,7 @@ func TestRunMCPAuditCodeOrchSurface(t *testing.T) {
 	mustWrite(t, cli, "cmd/cloudy-cli-pp-mcp/main.go",
 		"package main\nfunc main() { server.ServeStdio(s); server.NewStreamableHTTPServer(s) }\n")
 	mustWrite(t, cli, "internal/mcp/tools.go", "package mcp\n")
-	mustWrite(t, cli, "internal/mcp/code_orch.go", "package mcp\n")
+	mustWrite(t, cli, "internal/mcp/code_orch.go", currentCodeOrchSurface("cloudy"))
 
 	findings, err := runMCPAudit(lib)
 	require.NoError(t, err)
@@ -105,6 +105,40 @@ func TestRunMCPAuditCodeOrchSurface(t *testing.T) {
 	assert.Equal(t, "both", f.Transport)
 	assert.Equal(t, "code-orch", f.ToolDesign)
 	assert.Equal(t, "ok", f.Recommend, "fully-modernized CLI has nothing to recommend")
+}
+
+func TestRunMCPAuditStaleCodeOrchRecommendsReprint(t *testing.T) {
+	lib := t.TempDir()
+	cli := filepath.Join(lib, "old-cli")
+	mustWrite(t, cli, "cmd/old-cli-pp-mcp/main.go",
+		"package main\nfunc main() { server.ServeStdio(s); server.NewStreamableHTTPServer(s) }\n")
+	mustWrite(t, cli, "internal/mcp/tools.go", "package mcp\n")
+	mustWrite(t, cli, "internal/mcp/code_orch.go", "package mcp\nfunc Register() {\n\tmcplib.NewTool(\"old_execute\",\n\t)\n}\n")
+
+	findings, err := runMCPAudit(lib)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	f := findings[0]
+	assert.Equal(t, "code-orch", f.ToolDesign)
+	assert.Contains(t, f.Recommend, "reprint:")
+	assert.Contains(t, f.Recommend, "confirm")
+	assert.NotEqual(t, "ok", f.Recommend)
+}
+
+func TestCodeOrchConfirmContract(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, codeOrchConfirmContract("package mcp\n"))
+	assert.False(t, codeOrchConfirmContract("package mcp\nfunc Register() {\n\tmcplib.NewTool(\"api_execute\",\n\t)\n}\nfunc codeOrchConfirmAccepted(v any) bool { return false }\nfunc codeOrchResolvedNeedsConfirm() bool { return false }\n"))
+	assert.True(t, codeOrchConfirmContract(currentCodeOrchSurface("api")))
+	assert.True(t, codeOrchConfirmContract("package mcp\nfunc Register() {\n\tmcplib.NewTool(\"api_read\",\n\t)\n}\nfunc codeOrchConfirmAccepted(v any) bool { return false }\nfunc codeOrchResolvedNeedsConfirm() bool { return false }\n"))
+}
+
+func currentCodeOrchSurface(api string) string {
+	return "package mcp\nfunc Register() {\n" +
+		"\tmcplib.NewTool(\"" + api + "_read\",\n\t\tmcplib.WithReadOnlyHintAnnotation(true),\n\t)\n" +
+		"\tmcplib.NewTool(\"" + api + "_execute\",\n\t\tmcplib.WithBoolean(\"confirm\"),\n\t\tmcplib.WithDestructiveHintAnnotation(true),\n\t)\n" +
+		"}\nfunc codeOrchConfirmAccepted(v any) bool { return false }\nfunc codeOrchResolvedNeedsConfirm() bool { return false }\n"
 }
 
 func TestRunMCPAuditGeneratedLargeDefaultSurface(t *testing.T) {

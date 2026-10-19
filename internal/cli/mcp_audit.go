@@ -161,8 +161,10 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 		f.IntentCt = strings.Count(intentsBody, "mcplib.NewTool(")
 	}
 	codeOrch := false
-	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
+	var codeOrchBody string
+	if data, err := os.ReadFile(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
 		codeOrch = true
+		codeOrchBody = string(data)
 	}
 
 	switch {
@@ -175,9 +177,25 @@ func auditLibraryCLI(dir, api string) MCPAuditFinding {
 	}
 
 	hints, recs := inspectIntentSurface(intentsBody, f.IntentCt)
+	if codeOrch && !codeOrchConfirmContract(codeOrchBody) {
+		recs = append(recs, "reprint: code-orchestration writes run without a confirm gate; regenerate for the read/execute split")
+	}
 	f.IntentHints = hints
 	f.Recommend = mergeRecommendations(recommendForFinding(f), recs)
 	return f
+}
+
+// codeOrchConfirmContract reports whether a code-orchestration file is the
+// read/execute split. Existence of the file is not enough: older prints
+// register one unrestricted execute tool.
+func codeOrchConfirmContract(body string) bool {
+	if !strings.Contains(body, "func codeOrchResolvedNeedsConfirm(") || !strings.Contains(body, "func codeOrchConfirmAccepted(") {
+		return false
+	}
+	if strings.Contains(body, `_execute",`) && !strings.Contains(body, `WithBoolean("confirm"`) {
+		return false
+	}
+	return true
 }
 
 func inspectIntentSurface(body string, intentCt int) (string, []string) {

@@ -2350,7 +2350,7 @@ type MCPConfig struct {
 	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., "127.0.0.1:7777"). Blank means runtime default ("127.0.0.1:7777"). Empty-host forms like ":7777" bind every interface and require TLS. Ignored unless http is in Transport.
 	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
 	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
-	Orchestration          string   `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`                     // "endpoint-mirror" (default), "intent", or "code". Code-orchestration emits a thin <api>_search + <api>_execute pair covering the full surface in ~1K tokens; used for very large APIs where even intent-grouped tools would overflow context. Mutually exclusive with endpoint-mirror at emission time.
+	Orchestration          string   `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`                     // "endpoint-mirror" (default), "intent", or "code". Code-orchestration emits <api>_search, <api>_get, <api>_read for reads, and <api>_execute for state-changing calls (preview until confirm is boolean true; omitted when the spec has none). Mutually exclusive with endpoint-mirror at emission time.
 	OrchestrationThreshold int      `yaml:"orchestration_threshold,omitempty" json:"orchestration_threshold,omitempty"` // endpoint count above which the generator auto-applies code orchestration when Orchestration is unset. Zero means use the built-in default (50).
 }
 
@@ -6114,15 +6114,16 @@ func (s *APISpec) ApplyLearnLoopDefault(w io.Writer) {
 }
 
 // IsCodeOrchestration reports whether this MCP config opts into the
-// code-orchestration thin surface. Templates branch on this to emit only
-// <api>_search + <api>_execute instead of the endpoint-mirror.
+// code-orchestration thin surface. Templates branch on this to emit
+// <api>_search, <api>_get, <api>_read, and <api>_execute instead of the
+// endpoint-mirror.
 func (m MCPConfig) IsCodeOrchestration() bool {
 	return m.Orchestration == "code"
 }
 
 // EndpointMirrorsVisible reports whether per-endpoint MCP tools are registered
 // directly. Code orchestration always suppresses endpoint mirrors because
-// <api>_search + <api>_execute cover the endpoint catalog.
+// <api>_search, <api>_read, and <api>_execute cover the endpoint catalog.
 func (m MCPConfig) EndpointMirrorsVisible() bool {
 	if m.IsCodeOrchestration() {
 		return false

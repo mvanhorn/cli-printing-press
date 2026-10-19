@@ -324,6 +324,11 @@ Rules:
 - Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
   `addr`, `intents`, `endpoint_tools`, `orchestration`,
   `orchestration_threshold`.
+- `orchestration: code` emits `<api>_search`, `<api>_get`, `<api>_read`, and
+  `<api>_execute`. `<api>_read` calls GET reads and codegen-marked read-only
+  POSTs. `<api>_execute` returns a preview for DELETE and other state-changing
+  calls, including mutating GETs, and performs no HTTP until `confirm` is
+  boolean `true`. Specs with no state-changing endpoints omit `<api>_execute`.
 - Validated by `validateMCP` at spec load (same allowlist as internal YAML):
   unknown transports and malformed addresses are rejected.
 

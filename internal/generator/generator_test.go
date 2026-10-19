@@ -19532,7 +19532,7 @@ func TestGenerateMCPMainExplicitStdioOnlyHonored(t *testing.T) {
 
 // TestGenerateMCPMainLargeAPIDefaultsCodeOrchestration confirms that large
 // APIs with no explicit orchestration mode get the Cloudflare MCP pattern by
-// default: remote-capable transport plus the thin search/execute surface.
+// default: remote-capable transport plus the thin search/read surface.
 func TestGenerateMCPMainLargeAPIDefaultsCodeOrchestration(t *testing.T) {
 	t.Parallel()
 
@@ -19571,7 +19571,9 @@ func TestGenerateMCPMainLargeAPIDefaultsCodeOrchestration(t *testing.T) {
 	codeOrch, err := os.ReadFile(codeOrchPath)
 	require.NoError(t, err, "code_orch.go must be emitted by the large-API default")
 	assert.Contains(t, string(codeOrch), `mcplib.NewTool("demo_search"`)
-	assert.Contains(t, string(codeOrch), `mcplib.NewTool("demo_execute"`)
+	assert.Contains(t, string(codeOrch), `mcplib.NewTool("demo_read"`)
+	assert.NotContains(t, string(codeOrch), `mcplib.NewTool("demo_execute"`,
+		"a read-only spec must not register the mutating execute tool")
 
 	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
 	toolsData, err := os.ReadFile(toolsPath)
@@ -19705,7 +19707,7 @@ func assertMCPMainUsesVersionVar(t *testing.T, body string) {
 
 // TestGenerateMCPCodeOrchestrationEmitsRegistryTools proves that when the
 // spec opts into code-orchestration, the generator emits only the registry
-// tools <api>_search, <api>_get, and <api>_execute as MCP tools, covering every
+// tools <api>_search, <api>_get, <api>_read, and <api>_execute as MCP tools, covering every
 // endpoint via a single registry. This is the thin surface pattern referenced by
 // Anthropic's 2026-04-22 post (Cloudflare's ~2,500-endpoint server in ~1K
 // tokens).
@@ -19729,6 +19731,7 @@ func TestGenerateMCPCodeOrchestrationEmitsRegistryTools(t *testing.T) {
 		`func RegisterCodeOrchestrationTools(`,
 		`mcplib.NewTool("loops_search"`,
 		`mcplib.NewTool("loops_get"`,
+		`mcplib.NewTool("loops_read"`,
 		`mcplib.NewTool("loops_execute"`,
 		`codeOrchEndpoints = []codeOrchEndpoint`,
 		`func handleCodeOrchSearch(`,

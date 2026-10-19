@@ -197,6 +197,7 @@ func TestCodeOrchQuerySpaceEncoding(t *testing.T) {
 
 	request := mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: map[string]any{
 		"endpoint_id": "notes.update",
+		"confirm":     true,
 		"params": map[string]any{
 			"id": "1", "note": "Lab Probe+Net", "text": "body text",
 		},
