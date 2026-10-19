@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14934,5 +14935,111 @@ func TestSetParamMinimumNormalizesBounds(t *testing.T) {
 		setParamMinimum(&p, nil)
 		assert.Nil(t, p.Minimum)
 		assert.NotPanics(t, func() { setParamMinimum(nil, &openapi3.Schema{Min: f(1)}) })
+	})
+
+	t.Run("allOf minimum is the only bound", func(t *testing.T) {
+		p := spec.Param{Type: "int"}
+		setParamMinimum(&p, &openapi3.Schema{
+			AllOf: openapi3.SchemaRefs{{Value: &openapi3.Schema{Min: f(1)}}},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 1.0, *p.Minimum)
+	})
+
+	t.Run("allOf keeps the tighter floor", func(t *testing.T) {
+		p := spec.Param{Type: "integer"}
+		setParamMinimum(&p, &openapi3.Schema{
+			Min: f(0),
+			AllOf: openapi3.SchemaRefs{
+				nil,
+				{Value: nil},
+				{Value: &openapi3.Schema{Min: f(1)}},
+				{Value: &openapi3.Schema{Min: f(4)}},
+			},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 4.0, *p.Minimum)
+	})
+
+	t.Run("direct minimum stays when it is tighter than allOf", func(t *testing.T) {
+		p := spec.Param{Type: "int"}
+		setParamMinimum(&p, &openapi3.Schema{
+			Min:   f(5),
+			AllOf: openapi3.SchemaRefs{{Value: &openapi3.Schema{Min: f(1)}}},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 5.0, *p.Minimum)
+	})
+
+	t.Run("nested allOf", func(t *testing.T) {
+		p := spec.Param{Type: "int"}
+		setParamMinimum(&p, &openapi3.Schema{
+			AllOf: openapi3.SchemaRefs{{
+				Value: &openapi3.Schema{
+					AllOf: openapi3.SchemaRefs{{Value: &openapi3.Schema{Min: f(3)}}},
+				},
+			}},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 3.0, *p.Minimum)
+	})
+
+	t.Run("allOf exclusiveMinimum normalizes for integer members", func(t *testing.T) {
+		p := spec.Param{Type: "string"}
+		member := &openapi3.Schema{
+			Type:         &openapi3.Types{openapi3.TypeInteger},
+			Min:          f(0),
+			ExclusiveMin: openapi3.ExclusiveBound{Bool: &tru},
+		}
+		setParamMinimum(&p, &openapi3.Schema{AllOf: openapi3.SchemaRefs{{Value: member}}})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 1.0, *p.Minimum)
+	})
+
+	t.Run("allOf exclusive bound can beat a lower inclusive minimum", func(t *testing.T) {
+		p := spec.Param{Type: "int"}
+		setParamMinimum(&p, &openapi3.Schema{
+			Min: f(1),
+			AllOf: openapi3.SchemaRefs{{
+				Value: &openapi3.Schema{ExclusiveMin: openapi3.ExclusiveBound{Value: f(1.2)}},
+			}},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 2.0, *p.Minimum)
+	})
+
+	t.Run("non-integer allOf keeps the inclusive floor", func(t *testing.T) {
+		p := spec.Param{Type: "number"}
+		setParamMinimum(&p, &openapi3.Schema{
+			Min: f(0),
+			AllOf: openapi3.SchemaRefs{{
+				Value: &openapi3.Schema{Min: f(2.5), ExclusiveMin: openapi3.ExclusiveBound{Bool: &tru}},
+			}},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 2.5, *p.Minimum)
+	})
+
+	t.Run("non-finite allOf bound loses to a finite sibling", func(t *testing.T) {
+		nan := math.NaN()
+		p := spec.Param{Type: "int"}
+		setParamMinimum(&p, &openapi3.Schema{
+			Min: &nan,
+			AllOf: openapi3.SchemaRefs{
+				{Value: &openapi3.Schema{Min: &nan}},
+				{Value: &openapi3.Schema{Min: f(4)}},
+			},
+		})
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 4.0, *p.Minimum)
+	})
+
+	t.Run("cyclic allOf does not recurse forever", func(t *testing.T) {
+		schema := &openapi3.Schema{Min: f(2)}
+		schema.AllOf = openapi3.SchemaRefs{{Value: schema}}
+		p := spec.Param{Type: "int"}
+		assert.NotPanics(t, func() { setParamMinimum(&p, schema) })
+		require.NotNil(t, p.Minimum)
+		assert.Equal(t, 2.0, *p.Minimum)
 	})
 }

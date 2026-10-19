@@ -13,8 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func floatPtr(v float64) *float64 { return &v }
-
 func firstPageOffsetSpec(name string) *spec.APISpec {
 	apiSpec := minimalSpec(name)
 	apiSpec.Auth = spec.AuthConfig{Type: "none"}
@@ -23,8 +21,8 @@ func firstPageOffsetSpec(name string) *spec.APISpec {
 		"bounces":     offsetList("Bounces", "/bounces", "count", true, 0, nil),
 		"reviews":     offsetList("Reviews", "/reviews", "limit", true, 0, nil),
 		"commands":    pageList("Commands", "/commands", true, nil),
-		"zero_pages":  pageList("Zero-based pages", "/zero-pages", true, floatPtr(0)),
-		"positions":   offsetList("Positions", "/positions", "limit", true, nil, floatPtr(1)),
+		"zero_pages":  pageList("Zero-based pages", "/zero-pages", true, new(float64(0))),
+		"positions":   offsetList("Positions", "/positions", "limit", true, nil, new(float64(1))),
 		"tokens":      tokenList("Tokens", "/tokens", "starting_after", "cursor"),
 		"page_tokens": tokenList("Page tokens", "/page-tokens", "page_token", "page_token"),
 		"optional_offsets": {
@@ -55,7 +53,7 @@ func firstPageOffsetSpec(name string) *spec.APISpec {
 			},
 		},
 		"child_reviews": childList("Child reviews", "/child-reviews", "offset", "offset", true, nil),
-		"child_pages":   childList("Child pages", "/child-pages", "page", "page", true, floatPtr(0)),
+		"child_pages":   childList("Child pages", "/child-pages", "page", "page", true, new(float64(0))),
 	}
 	return apiSpec
 }

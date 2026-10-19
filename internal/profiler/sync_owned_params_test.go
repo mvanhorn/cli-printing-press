@@ -554,6 +554,54 @@ paths:
               schema:
                 type: array
                 items: {type: object, properties: {id: {type: string}}}
+  /bounded:
+    get:
+      operationId: listBounded
+      parameters:
+        - name: offset
+          in: query
+          required: true
+          schema:
+            type: integer
+            allOf:
+              - minimum: 1
+        - name: limit
+          in: query
+          schema: {type: integer, default: 2}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {type: object, properties: {id: {type: string}}}
+  /bounded-ref:
+    get:
+      operationId: listBoundedRef
+      parameters:
+        - name: offset
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/OneBasedOffset"
+        - name: limit
+          in: query
+          schema: {type: integer, default: 2}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {type: object, properties: {id: {type: string}}}
+components:
+  schemas:
+    OneBasedOffset:
+      type: integer
+      allOf:
+        - minimum: 1
 `))
 	require.NoError(t, err)
 
@@ -584,4 +632,38 @@ paths:
 
 	positions := byPath["/positions"]
 	assert.Equal(t, "1", positions.PaginationInitialCursor)
+
+	boundedParam, ok := queryParamByPath(apiSpec, "/bounded", "offset")
+	require.True(t, ok)
+	require.NotNil(t, boundedParam.Minimum)
+	assert.Equal(t, 1.0, *boundedParam.Minimum)
+	assert.Nil(t, boundedParam.Default)
+	bounded := byPath["/bounded"]
+	assert.Equal(t, "offset", bounded.PaginationCursorType)
+	assert.Equal(t, "1", bounded.PaginationInitialCursor)
+
+	refParam, ok := queryParamByPath(apiSpec, "/bounded-ref", "offset")
+	require.True(t, ok)
+	require.NotNil(t, refParam.Minimum)
+	assert.Equal(t, 1.0, *refParam.Minimum)
+	assert.Equal(t, "1", byPath["/bounded-ref"].PaginationInitialCursor)
+}
+
+func queryParamByPath(apiSpec *spec.APISpec, path, name string) (spec.Param, bool) {
+	if apiSpec == nil {
+		return spec.Param{}, false
+	}
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Path != path {
+				continue
+			}
+			for _, param := range endpoint.Params {
+				if param.Name == name && param.In == "query" {
+					return param, true
+				}
+			}
+		}
+	}
+	return spec.Param{}, false
 }
