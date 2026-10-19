@@ -4706,6 +4706,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 			}
 		}
 		setParamMaximum(&param, schema)
+		setParamMinimum(&param, schema)
 		if param.Positional {
 			param.Required = true
 		}
@@ -4762,6 +4763,46 @@ func setParamMaximum(param *spec.Param, schema *openapi3.Schema) {
 	if schema.ExclusiveMax.Value != nil {
 		param.ExclusiveMaximum = schema.ExclusiveMax.Value
 	}
+}
+
+// setParamMinimum records the first legal numeric lower bound. Integer
+// exclusiveMinimum (OpenAPI 3.1's number, or 3.0's minimum plus
+// exclusiveMinimum: true) becomes the first integer strictly above that
+// bound, so sync can seed an offset or page from one inclusive value.
+func setParamMinimum(param *spec.Param, schema *openapi3.Schema) {
+	if param == nil || schema == nil {
+		return
+	}
+	minimum := schema.Min
+	if isIntegerParamType(param.Type) {
+		if exclusive := exclusiveMinimumBound(schema); exclusive != nil && (minimum == nil || *exclusive >= *minimum) {
+			value := math.Floor(*exclusive) + 1
+			minimum = &value
+		}
+	}
+	param.Minimum = minimum
+}
+
+func isIntegerParamType(typ string) bool {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "int", "integer":
+		return true
+	default:
+		return false
+	}
+}
+
+func exclusiveMinimumBound(schema *openapi3.Schema) *float64 {
+	if schema == nil {
+		return nil
+	}
+	if schema.ExclusiveMin.Value != nil {
+		return schema.ExclusiveMin.Value
+	}
+	if schema.ExclusiveMin.IsTrue() {
+		return schema.Min
+	}
+	return nil
 }
 
 func readParamURLNameOverrides(pathItem *openapi3.PathItem, op *openapi3.Operation) map[string]string {
@@ -5223,6 +5264,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		assignBodySchemaDefault(&param, paramSchema)
 		setParamMaximum(&param, paramSchema)
+		setParamMinimum(&param, paramSchema)
 		// For array types, propagate item-level enum as a Fields entry
 		// so downstream consumers (profiler) can access it.
 		if paramSchema != nil && paramSchema.Type != nil && paramSchema.Type.Is(openapi3.TypeArray) &&

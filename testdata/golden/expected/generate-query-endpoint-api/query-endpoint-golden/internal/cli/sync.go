@@ -557,11 +557,7 @@ func syncResource(ctx context.Context, c interface {
 
 		if resourceSupportsPagination(resource) {
 			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
-			if cursor != "" {
-				if pageSize.cursorParam != "" {
-					params[pageSize.cursorParam] = cursor
-				}
-			}
+			cursor = seedSyncPageCursor(params, pageSize, cursor)
 		}
 
 		// Set since filter
@@ -663,11 +659,7 @@ func syncResource(ctx context.Context, c interface {
 		// spellings (page / page_number / pageNumber / page[number]) work.
 		// A declared strategy without a request parameter cannot advance safely.
 		if pageSize.cursorParam != "" && pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-			currentPage, _ := strconv.Atoi(cursor)
-			if currentPage < 1 {
-				currentPage = 1
-			}
-			nextCursor = strconv.Itoa(currentPage + 1)
+			nextCursor = nextSyncPageNumber(cursor)
 			hasMore = true
 		}
 		if pageSize.cursorParam != "" && pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
@@ -1114,6 +1106,7 @@ func syncResource(ctx context.Context, c interface {
 type paginationDefaults struct {
 	cursorParam    string
 	cursorType     string // paginator class: "", "cursor", "page_token", "offset", "page"
+	initialCursor  string // first offset or page when that parameter is required or declares a default
 	nextCursorPath string
 	limitParam     string
 	limit          int
@@ -1165,10 +1158,38 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 	return paginationDefaults{
 		cursorParam:    "after",
 		cursorType:     "",
+		initialCursor:  "",
 		nextCursorPath: "",
 		limitParam:     "limit",
 		limit:          100,
 	}
+}
+
+// seedSyncPageCursor returns the cursor the page loop should advance from.
+// A resumed cursor wins. Offset and page parameters seed page one only when
+// they are required or declare a default; token cursors stay off that request.
+func seedSyncPageCursor(params map[string]string, pageSize paginationDefaults, cursor string) string {
+	if pageSize.cursorParam == "" {
+		return cursor
+	}
+	if cursor == "" {
+		cursor = pageSize.initialCursor
+	}
+	if cursor != "" {
+		params[pageSize.cursorParam] = cursor
+	}
+	return cursor
+}
+
+// nextSyncPageNumber advances a page-number cursor by one. An empty cursor
+// means page one was implicit, so the next request is page 2. Numeric 0
+// advances to 1 so a zero-based first page is not skipped.
+func nextSyncPageNumber(cursor string) string {
+	currentPage, err := strconv.Atoi(cursor)
+	if err != nil {
+		currentPage = 1
+	}
+	return strconv.Itoa(currentPage + 1)
 }
 
 func resourceSupportsPagination(resource string) bool {
