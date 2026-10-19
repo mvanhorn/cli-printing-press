@@ -44,6 +44,10 @@ func TestGenerate_PlatformProfilePermsAreBuildTagged(t *testing.T) {
 		"the POSIX helper must read the mode bits")
 	require.Regexp(t, posixModeMask, unixSrc,
 		"the POSIX helper is where the mode comparison belongs, and it must be preserved there")
+	require.Contains(t, unixSrc, "cliutil.CheckDarwinPrivateFileACL",
+		"darwin profile and cache files must refuse a foreign ACL")
+	aclSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "darwin_acl.go")
+	require.Contains(t, aclSrc, "chmod -N", "the ACL refusal hint must remove the ACL, not only the mode")
 
 	winSrc := readGeneratedFile(t, outputDir, "internal", "platform", "perms_windows.go")
 	require.Contains(t, winSrc, "//go:build windows", "Windows helper must carry a build tag")
