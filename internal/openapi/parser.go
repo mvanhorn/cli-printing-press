@@ -4706,6 +4706,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 			}
 		}
 		setParamMaximum(&param, schema)
+		setParamMinimum(&param, schema)
 		if param.Positional {
 			param.Required = true
 		}
@@ -4762,6 +4763,87 @@ func setParamMaximum(param *spec.Param, schema *openapi3.Schema) {
 	if schema.ExclusiveMax.Value != nil {
 		param.ExclusiveMaximum = schema.ExclusiveMax.Value
 	}
+}
+
+// setParamMinimum records the first legal numeric lower bound. Integer
+// exclusiveMinimum (OpenAPI 3.1's number, or 3.0's minimum plus
+// exclusiveMinimum: true) becomes the first integer strictly above that
+// bound, so sync can seed an offset or page from one inclusive value.
+// allOf members are the same constraint, so a minimum that lives only on
+// a member still counts; the highest floor wins. oneOf and anyOf are
+// alternatives and are not folded in.
+func setParamMinimum(param *spec.Param, schema *openapi3.Schema) {
+	if param == nil || schema == nil {
+		return
+	}
+	param.Minimum = tightestSchemaMinimum(schema, param.Type, map[*openapi3.Schema]struct{}{})
+}
+
+func tightestSchemaMinimum(schema *openapi3.Schema, typ string, seen map[*openapi3.Schema]struct{}) *float64 {
+	if schema == nil {
+		return nil
+	}
+	if _, ok := seen[schema]; ok {
+		return nil
+	}
+	seen[schema] = struct{}{}
+
+	best := directSchemaMinimum(schema, typ)
+	for _, ref := range schema.AllOf {
+		best = tighterLowerBound(best, tightestSchemaMinimum(schemaRefValue(ref), typ, seen))
+	}
+	return best
+}
+
+func tighterLowerBound(current, candidate *float64) *float64 {
+	if candidate == nil || math.IsNaN(*candidate) || math.IsInf(*candidate, 0) {
+		return current
+	}
+	if current == nil || math.IsNaN(*current) || math.IsInf(*current, 0) || *candidate > *current {
+		return candidate
+	}
+	return current
+}
+
+func directSchemaMinimum(schema *openapi3.Schema, typ string) *float64 {
+	minimum := schema.Min
+	if !schemaMinimumIsInteger(schema, typ) {
+		return minimum
+	}
+	if exclusive := exclusiveMinimumBound(schema); exclusive != nil && (minimum == nil || *exclusive >= *minimum) {
+		value := math.Floor(*exclusive) + 1
+		return &value
+	}
+	return minimum
+}
+
+func schemaMinimumIsInteger(schema *openapi3.Schema, typ string) bool {
+	if isIntegerParamType(typ) {
+		return true
+	}
+	return schema != nil && schema.Type != nil && schema.Type.Includes(openapi3.TypeInteger)
+}
+
+func isIntegerParamType(typ string) bool {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "int", "integer":
+		return true
+	default:
+		return false
+	}
+}
+
+func exclusiveMinimumBound(schema *openapi3.Schema) *float64 {
+	if schema == nil {
+		return nil
+	}
+	if schema.ExclusiveMin.Value != nil {
+		return schema.ExclusiveMin.Value
+	}
+	if schema.ExclusiveMin.IsTrue() {
+		return schema.Min
+	}
+	return nil
 }
 
 func readParamURLNameOverrides(pathItem *openapi3.PathItem, op *openapi3.Operation) map[string]string {
@@ -5223,6 +5305,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		assignBodySchemaDefault(&param, paramSchema)
 		setParamMaximum(&param, paramSchema)
+		setParamMinimum(&param, paramSchema)
 		// For array types, propagate item-level enum as a Fields entry
 		// so downstream consumers (profiler) can access it.
 		if paramSchema != nil && paramSchema.Type != nil && paramSchema.Type.Is(openapi3.TypeArray) &&
