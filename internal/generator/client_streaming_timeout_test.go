@@ -32,7 +32,9 @@ func TestGeneratedClientStreamingTimeoutCarveOut(t *testing.T) {
 		"streaming client must keep a header-stall bound")
 	assert.Contains(t, client, "if binaryResponse && !c.timeoutExplicit {",
 		"doInternal must swap to the streaming client only for unmarked binary transfers")
-	assert.Contains(t, client, "httpClient = StreamingHTTPClient(c.HTTPClient, c.ConfiguredTimeout())",
+	assert.Contains(t, client, "streamIdle = c.ConfiguredTimeout()",
+		"binary transfers must reuse the configured --timeout as the header and body idle bound")
+	assert.Contains(t, client, "httpClient = StreamingHTTPClient(c.HTTPClient, streamIdle)",
 		"binary transfers must reuse the configured --timeout as the header-stall bound")
 	assert.Contains(t, client, "&http.Client{Timeout: timeout, Jar: jar, Transport: tr}",
 		"ordinary JSON clients must keep the whole-call Timeout")
@@ -113,14 +115,24 @@ func flushThenPause(w http.ResponseWriter, delay time.Duration) {
 }
 
 func TestBinaryResponseIgnoresDefaultClientTimeout(t *testing.T) {
-	const clientTimeout = 150 * time.Millisecond
-	const bodyDelay = 400 * time.Millisecond
+	const clientTimeout = 500 * time.Millisecond
+	const tick = 20 * time.Millisecond
+	const ticks = 30
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
-		_, _ = w.Write([]byte{0x00})
-		flushThenPause(w, bodyDelay)
-		_, _ = w.Write([]byte{0x01, 0x02, 0x03})
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < ticks; i++ {
+			if _, err := w.Write([]byte{byte(i)}); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if i+1 < ticks {
+				time.Sleep(tick)
+			}
+		}
 	}))
 	defer server.Close()
 
@@ -131,8 +143,8 @@ func TestBinaryResponseIgnoresDefaultClientTimeout(t *testing.T) {
 	if _, err := c.GetWithHeaders(context.Background(), "/blob", nil, map[string]string{BinaryResponseHeader: "true"}); err != nil {
 		t.Fatalf("binary transfer died under the default whole-client timeout: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed < bodyDelay {
-		t.Fatalf("binary transfer returned too quickly (%s), want at least %s of streamed body", elapsed, bodyDelay)
+	if elapsed := time.Since(start); elapsed < clientTimeout {
+		t.Fatalf("binary transfer returned too quickly (%s), want at least %s of streamed body", elapsed, clientTimeout)
 	}
 }
 

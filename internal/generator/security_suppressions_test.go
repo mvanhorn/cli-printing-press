@@ -55,7 +55,7 @@ func TestGeneratedInfraSecuritySuppressionsAreExplicit(t *testing.T) {
 	assert.Contains(t, clientGo, `_ = os.MkdirAll(resourceDir, 0o700)`)
 	assert.Contains(t, clientGo, `_ = os.WriteFile(cacheFile, []byte(data), 0o600)`)
 	assert.Contains(t, clientGo, `_ = os.Chmod(cacheFile, 0o600)`)
-	assert.Contains(t, clientGo, `_ = resp.Body.Close()`)
+	assert.Contains(t, clientGo, `defer func() { _ = body.Close() }()`)
 
 	cacheGo := readGenerated(t, outputDir, "internal", "cache", "cache.go")
 	assert.Contains(t, cacheGo, `os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-derived cache path from sha256 cache key.`)
