@@ -878,7 +878,7 @@ When `mcp_token_efficiency`, `mcp_tool_design`, `mcp_remote_transport`, or `mcp_
 | Weak dim | Spec field that fixes it | What to add to `spec.yaml`'s `mcp:` block |
 |---|---|---|
 | `mcp_remote_transport` | `mcp.transport` | `transport: [stdio, http]` (small APIs at or under `spec.DefaultRemoteTransportEndpointThreshold` typed endpoints already get this by default; the override is only needed when the spec opted into a narrower list or the API is above the threshold and still wants remote reach) |
-| `mcp_token_efficiency`, `mcp_surface_strategy` | `mcp.endpoint_tools`, `mcp.orchestration` | `endpoint_tools: hidden` + `orchestration: code` (Cloudflare pattern: ~70 raw endpoint tools collapse to `<api>_search` + `<api>_execute`; all endpoints still reachable via execute) |
+| `mcp_token_efficiency`, `mcp_surface_strategy` | `mcp.endpoint_tools`, `mcp.orchestration` | `endpoint_tools: hidden` + `orchestration: code` (Cloudflare pattern: ~70 raw endpoint tools collapse to `<api>_search` + `<api>_read` + `<api>_execute`; reads use `_read`, and `_execute` previews state-changing calls until `confirm` is boolean `true`) |
 | `mcp_tool_design` | `mcp.intents` | Define multi-step intent compositions for the workflows the API supports |
 | `mcp_description_quality` | `mcp-descriptions.json` (override file at the CLI root) | Per-tool description overrides; thin spec-derived descriptions get richer text without spec edits |
 

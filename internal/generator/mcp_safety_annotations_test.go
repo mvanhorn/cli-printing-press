@@ -51,6 +51,7 @@ func TestCodeOrchestrationSafetyMetadata(t *testing.T) {
 	}{
 		"mcp-safety_search":  {readOnly: true, destructive: false, openWorld: false},
 		"mcp-safety_get":     {readOnly: true, destructive: false, openWorld: false},
+		"mcp-safety_read":    {readOnly: true, destructive: false, openWorld: true},
 		"mcp-safety_execute": {readOnly: false, destructive: true, openWorld: true},
 	}
 	for name, want := range tests {

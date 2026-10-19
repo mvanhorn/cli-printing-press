@@ -42,7 +42,10 @@ const (
 func RegisterTools(s *server.MCPServer) {
 	installFreshTenantGate(s)
 	// Code-orchestration mode — the full surface is covered by registry tools
-	// (<api>_search, <api>_get, and <api>_execute). Endpoint-mirror tools are suppressed.
+	// (<api>_search, <api>_get, <api>_read, and <api>_execute). Reads go
+	// through <api>_read. <api>_execute previews state-changing calls until
+	// confirm is boolean true, and is omitted when the spec has none.
+	// Endpoint-mirror tools are suppressed.
 	RegisterCodeOrchestrationTools(s)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(

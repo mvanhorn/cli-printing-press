@@ -66,6 +66,7 @@ then read [references/run-resolution.md](references/run-resolution.md): it resol
 API target, the briefing context, and the source priority for combo runs.
 
 **Never execute a phase from memory. When you enter a phase, Read its file from phases/ first.**
+Code orchestration in [phases/10-generate.md](phases/10-generate.md) serves reads on `<api>_read` and previews state-changing `<api>_execute` calls until `confirm` is boolean `true`.
 
 | Step | File |
 |---:|---|
