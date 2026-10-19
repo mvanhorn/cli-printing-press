@@ -662,7 +662,9 @@ func quoteIdent(name string) string {
 // getSyncState fetches one sync_state value via a direct SQL query so
 // share.go stays independent of store's own helpers (which it cannot
 // call from here because store imports share indirectly through the
-// schema layer in some paths). The sync_state table shape is stable.
+// schema layer in some paths). The primary key stays resource_type.
+// scope_key is a defaulted column this query does not read; an import
+// that omits it keeps the empty scope.
 func getSyncState(ctx context.Context, s *store.Store, scope string) (string, error) {
 	var v sql.NullString
 	err := s.DB().QueryRowContext(ctx, `SELECT last_cursor FROM sync_state WHERE resource_type = ?`, scope).Scan(&v)

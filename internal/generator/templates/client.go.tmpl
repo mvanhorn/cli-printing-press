@@ -1407,6 +1407,21 @@ func redirectLeavesOrigin(next *url.URL, via []*http.Request) bool {
 	return false
 }
 
+{{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
+// CurrentTemplateVars returns a copy of the resolved base-URL and path
+// placeholders. Sync uses them so a checkpoint or prune cannot cross tenants.
+func (c *Client) CurrentTemplateVars() map[string]string {
+	if c == nil || c.Config == nil || len(c.Config.TemplateVars) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(c.Config.TemplateVars))
+	for k, v := range c.Config.TemplateVars {
+		out[k] = v
+	}
+	return out
+}
+{{- end}}
+
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	cacheDir := ""
 	if dir, err := cliutil.CacheDir(); err == nil {

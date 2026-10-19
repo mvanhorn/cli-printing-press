@@ -15592,7 +15592,7 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 		"GraphQL sync.go must not retain the old 10-page default")
 	assert.Contains(t, string(syncGo), "attemptComplete := false",
 		"GraphQL sync.go must distinguish a proven natural end from a capped walk")
-	assert.Contains(t, string(syncGo), "db.SaveSyncProgress(resource, progressCursor, totalCount)",
+	assert.Contains(t, string(syncGo), "db.SaveSyncProgressInScope(resource, scopeKey, progressCursor, totalCount)",
 		"GraphQL sync.go must preserve resumable progress without advancing the completion watermark")
 	assert.Contains(t, string(syncGo), "conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != \"\" && conn.PageInfo.EndCursor != cursor",
 		"GraphQL sync.go must only preserve a cap-exit cursor when another page exists")

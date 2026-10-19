@@ -692,8 +692,8 @@ func TestGeneratedSyncPreservesWatermarkAcrossPaginationCaps(t *testing.T) {
 	require.Contains(t, syncSrc, "func syncResourceSortParam(resource string) string")
 	require.Contains(t, syncSrc, "func syncResourceSortField(resource string) string")
 	require.Contains(t, syncSrc, "restSyncTimestamp(item, sortField)")
-	require.Contains(t, syncSrc, "db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)")
-	require.Contains(t, syncSrc, "db.SaveSyncProgress(resource, nextCursor, totalCount)")
+	require.Contains(t, syncSrc, "db.SaveSyncStateAtInScope(resource, scopeKey, finalCursor, cachedCount, watermark)")
+	require.Contains(t, syncSrc, "db.SaveSyncProgressInScope(resource, scopeKey, nextCursor, totalCount)")
 	requireGeneratedCompiles(t, outputDir)
 
 	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))

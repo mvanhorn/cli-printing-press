@@ -151,11 +151,13 @@ Resource scoping:
 				return usageErr(err)
 			}
 
-			// --full: clear all sync cursors before starting.
-			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
+			// --full drops the resume cursor for the scope this run will walk.
+			// A different tenant keeps its checkpoint until that walk starts,
+			// so a preflight skip cannot wipe it. Dry-run does not write.
 			if full && !c.DryRun {
 				for _, resource := range resources {
-					if err := db.SaveSyncStateAt(resource, "", 0, time.Time{}); err != nil {
+					scopeKey := syncCheckpointScope(resource, false, userParams, syncClientTemplateVars(c), syncActivePathContext())
+					if err := db.ClearSyncScopeIfCurrent(resource, scopeKey); err != nil {
 						return fmt.Errorf("clearing sync state for %s: %w", resource, err)
 					}
 				}
@@ -182,7 +184,8 @@ Resource scoping:
 					// a preview must not mutate sync-state (issue #2935).
 					if !c.DryRun {
 						for _, resource := range resources {
-							if err := db.SaveSyncStateAt(resource, "", 0, time.Time{}); err != nil {
+							scopeKey := syncCheckpointScope(resource, false, userParams, syncClientTemplateVars(c), syncActivePathContext())
+							if err := db.ClearSyncScopeIfCurrent(resource, scopeKey); err != nil {
 								return fmt.Errorf("clearing sync state for %s: %w", resource, err)
 							}
 						}
@@ -228,6 +231,8 @@ Resource scoping:
 			// the API no longer returns after a complete walk, unless --no-prune
 			// disables it. Flat tenant-scoped / single-tenant reconcile (per
 			// resource) and dependent per-parent reconcile share this gate.
+			// A narrowed walk skips the delete later; it did not cover rows
+			// outside its tenant, param, or date window.
 			prune := full && !noPrune
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -447,8 +452,11 @@ func syncResource(ctx context.Context, c interface {
 	var totalCount int
 	requestedAt := started.UTC()
 
-	// Resume cursor from sync_state (unless --full cleared it)
-	persistedCursor, lastSynced, existingCount, stateErr := db.GetSyncState(resource)
+	// Resume cursor from sync_state (unless --full cleared it). Read is
+	// side-effect free so a preflight skip or dry-run cannot reset another
+	// tenant's checkpoint; BindSyncScope commits the scope once the walk runs.
+	scopeKey := syncCheckpointScope(resource, false, userParams, syncClientTemplateVars(c), syncActivePathContext())
+	persistedCursor, lastSynced, existingCount, stateErr := db.ReadSyncScope(resource, scopeKey)
 	if stateErr != nil {
 		return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
 	}
@@ -494,8 +502,16 @@ func syncResource(ctx context.Context, c interface {
 	sortEffective := false
 	// Preflight skips must preserve readiness. Once requests can run, mark
 	// the attempt incomplete without moving the persisted resume boundary.
+	// Bind here, not at the read above, so a skipped resource does not drop
+	// another tenant's cursor.
 	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
-		if err := db.SaveSyncProgress(resource, persistedCursor, existingCount); err != nil {
+		var bindCount int
+		persistedCursor, _, bindCount, stateErr = db.BindSyncScope(resource, scopeKey)
+		if stateErr != nil {
+			return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
+		}
+		existingCount = bindCount
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, persistedCursor, existingCount); err != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
 		}
 	}
@@ -886,7 +902,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		// Save cursor after each page for resumability
-		if err := db.SaveSyncProgress(resource, nextCursor, totalCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, nextCursor, totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
@@ -907,7 +923,15 @@ func syncResource(ctx context.Context, c interface {
 	//     reason; an abnormal or unprovable end never proves the partition was
 	//     enumerated.
 	if prune && flatReconcilable {
-		if reconcileMode == "flat_global" {
+		if reason := syncPruneSkipReason(resource, false, effectiveSince, "", userParams, reconcileMode, scopeKey); reason != "" {
+			if reconcileMode == "flat_global" {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":%q}`+"\n", resource, reason)
+			} else if tenantUUID := resolveTenantID(); tenantUUID == "" {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":%q}`+"\n", resource, reason)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, reason)
+			}
+		} else if reconcileMode == "flat_global" {
 			if outcome.complete {
 				deleted, rerr := db.ReconcileAll(
 					resource, seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
@@ -975,7 +999,7 @@ func syncResource(ctx context.Context, c interface {
 	// Integrity verdicts must precede completion persistence. Otherwise a
 	// run can advance its watermark and only then report that no rows landed.
 	if consumedTotal > 0 && totalCount == 0 {
-		if err := db.SaveSyncProgress(resource, finalCursor, cachedCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, finalCursor, cachedCount); err != nil {
 			return syncResult{Resource: resource, Count: 0, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 		if extractFailureTotal < consumedTotal {
@@ -1010,9 +1034,9 @@ func syncResource(ctx context.Context, c interface {
 	}
 	stateErr = nil
 	if watermark.IsZero() {
-		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
+		stateErr = db.SaveSyncProgressInScope(resource, scopeKey, finalCursor, cachedCount)
 	} else {
-		stateErr = db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)
+		stateErr = db.SaveSyncStateAtInScope(resource, scopeKey, finalCursor, cachedCount, watermark)
 	}
 	if stateErr != nil {
 		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
@@ -2249,6 +2273,85 @@ type partitionOutcome struct {
 	complete bool
 	reason   string
 	scopeVal string
+}
+
+func syncActivePathContext() map[string]string {
+	return nil
+}
+
+const (
+	syncPruneSkipTenantScope        = "tenant_scope"
+	syncPruneSkipParamFilter        = "param_filter"
+	syncPruneSkipGlobalParam        = "global_param"
+	syncPruneSkipResourceParam      = "resource_param"
+	syncPruneSkipSinceWindow        = "since_window"
+	syncPruneSkipDateRange          = "date_range"
+	syncPruneSkipRequiredDateWindow = "required_date_window"
+)
+
+// syncPruneSkipReason is empty when this walk covered the reconcile partition.
+// Tenant-column mode "flat" still prunes for a base-URL placeholder; that
+// partition is already the tenant. since and dates count only once applied.
+func syncPruneSkipReason(resource string, dependent bool, effectiveSince, dates string, userParams *syncUserParams, reconcileMode, scopeKey string) string {
+	if userParams != nil {
+		if !dependent {
+			for key := range userParams.flatGlobal {
+				if syncParamIsGlobalScope(key) {
+					return syncPruneSkipTenantScope
+				}
+			}
+			if len(userParams.flatGlobal) > 0 {
+				return syncPruneSkipParamFilter
+			}
+		}
+		if len(userParams.trueGlobal) > 0 {
+			return syncPruneSkipGlobalParam
+		}
+		if len(userParams.perResource[resource]) > 0 {
+			return syncPruneSkipResourceParam
+		}
+	}
+	if strings.TrimSpace(effectiveSince) != "" {
+		return syncPruneSkipSinceWindow
+	}
+	if strings.TrimSpace(dates) != "" {
+		return syncPruneSkipDateRange
+	}
+	if syncResourceHasDateWindow(resource) {
+		return syncPruneSkipRequiredDateWindow
+	}
+	if reconcileMode != "flat" && syncScopeIsTenant(scopeKey) {
+		return syncPruneSkipTenantScope
+	}
+	return ""
+}
+
+func syncScopeIsTenant(scopeKey string) bool {
+	for _, line := range strings.Split(scopeKey, "\n") {
+		if strings.HasPrefix(line, "template:") || strings.HasPrefix(line, "path:") {
+			return true
+		}
+	}
+	return false
+}
+
+func syncParamIsDateWindow(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	n = strings.ReplaceAll(n, "-", "_")
+	switch n {
+	case "since", "until", "start_date", "end_date", "from_date", "to_date",
+		"date_from", "date_to", "start_time", "end_time", "date", "dates",
+		"time_min", "time_max", "created_after", "created_before",
+		"updated_after", "updated_before":
+		return true
+	default:
+		return strings.Contains(n, "date")
+	}
+}
+
+func syncResourceHasDateWindow(resource string) bool {
+	_ = resource
+	return false
 }
 
 // flatReconcileModes maps a flat resource to its reconcile mode classification
