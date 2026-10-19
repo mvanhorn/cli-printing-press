@@ -2977,6 +2977,10 @@ type Param struct {
 	// 3.1 `maximum` and `exclusiveMaximum` are independent assertions, so both
 	// this and Maximum can be set; consumers take the most restrictive.
 	ExclusiveMaximum *float64 `yaml:"exclusive_maximum,omitempty" json:"exclusive_maximum,omitempty"`
+	// Minimum is the inclusive lower bound after integer exclusiveMinimum
+	// normalization. Sync uses it as the first offset or page when that
+	// parameter is required and the spec declares no default.
+	Minimum *float64 `yaml:"minimum,omitempty" json:"minimum,omitempty"`
 	// DispatchParam marks a fixed discriminator such as type=domain_rank.
 	// Generated runnable examples keep its default instead of substituting
 	// synthetic dogfood values that would address a different upstream route.

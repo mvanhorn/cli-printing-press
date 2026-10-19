@@ -187,6 +187,10 @@ type SyncableResource struct {
 	PaginationNextCursorPath string
 	PaginationLimitParam     string
 	PaginationPageSize       int
+	// PaginationInitialCursor is the offset or page sent on request one when
+	// that parameter is required or declares a default. Empty for token
+	// cursors and for numeric params the API does not require.
+	PaginationInitialCursor string
 	// PaginationSort* describe an explicit ascending last-modified ordering
 	// that is safe to send alongside an incremental temporal filter.
 	PaginationSortParam string
@@ -315,6 +319,8 @@ type DependentResource struct {
 	PaginationNextCursorPath string
 	PaginationLimitParam     string
 	PaginationPageSize       int
+	// PaginationInitialCursor mirrors SyncableResource for child sync paths.
+	PaginationInitialCursor string
 
 	// ResponseFormat mirrors SyncableResource so dependent fan-out can skip
 	// html/binary/text children.
@@ -2098,6 +2104,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		PaginationNextCursorPath: entry.meta.PaginationNextCursorPath,
 		PaginationLimitParam:     entry.meta.PaginationLimitParam,
 		PaginationPageSize:       entry.meta.PaginationPageSize,
+		PaginationInitialCursor:  entry.meta.PaginationInitialCursor,
 		ResponseFormat:           entry.meta.ResponseFormat,
 		UsesHTMLResponse:         entry.meta.UsesHTMLResponse,
 		HTMLExtract:              entry.meta.HTMLExtract,
@@ -2372,6 +2379,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				PaginationNextCursorPath: meta.PaginationNextCursorPath,
 				PaginationLimitParam:     meta.PaginationLimitParam,
 				PaginationPageSize:       meta.PaginationPageSize,
+				PaginationInitialCursor:  meta.PaginationInitialCursor,
 				ResponseFormat:           meta.ResponseFormat,
 				UsesHTMLResponse:         meta.UsesHTMLResponse,
 				HTMLExtract:              meta.HTMLExtract,
@@ -2697,6 +2705,7 @@ type syncableMeta struct {
 	PaginationNextCursorPath string
 	PaginationLimitParam     string
 	PaginationPageSize       int
+	PaginationInitialCursor  string
 	PaginationSortParam      string
 	PaginationSortValue      string
 	PaginationSortField      string
@@ -2752,12 +2761,13 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	}
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
 	syncOwned := syncOwnedParams{
-		cursor:    paginationCursorParam,
-		limit:     paginationLimitParam,
-		idWalk:    idWalkLimitParam,
-		since:     sinceParam,
-		sort:      paginationSortParam,
-		dateRange: syncDateRangeParamNames,
+		cursor:     paginationCursorParam,
+		cursorType: paginationCursorType,
+		limit:      paginationLimitParam,
+		idWalk:     idWalkLimitParam,
+		since:      sinceParam,
+		sort:       paginationSortParam,
+		dateRange:  syncDateRangeParamNames,
 	}
 	queryParamSeed := syncQueryParamSeedFromEndpoint(e, syncOwned)
 	_, optOut := spec.EffectiveSyncMembership(resource, e)
@@ -2781,6 +2791,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		PaginationNextCursorPath: nextCursorPath,
 		PaginationLimitParam:     paginationLimitParam,
 		PaginationPageSize:       paginationPageSize,
+		PaginationInitialCursor:  syncPaginationInitialCursorFromEndpoint(e, paginationCursorParam, paginationCursorType),
 		PaginationSortParam:      paginationSortParam,
 		PaginationSortValue:      paginationSortValue,
 		PaginationSortField:      paginationSortField,
@@ -3089,25 +3100,63 @@ func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
 // Sync decides per run whether to send each one, and several are assigned only
 // inside a conditional: the since filter and its companion sort go on the wire
 // only when an incremental watermark applies, the date range only when the
-// operator passed one, and the paging keys only when the resource paginates.
-// A spec `default:` seeded into one of these keys would survive precisely when
-// sync deliberately chose not to send it, turning "full sync" into a filtered
-// or re-ordered walk. Seeding must therefore skip them and let sync stay the
-// sole author of its own request state.
+// operator passed one, and a token cursor only after page one. A spec default
+// seeded into one of those keys would survive the branch where sync withheld
+// it. Offset and page cursors are the exception: when the parameter is
+// required or declares a default, page one must send that position, so the
+// default stays seedable and the page loop advances from the same value.
 type syncOwnedParams struct {
-	cursor    string
-	limit     string
-	idWalk    string
-	since     string
-	sort      string
-	dateRange []string
+	cursor     string
+	cursorType string
+	limit      string
+	idWalk     string
+	since      string
+	sort       string
+	dateRange  []string
 }
 
 // keys flattens the reserved names to the lowercased form the seeding filter
 // compares against.
 func (o syncOwnedParams) keys() map[string]struct{} {
-	names := []string{o.cursor, o.limit, o.idWalk, o.since, o.sort}
+	names := []string{o.limit, o.idWalk, o.since, o.sort}
+	if !o.seedsFirstPageCursor() {
+		names = append(names, o.cursor)
+	}
 	names = append(names, o.dateRange...)
+	return lowerSyncParamNames(names)
+}
+
+// alwaysAssignedKeys are the paging keys the page loop puts on every request.
+// Offset and page cursors stay off this set: page one sends them only when
+// the parameter is required or has a default, so a required one must remain
+// in the missing-param guard. Token cursors stay included so a required
+// opaque cursor does not skip the resource; page one still omits the token.
+// since, sort, and date-range stay off this set because sync only sends them
+// inside a conditional.
+func (o syncOwnedParams) alwaysAssignedKeys() map[string]struct{} {
+	names := []string{o.limit, o.idWalk}
+	if !o.seedsFirstPageCursor() {
+		names = append(names, o.cursor)
+	}
+	return lowerSyncParamNames(names)
+}
+
+func (o syncOwnedParams) seedsFirstPageCursor() bool {
+	return o.cursorType == "offset" || o.cursorType == "page"
+}
+
+func (o syncOwnedParams) isFirstPageCursorParam(param spec.Param) bool {
+	if !o.seedsFirstPageCursor() {
+		return false
+	}
+	cursor := strings.TrimSpace(o.cursor)
+	if cursor == "" {
+		return false
+	}
+	return strings.EqualFold(param.Name, cursor) || strings.EqualFold(param.WireName(), cursor)
+}
+
+func lowerSyncParamNames(names []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
@@ -3115,13 +3164,6 @@ func (o syncOwnedParams) keys() map[string]struct{} {
 		}
 	}
 	return out
-}
-
-// alwaysAssignedKeys are the paging keys the generated page loop puts on
-// every request. since, sort, and date-range stay off this set because
-// sync only sends them inside a conditional.
-func (o syncOwnedParams) alwaysAssignedKeys() map[string]struct{} {
-	return syncOwnedParams{cursor: o.cursor, limit: o.limit, idWalk: o.idWalk}.keys()
 }
 
 // syncDateRangeParamNames lists the spellings the profiler recognizes as the
@@ -3137,19 +3179,20 @@ type syncQueryParamSeed struct {
 // syncQueryParamDefaultsFromEndpoint collects the query params this list
 // endpoint declares a `default:` for, rendered as the strings sync must put on
 // the wire. Header, path, and positional params are excluded because they are
-// not query keys, and every key in syncOwned is excluded because sync assigns
-// it itself: seeding one would fight the page loop, or worse, survive the
-// branch where sync deliberately withheld it. History-hiding status/state=open
-// defaults are replaced by the spec's all-history enum value when one exists;
-// Endpoint.SyncParams overlay last so a spec can opt into (or keep) a slice.
+// not query keys. Sync-owned keys are excluded, except an offset or page
+// cursor whose default is the first request position. History-hiding
+// status/state=open defaults are replaced by the spec's all-history enum
+// value when one exists; Endpoint.SyncParams overlay last so a spec can opt
+// into (or keep) a slice.
 func syncQueryParamDefaultsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams) []SyncQueryParamDefault {
 	return syncQueryParamSeedFromEndpoint(endpoint, syncOwned).Defaults
 }
 
 func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncOwnedParams, path string) []string {
-	// Drop only paging keys the page loop always assigns. since, sort, and
-	// date-range are sync-owned but conditional: a first or full sync leaves
-	// them off the wire, so a required one must stay in this guard.
+	// Drop paging keys the page loop always assigns. Offset and page cursors
+	// are not in that set: a required one is still missing until the
+	// first-page seed fills it. since, sort, and date-range are conditional
+	// and stay in this guard.
 	reserved := syncOwned.alwaysAssignedKeys()
 	satisfied := queryNamesInPath(path)
 	var out []string
@@ -3176,7 +3219,8 @@ func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncO
 			continue
 		}
 		lower := strings.ToLower(param.Name)
-		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || pageSizeParamCandidates[key] || cursorParamCandidates[key] {
+		if (pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || pageSizeParamCandidates[key] || cursorParamCandidates[key]) &&
+			!syncOwned.isFirstPageCursorParam(param) {
 			continue
 		}
 		if _, ok := satisfied[key]; ok {
@@ -3536,7 +3580,73 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 		(cursorType == "page" || cursorType == "offset") {
 		cursorType = inferredType
 	}
+	// Known token names are stronger than the offset type applied when a
+	// limit was seen before the cursor parameter was known. Otherwise the
+	// first request sends that token as a number (starting_after=0). A
+	// custom cursor name with an explicit offset type stays offset.
+	if cursorParamCandidates[strings.ToLower(strings.TrimSpace(cursorParam))] &&
+		inferredType != "page" && inferredType != "offset" &&
+		(cursorType == "page" || cursorType == "offset") {
+		cursorType = inferredType
+	}
 	return cursorParam, cursorType, limitParam, syncPageSizeFromEndpoint(endpoint, cursorParam, limitParam)
+}
+
+// syncPaginationInitialCursorFromEndpoint is the position page one must send
+// for offset and page pagination. Token cursors return empty so the first
+// request stays token-free. A 1-based offset uses its minimum (or an
+// exclusive bound normalized to that minimum) instead of the zero fallback.
+func syncPaginationInitialCursorFromEndpoint(endpoint spec.Endpoint, cursorParam, cursorType string) string {
+	if cursorType != "offset" && cursorType != "page" {
+		return ""
+	}
+	param, ok := syncPaginationCursorParam(endpoint, cursorParam)
+	if !ok {
+		return ""
+	}
+	value, hasDefault := syncQueryParamDefaultValue(param)
+	if !param.Required && !hasDefault {
+		return ""
+	}
+	if hasDefault {
+		return value
+	}
+	if param.Minimum != nil {
+		if seeded, ok := firstSyncPageInteger(*param.Minimum); ok {
+			return seeded
+		}
+	}
+	if cursorType == "offset" {
+		return "0"
+	}
+	return "1"
+}
+
+func syncPaginationCursorParam(endpoint spec.Endpoint, cursorParam string) (spec.Param, bool) {
+	cursorKey := strings.ToLower(strings.TrimSpace(cursorParam))
+	if cursorKey == "" {
+		return spec.Param{}, false
+	}
+	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
+	for _, param := range params {
+		if param.Positional || param.PathParam {
+			continue
+		}
+		if location := strings.TrimSpace(param.In); location != "" && !strings.EqualFold(location, "query") && !strings.EqualFold(location, "body") {
+			continue
+		}
+		if strings.EqualFold(param.Name, cursorKey) || strings.EqualFold(param.WireName(), cursorKey) {
+			return param, true
+		}
+	}
+	return spec.Param{}, false
+}
+
+func firstSyncPageInteger(value float64) (string, bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "", false
+	}
+	return strconv.Itoa(int(math.Ceil(value))), true
 }
 
 // A spec-declared page-size default is the server's no-param fallback, not a
@@ -4180,6 +4290,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			PaginationNextCursorPath: meta.PaginationNextCursorPath,
 			PaginationLimitParam:     meta.PaginationLimitParam,
 			PaginationPageSize:       meta.PaginationPageSize,
+			PaginationInitialCursor:  meta.PaginationInitialCursor,
 			PaginationSortParam:      meta.PaginationSortParam,
 			PaginationSortValue:      meta.PaginationSortValue,
 			PaginationSortField:      meta.PaginationSortField,

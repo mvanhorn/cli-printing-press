@@ -16876,6 +16876,7 @@ func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 			SupportsPagination:       true,
 			PaginationCursorParam:    "offset",
 			PaginationCursorType:     "offset",
+			PaginationInitialCursor:  "0",
 			PaginationNextCursorPath: "paging.next",
 			PaginationLimitParam:     "per_page",
 			PaginationPageSize:       25,
@@ -16892,6 +16893,7 @@ func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
 	assert.Equal(t, "after", byKey["tasks"].CursorParam)
 	assert.Equal(t, "meta.next", byKey["tasks"].NextCursorPath)
 	assert.Equal(t, "offset", byKey["projects/tasks"].CursorParam)
+	assert.Equal(t, "0", byKey["projects/tasks"].InitialCursor)
 	assert.Equal(t, "paging.next", byKey["projects/tasks"].NextCursorPath)
 	assert.Equal(t, "per_page", byKey["projects/tasks"].LimitParam)
 	assert.Equal(t, 25, byKey["projects/tasks"].Limit)
