@@ -165,6 +165,12 @@ func ArchiveRunArtifacts(state *PipelineState) (string, error) {
 		{src: state.DiscoveryDir(), dst: ArchivedDiscoveryDir(state.APIName, state.RunID)},
 	}
 
+	// Scan every directory before copying any of them. research/ and
+	// discovery/ are separate calls; a hard link under research/ can name
+	// the same bytes as a raw capture under discovery/.
+	opts := PublishableManuscriptCopyOptions{}
+	var skipped skippedFiles
+	var ready []pair
 	for _, item := range pairs {
 		info, err := os.Stat(item.src)
 		if err != nil {
@@ -176,7 +182,15 @@ func ArchiveRunArtifacts(state *PipelineState) (string, error) {
 		if !info.IsDir() {
 			continue
 		}
-		if err := CopyPublishableManuscriptDir(item.src, item.dst); err != nil {
+		part, err := skippedPublishableContent(item.src, opts)
+		if err != nil {
+			return "", fmt.Errorf("archiving %s: %w", item.src, err)
+		}
+		skipped.merge(part)
+		ready = append(ready, item)
+	}
+	for _, item := range ready {
+		if err := copyPublishableManuscriptDir(item.src, item.dst, opts, skipped); err != nil {
 			return "", fmt.Errorf("archiving %s: %w", item.src, err)
 		}
 	}
@@ -691,23 +705,28 @@ func CopyPublishableManuscriptDirWithOptions(src, dst string, opts PublishableMa
 	if err != nil {
 		return err
 	}
+	return copyPublishableManuscriptDir(src, dst, opts, skipped)
+}
+
+func copyPublishableManuscriptDir(src, dst string, opts PublishableManuscriptCopyOptions, skipped skippedFiles) error {
+	src = filepath.Clean(src)
 	if err := copyDirFiltered(src, dst, func(path string, info fs.FileInfo) bool {
-		if shouldSkipPublishableManuscriptFile(path, info, opts) {
+		if shouldSkipPublishableManuscriptFile(src, path, info, opts) {
 			return true
 		}
-		// A second name for a skipped capture (hard link) would otherwise
-		// ship the same bytes from research/ or proofs/.
-		return sameContentAsSkipped(info, skipped)
+		// A second name for a skipped capture (hard link), including one
+		// recorded from another manuscript directory, would ship the same bytes.
+		return skipped.contains(path, info)
 	}); err != nil {
 		return err
 	}
-	if err := pruneEmptyDiscoveryDirs(dst); err != nil {
+	if err := pruneEmptyDiscoveryDirs(dst, strings.EqualFold(filepath.Base(src), "discovery")); err != nil {
 		return err
 	}
 	return redactAbsoluteHostPathsInTree(dst)
 }
 
-func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts PublishableManuscriptCopyOptions) bool {
+func shouldSkipPublishableManuscriptFile(root, path string, info fs.FileInfo, opts PublishableManuscriptCopyOptions) bool {
 	// A `sources/` directory holds downloaded third-party reference repos — local
 	// research INPUT, not authored manuscript OUTPUT. Never publish copies of other
 	// projects' code: it is a licensing problem and a secret/PII vector (the only
@@ -734,13 +753,13 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	if opts.IncludeRawCaptures {
 		return false
 	}
-	if isRawBrowserSniffCapture(path, info) {
+	if isRawBrowserSniffCapture(root, path, info) {
 		return true
 	}
 	if strings.EqualFold(filepath.Ext(path), ".har") {
 		return true
 	}
-	if !info.IsDir() && isInsideDiscoveryTree(path) && !isPressAuthoredDiscoveryArtifact(filepath.Base(path)) {
+	if !info.IsDir() && isInsideDiscoveryTree(root, path) && !isPressAuthoredDiscoveryArtifact(filepath.Base(path)) {
 		return true
 	}
 	return false
@@ -776,13 +795,27 @@ func isPressAuthoredDiscoveryArtifact(name string) bool {
 	return false
 }
 
-func isInsideDiscoveryTree(path string) bool {
-	return pathHasComponentFold(filepath.Dir(path), "discovery")
+// Discovery membership is relative to the directory being copied. A parent
+// named discovery (an API slug, or a workspace checkout) must not pull
+// research/ and proofs/ into the allowlist. Copying the discovery directory
+// itself has no discovery component in the relative path, so that root is
+// the discovery tree.
+func isInsideDiscoveryTree(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if strings.EqualFold(filepath.Base(root), "discovery") {
+		return true
+	}
+	return pathHasComponentFold(filepath.Dir(rel), "discovery")
 }
 
-func skippedPublishableContent(src string, opts PublishableManuscriptCopyOptions) ([]fs.FileInfo, error) {
+func skippedPublishableContent(src string, opts PublishableManuscriptCopyOptions) (skippedFiles, error) {
 	src = filepath.Clean(src)
-	var skipped []fs.FileInfo
+	var skipped skippedFiles
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if path == src {
@@ -805,14 +838,14 @@ func skippedPublishableContent(src string, opts PublishableManuscriptCopyOptions
 		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return nil
 		}
-		if !shouldSkipPublishableManuscriptFile(path, info, opts) && !publishableAncestorSkipped(src, path, opts) {
+		if !shouldSkipPublishableManuscriptFile(src, path, info, opts) && !publishableAncestorSkipped(src, path, opts) {
 			return nil
 		}
-		skipped = append(skipped, info)
+		skipped.add(path, info)
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return skippedFiles{}, err
 	}
 	return skipped, nil
 }
@@ -824,7 +857,7 @@ func publishableAncestorSkipped(src, path string, opts PublishableManuscriptCopy
 		if err != nil {
 			return false
 		}
-		if shouldSkipPublishableManuscriptFile(dir, info, opts) {
+		if shouldSkipPublishableManuscriptFile(src, dir, info, opts) {
 			return true
 		}
 		parent := filepath.Dir(dir)
@@ -836,11 +869,55 @@ func publishableAncestorSkipped(src, path string, opts PublishableManuscriptCopy
 	return false
 }
 
-func sameContentAsSkipped(info fs.FileInfo, skipped []fs.FileInfo) bool {
-	if info == nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 || len(skipped) == 0 {
+// fileIdentity is the device and inode (volume serial and file index on
+// Windows). Hard links share it; distinct files do not.
+type fileIdentity struct {
+	dev uint64
+	ino uint64
+}
+
+// skippedFiles records captures that must not ship under another name.
+// ids is the lookup; unknown keeps files whose identity could not be read
+// so those few still compare with os.SameFile.
+type skippedFiles struct {
+	ids     map[fileIdentity]struct{}
+	unknown []fs.FileInfo
+}
+
+func (s *skippedFiles) add(path string, info fs.FileInfo) {
+	if info == nil || !info.Mode().IsRegular() {
+		return
+	}
+	if id, ok := fileIdentityOf(path, info); ok {
+		if s.ids == nil {
+			s.ids = make(map[fileIdentity]struct{})
+		}
+		s.ids[id] = struct{}{}
+		return
+	}
+	s.unknown = append(s.unknown, info)
+}
+
+func (s *skippedFiles) merge(other skippedFiles) {
+	for id := range other.ids {
+		if s.ids == nil {
+			s.ids = make(map[fileIdentity]struct{})
+		}
+		s.ids[id] = struct{}{}
+	}
+	s.unknown = append(s.unknown, other.unknown...)
+}
+
+func (s skippedFiles) contains(path string, info fs.FileInfo) bool {
+	if info == nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
-	for _, other := range skipped {
+	if id, ok := fileIdentityOf(path, info); ok {
+		if _, found := s.ids[id]; found {
+			return true
+		}
+	}
+	for _, other := range s.unknown {
 		if os.SameFile(info, other) {
 			return true
 		}
@@ -848,7 +925,8 @@ func sameContentAsSkipped(info fs.FileInfo, skipped []fs.FileInfo) bool {
 	return false
 }
 
-func pruneEmptyDiscoveryDirs(root string) error {
+func pruneEmptyDiscoveryDirs(root string, wholeTreeIsDiscovery bool) error {
+	root = filepath.Clean(root)
 	var dirs []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -857,7 +935,11 @@ func pruneEmptyDiscoveryDirs(root string) error {
 		if path == root || !d.IsDir() {
 			return nil
 		}
-		if !isInsideDiscoveryTree(path) && !strings.EqualFold(filepath.Base(path), "discovery") {
+		if wholeTreeIsDiscovery {
+			dirs = append(dirs, path)
+			return nil
+		}
+		if !isInsideDiscoveryTree(root, path) && !strings.EqualFold(filepath.Base(path), "discovery") {
 			return nil
 		}
 		dirs = append(dirs, path)
@@ -957,19 +1039,18 @@ func isRawLiveDogfoodTranscript(name string) bool {
 	return false
 }
 
-func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
-	clean := filepath.Clean(path)
-	base := filepath.Base(clean)
-	parentPath := filepath.Dir(clean)
+func isRawBrowserSniffCapture(root, path string, info fs.FileInfo) bool {
+	base := filepath.Base(path)
+	parentPath := filepath.Dir(path)
 
-	if pathHasComponent(parentPath, "discovery") {
+	if isInsideDiscoveryTree(root, path) {
 		hyphenated, _ := filepath.Match("probe-*.json", base)
 		underscored, _ := filepath.Match("probe_*.json", base)
 		if hyphenated || underscored {
 			return true
 		}
 	}
-	if info.IsDir() && pathHasComponent(parentPath, "discovery") && base == "bundles" {
+	if info.IsDir() && isInsideDiscoveryTree(root, path) && base == "bundles" {
 		return true
 	}
 	// New writes carry the marker for any --samples-output name. Older trees

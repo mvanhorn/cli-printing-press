@@ -752,6 +752,17 @@ func stageRunstateManuscripts(stagingDir string, state *PipelineState) error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspecting runstate research.json: %w", err)
 	}
+	// Scan every directory before copying any of them. A pre-existing
+	// destination is left alone, but its source still contributes skipped
+	// file identities so a research/ hard link of a discovery capture is
+	// not copied under the other name.
+	opts := PublishableManuscriptCopyOptions{}
+	var skipped skippedFiles
+	type stagedSource struct {
+		src  string
+		name string
+	}
+	var existing []stagedSource
 	for _, src := range sources {
 		name := filepath.Base(src)
 		info, err := os.Stat(src)
@@ -764,14 +775,22 @@ func stageRunstateManuscripts(stagingDir string, state *PipelineState) error {
 		if !info.IsDir() {
 			continue
 		}
-		target := filepath.Join(dstRoot, name)
+		part, err := skippedPublishableContent(src, opts)
+		if err != nil {
+			return fmt.Errorf("copying runstate %s: %w", name, err)
+		}
+		skipped.merge(part)
+		existing = append(existing, stagedSource{src: src, name: name})
+	}
+	for _, item := range existing {
+		target := filepath.Join(dstRoot, item.name)
 		if _, statErr := os.Stat(target); statErr == nil {
 			continue
 		} else if !os.IsNotExist(statErr) {
 			return fmt.Errorf("checking %s in staging: %w", target, statErr)
 		}
-		if err := CopyPublishableManuscriptDir(src, target); err != nil {
-			return fmt.Errorf("copying runstate %s: %w", name, err)
+		if err := copyPublishableManuscriptDir(item.src, target, opts, skipped); err != nil {
+			return fmt.Errorf("copying runstate %s: %w", item.name, err)
 		}
 	}
 	return nil

@@ -649,6 +649,161 @@ func TestCopyPublishableManuscriptDirDiscoveryBypasses(t *testing.T) {
 	})
 }
 
+func TestCopyPublishableManuscriptDirIgnoresDiscoveryAncestors(t *testing.T) {
+	run := filepath.Join(t.TempDir(), "discovery", "manuscripts", "discovery", "20260329-100000")
+	require.NoError(t, os.MkdirAll(filepath.Join(run, "proofs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(run, "research"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(run, "discovery"), 0o755))
+	acceptance := []byte("{\"status\":\"pass\"}\n")
+	skipMarker := []byte("{\"status\":\"skip\"}\n")
+	require.NoError(t, os.WriteFile(filepath.Join(run, "proofs", Phase5AcceptanceFilename), acceptance, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "proofs", Phase5SkipFilename), skipMarker, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "research", "page.html"), []byte("<html>kept</html>\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "research", "brief.md"), []byte("# brief\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "discovery", "resp-entitydetail.json"), []byte("raw\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(run, "discovery", "browser-sniff-report.md"), []byte("# report\n"), 0o644))
+
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, CopyPublishableManuscriptDir(run, dst))
+	got, err := os.ReadFile(filepath.Join(dst, "proofs", Phase5AcceptanceFilename))
+	require.NoError(t, err)
+	assert.Equal(t, acceptance, got)
+	got, err = os.ReadFile(filepath.Join(dst, "proofs", Phase5SkipFilename))
+	require.NoError(t, err)
+	assert.Equal(t, skipMarker, got)
+	assert.FileExists(t, filepath.Join(dst, "research", "page.html"))
+	assert.FileExists(t, filepath.Join(dst, "research", "brief.md"))
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "resp-entitydetail.json"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "browser-sniff-report.md"))
+
+	// Archive and promote copy proofs/ on its own. The absolute path still
+	// contains a discovery component, and the markers must still ship.
+	proofsDst := filepath.Join(t.TempDir(), "proofs-out")
+	require.NoError(t, CopyPublishableManuscriptDir(filepath.Join(run, "proofs"), proofsDst))
+	got, err = os.ReadFile(filepath.Join(proofsDst, Phase5AcceptanceFilename))
+	require.NoError(t, err)
+	assert.Equal(t, acceptance, got)
+	got, err = os.ReadFile(filepath.Join(proofsDst, Phase5SkipFilename))
+	require.NoError(t, err)
+	assert.Equal(t, skipMarker, got)
+}
+
+func TestSkippedFileIdentityIndexesHardLinks(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "resp-entitydetail.json")
+	require.NoError(t, os.WriteFile(original, []byte("raw-response\n"), 0o644))
+	linked := filepath.Join(dir, "linked.json")
+	if err := os.Link(original, linked); err != nil {
+		t.Skip("hard links are not supported here")
+	}
+	other := filepath.Join(dir, "brief.md")
+	require.NoError(t, os.WriteFile(other, []byte("raw-response\n"), 0o644))
+
+	info, err := os.Lstat(original)
+	require.NoError(t, err)
+	var skipped skippedFiles
+	skipped.add(original, info)
+
+	linkedInfo, err := os.Lstat(linked)
+	require.NoError(t, err)
+	assert.True(t, skipped.contains(linked, linkedInfo))
+	otherInfo, err := os.Lstat(other)
+	require.NoError(t, err)
+	assert.False(t, skipped.contains(other, otherInfo))
+
+	originalID, ok := fileIdentityOf(original, info)
+	require.True(t, ok)
+	linkedID, ok := fileIdentityOf(linked, linkedInfo)
+	require.True(t, ok)
+	otherID, ok := fileIdentityOf(other, otherInfo)
+	require.True(t, ok)
+	assert.Equal(t, originalID, linkedID)
+	assert.NotEqual(t, originalID, otherID)
+}
+
+func TestArchiveRunArtifactsDropsCrossTreeHardLink(t *testing.T) {
+	home := setPressTestEnv(t)
+	workingDir := filepath.Join(home, "working", "hardlink-pp-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	state := NewState("hardlink", workingDir)
+	require.NoError(t, os.MkdirAll(filepath.Dir(state.StatePath()), 0o755))
+	require.NoError(t, state.Save())
+	plantCrossTreeHardLink(t, state.ResearchDir(), state.DiscoveryDir())
+	require.NoError(t, os.MkdirAll(state.ProofsDir(), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.ProofsDir(), Phase5AcceptanceFilename), []byte("{\"status\":\"pass\"}\n"), 0o644))
+
+	_, err := ArchiveRunArtifacts(state)
+	require.NoError(t, err)
+	assertCrossTreeHardLinkDropped(t, ArchivedResearchDir(state.APIName, state.RunID), ArchivedDiscoveryDir(state.APIName, state.RunID))
+	assert.FileExists(t, filepath.Join(ArchivedProofsDir(state.APIName, state.RunID), Phase5AcceptanceFilename))
+}
+
+func TestStageRunstateManuscriptsDropsCrossTreeHardLink(t *testing.T) {
+	home := setPressTestEnv(t)
+	workingDir := filepath.Join(home, "working", "stage-hardlink-pp-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	state := NewStateWithRun("stage-hardlink", workingDir, "run-hardlink", "test-scope")
+	plantCrossTreeHardLink(t, state.ResearchDir(), state.DiscoveryDir())
+	require.NoError(t, os.MkdirAll(state.ProofsDir(), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.ProofsDir(), Phase5AcceptanceFilename), []byte("{\"status\":\"pass\"}\n"), 0o644))
+
+	staging := t.TempDir()
+	require.NoError(t, stageRunstateManuscripts(staging, state))
+	manu := filepath.Join(staging, ".manuscripts", state.RunID)
+	assertCrossTreeHardLinkDropped(t, filepath.Join(manu, "research"), filepath.Join(manu, "discovery"))
+	assert.FileExists(t, filepath.Join(manu, "proofs", Phase5AcceptanceFilename))
+}
+
+func TestStageRunstateManuscriptsHardLinkUsesUncopiedDiscovery(t *testing.T) {
+	home := setPressTestEnv(t)
+	workingDir := filepath.Join(home, "working", "stage-existing-pp-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	state := NewStateWithRun("stage-existing", workingDir, "run-existing", "test-scope")
+	plantCrossTreeHardLink(t, state.ResearchDir(), state.DiscoveryDir())
+
+	staging := t.TempDir()
+	preexisting := filepath.Join(staging, ".manuscripts", state.RunID, "discovery")
+	require.NoError(t, os.MkdirAll(preexisting, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(preexisting, "kept.txt"), []byte("preexisting\n"), 0o644))
+
+	require.NoError(t, stageRunstateManuscripts(staging, state))
+	manu := filepath.Join(staging, ".manuscripts", state.RunID)
+	assert.NoFileExists(t, filepath.Join(manu, "research", "linked.json"))
+	brief, err := os.ReadFile(filepath.Join(manu, "research", "brief.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# brief\n", string(brief))
+	kept, err := os.ReadFile(filepath.Join(preexisting, "kept.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "preexisting\n", string(kept))
+	assert.NoFileExists(t, filepath.Join(preexisting, "resp-entitydetail.json"))
+}
+
+func plantCrossTreeHardLink(t *testing.T, researchDir, discoveryDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.MkdirAll(discoveryDir, 0o755))
+	rawPath := filepath.Join(discoveryDir, "resp-entitydetail.json")
+	require.NoError(t, os.WriteFile(rawPath, []byte("raw-response\n"), 0o644))
+	if err := os.Link(rawPath, filepath.Join(researchDir, "linked.json")); err != nil {
+		t.Skip("hard links are not supported here")
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# brief\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "browser-sniff-report.md"), []byte("# report\n"), 0o644))
+}
+
+func assertCrossTreeHardLinkDropped(t *testing.T, researchDir, discoveryDir string) {
+	t.Helper()
+	assert.NoFileExists(t, filepath.Join(researchDir, "linked.json"))
+	assert.NoFileExists(t, filepath.Join(discoveryDir, "resp-entitydetail.json"))
+	brief, err := os.ReadFile(filepath.Join(researchDir, "brief.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# brief\n", string(brief))
+	report, err := os.ReadFile(filepath.Join(discoveryDir, "browser-sniff-report.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# report\n", string(report))
+	assert.NotContains(t, string(brief), "raw-response")
+}
+
 func TestPressAuthoredDiscoveryArtifactNames(t *testing.T) {
 	allowed := []string{
 		"browser-sniff-report.md",
