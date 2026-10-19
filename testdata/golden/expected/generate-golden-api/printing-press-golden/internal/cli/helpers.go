@@ -3430,6 +3430,7 @@ func writeCSVRows(w io.Writer, items []map[string]any) error {
 func writeCSVRow(w io.Writer, cells []string) {
 	escaped := make([]string, len(cells))
 	for i, cell := range cells {
+		cell = csvSafeCell(cell)
 		if strings.ContainsAny(cell, ",\"\r\n") {
 			escaped[i] = `"` + strings.ReplaceAll(cell, `"`, `""`) + `"`
 		} else {
@@ -3437,6 +3438,79 @@ func writeCSVRow(w io.Writer, cells []string) {
 		}
 	}
 	fmt.Fprintln(w, strings.Join(escaped, ","))
+}
+
+// csvSafeCell stops spreadsheet formula injection without turning a plain
+// signed decimal into text. Leading apostrophes are skipped so a value that
+// already has one stays distinguishable after a single-apostrophe unescape.
+func csvSafeCell(s string) string {
+	if csvPlainNumber(s) {
+		return s
+	}
+	i := 0
+	for i < len(s) && s[i] == '\'' {
+		i++
+	}
+	if csvFormulaLead(s[i:]) {
+		return "'" + s
+	}
+	return s
+}
+
+func csvFormulaLead(s string) bool {
+	// Fullwidth = + - @ are a common bypass of an ASCII-only check.
+	for _, r := range s {
+		switch r {
+		case '=', '+', '-', '@', '\t', '\r', '\n', '\uFF1D', '\uFF0B', '\uFF0D', '\uFF20':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func csvPlainNumber(s string) bool {
+	if s == "" {
+		return false
+	}
+	i := 0
+	if s[0] == '+' || s[0] == '-' {
+		i++
+	}
+	if i >= len(s) {
+		return false
+	}
+	digits := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		digits++
+		i++
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			digits++
+			i++
+		}
+	}
+	if digits == 0 {
+		return false
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		exp := 0
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			exp++
+			i++
+		}
+		if exp == 0 {
+			return false
+		}
+	}
+	return i == len(s)
 }
 
 func csvDeclaredHeader(documentedFields ...map[string]bool) []string {

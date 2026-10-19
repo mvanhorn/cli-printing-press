@@ -270,6 +270,8 @@ printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --dry-run
 printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --agent
 ```
 
+`--csv` prefixes a leading `'` on cells and header keys that start with `=`, `+`, `-`, `@`, a tab, or a line break (including fullwidth `＝＋－＠`) so a spreadsheet does not run them as formulas. Plain signed numbers such as `-5` and `+2.5e3` are left unchanged.
+
 ## Agent Usage
 
 This CLI is designed for AI agent consumption:
