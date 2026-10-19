@@ -223,6 +223,11 @@ cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/researc
 cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/" 2>/dev/null || true
 
 # Archive discovery artifacts (browser-sniff captures, URL lists, traffic analysis, browser-sniff report).
+# This local archive keeps raw captures for later runs on this machine.
+# publish package does not ship them: discovery/ in the library package keeps
+# press-authored summaries (markdown reports, traffic-analysis.json,
+# *-provenance.json, and the other summary files the press writes) unless
+# --include-raw-captures is set.
 # Session state lives outside $DISCOVERY_DIR (see 02-run-initialization.md), so the
 # archive cannot pick it up. The legacy rm is a no-op safety net for an
 # in-flight $DISCOVERY_DIR carried over from a pre-isolation run.

@@ -165,6 +165,12 @@ func ArchiveRunArtifacts(state *PipelineState) (string, error) {
 		{src: state.DiscoveryDir(), dst: ArchivedDiscoveryDir(state.APIName, state.RunID)},
 	}
 
+	// Scan every directory before copying any of them. research/ and
+	// discovery/ are separate calls; a hard link under research/ can name
+	// the same bytes as a raw capture under discovery/.
+	opts := PublishableManuscriptCopyOptions{}
+	var skipped skippedFiles
+	var ready []pair
 	for _, item := range pairs {
 		info, err := os.Stat(item.src)
 		if err != nil {
@@ -176,7 +182,15 @@ func ArchiveRunArtifacts(state *PipelineState) (string, error) {
 		if !info.IsDir() {
 			continue
 		}
-		if err := CopyPublishableManuscriptDir(item.src, item.dst); err != nil {
+		part, err := skippedPublishableContent(item.src, opts)
+		if err != nil {
+			return "", fmt.Errorf("archiving %s: %w", item.src, err)
+		}
+		skipped.merge(part)
+		ready = append(ready, item)
+	}
+	for _, item := range ready {
+		if err := copyPublishableManuscriptDir(item.src, item.dst, opts, skipped); err != nil {
 			return "", fmt.Errorf("archiving %s: %w", item.src, err)
 		}
 	}
@@ -674,27 +688,45 @@ type PublishableManuscriptCopyOptions struct {
 }
 
 // CopyPublishableManuscriptDir copies manuscript artifacts that may be bundled
-// into published CLIs. Raw browser-sniff captures stay in local runstate by
-// default because they can carry cookies, session identifiers, and PII.
-// Live-dogfood transcripts and pipeline runstate are always omitted: they
-// carry API response bodies and absolute host paths, and IncludeRawCaptures
-// does not opt them back in. Phase 5 acceptance and skip markers stay.
-// Shipped text has absolute home and .runstate paths rewritten to the
-// <cli-dir> and <runstate> placeholders.
+// into published CLIs. Under discovery/, only press-authored summaries ship
+// by default. Raw captures stay behind because they carry third-party pages
+// and contact data. IncludeRawCaptures opts those captures back in for
+// private use. Live-dogfood transcripts and pipeline runstate are always
+// omitted: they carry API response bodies and absolute host paths, and
+// IncludeRawCaptures does not opt them back in. Phase 5 acceptance and skip
+// markers stay. Shipped text has absolute home and .runstate paths rewritten
+// to the <cli-dir> and <runstate> placeholders.
 func CopyPublishableManuscriptDir(src, dst string) error {
 	return CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{})
 }
 
 func CopyPublishableManuscriptDirWithOptions(src, dst string, opts PublishableManuscriptCopyOptions) error {
+	skipped, err := skippedPublishableContent(src, opts)
+	if err != nil {
+		return err
+	}
+	return copyPublishableManuscriptDir(src, dst, opts, skipped)
+}
+
+func copyPublishableManuscriptDir(src, dst string, opts PublishableManuscriptCopyOptions, skipped skippedFiles) error {
+	src = filepath.Clean(src)
 	if err := copyDirFiltered(src, dst, func(path string, info fs.FileInfo) bool {
-		return shouldSkipPublishableManuscriptFile(path, info, opts)
+		if shouldSkipPublishableManuscriptFile(src, path, info, opts) {
+			return true
+		}
+		// A second name for a skipped capture (hard link), including one
+		// recorded from another manuscript directory, would ship the same bytes.
+		return skipped.contains(path, info)
 	}); err != nil {
+		return err
+	}
+	if err := pruneEmptyDiscoveryDirs(dst, strings.EqualFold(filepath.Base(src), "discovery")); err != nil {
 		return err
 	}
 	return redactAbsoluteHostPathsInTree(dst)
 }
 
-func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts PublishableManuscriptCopyOptions) bool {
+func shouldSkipPublishableManuscriptFile(root, path string, info fs.FileInfo, opts PublishableManuscriptCopyOptions) bool {
 	// A `sources/` directory holds downloaded third-party reference repos — local
 	// research INPUT, not authored manuscript OUTPUT. Never publish copies of other
 	// projects' code: it is a licensing problem and a secret/PII vector (the only
@@ -712,22 +744,226 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 		return true
 	}
 	// Live transcripts and pipeline runstate carry response bodies and host
-	// paths. This check stays ahead of IncludeRawCaptures so that flag remains
-	// limited to browser-sniff evidence. Phase 5 marker filenames stay copyable
-	// even when their JSON resembles a report.
+	// paths. This check stays ahead of IncludeRawCaptures so that flag cannot
+	// opt them back in. Phase 5 marker filenames stay copyable even when their
+	// JSON resembles a report.
 	if isManuscriptPipelineRunstate(path, info) || isRawLiveDogfoodTranscript(filepath.Base(path)) || isLiveDogfoodReportFile(path, info) {
 		return true
 	}
 	if opts.IncludeRawCaptures {
 		return false
 	}
-	if isRawBrowserSniffCapture(path, info) {
+	if isRawBrowserSniffCapture(root, path, info) {
 		return true
 	}
 	if strings.EqualFold(filepath.Ext(path), ".har") {
 		return true
 	}
+	if !info.IsDir() && isInsideDiscoveryTree(root, path) && !isPressAuthoredDiscoveryArtifact(filepath.Base(path)) {
+		return true
+	}
 	return false
+}
+
+// Summaries the press writes into discovery/: markdown reports, traffic
+// analysis, provenance, BLE analysis, and the deduped URL list. Capture
+// inputs (HAR, enriched JSON, direct responses, sniff-urls.txt) are not in
+// this set — sniff-urls.txt still has query strings.
+func isPressAuthoredDiscoveryArtifact(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".md") {
+		return true
+	}
+	switch lower {
+	case "traffic-analysis.json",
+		"traffic-analysis.schema.json",
+		"ble-analysis.json",
+		"ble-evidence-redacted.json",
+		"browser-sniff-unique-paths.txt":
+		return true
+	}
+	for _, pattern := range []string{
+		"*-traffic-analysis.json",
+		"*-ble-analysis.json",
+		"*-provenance.json",
+	} {
+		matched, err := filepath.Match(pattern, lower)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// Discovery membership is relative to the directory being copied. A parent
+// named discovery (an API slug, or a workspace checkout) must not pull
+// research/ and proofs/ into the allowlist. Copying the discovery directory
+// itself has no discovery component in the relative path, so that root is
+// the discovery tree.
+func isInsideDiscoveryTree(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if strings.EqualFold(filepath.Base(root), "discovery") {
+		return true
+	}
+	return pathHasComponentFold(filepath.Dir(rel), "discovery")
+}
+
+func skippedPublishableContent(src string, opts PublishableManuscriptCopyOptions) (skippedFiles, error) {
+	src = filepath.Clean(src)
+	var skipped skippedFiles
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == src {
+				return walkErr
+			}
+			return skipIfVanished(walkErr, d != nil && d.IsDir())
+		}
+		if path == src || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return skipIfVanished(err, false)
+		}
+		// Directory skips (sources/, bundles/, sample dirs) do not mark each
+		// child, so a hard link of that child under another name would ship.
+		// Followed symlink targets would mark an ordinary file as raw when a
+		// skipped name points at it. The copy walk checks the link path and
+		// the resolved path separately.
+		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil
+		}
+		if !shouldSkipPublishableManuscriptFile(src, path, info, opts) && !publishableAncestorSkipped(src, path, opts) {
+			return nil
+		}
+		skipped.add(path, info)
+		return nil
+	})
+	if err != nil {
+		return skippedFiles{}, err
+	}
+	return skipped, nil
+}
+
+func publishableAncestorSkipped(src, path string, opts PublishableManuscriptCopyOptions) bool {
+	dir := filepath.Dir(path)
+	for dir != src && dir != "." && dir != string(filepath.Separator) {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return false
+		}
+		if shouldSkipPublishableManuscriptFile(src, dir, info, opts) {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+	return false
+}
+
+// fileIdentity is the device and inode (volume serial and file index on
+// Windows). Hard links share it; distinct files do not.
+type fileIdentity struct {
+	dev uint64
+	ino uint64
+}
+
+// skippedFiles records captures that must not ship under another name.
+// ids is the lookup; unknown keeps files whose identity could not be read
+// so those few still compare with os.SameFile.
+type skippedFiles struct {
+	ids     map[fileIdentity]struct{}
+	unknown []fs.FileInfo
+}
+
+func (s *skippedFiles) add(path string, info fs.FileInfo) {
+	if info == nil || !info.Mode().IsRegular() {
+		return
+	}
+	if id, ok := fileIdentityOf(path, info); ok {
+		if s.ids == nil {
+			s.ids = make(map[fileIdentity]struct{})
+		}
+		s.ids[id] = struct{}{}
+		return
+	}
+	s.unknown = append(s.unknown, info)
+}
+
+func (s *skippedFiles) merge(other skippedFiles) {
+	for id := range other.ids {
+		if s.ids == nil {
+			s.ids = make(map[fileIdentity]struct{})
+		}
+		s.ids[id] = struct{}{}
+	}
+	s.unknown = append(s.unknown, other.unknown...)
+}
+
+func (s skippedFiles) contains(path string, info fs.FileInfo) bool {
+	if info == nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if id, ok := fileIdentityOf(path, info); ok {
+		if _, found := s.ids[id]; found {
+			return true
+		}
+	}
+	for _, other := range s.unknown {
+		if os.SameFile(info, other) {
+			return true
+		}
+	}
+	return false
+}
+
+func pruneEmptyDiscoveryDirs(root string, wholeTreeIsDiscovery bool) error {
+	root = filepath.Clean(root)
+	var dirs []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root || !d.IsDir() {
+			return nil
+		}
+		if wholeTreeIsDiscovery {
+			dirs = append(dirs, path)
+			return nil
+		}
+		if !isInsideDiscoveryTree(root, path) && !strings.EqualFold(filepath.Base(path), "discovery") {
+			return nil
+		}
+		dirs = append(dirs, path)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		entries, err := os.ReadDir(dirs[i])
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if len(entries) != 0 {
+			continue
+		}
+		if err := os.Remove(dirs[i]); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func isPublishablePhase5Marker(name string) bool {
@@ -803,19 +1039,18 @@ func isRawLiveDogfoodTranscript(name string) bool {
 	return false
 }
 
-func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
-	clean := filepath.Clean(path)
-	base := filepath.Base(clean)
-	parentPath := filepath.Dir(clean)
+func isRawBrowserSniffCapture(root, path string, info fs.FileInfo) bool {
+	base := filepath.Base(path)
+	parentPath := filepath.Dir(path)
 
-	if pathHasComponent(parentPath, "discovery") {
+	if isInsideDiscoveryTree(root, path) {
 		hyphenated, _ := filepath.Match("probe-*.json", base)
 		underscored, _ := filepath.Match("probe_*.json", base)
 		if hyphenated || underscored {
 			return true
 		}
 	}
-	if info.IsDir() && pathHasComponent(parentPath, "discovery") && base == "bundles" {
+	if info.IsDir() && isInsideDiscoveryTree(root, path) && base == "bundles" {
 		return true
 	}
 	// New writes carry the marker for any --samples-output name. Older trees
@@ -935,6 +1170,15 @@ func hasSniffSamplesMarker(dir string) bool {
 
 func pathHasComponent(path, component string) bool {
 	return slices.Contains(strings.Split(filepath.ToSlash(filepath.Clean(path)), "/"), component)
+}
+
+func pathHasComponentFold(path, component string) bool {
+	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(path)), "/") {
+		if strings.EqualFold(part, component) {
+			return true
+		}
+	}
+	return false
 }
 
 // A WalkDir child can disappear between enumeration and stat (Windows

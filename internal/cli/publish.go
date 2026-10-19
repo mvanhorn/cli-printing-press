@@ -602,7 +602,7 @@ func newPublishPackageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseDir, "base-dir", "", "Existing library entry whose runtime version declaration layout is preserved into the package")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
 	cmd.Flags().BoolVar(&allowMirrorDeletions, "allow-mirror-deletions", false, "Allow the overlay to delete mirror files that have no source counterpart (use only after manual reconciliation)")
-	cmd.Flags().BoolVar(&includeRawCaptures, "include-raw-captures", false, "Include raw browser-sniff captures in bundled manuscripts (private use only)")
+	cmd.Flags().BoolVar(&includeRawCaptures, "include-raw-captures", false, "Include raw discovery captures in bundled manuscripts (private use only)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
