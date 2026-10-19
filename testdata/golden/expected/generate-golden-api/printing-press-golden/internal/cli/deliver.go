@@ -134,6 +134,11 @@ func safeJoinUnder(dir, name string) (string, error) {
 	return joined, nil
 }
 
+// downloadTempPattern stays short and fixed. Embedding the destination name
+// would push a legal filename (up to NAME_MAX) over the limit once CreateTemp
+// adds its random suffix. The last * is the random placeholder.
+const downloadTempPattern = ".pp-download.*.tmp"
+
 // writeDownloadUnder writes body as a 0600 file under a 0700 directory.
 // name is a response id or other API-supplied filename component.
 func writeDownloadUnder(dir, name string, body []byte) error {
@@ -144,9 +149,9 @@ func writeDownloadUnder(dir, name string, body []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating download dir: %w", err)
 	}
-	// CreateTemp is exclusive, so a planted "<dest>.tmp" symlink is never opened.
+	// CreateTemp is exclusive, so a planted symlink is never opened.
 	// Chmod the fd: a path chmod after rename would follow a swapped-in symlink.
-	f, err := os.CreateTemp(dir, "."+name+".*.tmp")
+	f, err := os.CreateTemp(dir, downloadTempPattern)
 	if err != nil {
 		return fmt.Errorf("creating download: %w", err)
 	}

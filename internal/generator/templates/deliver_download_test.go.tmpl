@@ -207,6 +207,42 @@ func TestWriteDownloadUnderStarInNameIsLiteral(t *testing.T) {
 	assertPrivateDownload(t, filepath.Join(dir, "a*b.json"), "star")
 }
 
+func TestWriteDownloadUnderAcceptsNameAtFilenameLimit(t *testing.T) {
+	dir := t.TempDir()
+	// 255 is NAME_MAX on common filesystems. 251 is the longest name the old
+	// predictable "<dest>.tmp" sink could still create under that limit.
+	probe := strings.Repeat("n", 255)
+	f, err := os.OpenFile(filepath.Join(dir, probe), os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Skipf("filesystem rejects a 255-byte name: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, probe)); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{251, 255} {
+		name := strings.Repeat("n", n)
+		body := "b" + strconv.Itoa(n)
+		if err := writeDownloadUnder(dir, name, []byte(body)); err != nil {
+			t.Fatalf("name length %d: %v", n, err)
+		}
+		assertPrivateDownload(t, filepath.Join(dir, name), body)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("dir entries = %v", names)
+	}
+}
+
 func TestWriteDownloadUnderRemovesTempWhenRenameFails(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "out.json")
@@ -224,9 +260,8 @@ func TestWriteDownloadUnderRemovesTempWhenRenameFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, ".out.json.") && strings.HasSuffix(name, ".tmp") {
-			t.Fatalf("temp file left behind: %s", name)
+		if entry.Name() != "out.json" {
+			t.Fatalf("temp file left behind: %s", entry.Name())
 		}
 	}
 	kept, err := os.ReadFile(filepath.Join(dest, "keep"))

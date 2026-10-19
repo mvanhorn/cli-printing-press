@@ -41,7 +41,9 @@ func TestGeneratedCookieAuthHardening(t *testing.T) {
 
 	require.Contains(t, deliverGo, "func safeJoinUnder(")
 	require.Contains(t, deliverGo, "func writeDownloadUnder(")
-	require.Contains(t, deliverGo, `os.CreateTemp(dir, "."+name+".*.tmp")`)
+	require.Contains(t, deliverGo, `downloadTempPattern = ".pp-download.*.tmp"`)
+	require.Contains(t, deliverGo, "os.CreateTemp(dir, downloadTempPattern)")
+	require.NotContains(t, deliverGo, `os.CreateTemp(dir, "."+name+".*.tmp")`)
 	require.Contains(t, deliverGo, "f.Chmod(0o600)")
 	require.NotContains(t, deliverGo, "os.WriteFile(tmp, body, 0o600)")
 	require.NotContains(t, deliverGo, "os.Chmod(path, 0o600)")
