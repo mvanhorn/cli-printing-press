@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.33.7](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.6...v4.33.7) (2026-10-19)
+
+
+### Bug Fixes
+
+* **cli:** bind printed credentials to the server and file they were saved for ([#5076](https://github.com/mvanhorn/cli-printing-press/issues/5076)) ([17444d5](https://github.com/mvanhorn/cli-printing-press/commit/17444d534747967df7636c8e2a31a0b5d9c98cec))
+* **cli:** bound printed response bodies and idle streaming reads ([#5088](https://github.com/mvanhorn/cli-printing-press/issues/5088)) ([493e977](https://github.com/mvanhorn/cli-printing-press/commit/493e977550e1061f75ba7e0c8bcf760f81e2732b))
+* **cli:** harden deliver file writes, webhook redirects, and CSV cells ([#5085](https://github.com/mvanhorn/cli-printing-press/issues/5085)) ([9830272](https://github.com/mvanhorn/cli-printing-press/commit/9830272dca3940da9581d4e631a8241e84277d90))
+* **cli:** harden printed MCP tail, path flags, HTTP, and search ([#5079](https://github.com/mvanhorn/cli-printing-press/issues/5079)) ([c439a86](https://github.com/mvanhorn/cli-printing-press/commit/c439a86788801b22f2c375c8038a6fa352a15f1a))
+* **cli:** pick async status siblings deterministically ([#5075](https://github.com/mvanhorn/cli-printing-press/issues/5075)) ([fbf39f3](https://github.com/mvanhorn/cli-printing-press/commit/fbf39f3c411dc32d2c1547661b8de3df3a345739))
+* **cli:** refuse plaintext credentials and private redirect dials ([#5077](https://github.com/mvanhorn/cli-printing-press/issues/5077)) ([0e5468a](https://github.com/mvanhorn/cli-printing-press/commit/0e5468a2333613b40fade6afe5f3fc1c07da3532))
+* **cli:** reject darwin ACL grants on private files ([#5086](https://github.com/mvanhorn/cli-printing-press/issues/5086)) ([8b6520b](https://github.com/mvanhorn/cli-printing-press/commit/8b6520b64dd62069507f4024b00b7868f37f48a4))
+* **cli:** report a failed dependent parent query instead of skipping it ([#5072](https://github.com/mvanhorn/cli-printing-press/issues/5072)) ([71c314c](https://github.com/mvanhorn/cli-printing-press/commit/71c314ce38c8d99b7184bd18aed013533b1c8d43))
+
 ## [4.33.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.5...v4.33.6) (2026-10-17)
 
 
