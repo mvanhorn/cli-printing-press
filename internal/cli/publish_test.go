@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1806,6 +1807,111 @@ func TestPublishPackageCanIncludeRawCaptures(t *testing.T) {
 	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "browser-sniff-capture.har"))
 	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "bundles", "app.js"))
 	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "test-browser-sniff-spec-samples", "sample.json"))
+}
+
+func TestPublishPackageDiscoveryAllowlist(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
+	runDir := filepath.Join(home, "manuscripts", "test", runID)
+	allowed := []string{
+		"discovery/browser-sniff-report.md",
+		"discovery/traffic-analysis.json",
+		"discovery/crowd-sniff-provenance.json",
+		"discovery/browser-sniff-unique-paths.txt",
+	}
+	raw := []string{
+		"discovery/resp-entitydetail.json",
+		"discovery/requests-search.json",
+		"discovery/direct-response-search.json",
+		"discovery/direct-probe-search.json",
+		"discovery/browser-sniff-capture.json",
+		"discovery/browser-sniff-capture.har",
+		"discovery/probe-001.json",
+		"discovery/page.html",
+		"discovery/app.js",
+		"discovery/bundles/app.js",
+		"discovery/raw/home.html",
+		"discovery/contract/out-01/sample.body",
+		"discovery/oracle-check/r1_body",
+		"discovery/terms/General-Terms-of-Use.txt",
+		"discovery/pdf/share-pct.pdf",
+		"discovery/sniff-urls.txt",
+	}
+	untouched := []string{
+		"research/brief.md",
+		"research/captured.json",
+		"research/page.html",
+		"proofs/shipcheck.md",
+		"proofs/notes.txt",
+	}
+	for _, rel := range append(append([]string{}, allowed...), append(raw, untouched...)...) {
+		path := filepath.Join(runDir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(rel+"\n"), 0o644))
+	}
+
+	packageAt := func(t *testing.T, target string, includeRaw bool) string {
+		t.Helper()
+		args := []string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"}
+		if includeRaw {
+			args = append(args, "--include-raw-captures")
+		}
+		cmd := newPublishCmd()
+		cmd.SetArgs(args)
+		output, err := runWithCapturedStdout(t, cmd.Execute)
+		require.NoError(t, err)
+		var result PackageResult
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.True(t, result.ManuscriptsIncluded)
+		return filepath.Join(result.StagedDir, ".manuscripts", runID)
+	}
+
+	staged := packageAt(t, filepath.Join(t.TempDir(), "staging"), false)
+	var want []string
+	want = append(want, allowed...)
+	want = append(want, untouched...)
+	sort.Strings(want)
+	assert.Equal(t, want, relFilesUnder(t, staged))
+	for _, rel := range untouched {
+		body, err := os.ReadFile(filepath.Join(staged, filepath.FromSlash(rel)))
+		require.NoError(t, err)
+		assert.Equal(t, rel+"\n", string(body))
+	}
+
+	included := packageAt(t, filepath.Join(t.TempDir(), "staging-raw"), true)
+	for _, rel := range append(append([]string{}, allowed...), append(raw, untouched...)...) {
+		assert.FileExists(t, filepath.Join(included, filepath.FromSlash(rel)), rel)
+	}
+	body, err := os.ReadFile(filepath.Join(included, "research", "page.html"))
+	require.NoError(t, err)
+	assert.Equal(t, "research/page.html\n", string(body))
+	body, err = os.ReadFile(filepath.Join(included, "proofs", "notes.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "proofs/notes.txt\n", string(body))
+}
+
+func relFilesUnder(t *testing.T, root string) []string {
+	t.Helper()
+	var got []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || path == root || d.IsDir() {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		got = append(got, filepath.ToSlash(rel))
+		return nil
+	})
+	require.NoError(t, err)
+	sort.Strings(got)
+	return got
 }
 
 func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
