@@ -41,7 +41,7 @@ func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 
 	src, _ := generateLearnStore(t, "learn-v10-enabled", true)
 
-	require.Contains(t, src, "const StoreSchemaVersion = 12")
+	require.Contains(t, src, "const StoreSchemaVersion = 13")
 	require.Contains(t, src, "const resourcesFTSTokenizerSchemaVersion = 11")
 	require.Contains(t, src, "migrateParentKeyStorageIDs")
 	require.Contains(t, src, `column: "last_attempt_complete"`)
@@ -76,7 +76,7 @@ func TestLearnSchemaV10_FTSContentPinIsUnconditional(t *testing.T) {
 
 	disabled, _ := generateLearnStore(t, "learn-v10-fts-disabled", false)
 	require.Contains(t, disabled, "const resourcesFTSContentSchemaVersion = 4")
-	require.Contains(t, disabled, "const StoreSchemaVersion = 7")
+	require.Contains(t, disabled, "const StoreSchemaVersion = 8")
 	require.Contains(t, enabled, "const resourcesFTSTokenizerSchemaVersion = 11")
 	require.Contains(t, disabled, "const resourcesFTSTokenizerSchemaVersion = 6")
 	require.Contains(t, enabled, "migrateParentKeyStorageIDs")

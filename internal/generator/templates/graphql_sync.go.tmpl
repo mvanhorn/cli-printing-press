@@ -136,7 +136,8 @@ Exit codes & warnings:
 			// attempt and must retain the last successful watermark and count.
 			if full || (latestOnly && since == "") {
 				for _, resource := range resources {
-					_, _, count, err := db.GetSyncState(resource)
+					scopeKey := syncCheckpointScope(resource, false, nil, syncClientTemplateVars(c), nil)
+					_, _, count, err := db.BindSyncScope(resource, scopeKey)
 					if err != nil {
 						return fmt.Errorf("reading sync state for %s: %w", resource, err)
 					}
@@ -307,8 +308,11 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		return syncResult{Resource: resource, Err: fmt.Errorf("unknown resource %q", resource), Duration: time.Since(started)}
 	}
 
-	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, _, existingCount, stateErr := db.GetSyncState(resource)
+	// Resume cursor from sync_state (unless --full cleared it). Same-scope
+	// --full already cleared the cursor and kept the watermark; a different
+	// scope must not resume the previous tenant.
+	scopeKey := syncCheckpointScope(resource, false, nil, syncClientTemplateVars(c), nil)
+	existingCursor, _, existingCount, stateErr := db.BindSyncScope(resource, scopeKey)
 	if stateErr != nil {
 		return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
 	}

@@ -78,7 +78,7 @@ func TestGeneratedStoreMigratesLegacyParentKeyRows(t *testing.T) {
 	require.Contains(t, source, "idx_resources_legacy_parent_key")
 	require.Contains(t, source, "SELECT 1 FROM resources INDEXED BY ")
 	require.Contains(t, source, "if !bare {")
-	require.Contains(t, source, "const StoreSchemaVersion = 7")
+	require.Contains(t, source, "const StoreSchemaVersion = 8")
 	require.Contains(t, source, "const resourcesFTSTokenizerSchemaVersion = 6")
 
 	testPath := filepath.Join(outputDir, "internal", "store", "parent_key_migration_test.go")
@@ -207,8 +207,8 @@ func requireParentKeySearch(t *testing.T, s *Store, token string, want int) {
 }
 
 func TestMigrateParentKeyStorageIDs(t *testing.T) {
-	if StoreSchemaVersion != 7 {
-		t.Fatalf("StoreSchemaVersion = %d, want 7 for the v7 migration fixture", StoreSchemaVersion)
+	if StoreSchemaVersion != 8 {
+		t.Fatalf("StoreSchemaVersion = %d, want 8 for the non-learn migration fixture", StoreSchemaVersion)
 	}
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -384,8 +384,8 @@ func TestMigrateParentKeyStorageIDs(t *testing.T) {
 }
 
 func TestMigrateParentKeyStorageIDsAtCurrentVersion(t *testing.T) {
-	if StoreSchemaVersion != 7 {
-		t.Fatalf("StoreSchemaVersion = %d, want 7 for the v7 migration fixture", StoreSchemaVersion)
+	if StoreSchemaVersion != 8 {
+		t.Fatalf("StoreSchemaVersion = %d, want 8 for the non-learn migration fixture", StoreSchemaVersion)
 	}
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -471,8 +471,8 @@ func TestMigrateParentKeyStorageIDsAtCurrentVersion(t *testing.T) {
 }
 
 func TestMigrateParentKeyStorageIDsRebuildsStaleIndex(t *testing.T) {
-	if StoreSchemaVersion != 7 {
-		t.Fatalf("StoreSchemaVersion = %d, want 7 for the v7 migration fixture", StoreSchemaVersion)
+	if StoreSchemaVersion != 8 {
+		t.Fatalf("StoreSchemaVersion = %d, want 8 for the non-learn migration fixture", StoreSchemaVersion)
 	}
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)

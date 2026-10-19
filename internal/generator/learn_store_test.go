@@ -11,7 +11,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
-func TestGenerateStoreSchemaVersion_DisabledAdvancesToV7(t *testing.T) {
+func TestGenerateStoreSchemaVersion_DisabledAdvancesToV8(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-disabled")
@@ -25,8 +25,8 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV7(t *testing.T) {
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 7")
-	require.NotContains(t, src, "const StoreSchemaVersion = 12")
+	require.Contains(t, src, "const StoreSchemaVersion = 8")
+	require.NotContains(t, src, "const StoreSchemaVersion = 13")
 	require.NotContains(t, src, "parentKeyStorageIDSchemaVersion")
 	require.Contains(t, src, "s.migrateParentKeyStorageIDs(ctx, conn)")
 	require.Contains(t, src, "parentKeyLegacyBatchSize")
@@ -39,7 +39,7 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV7(t *testing.T) {
 	}
 }
 
-func TestGenerateStoreSchemaVersion_EnabledAdvancesToV12WithLearnTables(t *testing.T) {
+func TestGenerateStoreSchemaVersion_EnabledAdvancesToV13WithLearnTables(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-enabled")
@@ -52,8 +52,8 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV12WithLearnTables(t *testi
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 12")
-	require.NotContains(t, src, "const StoreSchemaVersion = 7")
+	require.Contains(t, src, "const StoreSchemaVersion = 13")
+	require.NotContains(t, src, "const StoreSchemaVersion = 8")
 	require.NotContains(t, src, "parentKeyStorageIDSchemaVersion")
 	require.Contains(t, src, "s.migrateParentKeyStorageIDs(ctx, conn)")
 	require.Contains(t, src, "parentKeyLegacyBatchSize")
