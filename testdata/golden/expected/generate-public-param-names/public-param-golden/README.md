@@ -233,6 +233,8 @@ public-param-golden-pp-cli stores find --address example-value --city example-va
 public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --agent
 ```
 
+`--csv` prefixes a leading `'` on cells and header keys that start with `=`, `+`, `-`, `@`, a tab, or a line break (including fullwidth `＝＋－＠`) so a spreadsheet does not run them as formulas. Plain signed numbers such as `-5` and `+2.5e3` are left unchanged.
+
 ## Agent Usage
 
 This CLI is designed for AI agent consumption:

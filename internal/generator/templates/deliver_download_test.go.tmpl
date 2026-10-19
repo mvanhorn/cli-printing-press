@@ -5,9 +5,14 @@
 package cli
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +70,317 @@ func TestWriteDownloadUnderRejectsEscapeAndUsesPrivateMode(t *testing.T) {
 	}
 	if dirInfo.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("dir mode = %o", dirInfo.Mode().Perm())
+	}
+}
+
+func assertPrivateDownload(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is still a symlink", path)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestWriteDownloadUnderIgnoresPlantedTmpSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink")
+	}
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+	if err := os.WriteFile(victim, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "out.json.tmp")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+	const body = "{\"secret\":1}"
+	if err := writeDownloadUnder(dir, "out.json", []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("symlink target overwritten: %q", got)
+	}
+	target, err := os.Readlink(link)
+	if err != nil || target != victim {
+		t.Fatalf("planted tmp symlink = %q, %v", target, err)
+	}
+	assertPrivateDownload(t, filepath.Join(dir, "out.json"), body)
+}
+
+func TestWriteDownloadUnderLeavesLooseTmpAndWritesPrivateDest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits")
+	}
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "out.json.tmp")
+	if err := os.WriteFile(tmp, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const body = "{\"secret\":1}"
+	if err := writeDownloadUnder(dir, "out.json", []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stale) != "stale" {
+		t.Fatalf("predictable tmp rewritten: %q", stale)
+	}
+	info, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("tmp mode = %o, want 0644", info.Mode().Perm())
+	}
+	assertPrivateDownload(t, filepath.Join(dir, "out.json"), body)
+}
+
+func TestWriteDownloadUnderReplacesLooseDestAndDestSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink and mode bits")
+	}
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "out.json")
+	if err := os.WriteFile(dest, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const body = "{\"secret\":1}"
+	if err := writeDownloadUnder(dir, "out.json", []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateDownload(t, dest, body)
+
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+	if err := os.WriteFile(victim, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDownloadUnder(dir, "out.json", []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("dest symlink followed: %q", got)
+	}
+	assertPrivateDownload(t, dest, body)
+}
+
+func TestWriteDownloadUnderStarInNameIsLiteral(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("asterisk is not a legal file name")
+	}
+	dir := t.TempDir()
+	if err := writeDownloadUnder(dir, "a*b.json", []byte("star")); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateDownload(t, filepath.Join(dir, "a*b.json"), "star")
+}
+
+func TestWriteDownloadUnderAcceptsNameAtFilenameLimit(t *testing.T) {
+	dir := t.TempDir()
+	// 255 is NAME_MAX on common filesystems. 251 is the longest name the old
+	// predictable "<dest>.tmp" sink could still create under that limit.
+	probe := strings.Repeat("n", 255)
+	f, err := os.OpenFile(filepath.Join(dir, probe), os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Skipf("filesystem rejects a 255-byte name: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, probe)); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{251, 255} {
+		name := strings.Repeat("n", n)
+		body := "b" + strconv.Itoa(n)
+		if err := writeDownloadUnder(dir, name, []byte(body)); err != nil {
+			t.Fatalf("name length %d: %v", n, err)
+		}
+		assertPrivateDownload(t, filepath.Join(dir, name), body)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("dir entries = %v", names)
+	}
+}
+
+func TestWriteDownloadUnderRemovesTempWhenRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "out.json")
+	if err := os.Mkdir(dest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDownloadUnder(dir, "out.json", []byte("secret")); err == nil {
+		t.Fatal("expected rename onto a directory to fail")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "out.json" {
+			t.Fatalf("temp file left behind: %s", entry.Name())
+		}
+	}
+	kept, err := os.ReadFile(filepath.Join(dest, "keep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(kept) != "x" {
+		t.Fatalf("directory contents = %q", kept)
+	}
+}
+
+func TestDeliverWebhookDoesNotFollowRedirect(t *testing.T) {
+	for _, code := range []int{
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			var hit bool
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hit = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(target.Close)
+			const payload = "{\"k\":\"v\"}"
+			var got []byte
+			src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var err error
+				got, err = io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body: %v", err)
+				}
+				http.Redirect(w, r, target.URL, code)
+			}))
+			t.Cleanup(src.Close)
+			err := deliverWebhook(src.URL, []byte(payload), false)
+			if hit {
+				t.Fatal("redirect target received a request")
+			}
+			if string(got) != payload {
+				t.Fatalf("webhook body = %q", got)
+			}
+			if err == nil {
+				t.Fatal("expected redirect to fail delivery")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, strconv.Itoa(code)) || !strings.Contains(msg, target.URL) || !strings.Contains(msg, "redirects are not followed") {
+				t.Fatalf("error = %q", msg)
+			}
+		})
+	}
+}
+
+func TestDeliverWebhookRejectsUnvalidatedLocation(t *testing.T) {
+	const loc = "http://example.invalid/taken"
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", loc)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(src.Close)
+	err := deliverWebhook(src.URL, []byte("{\"k\":\"v\"}"), true)
+	if err == nil {
+		t.Fatal("expected redirect to fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, loc) || !strings.Contains(msg, "307") || !strings.Contains(msg, "redirects are not followed") {
+		t.Fatalf("error = %q", msg)
+	}
+}
+
+func TestDeliverWebhookNamesEmptyLocation(t *testing.T) {
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(src.Close)
+	err := deliverWebhook(src.URL, []byte("{}"), false)
+	if err == nil || !strings.Contains(err.Error(), "Location: \"\"") || !strings.Contains(err.Error(), "302") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDeliverWebhookPostsSuccessAndReportsHTTPError(t *testing.T) {
+	const payload = "{\"k\":\"v\"}"
+	var got []byte
+	var method, ctype string
+	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		ctype = r.Header.Get("Content-Type")
+		var err error
+		got, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(okSrv.Close)
+	if err := deliverWebhook(okSrv.URL, []byte(payload), false); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPost || ctype != "application/json" || string(got) != payload {
+		t.Fatalf("method=%s type=%s body=%q", method, ctype, got)
+	}
+
+	for _, code := range []int{http.StatusBadRequest, http.StatusInternalServerError} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		}))
+		err := deliverWebhook(srv.URL, []byte(payload), false)
+		srv.Close()
+		if err == nil {
+			t.Fatalf("status %d succeeded", code)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "webhook returned "+strconv.Itoa(code)) {
+			t.Fatalf("error = %q", msg)
+		}
+		if strings.Contains(msg, "redirects are not followed") {
+			t.Fatalf("HTTP error looked like a redirect: %q", msg)
+		}
 	}
 }

@@ -29,8 +29,8 @@ type DeliverSink struct {
 // ParseDeliverSink parses a --deliver value. Supported schemes:
 //
 //	stdout          -> default, no redirection
-//	file:<path>     -> write output atomically to <path>
-//	webhook:<url>   -> POST output body to <url>
+//	file:<path>     -> write output atomically to a private file at <path>
+//	webhook:<url>   -> POST output body to <url> (redirects are not followed)
 //
 // Returns an error for unknown schemes with a message naming the
 // supported set, so agents see a structured refusal rather than a
@@ -134,6 +134,11 @@ func safeJoinUnder(dir, name string) (string, error) {
 	return joined, nil
 }
 
+// downloadTempPattern stays short and fixed. Embedding the destination name
+// would push a legal filename (up to NAME_MAX) over the limit once CreateTemp
+// adds its random suffix. The last * is the random placeholder.
+const downloadTempPattern = ".pp-download.*.tmp"
+
 // writeDownloadUnder writes body as a 0600 file under a 0700 directory.
 // name is a response id or other API-supplied filename component.
 func writeDownloadUnder(dir, name string, body []byte) error {
@@ -144,17 +149,36 @@ func writeDownloadUnder(dir, name string, body []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating download dir: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+	// CreateTemp is exclusive, so a planted symlink is never opened.
+	// Chmod the fd: a path chmod after rename would follow a swapped-in symlink.
+	f, err := os.CreateTemp(dir, downloadTempPattern)
+	if err != nil {
+		return fmt.Errorf("creating download: %w", err)
+	}
+	tmp := f.Name()
+	committed := false
+	defer func() {
+		_ = f.Close()
+		if !committed {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		return fmt.Errorf("setting download permissions: %w", err)
+	}
+	if _, err := f.Write(body); err != nil {
+		return fmt.Errorf("writing download: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("writing download: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("writing download: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
 		return fmt.Errorf("replacing download: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("setting download permissions: %w", err)
-	}
+	committed = true
 	return nil
 }
 
@@ -172,12 +196,22 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 		req.Header.Set("User-Agent", "printing-press-golden-pp-cli/deliver")
 	}
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	// One POST. A followed 3xx would replay the body at a Location the
+	// operator did not name, including another host or an http downgrade.
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to webhook: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return fmt.Errorf("webhook returned %s (Location: %q); redirects are not followed", resp.Status, resp.Header.Get("Location"))
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook returned %s", resp.Status)
 	}

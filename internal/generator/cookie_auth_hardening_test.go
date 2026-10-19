@@ -41,7 +41,14 @@ func TestGeneratedCookieAuthHardening(t *testing.T) {
 
 	require.Contains(t, deliverGo, "func safeJoinUnder(")
 	require.Contains(t, deliverGo, "func writeDownloadUnder(")
-	require.Contains(t, deliverGo, "os.WriteFile(tmp, body, 0o600)")
+	require.Contains(t, deliverGo, `downloadTempPattern = ".pp-download.*.tmp"`)
+	require.Contains(t, deliverGo, "os.CreateTemp(dir, downloadTempPattern)")
+	require.NotContains(t, deliverGo, `os.CreateTemp(dir, "."+name+".*.tmp")`)
+	require.Contains(t, deliverGo, "f.Chmod(0o600)")
+	require.NotContains(t, deliverGo, "os.WriteFile(tmp, body, 0o600)")
+	require.NotContains(t, deliverGo, "os.Chmod(path, 0o600)")
+	require.Contains(t, deliverGo, "http.ErrUseLastResponse")
+	require.Contains(t, deliverGo, "redirects are not followed")
 	require.Contains(t, deliverGo, "os.MkdirAll(dir, 0o700)")
 
 	if exportGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "export.go")); err == nil {
@@ -93,5 +100,5 @@ func TestDoctorFailOnCaseAndInfoKeys(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "cookie_hardening_runtime_test.go"), []byte(runtime), 0o600))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-count=1", "-run", "TestDoctorFailOnCaseAndInfoKeys|TestWriteDownloadUnderRejectsEscapeAndUsesPrivateMode")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-count=1", "-run", "TestDoctorFailOnCaseAndInfoKeys|TestWriteDownloadUnder|TestDeliverWebhook")
 }
