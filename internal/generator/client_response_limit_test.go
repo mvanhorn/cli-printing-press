@@ -409,5 +409,44 @@ func TestResponseLimitKeepAlive(t *testing.T) {
 		t.Fatalf("accepted %d connections, want 1", got)
 	}
 }
+
+// responseLimitSharedTransport hides *http.Transport so StreamingHTTPClient
+// does not clone it. Production binary calls each get a fresh pool; this
+// wrapper keeps one pool so cancel-after-read is observable.
+type responseLimitSharedTransport struct {
+	http.RoundTripper
+}
+
+func (t responseLimitSharedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return t.RoundTripper.RoundTrip(r)
+}
+
+func TestResponseLimitBinaryKeepAlive(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte{0x01, 0x02, 0x03})
+	}))
+	srv.Listener.Close()
+	srv.Listener = &responseLimitCountListener{Listener: ln, n: &conns}
+	srv.Start()
+	defer srv.Close()
+
+	c := New(&config.Config{BaseURL: srv.URL}, 2*time.Second, 0)
+	c.NoCache = true
+	c.HTTPClient.Transport = responseLimitSharedTransport{RoundTripper: c.HTTPClient.Transport}
+	for i := 0; i < 3; i++ {
+		if _, err := c.GetWithHeaders(context.Background(), "/blob", nil, map[string]string{BinaryResponseHeader: "true"}); err != nil {
+			t.Fatalf("get %d: %v", i, err)
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Fatalf("accepted %d connections, want 1", got)
+	}
+}
 `
 }
