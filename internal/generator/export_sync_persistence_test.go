@@ -42,16 +42,22 @@ func TestSyncTemplates_DoNotDiscardSaveSyncStateErrors(t *testing.T) {
 				"%s must propagate SaveSyncProgress errors", tmpl)
 			require.NotContains(t, content, "warning: failed to save sync state",
 				"%s must not downgrade checkpoint failures to warnings", tmpl)
+			require.Equal(t, 0, strings.Count(content, "db.SaveSyncProgress("),
+				"%s checkpoint writes must carry the bound scope", tmpl)
+			require.Equal(t, 0, strings.Count(content, "db.SaveSyncState("),
+				"%s checkpoint writes must carry the bound scope", tmpl)
+			require.Equal(t, 0, strings.Count(content, "db.SaveSyncStateAt("),
+				"%s checkpoint writes must carry the bound scope", tmpl)
 			if tmpl == "sync.go.tmpl" {
-				require.Equal(t, 0, strings.Count(content, "if err := db.SaveSyncState(resource"),
+				require.Equal(t, 0, strings.Count(content, "if err := db.SaveSyncStateInScope(resource"),
 					"REST sync should keep cursor progress separate from watermark writes")
-				require.Equal(t, 3, strings.Count(content, "if err := db.SaveSyncProgress(resource"),
+				require.Equal(t, 3, strings.Count(content, "if err := db.SaveSyncProgressInScope(resource"),
 					"%s must check attempt, per-page, and incomplete-final progress checkpoints", tmpl)
-				require.Contains(t, content, "SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)")
+				require.Contains(t, content, "SaveSyncStateAtInScope(resource, scopeKey, finalCursor, cachedCount, watermark)")
 			} else {
-				require.Equal(t, 1, strings.Count(content, "if err := db.SaveSyncState(resource"),
+				require.Equal(t, 1, strings.Count(content, "if err := db.SaveSyncStateInScope(resource"),
 					"%s must certify completion only at the natural final checkpoint", tmpl)
-				require.Equal(t, 5, strings.Count(content, "if err := db.SaveSyncProgress(resource"),
+				require.Equal(t, 5, strings.Count(content, "if err := db.SaveSyncProgressInScope(resource"),
 					"%s must check reset, attempt, lossy-page, per-page, and partial-final progress checkpoints", tmpl)
 			}
 			require.True(t, strings.Contains(content, "saving sync state for"),
@@ -106,8 +112,11 @@ func TestGeneratedSync_PropagatesEveryResourceCheckpoint(t *testing.T) {
 	content := string(syncGo)
 
 	require.NotContains(t, content, "warning: failed to save sync state")
-	require.Equal(t, 0, strings.Count(content, "if err := db.SaveSyncState(resource"))
-	require.Equal(t, 3, strings.Count(content, "if err := db.SaveSyncProgress(resource"))
-	require.Contains(t, content, "SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)")
+	require.Equal(t, 0, strings.Count(content, "if err := db.SaveSyncStateInScope(resource"))
+	require.Equal(t, 3, strings.Count(content, "if err := db.SaveSyncProgressInScope(resource"))
+	require.Contains(t, content, "SaveSyncStateAtInScope(resource, scopeKey, finalCursor, cachedCount, watermark)")
+	require.Equal(t, 0, strings.Count(content, "db.SaveSyncProgress("))
+	require.Equal(t, 0, strings.Count(content, "db.SaveSyncState("))
+	require.Equal(t, 0, strings.Count(content, "db.SaveSyncStateAt("))
 	require.Contains(t, content, `Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr)`)
 }

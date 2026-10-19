@@ -736,12 +736,7 @@ func syncScopeVarIgnored(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	n = strings.ReplaceAll(n, "-", "")
 	n = strings.ReplaceAll(n, "_", "")
-	switch n {
-	case "apiversion", "version":
-		return true
-	default:
-		return false
-	}
+	return n == "apiversion" || n == "version"
 }
 
 func syncParamIsGlobalScope(name string) bool {
@@ -749,11 +744,12 @@ func syncParamIsGlobalScope(name string) bool {
 }
 
 // syncCheckpointScope is the tenant identity for one resource checkpoint.
-// Query filters (--param, --global-param, --resource-param, --since, --dates)
-// narrow prune but stay out of the key, so a sort or window override does not
-// drop the incremental watermark. A global-scope selector is the exception:
-// it chooses the tenant. An empty key matches upgraded rows whose scope_key
-// defaulted to "".
+// Ordinary filters (--param, --global-param, --resource-param, --since,
+// --dates) narrow prune but stay out of the key, so a sort or window
+// override does not drop the incremental watermark. A declared global-scope
+// selector is the exception, and its effective value follows applyTo: flat
+// --param on flat walks, then --global-param, then --resource-param. An
+// empty key matches upgraded rows whose scope_key defaulted to "".
 func syncCheckpointScope(resource string, dependent bool, userParams *syncUserParams, templateVars, pathContext map[string]string) string {
 	var lines []string
 	seen := map[string]struct{}{}
@@ -789,10 +785,22 @@ func syncCheckpointScope(resource string, dependent bool, userParams *syncUserPa
 		add("path", name, value)
 	}
 	if userParams != nil {
-		for name, value := range userParams.flatGlobal {
-			if !syncParamIsGlobalScope(name) {
-				continue
+		// Later sources overwrite earlier ones, matching applyTo. Dependent
+		// walks never send flat --param, so that map must not key them.
+		chosen := map[string]string{}
+		take := func(src map[string]string) {
+			for name, value := range src {
+				if syncParamIsGlobalScope(name) {
+					chosen[name] = value
+				}
 			}
+		}
+		if !dependent {
+			take(userParams.flatGlobal)
+		}
+		take(userParams.trueGlobal)
+		take(userParams.perResource[resource])
+		for name, value := range chosen {
 			add("param", name, value)
 		}
 	}

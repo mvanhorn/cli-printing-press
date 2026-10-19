@@ -103,7 +103,9 @@ func TestNarrowedSyncPruneAndCheckpoints(t *testing.T) {
 	for _, needle := range []string{
 		"BindSyncScope",
 		"ReadSyncScope",
+		"SaveSyncProgressInScope",
 		"syncPruneSkipReason",
+		"syncPruneSkipTenantScope",
 		"required_date_window",
 		"since_window",
 		"date_range",
@@ -327,12 +329,31 @@ func TestScopeKeyBranches(t *testing.T) {
 	}
 	params := &syncUserParams{flatGlobal: map[string]string{"statuses": "Online", "account_id": "acct"}}
 	depKey := syncCheckpointScope("modules", true, params, nil, nil)
-	if depKey != "param:account_id=acct" {
-		t.Fatalf("dependent scope key = %q", depKey)
+	if depKey != "" {
+		t.Fatalf("dependent scope key includes flat --param: %q", depKey)
 	}
 	flatKey := syncCheckpointScope("clients", false, params, nil, nil)
 	if flatKey != "param:account_id=acct" {
 		t.Fatalf("flat scope key = %q", flatKey)
+	}
+	if got := syncCheckpointScope("clients", false, &syncUserParams{
+		flatGlobal:  map[string]string{"account_id": "flat", "sort": "name:asc"},
+		trueGlobal:  map[string]string{"account_id": "global", "sort": "name:desc"},
+		perResource: map[string]map[string]string{"clients": {"account_id": "resource", "sort": "name:desc"}},
+	}, nil, nil); got != "param:account_id=resource" {
+		t.Fatalf("resource-param scope precedence: %q", got)
+	}
+	if got := syncCheckpointScope("clients", false, &syncUserParams{
+		flatGlobal: map[string]string{"account_id": "flat"},
+		trueGlobal: map[string]string{"account_id": "global", "sort": "name:asc"},
+	}, nil, nil); got != "param:account_id=global" {
+		t.Fatalf("global-param scope precedence: %q", got)
+	}
+	if got := syncCheckpointScope("modules", true, &syncUserParams{
+		flatGlobal: map[string]string{"account_id": "flat"},
+		trueGlobal: map[string]string{"account_id": "global"},
+	}, nil, nil); got != "param:account_id=global" {
+		t.Fatalf("dependent global-param scope: %q", got)
 	}
 	if got := syncCheckpointScope("clients", false, &syncUserParams{
 		trueGlobal:  map[string]string{"sort": "name:asc"},
@@ -346,31 +367,31 @@ func TestScopeKeyBranches(t *testing.T) {
 	if syncParamIsDateWindow("format") || syncParamIsDateWindow("statuses") {
 		t.Fatal("non-date names must not count as a window")
 	}
-	if got := syncPruneSkipReason("clients", false, "", "", &syncUserParams{flatGlobal: map[string]string{"account_id": "a", "statuses": "Online"}}, "flat_global", ""); got != "tenant_scope" {
+	if got := syncPruneSkipReason("clients", false, "", "", &syncUserParams{flatGlobal: map[string]string{"account_id": "a", "statuses": "Online"}}, "flat_global", ""); got != syncPruneSkipTenantScope {
 		t.Fatalf("global-scope param reason %q", got)
 	}
-	if got := syncPruneSkipReason("clients", false, "", "", &syncUserParams{flatGlobal: map[string]string{"statuses": "Online"}}, "flat_global", ""); got != "param_filter" {
+	if got := syncPruneSkipReason("clients", false, "", "", &syncUserParams{flatGlobal: map[string]string{"statuses": "Online"}}, "flat_global", ""); got != syncPruneSkipParamFilter {
 		t.Fatalf("param reason %q", got)
 	}
 	if got := syncPruneSkipReason("modules", true, "", "", &syncUserParams{flatGlobal: map[string]string{"statuses": "Online"}}, "per_parent", ""); got != "" {
 		t.Fatalf("--param must not narrow a dependent walk, got %q", got)
 	}
-	if got := syncPruneSkipReason("modules", true, "", "", &syncUserParams{trueGlobal: map[string]string{"region": "us"}}, "per_parent", ""); got != "global_param" {
+	if got := syncPruneSkipReason("modules", true, "", "", &syncUserParams{trueGlobal: map[string]string{"region": "us"}}, "per_parent", ""); got != syncPruneSkipGlobalParam {
 		t.Fatalf("global-param reason %q", got)
 	}
-	if got := syncPruneSkipReason("modules", true, "", "", &syncUserParams{perResource: map[string]map[string]string{"modules": {"status": "Online"}}}, "per_parent", ""); got != "resource_param" {
+	if got := syncPruneSkipReason("modules", true, "", "", &syncUserParams{perResource: map[string]map[string]string{"modules": {"status": "Online"}}}, "per_parent", ""); got != syncPruneSkipResourceParam {
 		t.Fatalf("resource-param reason %q", got)
 	}
-	if got := syncPruneSkipReason("clients", false, "2020-01-01T00:00:00Z", "", nil, "flat_global", ""); got != "since_window" {
+	if got := syncPruneSkipReason("clients", false, "2020-01-01T00:00:00Z", "", nil, "flat_global", ""); got != syncPruneSkipSinceWindow {
 		t.Fatalf("since reason %q", got)
 	}
 	if got := syncPruneSkipReason("clients", false, "  ", "", nil, "flat_global", ""); got != "" {
 		t.Fatalf("blank since reason %q", got)
 	}
-	if got := syncPruneSkipReason("clients", false, "", "20240101-20240131", nil, "flat_global", ""); got != "date_range" {
+	if got := syncPruneSkipReason("clients", false, "", "20240101-20240131", nil, "flat_global", ""); got != syncPruneSkipDateRange {
 		t.Fatalf("dates reason %q", got)
 	}
-	if got := syncPruneSkipReason("transactions", false, "", "", nil, "flat_global", ""); got != "required_date_window" {
+	if got := syncPruneSkipReason("transactions", false, "", "", nil, "flat_global", ""); got != syncPruneSkipRequiredDateWindow {
 		t.Fatalf("required date reason %q", got)
 	}
 	if got := syncPruneSkipReason("clients", false, "", "", nil, "flat_global", ""); got != "" {
@@ -379,10 +400,10 @@ func TestScopeKeyBranches(t *testing.T) {
 	if got := syncPruneSkipReason("clients", false, "", "", nil, "flat", "template:server=a"); got != "" {
 		t.Fatalf("tenant-column partition must still prune, got %q", got)
 	}
-	if got := syncPruneSkipReason("clients", false, "", "", nil, "flat_global", "template:server=a"); got != "tenant_scope" {
+	if got := syncPruneSkipReason("clients", false, "", "", nil, "flat_global", "template:server=a"); got != syncPruneSkipTenantScope {
 		t.Fatalf("template scope reason %q", got)
 	}
-	if got := syncPruneSkipReason("clients", false, "", "", nil, "per_parent", "path:networkId=n"); got != "tenant_scope" {
+	if got := syncPruneSkipReason("clients", false, "", "", nil, "per_parent", "path:networkId=n"); got != syncPruneSkipTenantScope {
 		t.Fatalf("path scope reason %q", got)
 	}
 }
@@ -546,7 +567,7 @@ func TestUnnarrowedFullPrunes(t *testing.T) {
 	if !hasRow(t, db, "clients", "keep") || hasRow(t, db, "clients", "ghost") {
 		t.Fatal("unnarrowed --full must delete rows the API no longer returns")
 	}
-	if !hasReconcile(events, "clients") || hasSkip(events, "clients", "tenant_scope") {
+	if !hasReconcile(events, "clients") || hasSkip(events, "clients", syncPruneSkipTenantScope) {
 		t.Fatalf("events=%s", events)
 	}
 }
@@ -580,7 +601,7 @@ func TestTenantTemplateLeavesOtherTenant(t *testing.T) {
 	if !hasRow(t, db, "clients", "client-a") || !hasRow(t, db, "clients", "client-b") {
 		t.Fatal("tenant B full sync deleted tenant A rows")
 	}
-	if !hasSkip(events, "clients", "tenant_scope") {
+	if !hasSkip(events, "clients", syncPruneSkipTenantScope) {
 		t.Fatalf("events=%s", events)
 	}
 }
@@ -598,7 +619,7 @@ func TestPathContextLeavesOtherNetwork(t *testing.T) {
 	if !hasRow(t, db, "clients", "client-a") || !hasRow(t, db, "clients", "client-b") {
 		t.Fatal("path-context B deleted network A rows")
 	}
-	if !hasSkip(events, "clients", "tenant_scope") {
+	if !hasSkip(events, "clients", syncPruneSkipTenantScope) {
 		t.Fatalf("events=%s", events)
 	}
 }
@@ -613,7 +634,7 @@ func TestParamFilterDoesNotDeleteUnfiltered(t *testing.T) {
 	if !hasRow(t, db, "clients", "offline") || !hasRow(t, db, "clients", "online") {
 		t.Fatal("--param filtered --full deleted rows outside the filter")
 	}
-	if !hasSkip(events, "clients", "param_filter") {
+	if !hasSkip(events, "clients", syncPruneSkipParamFilter) {
 		t.Fatalf("events=%s", events)
 	}
 	if len(client.calls) == 0 || client.calls[0].params["statuses"] != "Online" {
@@ -631,7 +652,7 @@ func TestGlobalParamSkipsPrune(t *testing.T) {
 	if !hasRow(t, db, "clients", "ghost") {
 		t.Fatal("--global-param --full deleted rows outside the filter")
 	}
-	if !hasSkip(events, "clients", "global_param") {
+	if !hasSkip(events, "clients", syncPruneSkipGlobalParam) {
 		t.Fatalf("events=%s", events)
 	}
 	if len(client.calls) == 0 || client.calls[0].params["region"] != "us" {
@@ -648,7 +669,7 @@ func TestSinceAndDatesSkipPrune(t *testing.T) {
 	if !hasRow(t, db, "clients", "ghost") {
 		t.Fatal("--since --full deleted rows outside the window")
 	}
-	if !hasSkip(events, "clients", "since_window") {
+	if !hasSkip(events, "clients", syncPruneSkipSinceWindow) {
 		t.Fatalf("events=%s", events)
 	}
 	if len(client.calls) == 0 || client.calls[0].params["since"] == "" {
@@ -663,7 +684,7 @@ func TestSinceAndDatesSkipPrune(t *testing.T) {
 	if !hasRow(t, db, "clients", "ghost") {
 		t.Fatal("--dates --full deleted rows outside the window")
 	}
-	if !hasSkip(events, "clients", "date_range") {
+	if !hasSkip(events, "clients", syncPruneSkipDateRange) {
 		t.Fatalf("events=%s", events)
 	}
 	if len(client.calls) == 0 || client.calls[0].params["dates"] != "20240101-20240131" {
@@ -694,7 +715,7 @@ func TestRequiredDateWindowSkipsPrune(t *testing.T) {
 	if !hasRow(t, db, "transactions", "tx-new") || !hasRow(t, db, "transactions", "ghost") {
 		t.Fatal("required date window must keep rows outside the window and still store the response")
 	}
-	if !hasSkip(events, "transactions", "required_date_window") {
+	if !hasSkip(events, "transactions", syncPruneSkipRequiredDateWindow) {
 		t.Fatalf("events=%s", events)
 	}
 	if len(client.calls) == 0 || client.calls[0].params["end_date"] != "2024-01-31" {
@@ -803,7 +824,7 @@ func TestDependentParamDoesNotPruneSiblings(t *testing.T) {
 	if !hasRow(t, db, "modules", "mod-other") || !hasRow(t, db, "modules", "mod-keep") {
 		t.Fatal("resource-param walk pruned a sibling the filter did not return")
 	}
-	if !hasSkip(buf.String(), "modules", "resource_param") {
+	if !hasSkip(buf.String(), "modules", syncPruneSkipResourceParam) {
 		t.Fatalf("events=%s", buf.String())
 	}
 	sawStatus := false
@@ -862,11 +883,184 @@ func TestDependentFlatParamStillPrunes(t *testing.T) {
 		t.Fatalf("events=%s", buf.String())
 	}
 }
+
+func TestGlobalAndResourceParamScopeIsolatesCursor(t *testing.T) {
+	db := openDB(t)
+	client := &scopeClient{body: func(string, map[string]string) json.RawMessage { return envelope("a1", "cur-a") }}
+	params := &syncUserParams{trueGlobal: map[string]string{"account_id": "acct-a"}}
+	res, events := runScope(client, db, "clients", "", false, 1, false, "", params)
+	mustOK(t, res, events)
+	cursor, _, _, err := db.GetSyncState("clients")
+	if err != nil || cursor != "cur-a" {
+		t.Fatalf("global A cursor=%q err=%v events=%s", cursor, err, events)
+	}
+	client.calls = nil
+	client.body = func(string, map[string]string) json.RawMessage { return envelope("b1", "cur-b") }
+	params = &syncUserParams{trueGlobal: map[string]string{"account_id": "acct-b", "sort": "name:asc"}}
+	res, events = runScope(client, db, "clients", "", false, 1, false, "", params)
+	mustOK(t, res, events)
+	if len(client.calls) == 0 || client.calls[0].params["after"] != "" || client.calls[0].params["account_id"] != "acct-b" {
+		t.Fatalf("global-param reused a cursor: %+v", client.calls)
+	}
+	client.calls = nil
+	client.body = func(string, map[string]string) json.RawMessage { return envelope("c1", "cur-c") }
+	params = &syncUserParams{
+		trueGlobal:  map[string]string{"account_id": "acct-b"},
+		perResource: map[string]map[string]string{"clients": {"account_id": "acct-c"}},
+	}
+	res, events = runScope(client, db, "clients", "", false, 1, false, "", params)
+	mustOK(t, res, events)
+	if len(client.calls) == 0 || client.calls[0].params["after"] != "" || client.calls[0].params["account_id"] != "acct-c" {
+		t.Fatalf("resource-param reused a cursor: %+v", client.calls)
+	}
+	cursor, _, _, err = db.GetSyncState("clients")
+	if err != nil || cursor != "cur-c" {
+		t.Fatalf("resource-param cursor=%q err=%v", cursor, err)
+	}
+}
+
+func TestDependentEmptyParentsKeepCheckpoint(t *testing.T) {
+	db := openDB(t)
+	stamp := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, _, _, err := db.BindSyncScope("modules", "template:server=a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSyncStateAt("modules", "cur-a", 4, stamp); err != nil {
+		t.Fatal(err)
+	}
+	dep := modulesDep(t)
+	client := &scopeClient{
+		template: map[string]string{"server": "b"},
+		body: func(string, map[string]string) json.RawMessage {
+			t.Error("empty parent walk made a request")
+			return arr()
+		},
+	}
+	var buf bytes.Buffer
+	res := syncDependentResource(context.Background(), client, db, dep, "", false, 0, false, true, "", nil, &buf, 1)
+	if res.Err != nil || res.Warn != nil {
+		t.Fatalf("sync err=%v warn=%v events=%s", res.Err, res.Warn, buf.String())
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("calls=%+v", client.calls)
+	}
+	cursor, got, count, err := db.GetSyncState("modules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope string
+	if err := db.DB().QueryRow("SELECT scope_key FROM sync_state WHERE resource_type = 'modules'").Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "template:server=a" || cursor != "cur-a" || !got.Equal(stamp) || count != 4 {
+		t.Fatalf("skipped walk rewrote checkpoint scope=%q cursor=%q at=%s count=%d", scope, cursor, got, count)
+	}
+}
+
+func TestDependentParentQueryErrorKeepsOtherScope(t *testing.T) {
+	db := openDB(t)
+	stamp := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, _, _, err := db.BindSyncScope("modules", "template:server=a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSyncStateAt("modules", "cur-a", 4, stamp); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{"DROP TABLE projects", "ALTER TABLE resources RENAME TO resources_gone"} {
+		if _, err := db.DB().Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	dep := modulesDep(t)
+	client := &scopeClient{
+		template: map[string]string{"server": "b"},
+		body: func(string, map[string]string) json.RawMessage {
+			t.Error("parent-query failure made a request")
+			return arr()
+		},
+	}
+	var buf bytes.Buffer
+	res := syncDependentResource(context.Background(), client, db, dep, "", false, 0, false, true, "", nil, &buf, 1)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "querying parent table") {
+		t.Fatalf("err=%v events=%s", res.Err, buf.String())
+	}
+	cursor, got, count, err := db.GetSyncState("modules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope string
+	var complete int
+	if err := db.DB().QueryRow("SELECT scope_key, last_attempt_complete FROM sync_state WHERE resource_type = 'modules'").Scan(&scope, &complete); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "template:server=a" || cursor != "cur-a" || !got.Equal(stamp) || count != 4 || complete != 1 {
+		t.Fatalf("parent-query failure rewrote checkpoint scope=%q cursor=%q at=%s count=%d complete=%d", scope, cursor, got, count, complete)
+	}
+}
+
+func TestCheckpointWriteRejectsReboundScope(t *testing.T) {
+	db := openDB(t)
+	if _, _, _, err := db.BindSyncScope("clients", "param:account_id=a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSyncProgressInScope("clients", "param:account_id=a", "cur-a", 3); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := db.SaveSyncStateAtInScope("clients", "param:account_id=a", "cur-a", 3, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.BindSyncScope("clients", "param:account_id=b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSyncProgressInScope("clients", "param:account_id=a", "cur-a-late", 9); err == nil {
+		t.Fatal("mismatched progress write succeeded")
+	}
+	if err := db.SaveSyncStateAtInScope("clients", "param:account_id=a", "cur-a-late", 9, time.Now().UTC()); err == nil {
+		t.Fatal("mismatched state write succeeded")
+	}
+	if err := db.SaveSyncStateInScope("clients", "param:account_id=a", "cur-a-late", 9); err == nil {
+		t.Fatal("mismatched completion write succeeded")
+	}
+	if err := db.SaveSyncProgressInScope("missing", "param:account_id=a", "cur", 1); err == nil {
+		t.Fatal("missing row progress write succeeded")
+	}
+	var scope, saved string
+	var count int
+	if err := db.DB().QueryRow("SELECT scope_key, IFNULL(last_cursor, ''), total_count FROM sync_state WHERE resource_type = 'clients'").Scan(&scope, &saved, &count); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "param:account_id=b" || saved != "" || count != 0 {
+		t.Fatalf("rebound row = scope %q cursor %q count %d", scope, saved, count)
+	}
+	if err := db.SaveSyncProgressInScope("clients", "param:account_id=b", "cur-b", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB().QueryRow("SELECT scope_key, IFNULL(last_cursor, ''), total_count FROM sync_state WHERE resource_type = 'clients'").Scan(&scope, &saved, &count); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "param:account_id=b" || saved != "cur-b" || count != 1 {
+		t.Fatalf("matching write = scope %q cursor %q count %d", scope, saved, count)
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "narrowed_prune_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "-count=1", "-run", "Test(ScopeKeyBranches|CheckpointResetAndLegacyUpgrade|LegacyScopeColumnKeepsCursor|ClosedStoreScopeErrors|FullClearKeepsOtherScope|UnnarrowedFullPrunes|VersionPlaceholderStillPrunes|TenantTemplateLeavesOtherTenant|PathContextLeavesOtherNetwork|ParamFilterDoesNotDeleteUnfiltered|GlobalParamSkipsPrune|SinceAndDatesSkipPrune|IgnoredSinceStillPrunes|RequiredDateWindowSkipsPrune|GlobalScopeEnvIsolatesCursor|TemplateScopeIsolatesCursor|DependentParamDoesNotPruneSiblings|DependentUnnarrowedPrunesSibling|DependentFlatParamStillPrunes)$", "./internal/cli")
+	out, err := runGoCommandOutput(t, outputDir, "test", "-count=1", "-v", "-run", "Test(ScopeKeyBranches|CheckpointResetAndLegacyUpgrade|LegacyScopeColumnKeepsCursor|ClosedStoreScopeErrors|FullClearKeepsOtherScope|UnnarrowedFullPrunes|VersionPlaceholderStillPrunes|TenantTemplateLeavesOtherTenant|PathContextLeavesOtherNetwork|ParamFilterDoesNotDeleteUnfiltered|GlobalParamSkipsPrune|SinceAndDatesSkipPrune|IgnoredSinceStillPrunes|RequiredDateWindowSkipsPrune|GlobalScopeEnvIsolatesCursor|TemplateScopeIsolatesCursor|DependentParamDoesNotPruneSiblings|DependentUnnarrowedPrunesSibling|DependentFlatParamStillPrunes|GlobalAndResourceParamScopeIsolatesCursor|DependentEmptyParentsKeepCheckpoint|DependentParentQueryErrorKeepsOtherScope|CheckpointWriteRejectsReboundScope)$", "./internal/cli")
+	require.NoError(t, err, out)
+	for _, name := range []string{
+		"TestScopeKeyBranches",
+		"TestUnnarrowedFullPrunes",
+		"TestGlobalScopeEnvIsolatesCursor",
+		"TestGlobalAndResourceParamScopeIsolatesCursor",
+		"TestDependentEmptyParentsKeepCheckpoint",
+		"TestDependentParentQueryErrorKeepsOtherScope",
+		"TestCheckpointWriteRejectsReboundScope",
+		"TestDependentUnnarrowedPrunesSibling",
+	} {
+		require.Contains(t, out, "--- PASS: "+name, out)
+	}
 }
 
 // TestFlatTenantColumnPruneIgnoresTemplateScope proves a base-URL placeholder
@@ -972,7 +1166,7 @@ func TestFlatTemplateScopeStillPrunesPartition(t *testing.T) {
 	if _, err := db.Get("projects", "p2"); err == nil {
 		t.Fatalf("p2 was kept; a template var must not disable tenant-column prune events=%s", events.String())
 	}
-	if !strings.Contains(events.String(), "\"event\":\"reconcile\",") || strings.Contains(events.String(), "tenant_scope") {
+	if !strings.Contains(events.String(), "\"event\":\"reconcile\",") || strings.Contains(events.String(), syncPruneSkipTenantScope) {
 		t.Fatalf("events=%s", events.String())
 	}
 }

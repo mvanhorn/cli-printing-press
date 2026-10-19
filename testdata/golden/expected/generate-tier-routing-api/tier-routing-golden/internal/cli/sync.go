@@ -523,7 +523,7 @@ func syncResource(ctx context.Context, c interface {
 			return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
 		}
 		existingCount = bindCount
-		if err := db.SaveSyncProgress(resource, persistedCursor, existingCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, persistedCursor, existingCount); err != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
 		}
 	}
@@ -917,7 +917,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		// Save cursor after each page for resumability
-		if err := db.SaveSyncProgress(resource, nextCursor, totalCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, nextCursor, totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
@@ -1014,7 +1014,7 @@ func syncResource(ctx context.Context, c interface {
 	// Integrity verdicts must precede completion persistence. Otherwise a
 	// run can advance its watermark and only then report that no rows landed.
 	if consumedTotal > 0 && totalCount == 0 {
-		if err := db.SaveSyncProgress(resource, finalCursor, cachedCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, finalCursor, cachedCount); err != nil {
 			return syncResult{Resource: resource, Count: 0, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 		if extractFailureTotal < consumedTotal {
@@ -1049,9 +1049,9 @@ func syncResource(ctx context.Context, c interface {
 	}
 	stateErr = nil
 	if watermark.IsZero() {
-		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
+		stateErr = db.SaveSyncProgressInScope(resource, scopeKey, finalCursor, cachedCount)
 	} else {
-		stateErr = db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)
+		stateErr = db.SaveSyncStateAtInScope(resource, scopeKey, finalCursor, cachedCount, watermark)
 	}
 	if stateErr != nil {
 		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
@@ -2171,6 +2171,16 @@ func syncActivePathContext() map[string]string {
 	return nil
 }
 
+const (
+	syncPruneSkipTenantScope        = "tenant_scope"
+	syncPruneSkipParamFilter        = "param_filter"
+	syncPruneSkipGlobalParam        = "global_param"
+	syncPruneSkipResourceParam      = "resource_param"
+	syncPruneSkipSinceWindow        = "since_window"
+	syncPruneSkipDateRange          = "date_range"
+	syncPruneSkipRequiredDateWindow = "required_date_window"
+)
+
 // syncPruneSkipReason is empty when this walk covered the reconcile partition.
 // Tenant-column mode "flat" still prunes for a base-URL placeholder; that
 // partition is already the tenant. since and dates count only once applied.
@@ -2179,31 +2189,31 @@ func syncPruneSkipReason(resource string, dependent bool, effectiveSince, dates 
 		if !dependent {
 			for key := range userParams.flatGlobal {
 				if syncParamIsGlobalScope(key) {
-					return "tenant_scope"
+					return syncPruneSkipTenantScope
 				}
 			}
 			if len(userParams.flatGlobal) > 0 {
-				return "param_filter"
+				return syncPruneSkipParamFilter
 			}
 		}
 		if len(userParams.trueGlobal) > 0 {
-			return "global_param"
+			return syncPruneSkipGlobalParam
 		}
 		if len(userParams.perResource[resource]) > 0 {
-			return "resource_param"
+			return syncPruneSkipResourceParam
 		}
 	}
 	if strings.TrimSpace(effectiveSince) != "" {
-		return "since_window"
+		return syncPruneSkipSinceWindow
 	}
 	if strings.TrimSpace(dates) != "" {
-		return "date_range"
+		return syncPruneSkipDateRange
 	}
 	if syncResourceHasDateWindow(resource) {
-		return "required_date_window"
+		return syncPruneSkipRequiredDateWindow
 	}
 	if reconcileMode != "flat" && syncScopeIsTenant(scopeKey) {
-		return "tenant_scope"
+		return syncPruneSkipTenantScope
 	}
 	return ""
 }

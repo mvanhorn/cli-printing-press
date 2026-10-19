@@ -565,7 +565,7 @@ func syncResource(ctx context.Context, c interface {
 			return syncResult{Resource: resource, Err: stateErr, Duration: time.Since(started)}
 		}
 		existingCount = bindCount
-		if err := db.SaveSyncProgress(resource, persistedCursor, existingCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, persistedCursor, existingCount); err != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
 		}
 	}
@@ -978,7 +978,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		// Save cursor after each page for resumability
-		if err := db.SaveSyncProgress(resource, nextCursor, totalCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, nextCursor, totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
@@ -1075,7 +1075,7 @@ func syncResource(ctx context.Context, c interface {
 	// Integrity verdicts must precede completion persistence. Otherwise a
 	// run can advance its watermark and only then report that no rows landed.
 	if consumedTotal > 0 && totalCount == 0 {
-		if err := db.SaveSyncProgress(resource, finalCursor, cachedCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, finalCursor, cachedCount); err != nil {
 			return syncResult{Resource: resource, Count: 0, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 		if extractFailureTotal < consumedTotal {
@@ -1110,9 +1110,9 @@ func syncResource(ctx context.Context, c interface {
 	}
 	stateErr = nil
 	if watermark.IsZero() {
-		stateErr = db.SaveSyncProgress(resource, finalCursor, cachedCount)
+		stateErr = db.SaveSyncProgressInScope(resource, scopeKey, finalCursor, cachedCount)
 	} else {
-		stateErr = db.SaveSyncStateAt(resource, finalCursor, cachedCount, watermark)
+		stateErr = db.SaveSyncStateAtInScope(resource, scopeKey, finalCursor, cachedCount, watermark)
 	}
 	if stateErr != nil {
 		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
@@ -3182,16 +3182,6 @@ func syncDependentResource(ctx context.Context, c interface {
 	RateLimit() float64
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, userParams *syncUserParams, syncEvents io.Writer, concurrency int) syncResult {
 	started := time.Now()
-	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
-		scopeKey := syncCheckpointScope(dep.Name, true, userParams, syncClientTemplateVars(c), syncActivePathContext())
-		cursor, _, count, err := db.BindSyncScope(dep.Name, scopeKey)
-		if err != nil {
-			return syncResult{Resource: dep.Name, Err: err, Duration: time.Since(started)}
-		}
-		if err := db.SaveSyncProgress(dep.Name, cursor, count); err != nil {
-			return syncResult{Resource: dep.Name, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", dep.Name, err), Duration: time.Since(started)}
-		}
-	}
 	if syncEvents == nil {
 		syncEvents = io.Discard
 	}
@@ -3213,7 +3203,15 @@ func syncDependentResource(ctx context.Context, c interface {
 	if err != nil {
 		// Every error path returns no rows, so test the error first or a failed
 		// parent query passes as an empty parent table and the run succeeds.
+		// Invalidate readiness only for the scope already stored. Binding here
+		// would drop another tenant's cursor before any request.
 		err = fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err)
+		if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+			scopeKey := syncCheckpointScope(dep.Name, true, userParams, syncClientTemplateVars(c), syncActivePathContext())
+			if markErr := db.MarkSyncAttemptIncompleteIfCurrent(dep.Name, scopeKey); markErr != nil {
+				err = fmt.Errorf("%w; saving sync progress for %s: %v", err, dep.Name, markErr)
+			}
+		}
 		if !humanFriendly {
 			fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, "", err))
 		}
@@ -3236,6 +3234,24 @@ func syncDependentResource(ctx context.Context, c interface {
 			fmt.Fprintf(os.Stderr, "  %s: dogfood capped parent sync to %d of %d %s parents\n", dep.Name, len(parentRows), originalParentRows, dep.ParentTable)
 		} else {
 			fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent_table":"%s","reason":"dogfood_parent_rows_cap_hit","message":"dogfood capped dependent sync to %d of %d parent rows; run outside dogfood to verify full parent coverage"}`+"\n", dep.Name, dep.ParentTable, len(parentRows), originalParentRows)
+		}
+	}
+	if len(parentRows) == 0 {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "  %s: skipping (no parents to sync)\n", dep.Name)
+		}
+		return syncResult{Resource: dep.Name, Duration: time.Since(started)}
+	}
+	// Bind only once a parent will be requested. An empty or failed parent
+	// lookup must not reset another tenant's cursor.
+	scopeKey := syncCheckpointScope(dep.Name, true, userParams, syncClientTemplateVars(c), syncActivePathContext())
+	if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
+		cursor, _, count, err := db.BindSyncScope(dep.Name, scopeKey)
+		if err != nil {
+			return syncResult{Resource: dep.Name, Err: err, Duration: time.Since(started)}
+		}
+		if err := db.SaveSyncProgressInScope(dep.Name, scopeKey, cursor, count); err != nil {
+			return syncResult{Resource: dep.Name, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", dep.Name, err), Duration: time.Since(started)}
 		}
 	}
 
@@ -3420,7 +3436,7 @@ func syncDependentResource(ctx context.Context, c interface {
 		// writes still have to fail the run when --strict is off.
 		integrityFailure := integrityFailedParents > 0
 		if preview, ok := c.(interface{ IsDryRun() bool }); !ok || !preview.IsDryRun() {
-			if err := db.SaveSyncProgress(dep.Name, "", totalCount); err != nil {
+			if err := db.SaveSyncProgressInScope(dep.Name, scopeKey, "", totalCount); err != nil {
 				return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), IntegrityFailure: integrityFailure, Duration: time.Since(started)}
 			}
 		}
@@ -3444,7 +3460,7 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 	}
 	if failedParents > 0 {
-		if err := db.SaveSyncProgress(dep.Name, "", totalCount); err != nil {
+		if err := db.SaveSyncProgressInScope(dep.Name, scopeKey, "", totalCount); err != nil {
 			return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), Duration: time.Since(started)}
 		}
 		failure := fmt.Errorf("%s failed to store data for %d of %d parents: %w", dep.Name, failedParents, len(parentRows), firstFailure)
@@ -3457,7 +3473,7 @@ func syncDependentResource(ctx context.Context, c interface {
 		return syncResult{Resource: dep.Name, Count: totalCount, Warn: failure, Duration: time.Since(started)}
 	}
 	if depConsumedTotal > 0 && totalCount == 0 {
-		if err := db.SaveSyncProgress(dep.Name, "", 0); err != nil {
+		if err := db.SaveSyncProgressInScope(dep.Name, scopeKey, "", 0); err != nil {
 			return syncResult{Resource: dep.Name, Err: fmt.Errorf("saving incomplete sync progress for %s: %w", dep.Name, err), Duration: time.Since(started)}
 		}
 		if depExtractFailureTotal < depConsumedTotal {
@@ -3490,9 +3506,9 @@ func syncDependentResource(ctx context.Context, c interface {
 	}
 	var stateErr error
 	if attemptComplete {
-		stateErr = db.SaveSyncState(dep.Name, "", totalCount)
+		stateErr = db.SaveSyncStateInScope(dep.Name, scopeKey, "", totalCount)
 	} else {
-		stateErr = db.SaveSyncProgress(dep.Name, "", totalCount)
+		stateErr = db.SaveSyncProgressInScope(dep.Name, scopeKey, "", totalCount)
 	}
 	if stateErr != nil {
 		return syncResult{Resource: dep.Name, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", dep.Name, stateErr), Duration: time.Since(started)}
@@ -3597,6 +3613,16 @@ func syncActivePathContext() map[string]string {
 	return nil
 }
 
+const (
+	syncPruneSkipTenantScope        = "tenant_scope"
+	syncPruneSkipParamFilter        = "param_filter"
+	syncPruneSkipGlobalParam        = "global_param"
+	syncPruneSkipResourceParam      = "resource_param"
+	syncPruneSkipSinceWindow        = "since_window"
+	syncPruneSkipDateRange          = "date_range"
+	syncPruneSkipRequiredDateWindow = "required_date_window"
+)
+
 // syncPruneSkipReason is empty when this walk covered the reconcile partition.
 // Tenant-column mode "flat" still prunes for a base-URL placeholder; that
 // partition is already the tenant. since and dates count only once applied.
@@ -3605,31 +3631,31 @@ func syncPruneSkipReason(resource string, dependent bool, effectiveSince, dates 
 		if !dependent {
 			for key := range userParams.flatGlobal {
 				if syncParamIsGlobalScope(key) {
-					return "tenant_scope"
+					return syncPruneSkipTenantScope
 				}
 			}
 			if len(userParams.flatGlobal) > 0 {
-				return "param_filter"
+				return syncPruneSkipParamFilter
 			}
 		}
 		if len(userParams.trueGlobal) > 0 {
-			return "global_param"
+			return syncPruneSkipGlobalParam
 		}
 		if len(userParams.perResource[resource]) > 0 {
-			return "resource_param"
+			return syncPruneSkipResourceParam
 		}
 	}
 	if strings.TrimSpace(effectiveSince) != "" {
-		return "since_window"
+		return syncPruneSkipSinceWindow
 	}
 	if strings.TrimSpace(dates) != "" {
-		return "date_range"
+		return syncPruneSkipDateRange
 	}
 	if syncResourceHasDateWindow(resource) {
-		return "required_date_window"
+		return syncPruneSkipRequiredDateWindow
 	}
 	if reconcileMode != "flat" && syncScopeIsTenant(scopeKey) {
-		return "tenant_scope"
+		return syncPruneSkipTenantScope
 	}
 	return ""
 }

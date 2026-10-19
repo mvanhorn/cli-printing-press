@@ -134,7 +134,7 @@ Exit codes & warnings:
 					if err != nil {
 						return fmt.Errorf("reading sync state for %s: %w", resource, err)
 					}
-					if err := db.SaveSyncProgress(resource, "", count); err != nil {
+					if err := db.SaveSyncProgressInScope(resource, scopeKey, "", count); err != nil {
 						return fmt.Errorf("clearing sync cursor for %s: %w", resource, err)
 					}
 				}
@@ -298,7 +298,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	}
 	// Invalidate readiness before any request, including requests that fail
 	// before storing their first page. Keep the last lossless boundary.
-	if err := db.SaveSyncProgress(resource, existingCursor, existingCount); err != nil {
+	if err := db.SaveSyncProgressInScope(resource, scopeKey, existingCursor, existingCount); err != nil {
 		return syncResult{Resource: resource, Err: fmt.Errorf("saving sync progress for %s: starting attempt: %w", resource, err), Duration: time.Since(started)}
 	}
 	cursor := existingCursor
@@ -426,7 +426,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		extractFailureTotal += extractFailures
 		totalCount += stored
 		if extractFailures > 0 {
-			if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
+			if err := db.SaveSyncProgressInScope(resource, scopeKey, progressCursor, totalCount); err != nil {
 				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 			}
 			err := fmt.Errorf("%s dropped %d of %d item(s) without an extractable primary key", resource, extractFailures, len(conn.Nodes))
@@ -444,7 +444,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		}
 
 		// Save resumable progress without advancing the completion watermark.
-		if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, progressCursor, totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
@@ -502,14 +502,14 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	// Only a proven natural end advances readiness. A capped or otherwise
 	// unprovable walk retains a resume cursor and marks the latest attempt partial.
 	if attemptComplete {
-		if err := db.SaveSyncState(resource, "", totalCount); err != nil {
+		if err := db.SaveSyncStateInScope(resource, scopeKey, "", totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 	} else {
 		if capExitCursor != "" {
 			progressCursor = capExitCursor
 		}
-		if err := db.SaveSyncProgress(resource, progressCursor, totalCount); err != nil {
+		if err := db.SaveSyncProgressInScope(resource, scopeKey, progressCursor, totalCount); err != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("saving sync progress for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 		if bounded {
