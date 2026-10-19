@@ -4734,7 +4734,8 @@ func TestGenerateCmdMCPFlagsOverrideOpenAPISurface(t *testing.T) {
 	codeOrchSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(codeOrchSource), `mcplib.NewTool("mcp-flag_search"`)
-	assert.Contains(t, string(codeOrchSource), `mcplib.NewTool("mcp-flag_execute"`)
+	assert.Contains(t, string(codeOrchSource), `mcplib.NewTool("mcp-flag_read"`)
+	assert.NotContains(t, string(codeOrchSource), `mcplib.NewTool("mcp-flag_execute"`)
 }
 
 func openAPISpecWithEndpointCount(count int) string {

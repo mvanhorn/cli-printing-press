@@ -462,6 +462,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointIsReadCommand": func(endpoint spec.Endpoint, opName string) bool {
 			return endpointIsReadCommandShared(endpoint, opName, sharedGETRPCPaths(g.Spec.Resources))
 		},
+		"codeOrchNeedsConfirm": func(endpoint spec.Endpoint, opName string) bool {
+			return codeOrchEndpointNeedsConfirm(endpoint, opName, sharedGETRPCPaths(g.Spec.Resources))
+		},
+		"codeOrchHasReadEndpoints": func() bool {
+			return codeOrchHasEndpointClass(g.Spec.Resources, false)
+		},
+		"codeOrchHasConfirmEndpoints": func() bool {
+			return codeOrchHasEndpointClass(g.Spec.Resources, true)
+		},
 		"hasMultipartRequest":          hasMultipartRequest,
 		"hasRawRequest":                hasRawRequest,
 		"formBodyMaps":                 formBodyMaps,

@@ -103,8 +103,9 @@ func TestCodeOrchestrationRoutesHeaderAndEmptyValues(t *testing.T) {
 
 	request := mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: map[string]any{
 		"endpoint_id": "ledger.voucher-update",
-			"params": map[string]any{
-				"id": "voucher-1", "sendToLedger": "", "X-Request-ID": "request-1", "voucherDescription": "",
+		"confirm":     true,
+		"params": map[string]any{
+			"id": "voucher-1", "sendToLedger": "", "X-Request-ID": "request-1", "voucherDescription": "",
 		},
 	}}}
 	result, err := handleCodeOrchExecute(context.Background(), request)

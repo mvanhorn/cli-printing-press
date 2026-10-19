@@ -52,7 +52,8 @@ func TestGenerateMCPExecuteReadOnlyRefusesNonGET(t *testing.T) {
 	codeOrch := readGenerated(t, outputDir, "internal", "mcp", "code_orch.go")
 	require.Regexp(t, `Method:\s+"POST"`, codeOrch)
 	require.Regexp(t, `Method:\s+"DELETE"`, codeOrch)
-	require.Contains(t, codeOrch, "codeOrchBlockedByMCPReadOnly(ep.Method)")
+	require.Contains(t, codeOrch, "codeOrchRefuseForReadOnlySwitch(ep, method, executeTool)")
+	require.Contains(t, codeOrch, "codeOrchBlockedByMCPReadOnly(method)")
 	verifyenv := readGenerated(t, outputDir, "internal", "cliutil", "verifyenv.go")
 	require.Contains(t, verifyenv, naming.EnvPrefix(apiSpec.Name)+`_MCP_READ_ONLY`)
 
