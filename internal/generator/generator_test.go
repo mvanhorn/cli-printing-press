@@ -409,7 +409,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"darwin_acl.go", "func CheckDarwinPrivateFileACL("},
 		{"darwin_acl.go", "chmod -N"},
 		{"darwin_acl_darwin.go", "unix.SYS_FGETATTRLIST"},
-		{"darwin_acl_darwin.go", "dsmemberutil"},
+		{"darwin_acl_darwin.go", "/usr/bin/dsmemberutil"},
 		{"darwin_acl_live_test.go", "func TestDarwinACLLive("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))

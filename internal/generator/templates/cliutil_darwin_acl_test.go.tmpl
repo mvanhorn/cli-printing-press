@@ -102,6 +102,18 @@ func TestDarwinACL(t *testing.T) {
 		if err != nil || called {
 			t.Fatalf("empty ACL err=%v called=%v", err, called)
 		}
+		called = false
+		deny := darwinTestAttrList(darwinTestFileSec(false, darwinTestACEs(darwinTestACE{
+			guid:   other,
+			flags:  darwinACEDeny,
+			rights: darwinACLFileRights,
+		})), nil)
+		err = rejectDarwinForeignACLPathFrom(os.Open, func(uintptr) ([]byte, error) {
+			return deny, nil
+		}, path, "file", darwinACLScopeFile)
+		if err != nil || called {
+			t.Fatalf("deny-only err=%v called=%v", err, called)
+		}
 
 		activeDarwinOwnerUUID = func(*os.File) ([16]byte, error) {
 			return [16]byte{}, errors.New("no uuid")

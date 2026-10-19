@@ -155,6 +155,14 @@ func judgeDarwinACLOwner(buf []byte, ownerOf func() ([16]byte, error), path, lab
 		return nil
 	}
 	if ownerOf != nil {
+		// A zero owner matches nothing, so a nil result means no permit
+		// grants the rights we care about. Deny and inherit-only entries
+		// then stay readable when the membership tool cannot be run.
+		if err := evalDarwinFileSec(filesec, [16]byte{}, scope); err == nil {
+			return nil
+		} else if !errors.Is(err, errDarwinACLForeign) {
+			return darwinACLRefusal(label, path, false)
+		}
 		resolved, err := ownerOf()
 		if err != nil {
 			return fmt.Errorf("cannot identify the owner of %s: %w", path, err)

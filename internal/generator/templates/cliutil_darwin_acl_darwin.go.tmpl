@@ -80,7 +80,7 @@ func darwinUIDUUID(uid uint32) ([16]byte, error) {
 
 func lookupDarwinUIDUUID(uid uint32) ([16]byte, error) {
 	var zero [16]byte
-	out, err := exec.Command("dsmemberutil", "getuuid", "-u", strconv.FormatUint(uint64(uid), 10)).CombinedOutput() // #nosec G204 -- argv is the fixed membership tool plus a decimal uid.
+	out, err := exec.Command("/usr/bin/dsmemberutil", "getuuid", "-u", strconv.FormatUint(uint64(uid), 10)).CombinedOutput() // #nosec G204 -- fixed system path plus a decimal uid; PATH must not hide it.
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
