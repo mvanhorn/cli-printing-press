@@ -3180,14 +3180,20 @@ func syncDependentResource(ctx context.Context, c interface {
 	tenantUUID := resolveTenantID()
 	parentScopeColumn := parentTenantScopeColumns[dep.ParentTable]
 	parentRows, err := dependentParentRows(db, dep.ParentTable, pathParams, parentScopeColumn, tenantUUID)
-	if err != nil || len(parentRows) == 0 {
-		if len(parentRows) == 0 {
-			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "  %s: skipping (parent table %s is empty, sync it first)\n", dep.Name, dep.ParentTable)
-			}
-			return syncResult{Resource: dep.Name, Duration: time.Since(started)}
+	if err != nil {
+		// Every error path returns no rows, so test the error first or a failed
+		// parent query passes as an empty parent table and the run succeeds.
+		err = fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err)
+		if !humanFriendly {
+			fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, "", err))
 		}
-		return syncResult{Resource: dep.Name, Err: fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err), Duration: time.Since(started)}
+		return syncResult{Resource: dep.Name, Err: err, Duration: time.Since(started)}
+	}
+	if len(parentRows) == 0 {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "  %s: skipping (parent table %s is empty, sync it first)\n", dep.Name, dep.ParentTable)
+		}
+		return syncResult{Resource: dep.Name, Duration: time.Since(started)}
 	}
 	parentCoverageComplete := true
 	coverageReason := ""
