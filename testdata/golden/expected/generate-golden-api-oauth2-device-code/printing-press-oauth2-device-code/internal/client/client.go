@@ -2002,8 +2002,13 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			c.platformSession.RecordRateLimitRequest()
 		}
 		httpClient := c.HTTPClient
+		// Silence on a Timeout-0 transfer aborts that attempt. A body that
+		// keeps arriving may outlive the window. An explicit timeout,
+		// including 0, stays on the client deadline and is only size-limited.
+		var streamIdle time.Duration
 		if binaryResponse && !c.timeoutExplicit {
-			httpClient = StreamingHTTPClient(c.HTTPClient, c.ConfiguredTimeout())
+			streamIdle = c.ConfiguredTimeout()
+			httpClient = StreamingHTTPClient(c.HTTPClient, streamIdle)
 		}
 		if uploadAllowance > 0 && httpClient != nil && httpClient.Timeout > 0 {
 			// Copy so the shared client's timeout is never mutated.
@@ -2020,8 +2025,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			return nil, 0, guardErr
 		}
 		req = guarded
+		var cancelAttempt context.CancelFunc
+		if streamIdle > 0 {
+			attemptCtx, cancel := context.WithCancel(req.Context())
+			cancelAttempt = cancel
+			req = req.WithContext(attemptCtx)
+		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			if cancelAttempt != nil {
+				cancelAttempt()
+			}
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, 0, ctxErr
 			}
@@ -2048,8 +2062,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			return nil, 0, lastErr
 		}
 
-		respBody, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		respBody, err := readLimitedResponse(resp, streamIdle, cancelAttempt)
+		if cancelAttempt != nil {
+			// The body is already closed. Canceling while the transport is
+			// still finishing a successful read drops keep-alive.
+			cancelAttempt()
+		}
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
@@ -2427,9 +2445,11 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("refreshing access token: %w", err)
 	}
 	defer resp.Body.Close()
-
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(truncateBody(body)))
 	}
 
@@ -2438,7 +2458,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		RefreshToken string `json:"refresh_token"`
 		ExpiresIn    int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&tokenResp); err != nil {
 		return fmt.Errorf("parsing refresh response: %w", err)
 	}
 	if tokenResp.AccessToken == "" {
@@ -2533,6 +2553,160 @@ func UnwrapBinaryResponse(body []byte) (raw []byte, contentType string, ok bool)
 		return nil, "", false
 	}
 	return raw, env.ContentType, true
+}
+
+// Caps every buffered response, including bytes net/http already inflated.
+// The ceiling is one below MaxInt64 so the limit-plus-one probe cannot overflow.
+const defaultMaxResponseBytes int64 = 128 << 20
+
+const maxResponseBytesCeiling int64 = math.MaxInt64 - 1
+
+const maxResponseBytesEnv = "PRINTING_PRESS_OAUTH2_MAX_RESPONSE_BYTES"
+
+// ErrResponseTooLarge is returned when a response body exceeds the size limit.
+var ErrResponseTooLarge = errors.New("response exceeds size limit")
+
+// ErrResponseStalled is returned when a Timeout-0 body goes quiet for the
+// configured timeout.
+var ErrResponseStalled = errors.New("response stalled")
+
+func maxResponseBytes() int64 {
+	raw := strings.TrimSpace(cliutil.EnvOverride(maxResponseBytesEnv))
+	if raw == "" {
+		return defaultMaxResponseBytes
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return defaultMaxResponseBytes
+	}
+	if n > maxResponseBytesCeiling {
+		return maxResponseBytesCeiling
+	}
+	return n
+}
+
+func responseTooLargeError(limit int64) error {
+	return fmt.Errorf("%w (%d bytes); set %s to raise the limit", ErrResponseTooLarge, limit, maxResponseBytesEnv)
+}
+
+func readResponseBody(r io.Reader) ([]byte, error) {
+	if r == nil {
+		return nil, nil
+	}
+	limit := maxResponseBytes()
+	buf, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(buf)) > limit {
+		return nil, responseTooLargeError(limit)
+	}
+	return buf, nil
+}
+
+func readLimitedResponse(resp *http.Response, idle time.Duration, cancel context.CancelFunc) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, nil
+	}
+	body := resp.Body
+	if idle > 0 && cancel != nil {
+		body = newIdleResponseBody(resp.Body, idle, cancel)
+	}
+	defer func() { _ = body.Close() }()
+	return readResponseBody(body)
+}
+
+// Close stops the idle timer without canceling. The caller cancels after a
+// finished read so the transport can put the connection back in the pool.
+type idleResponseBody struct {
+	rc       io.ReadCloser
+	timeout  time.Duration
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	timer    *time.Timer
+	deadline time.Time
+	done     bool
+	stalled  bool
+}
+
+func newIdleResponseBody(rc io.ReadCloser, timeout time.Duration, cancel context.CancelFunc) io.ReadCloser {
+	if rc == nil || timeout <= 0 || cancel == nil {
+		return rc
+	}
+	return &idleResponseBody{rc: rc, timeout: timeout, cancel: cancel}
+}
+
+func (b *idleResponseBody) Read(p []byte) (int, error) {
+	b.arm()
+	n, err := b.rc.Read(p)
+	if err == nil {
+		if n > 0 {
+			b.arm()
+		}
+		return n, nil
+	}
+	b.disarm()
+	if !errors.Is(err, io.EOF) && b.wasStalled() {
+		return n, fmt.Errorf("%w: no bytes for %s", ErrResponseStalled, b.timeout)
+	}
+	return n, err
+}
+
+func (b *idleResponseBody) Close() error {
+	b.disarm()
+	if b.rc == nil {
+		return nil
+	}
+	return b.rc.Close()
+}
+
+func (b *idleResponseBody) arm() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.done {
+		return
+	}
+	b.deadline = time.Now().Add(b.timeout)
+	if b.timer == nil {
+		b.timer = time.AfterFunc(b.timeout, b.onIdle)
+		return
+	}
+	b.timer.Reset(b.timeout)
+}
+
+func (b *idleResponseBody) onIdle() {
+	b.mu.Lock()
+	if b.done {
+		b.mu.Unlock()
+		return
+	}
+	if wait := time.Until(b.deadline); wait > 0 {
+		b.timer.Reset(wait)
+		b.mu.Unlock()
+		return
+	}
+	b.stalled = true
+	cancel := b.cancel
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (b *idleResponseBody) disarm() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.done = true
+	if b.timer != nil {
+		b.timer.Stop()
+		b.timer = nil
+	}
+}
+
+func (b *idleResponseBody) wasStalled() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.stalled
 }
 
 // net/http only auto-decompresses encodings it selected itself. A caller-set
