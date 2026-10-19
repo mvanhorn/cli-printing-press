@@ -591,6 +591,11 @@ func codeOrchResolvedNeedsConfirm(selected *codeOrchEndpoint, method, resolvedPa
 	}
 	effective := codeOrchEffectiveQuery(resolvedPath, query)
 	resolvedBase := codeOrchPathBase(resolvedPath)
+	// A literal route is the destination when a placeholder route also
+	// matches. POST /reports/search stays a read even though POST
+	// /reports/{id} matches the same path.
+	selectedMatches := codeOrchRequestMatchesEndpoint(selected.Path, resolvedBase, effective)
+	selectedSpecificity := codeOrchPatternSpecificity(selected.Path)
 	for i := range codeOrchEndpoints {
 		other := &codeOrchEndpoints[i]
 		if other == selected {
@@ -602,11 +607,30 @@ func codeOrchResolvedNeedsConfirm(selected *codeOrchEndpoint, method, resolvedPa
 		if codeOrchNormalizeMethod(other.Method) != method {
 			continue
 		}
-		if codeOrchRequestMatchesEndpoint(other.Path, resolvedBase, effective) {
-			return true
+		if !codeOrchRequestMatchesEndpoint(other.Path, resolvedBase, effective) {
+			continue
 		}
+		if selectedMatches && selectedSpecificity > codeOrchPatternSpecificity(other.Path) {
+			continue
+		}
+		return true
 	}
 	return codeOrchFixedQueryOverridden(selected.Path, effective)
+}
+
+func codeOrchPatternSpecificity(pattern string) int {
+	base := strings.Trim(codeOrchPathBase(pattern), "/")
+	if base == "" {
+		return 0
+	}
+	score := 0
+	for _, seg := range strings.Split(base, "/") {
+		if len(seg) >= 2 && seg[0] == '{' && seg[len(seg)-1] == '}' {
+			continue
+		}
+		score++
+	}
+	return score
 }
 
 func codeOrchPathBase(path string) string {

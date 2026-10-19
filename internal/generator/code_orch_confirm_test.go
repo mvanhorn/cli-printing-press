@@ -108,7 +108,10 @@ func TestCodeOrchExecuteConfirmGate(t *testing.T) {
 	require.Regexp(t, `(?s)ID:\s+"records\.delete",.*?NeedsConfirm:\s+true`, src)
 	require.Regexp(t, `(?s)ID:\s+"marked\.show",.*?NeedsConfirm:\s+true,\s+Mutating:\s+true`, src)
 	require.Regexp(t, `(?s)ID:\s+"reports\.run",.*?NeedsConfirm:\s+false`, src)
+	require.Regexp(t, `(?s)ID:\s+"catalog\.search",.*?NeedsConfirm:\s+false`, src)
+	require.Regexp(t, `(?s)ID:\s+"catalog\.update",.*?NeedsConfirm:\s+true`, src)
 	require.Regexp(t, `(?s)ID:\s+"reports\.wipe",.*?NeedsConfirm:\s+true`, src)
+	require.Contains(t, src, "func codeOrchPatternSpecificity(")
 	require.Regexp(t, `(?s)ID:\s+"rpc\.delete",.*?NeedsConfirm:\s+true,\s+Mutating:\s+true`, src)
 	require.Regexp(t, `(?s)ID:\s+"rpc\.list",.*?NeedsConfirm:\s+false`, src)
 
@@ -251,6 +254,25 @@ func codeOrchConfirmResources() map[string]spec.Resource {
 					Path:        "/reports/wipe",
 					Description: "Wipe reports",
 					Body:        []spec.Param{{Name: "reason", Type: "string"}},
+				},
+			},
+		},
+		"catalog": {
+			Description: "Catalog",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:      "POST",
+					Path:        "/catalog/search",
+					Description: "Search the catalog",
+					Meta:        map[string]string{"mcp:read-only": "true"},
+					Body:        []spec.Param{{Name: "q", Type: "string"}},
+				},
+				"update": {
+					Method:      "POST",
+					Path:        "/catalog/{id}",
+					Description: "Update a catalog entry",
+					Params:      []spec.Param{{Name: "id", Type: "string", Positional: true, PathParam: true}},
+					Body:        []spec.Param{{Name: "note", Type: "string"}},
 				},
 			},
 		},
@@ -466,6 +488,16 @@ func TestCodeOrchConfirmRuntime(t *testing.T) {
 	if strings.Contains(text, "confirmation_required") || calls() != before+1 || last().Method != "POST" || last().Path != "/reports/wipe" {
 		t.Fatalf("wipe confirm = %d %#v text=%s", calls()-before, last(), text)
 	}
+	before = calls()
+	_, text = mustCall(t, false, map[string]any{"endpoint_id": "catalog.search", "params": map[string]any{"q": "open"}})
+	if strings.Contains(text, "confirmation_required") || strings.Contains(text, "changes state") || calls() != before+1 || last().Method != "POST" || last().Path != "/catalog/search" {
+		t.Fatalf("explicit search read = %d %#v text=%s", calls()-before, last(), text)
+	}
+	before = calls()
+	result, text = mustCall(t, true, map[string]any{"endpoint_id": "catalog.search", "params": map[string]any{"q": "open"}})
+	if !result.IsError || !strings.Contains(text, "read-only") || calls() != before {
+		t.Fatalf("explicit search via execute = error:%v calls:%d text:%s", result.IsError, calls()-before, text)
+	}
 
 	before = calls()
 	_, text = mustCall(t, false, map[string]any{"endpoint_id": "rpc.list"})
@@ -567,6 +599,11 @@ func TestCodeOrchConfirmRuntime(t *testing.T) {
 	_, text = mustCall(t, false, map[string]any{"endpoint_id": "reports.run", "params": map[string]any{"name": "quarterly"}})
 	if strings.Contains(text, "CODE_ORCH_CONFIRM_MCP_READ_ONLY") || calls() != before+1 || last().Method != "POST" {
 		t.Fatalf("read-only switch blocked read POST = %d %#v text=%s", calls()-before, last(), text)
+	}
+	before = calls()
+	_, text = mustCall(t, false, map[string]any{"endpoint_id": "catalog.search"})
+	if strings.Contains(text, "CODE_ORCH_CONFIRM_MCP_READ_ONLY") || strings.Contains(text, "changes state") || calls() != before+1 || last().Path != "/catalog/search" {
+		t.Fatalf("read-only switch blocked explicit search = %d %#v text=%s", calls()-before, last(), text)
 	}
 	before = calls()
 	_, text = mustCall(t, false, map[string]any{"endpoint_id": "records.list"})
