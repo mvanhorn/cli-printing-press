@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.33.8](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.7...v4.33.8) (2026-10-19)
+
+
+### Bug Fixes
+
+* **cli:** drop raw discovery captures from published manuscripts ([#5092](https://github.com/mvanhorn/cli-printing-press/issues/5092)) ([a182672](https://github.com/mvanhorn/cli-printing-press/commit/a182672a6c781b744bb0a4a7cfefbfca25772c8e))
+* **cli:** keep single-array record responses intact ([#5091](https://github.com/mvanhorn/cli-printing-press/issues/5091)) ([48da962](https://github.com/mvanhorn/cli-printing-press/commit/48da962f136e92483fff6e3c1b95526b9b62be19))
+* **cli:** require confirmation before code-orchestration writes ([#5097](https://github.com/mvanhorn/cli-printing-press/issues/5097)) ([fa6b34b](https://github.com/mvanhorn/cli-printing-press/commit/fa6b34bd0b6520b208cfd1f626314e151c6520ce))
+* **cli:** send required offset and page on the first sync request ([#5093](https://github.com/mvanhorn/cli-printing-press/issues/5093)) ([c4aa50b](https://github.com/mvanhorn/cli-printing-press/commit/c4aa50b2790751e41d7553abb29a34d10a16b28c))
+* **cli:** skip narrowed sync prune and isolate tenant checkpoints ([#5095](https://github.com/mvanhorn/cli-printing-press/issues/5095)) ([19f0de8](https://github.com/mvanhorn/cli-printing-press/commit/19f0de843a729a5c7850de8f0b76c4c8dabde20f))
+
 ## [4.33.7](https://github.com/mvanhorn/cli-printing-press/compare/v4.33.6...v4.33.7) (2026-10-19)
 
 
