@@ -8,8 +8,13 @@ package cliutil
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -30,6 +35,64 @@ var (
 func init() {
 	activeDarwinACLReader = readDarwinFileSec
 	activeDarwinACLOpen = openDarwinNoFollow
+	activeDarwinOwnerUUID = darwinOwnerUUID
+}
+
+// darwinOwnerUUID is the file owner's membership UUID. fgetattrlist's
+// ATTR_CMN_UUID is the file id, and the filesec owner field is the null
+// GUID, so neither names the user written into an ACE. dsmemberutil is the
+// membership lookup without cgo.
+func darwinOwnerUUID(f *os.File) ([16]byte, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
+		return [16]byte{}, err
+	}
+	runtime.KeepAlive(f)
+	return darwinUIDUUID(st.Uid)
+}
+
+var darwinUIDUUIDCache struct {
+	sync.Mutex
+	uid  uint32
+	uuid [16]byte
+	ok   bool
+}
+
+func darwinUIDUUID(uid uint32) ([16]byte, error) {
+	darwinUIDUUIDCache.Lock()
+	if darwinUIDUUIDCache.ok && darwinUIDUUIDCache.uid == uid {
+		u := darwinUIDUUIDCache.uuid
+		darwinUIDUUIDCache.Unlock()
+		return u, nil
+	}
+	darwinUIDUUIDCache.Unlock()
+	u, err := lookupDarwinUIDUUID(uid)
+	if err != nil {
+		return [16]byte{}, err
+	}
+	darwinUIDUUIDCache.Lock()
+	darwinUIDUUIDCache.uid = uid
+	darwinUIDUUIDCache.uuid = u
+	darwinUIDUUIDCache.ok = true
+	darwinUIDUUIDCache.Unlock()
+	return u, nil
+}
+
+func lookupDarwinUIDUUID(uid uint32) ([16]byte, error) {
+	var zero [16]byte
+	out, err := exec.Command("dsmemberutil", "getuuid", "-u", strconv.FormatUint(uint64(uid), 10)).CombinedOutput() // #nosec G204 -- argv is the fixed membership tool plus a decimal uid.
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return zero, err
+		}
+		return zero, fmt.Errorf("%w: %s", err, msg)
+	}
+	g, err := parseDarwinUUID(string(out))
+	if err != nil || g == zero {
+		return zero, errDarwinACLDecode
+	}
+	return g, nil
 }
 
 func openDarwinNoFollow(path string) (*os.File, error) {

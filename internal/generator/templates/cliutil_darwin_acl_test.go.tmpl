@@ -87,6 +87,60 @@ func TestDarwinACL(t *testing.T) {
 		t.Fatalf("path refusal = %v", err)
 	}
 
+	t.Run("owner lookup", func(t *testing.T) {
+		prev := activeDarwinOwnerUUID
+		t.Cleanup(func() { activeDarwinOwnerUUID = prev })
+		empty := darwinTestAttrList(nil, nil)
+		called := false
+		activeDarwinOwnerUUID = func(*os.File) ([16]byte, error) {
+			called = true
+			return [16]byte{}, errors.New("no uuid")
+		}
+		err := rejectDarwinForeignACLPathFrom(os.Open, func(uintptr) ([]byte, error) {
+			return empty, nil
+		}, path, "file", darwinACLScopeFile)
+		if err != nil || called {
+			t.Fatalf("empty ACL err=%v called=%v", err, called)
+		}
+
+		activeDarwinOwnerUUID = func(*os.File) ([16]byte, error) {
+			return [16]byte{}, errors.New("no uuid")
+		}
+		err = rejectDarwinForeignACLPathFrom(os.Open, func(uintptr) ([]byte, error) {
+			return foreign, nil
+		}, path, "file", darwinACLScopeFile)
+		if err == nil || err.Error() != "cannot identify the owner of "+path+": no uuid" {
+			t.Fatalf("lookup error = %v", err)
+		}
+
+		activeDarwinOwnerUUID = func(*os.File) ([16]byte, error) { return owner, nil }
+		err = rejectDarwinForeignACLPathFrom(os.Open, func(uintptr) ([]byte, error) {
+			return darwinTestAttrList(darwinTestFileSec(false, darwinTestACEs(darwinTestACE{
+				guid:   owner,
+				flags:  darwinACEPermit,
+				rights: darwinVnodeReadData,
+			})), nil), nil
+		}, path, "file", darwinACLScopeFile)
+		if err != nil {
+			t.Fatalf("looked-up owner = %v", err)
+		}
+	})
+
+	t.Run("uuid text matches ACE byte order", func(t *testing.T) {
+		g, err := parseDarwinUUID("A9A1519E-E6B4-4F98-A92D-A5EEC1042340")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want [16]byte
+		copy(want[:], []byte{0xa9, 0xa1, 0x51, 0x9e, 0xe6, 0xb4, 0x4f, 0x98, 0xa9, 0x2d, 0xa5, 0xee, 0xc1, 0x04, 0x23, 0x40})
+		if g != want {
+			t.Fatalf("uuid = %x", g)
+		}
+		if _, err := parseDarwinUUID("not-a-uuid"); err == nil {
+			t.Fatal("accepted a short uuid")
+		}
+	})
+
 	cases := []struct {
 		name    string
 		filesec []byte

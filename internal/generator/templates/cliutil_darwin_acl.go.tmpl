@@ -10,10 +10,12 @@ package cliutil
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -65,9 +67,11 @@ var (
 	errDarwinACLDecode  = errors.New("undecodable darwin acl")
 
 	// Set by the darwin file's init. Nil everywhere else, which is what
-	// keeps Linux from opening the file or calling fgetattrlist.
-	activeDarwinACLReader func(fd uintptr) ([]byte, error)
-	activeDarwinACLOpen   func(path string) (*os.File, error)
+	// keeps Linux from opening the file, calling fgetattrlist, or
+	// resolving an owner UUID.
+	activeDarwinACLReader   func(fd uintptr) ([]byte, error)
+	activeDarwinACLOpen     func(path string) (*os.File, error)
+	activeDarwinOwnerUUID   func(f *os.File) ([16]byte, error)
 )
 
 // CheckDarwinPrivateFileACL reports a non-owner allow entry on a darwin
@@ -90,7 +94,7 @@ func rejectDarwinForeignFile(f *os.File, path, label string, scope darwinACLScop
 	if activeDarwinACLReader == nil || f == nil {
 		return nil
 	}
-	err := rejectDarwinForeignACLFrom(activeDarwinACLReader, f.Fd(), path, label, scope)
+	err := judgeDarwinACLFile(f, activeDarwinACLReader, path, label, scope)
 	runtime.KeepAlive(f)
 	return err
 }
@@ -110,12 +114,24 @@ func rejectDarwinForeignACLPathFrom(open func(string) (*os.File, error), read fu
 		return fmt.Errorf("cannot read ACL of %s: %w", path, err)
 	}
 	defer f.Close()
-	err = rejectDarwinForeignACLFrom(read, f.Fd(), path, label, scope)
+	err = judgeDarwinACLFile(f, read, path, label, scope)
 	runtime.KeepAlive(f)
 	return err
 }
 
+func judgeDarwinACLFile(f *os.File, read func(uintptr) ([]byte, error), path, label string, scope darwinACLScope) error {
+	var ownerOf func() ([16]byte, error)
+	if activeDarwinOwnerUUID != nil {
+		ownerOf = func() ([16]byte, error) { return activeDarwinOwnerUUID(f) }
+	}
+	return rejectDarwinForeignACLFromOwner(read, f.Fd(), ownerOf, path, label, scope)
+}
+
 func rejectDarwinForeignACLFrom(read func(uintptr) ([]byte, error), fd uintptr, path, label string, scope darwinACLScope) error {
+	return rejectDarwinForeignACLFromOwner(read, fd, nil, path, label, scope)
+}
+
+func rejectDarwinForeignACLFromOwner(read func(uintptr) ([]byte, error), fd uintptr, ownerOf func() ([16]byte, error), path, label string, scope darwinACLScope) error {
 	if read == nil {
 		return nil
 	}
@@ -123,16 +139,27 @@ func rejectDarwinForeignACLFrom(read func(uintptr) ([]byte, error), fd uintptr, 
 	if err != nil {
 		return fmt.Errorf("cannot read ACL of %s: %w", path, err)
 	}
-	return judgeDarwinACL(buf, path, label, scope)
+	return judgeDarwinACLOwner(buf, ownerOf, path, label, scope)
 }
 
 func judgeDarwinACL(buf []byte, path, label string, scope darwinACLScope) error {
+	return judgeDarwinACLOwner(buf, nil, path, label, scope)
+}
+
+func judgeDarwinACLOwner(buf []byte, ownerOf func() ([16]byte, error), path, label string, scope darwinACLScope) error {
 	filesec, owner, err := parseDarwinAttrList(buf)
 	if err != nil {
 		return darwinACLRefusal(label, path, false)
 	}
 	if len(filesec) == 0 {
 		return nil
+	}
+	if ownerOf != nil {
+		resolved, err := ownerOf()
+		if err != nil {
+			return fmt.Errorf("cannot identify the owner of %s: %w", path, err)
+		}
+		owner = resolved
 	}
 	if err := evalDarwinFileSec(filesec, owner, scope); err != nil {
 		return darwinACLRefusal(label, path, errors.Is(err, errDarwinACLForeign))
@@ -154,11 +181,12 @@ func darwinACLRefusal(label, path string, foreign bool) error {
 // ATTR_CMN_RETURNED_ATTRS, ATTR_CMN_EXTENDED_SECURITY, and ATTR_CMN_UUID.
 // A missing security attribute is an empty filesec, not an error: the file
 // has no ACL. Fixed attributes follow the length word in the man-page order
-// (ascending bit value): the extended-security attrreference, then the owner
+// (ascending bit value): the extended-security attrreference, then the file
 // UUID. RETURNED_ATTRS is the exception and is always first. The filesec is
-// not inline; its attrreference offset is relative to that reference. The
-// filesec's own owner field is the null GUID in this buffer, so the owner
-// compared below is ATTR_CMN_UUID.
+// not inline; its attrreference offset is relative to that reference. Neither
+// that file UUID nor the filesec's own owner field identifies the owning
+// user: both are the null GUID for a normal local file. The caller supplies
+// the owner's membership UUID when it has one.
 func parseDarwinAttrList(buf []byte) ([]byte, [16]byte, error) {
 	var owner [16]byte
 	if len(buf) < darwinAttrListFixedHeader+darwinAttrReturnedSize {
@@ -283,9 +311,21 @@ func darwinFileSecUint32(magic []byte) (func([]byte) uint32, bool) {
 	}
 }
 
-// A null owner UUID matches nothing. getattrlist fills that UUID from the
-// file owner; an unresolved owner would otherwise let a zero principal through.
+// A null owner UUID matches nothing. An unresolved owner would otherwise
+// let a zero principal through.
 func darwinGUIDIsOwner(principal, owner [16]byte) bool {
 	var zero [16]byte
 	return owner != zero && principal == owner
+}
+
+// parseDarwinUUID reads the text form dsmemberutil prints. The bytes match
+// an ACE guid in display order; they are not word-swapped.
+func parseDarwinUUID(s string) ([16]byte, error) {
+	var g [16]byte
+	raw, err := hex.DecodeString(strings.ReplaceAll(strings.TrimSpace(s), "-", ""))
+	if err != nil || len(raw) != 16 {
+		return g, errDarwinACLDecode
+	}
+	copy(g[:], raw)
+	return g, nil
 }
