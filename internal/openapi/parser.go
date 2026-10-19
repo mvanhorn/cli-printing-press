@@ -6979,16 +6979,15 @@ func singularizeIdentifier(s string) string {
 
 // unwrapItemSchema returns the schema of items inside a list response. Handles
 // four shapes: bare array (return Items.Value), {data: [...]} wrapper (fast
-// path; mirrors mapResponse's handling), single-named-array envelope where the
-// resource is wrapped under its own key alongside scalar/object metadata
-// siblings (e.g. Kalshi's {events: [...], cursor: "..."}), and bare object
-// (no array, treat as a single-item resource and inspect its fields).
+// path; mirrors mapResponse's handling), single-named-array envelope whose
+// other properties are paging or envelope metadata (e.g. {events: [...],
+// cursor: "..."}), and a record (no array, or one array plus a domain field
+// such as an id or commandId — inspect the object's own fields).
 //
-// The single-named-array envelope detection is deliberately strict: it
-// requires *exactly one* array-typed property at the top level. Multi-array
-// envelopes (e.g. /portfolio/positions returning event_positions and
-// market_positions) fall through to the bare-object path; they need explicit
-// per-resource declaration since picking one would lose data.
+// Single-array detection requires exactly one array-typed property and
+// rejects any sibling that is not paging or envelope metadata, so a detail
+// object is not treated as a page. Multi-array envelopes fall through to the
+// record path; picking one array would drop the others.
 func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
 	if schema == nil {
 		return nil
@@ -7005,24 +7004,110 @@ func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
 			return schemaRefValue(data.Items)
 		}
 	}
-	// Single-named-array envelope: object whose only array-typed property is
-	// the resource list, with the rest being pagination/metadata fields. This
-	// catches API patterns like {events: [...], cursor: "..."} where the
-	// wrapper key matches the resource name. Without this, the PK profiler
-	// would walk the wrapper itself and pick a scalar sibling (cursor,
-	// has_more) as the resource ID.
+	// Single-named-array envelope: one array plus paging/envelope siblings
+	// ({events: [...], cursor: "..."}). A record that merely contains one
+	// array keeps its own fields so the PK walk does not pick a child id.
 	if itemRef, _ := singleArrayPropertyRef(schema); itemRef != nil {
 		return schemaRefValue(itemRef)
 	}
 	return schema
 }
 
+// envelopeMetadataPropertyNames lists sibling names that may sit next to a
+// single array when that object is a list envelope. Domain fields are absent
+// on purpose: an id, a command id, or any other record field means the array
+// is one property of the record. Names are matched after stripping case and
+// separators, so TotalCount, nextPageToken, and request_id all hit.
+var envelopeMetadataPropertyNames = func() map[string]bool {
+	names := []string{
+		"after",
+		"before",
+		"continuation",
+		"continuation_token",
+		"count",
+		"current_page",
+		"cursor",
+		"end_cursor",
+		"has_more",
+		"has_next",
+		"has_previous",
+		"item_count",
+		"items_per_page",
+		"limit",
+		"links",
+		"meta",
+		"metadata",
+		"next",
+		"next_cursor",
+		"next_link",
+		"next_offset",
+		"next_page",
+		"next_page_token",
+		"next_page_url",
+		"next_token",
+		"next_url",
+		"offset",
+		"page",
+		"page_count",
+		"page_details",
+		"page_info",
+		"page_number",
+		"page_size",
+		"page_token",
+		"pagination",
+		"paging",
+		"per_page",
+		"prev",
+		"prev_cursor",
+		"prev_page",
+		"previous",
+		"previous_cursor",
+		"previous_page",
+		"request_id",
+		"response_metadata",
+		"result_size_estimate",
+		"results_metadata",
+		"results_per_page",
+		"start_cursor",
+		"status_code",
+		"total",
+		"total_count",
+		"total_items",
+		"total_pages",
+		"total_results",
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[normalizeEnvelopePropertyName(name)] = true
+	}
+	return set
+}()
+
+func normalizeEnvelopePropertyName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if r == '_' || r == '-' {
+			continue
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
+}
+
+func isEnvelopeMetadataProperty(name string) bool {
+	return envelopeMetadataPropertyNames[normalizeEnvelopePropertyName(name)]
+}
+
 // singleArrayPropertyRef returns the items schema ref and property name of an
-// object's sole array-typed property, or nil if zero or multiple array
-// properties exist.
-// Non-array siblings (scalars, objects) are ignored — they're typically
-// pagination metadata.
+// object's sole array-typed property when every other property is paging or
+// envelope metadata. It returns nil when there is not exactly one array, or
+// when a sibling is part of the record. A malformed array (no items) is
+// ignored and does not count as that sibling.
 func singleArrayPropertyRef(schema *openapi3.Schema) (*openapi3.SchemaRef, string) {
+	if schema == nil {
+		return nil, ""
+	}
 	var items *openapi3.SchemaRef
 	var name string
 	count := 0
@@ -7038,10 +7123,26 @@ func singleArrayPropertyRef(schema *openapi3.Schema) (*openapi3.SchemaRef, strin
 		name = propName
 		items = prop.Items
 	}
-	if count == 1 {
-		return items, name
+	if count != 1 || !envelopeMetadataSiblings(schema, name) {
+		return nil, ""
 	}
-	return nil, ""
+	return items, name
+}
+
+func envelopeMetadataSiblings(schema *openapi3.Schema, arrayName string) bool {
+	for propName, propRef := range schema.Properties {
+		if propName == arrayName {
+			continue
+		}
+		prop := schemaRefValue(propRef)
+		if isArraySchema(prop) && prop.Items == nil {
+			continue
+		}
+		if !isEnvelopeMetadataProperty(propName) {
+			return false
+		}
+	}
+	return true
 }
 
 // isScalarSchema reports whether the schema's type is a scalar — string,
