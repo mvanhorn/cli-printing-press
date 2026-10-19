@@ -56,6 +56,14 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	require.NotContains(t, unixSrc, "syscall.Openat", "darwin's syscall package has no Openat")
 	require.Contains(t, unixSrc, "O_NOFOLLOW", "POSIX credentials open must refuse a swapped-in symlink")
 	require.Contains(t, unixSrc, "os.Geteuid()", "POSIX credentials open must check the owner on the descriptor it reads")
+	require.Contains(t, unixSrc, "rejectDarwinForeignFile", "an already-open credential descriptor must be the one whose ACL is judged")
+	require.Contains(t, unixSrc, "darwinACLScopeDir", "credential directories must be judged for a foreign ACL too")
+	aclSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "darwin_acl.go")
+	require.Contains(t, aclSrc, "chmod -N", "an ACL refusal must name the flag that removes it")
+	require.Contains(t, aclSrc, "activeDarwinACLReader", "Linux must be able to stub the darwin reader")
+	darwinSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "darwin_acl_darwin.go")
+	require.Contains(t, darwinSrc, "unix.SYS_FGETATTRLIST", "the darwin ACL read must be the raw fgetattrlist syscall")
+	require.Contains(t, darwinSrc, "FSOPT_REPORT_FULLSIZE", "a short buffer must be detected from the reported size")
 	require.Contains(t, unixSrc, "func ReadOpenedConfig", "POSIX config open must judge and read one descriptor")
 	require.Contains(t, winSrc, "windows.GetSecurityInfo(", "Windows credentials open must check the ACL on the handle it reads")
 	require.Contains(t, winSrc, "func ReadOpenedConfig", "Windows config open must judge and read one handle")
@@ -118,11 +126,12 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	pathsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "paths.go")
 	require.Contains(t, pathsSrc, "renamePrivateFileWithRetryFunc", "private-file publication must expose a testable bounded retry path")
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestEvalCredsSecurity", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cliutil", "-run", "TestEvalCredsSecurity|TestDarwinACL", "-count=1")
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoad_LooseConfigDropsOAuthEndpointOverrides", "-count=1")
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestLooseConfigDoesNotMintClientCredentials", "-count=1")
 	runGeneratedWindowsCLIUtilBuild(t, outputDir)
 	runGeneratedDarwinCLIUtilBuild(t, outputDir)
+	runGeneratedPrivatePermsCrossCompile(t, outputDir)
 
 	// A5: creds_perms_windows.go imports golang.org/x/sys/windows, which makes
 	// golang.org/x/sys a DIRECT dependency of a token-bearing bundle. The
@@ -165,6 +174,27 @@ func runGeneratedDarwinCLIUtilBuild(t *testing.T, outputDir string) {
 	}
 	bin := filepath.Join(t.TempDir(), "cliutil.test")
 	runGeneratedCrossGo(t, outputDir, "darwin", "arm64", "test", "-c", "-o", bin, "./internal/cliutil")
+}
+
+func runGeneratedPrivatePermsCrossCompile(t *testing.T, outputDir string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	targets := []struct {
+		goos, goarch string
+	}{
+		{"darwin", "amd64"},
+		{"darwin", "arm64"},
+		{"linux", "amd64"},
+		{"windows", "amd64"},
+	}
+	for _, target := range targets {
+		for _, pkg := range []string{"./internal/cliutil/", "./internal/platform/"} {
+			runGeneratedCrossGo(t, outputDir, target.goos, target.goarch, "vet", pkg)
+			runGeneratedCrossGo(t, outputDir, target.goos, target.goarch, "build", pkg)
+		}
+	}
 }
 
 func runGeneratedWindowsGo(t *testing.T, outputDir string, args ...string) {

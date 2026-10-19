@@ -16,10 +16,11 @@ require github.com/mark3labs/mcp-go v0.57.0
 // x/sys is a DIRECT dependency for token-bearing bundles. The read-time
 // credentials guard imports golang.org/x/sys/unix on non-Windows
 // (creds_perms_unix.go; darwin's syscall package has no Openat) and
-// golang.org/x/sys/windows on Windows. Emitted as a direct require (no
-// // indirect) so a freshly generated bundle's go.mod is correct out of the
-// box, WITHOUT a manual `go mod tidy`. The version matches the transitive
-// floor below so a single x/sys version is pinned. `go mod tidy` on
-// linux/darwin keeps the require direct because the unix import is compiled
-// there; tidy on Windows keeps it direct because of the windows import.
+// golang.org/x/sys/windows on Windows. darwin_acl_darwin.go also imports
+// golang.org/x/sys/unix. Emitted as a direct require (no // indirect) so a
+// freshly generated bundle's go.mod is correct out of the box, WITHOUT a
+// manual `go mod tidy`. The version matches the transitive floor below so a
+// single x/sys version is pinned. `go mod tidy` on linux/darwin keeps the
+// require direct because a unix import is compiled there; tidy on Windows
+// keeps it direct because of the windows import.
 require golang.org/x/sys v0.46.0

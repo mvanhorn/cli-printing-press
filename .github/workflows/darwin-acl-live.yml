@@ -1,0 +1,47 @@
+name: Darwin ACL
+
+on:
+  pull_request:
+    paths:
+      - internal/generator/templates/cliutil_darwin_acl.go.tmpl
+      - internal/generator/templates/cliutil_darwin_acl_darwin.go.tmpl
+      - internal/generator/templates/cliutil_darwin_acl_test.go.tmpl
+      - internal/generator/templates/cliutil_darwin_acl_live_test.go.tmpl
+      - internal/generator/templates/cliutil_creds_perms_unix.go.tmpl
+      - internal/generator/templates/platform_perms_unix.go.tmpl
+      - internal/generator/generator.go
+      - .github/workflows/darwin-acl-live.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: darwin-acl-live
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build generator
+        run: go build -o ./cli-printing-press ./cmd/cli-printing-press
+        env:
+          CGO_ENABLED: "0"
+
+      - name: Generate and run the live ACL test
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/stytch-pp-cli"
+          ./cli-printing-press generate --spec ./testdata/stytch.yaml --output "$out"
+          cd "$out"
+          go test -count=1 -run '^TestDarwinACLLive$' ./internal/cliutil
+        env:
+          CGO_ENABLED: "0"

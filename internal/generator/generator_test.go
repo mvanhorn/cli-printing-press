@@ -125,6 +125,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/filelock_unix.go",
 		"internal/cliutil/filelock_windows.go",
 		"internal/cliutil/filelock_test.go",
+		"internal/cliutil/darwin_acl.go",
+		"internal/cliutil/darwin_acl_darwin.go",
+		"internal/cliutil/darwin_acl_test.go",
+		"internal/cliutil/darwin_acl_live_test.go",
 	}
 
 	tests := []struct {
@@ -168,9 +172,12 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: cliutil.EncodeQuery and its test.
 		// +1: creds_perms_windows_test.go, the Windows SDDL alias resolver
 		// test. Auth-gated, so it lands for every token-bearing spec.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 188},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 192},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 189},
+		// +4: darwin ACL judgment (darwin_acl.go, darwin_acl_darwin.go,
+		// darwin_acl_test.go, darwin_acl_live_test.go). Always emitted:
+		// profile checks exist when auth is none.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 192},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 196},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 193},
 	}
 
 	for _, tt := range tests {
@@ -369,7 +376,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 
 	// All cliutil files must be emitted.
 	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
-	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "query.go", "query_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "filelock_test.go"} {
+	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "query.go", "query_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "filelock_test.go", "darwin_acl.go", "darwin_acl_darwin.go", "darwin_acl_test.go", "darwin_acl_live_test.go"} {
 		_, err := os.Stat(filepath.Join(cliutilDir, name))
 		require.NoError(t, err, "expected %s to be emitted", name)
 	}
@@ -399,6 +406,11 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"filelock_windows.go", "golang.org/x/sys/windows"},
 		{"filelock_windows.go", "windows.LockFileEx("},
 		{"filelock_windows.go", "windows.LOCKFILE_FAIL_IMMEDIATELY"},
+		{"darwin_acl.go", "func CheckDarwinPrivateFileACL("},
+		{"darwin_acl.go", "chmod -N"},
+		{"darwin_acl_darwin.go", "unix.SYS_FGETATTRLIST"},
+		{"darwin_acl_darwin.go", "/usr/bin/dsmemberutil"},
+		{"darwin_acl_live_test.go", "func TestDarwinACLLive("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)

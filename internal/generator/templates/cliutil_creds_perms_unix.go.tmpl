@@ -7,6 +7,8 @@
 // S1 (POSIX): refuse to load a persisted token/credentials file that is group-
 // or world-accessible, or that is not owned by the user the process is running
 // as. The owner must be the only principal with any access (mode 0600 / 0400).
+// On darwin an allow ACL entry for another principal is the same failure:
+// mode bits do not show it, and chmod 600 does not remove it.
 // This is the runtime READ-TIME enforcement: a file written 0600 can later
 // drift to loose perms, and this file holds a live bearer/OAuth token.
 package cliutil
@@ -30,7 +32,10 @@ func VerifyCredsPerms(path string) error {
 	if err != nil {
 		return fmt.Errorf("cannot stat credentials/token file: %w", err)
 	}
-	return verifyUnixPrivateFile(fi, path)
+	if err := verifyUnixPrivateFile(fi, path); err != nil {
+		return err
+	}
+	return rejectDarwinForeignACLPath(path, "file", darwinACLScopeFile)
 }
 
 func verifyUnixPrivateFile(fi os.FileInfo, path string) error {
@@ -51,7 +56,7 @@ func verifyUnixPrivateFile(fi os.FileInfo, path string) error {
 	return nil
 }
 
-func verifyUnixCredentialDir(fi os.FileInfo, path string) error {
+func verifyUnixCredentialDir(f *os.File, fi os.FileInfo, path string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", path)
 	}
@@ -66,7 +71,7 @@ func verifyUnixCredentialDir(fi os.FileInfo, path string) error {
 	if uid != uint32(os.Geteuid()) {
 		return fmt.Errorf("directory is not owned by the current user; run: chown \"$USER\" %s", path)
 	}
-	return nil
+	return rejectDarwinForeignFile(f, path, "directory", darwinACLScopeDir)
 }
 
 func unixFileUID(fi os.FileInfo) (uint32, bool) {
@@ -99,8 +104,8 @@ func ReadOpenedConfig(path string) (OpenedConfig, error) {
 	var permErr error
 	if !fi.Mode().IsRegular() {
 		permErr = fmt.Errorf("file is not a regular file: %s", path)
-	} else {
-		permErr = verifyUnixPrivateFile(fi, path)
+	} else if permErr = verifyUnixPrivateFile(fi, path); permErr == nil {
+		permErr = rejectDarwinForeignFile(f, path, "file", darwinACLScopeFile)
 	}
 	if configReadHook != nil {
 		configReadHook()
@@ -148,7 +153,7 @@ func readExplicitCredentialBytes(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyUnixCredentialDir(dataInfo, filepath.Join(profileDir, dataName)); err != nil {
+	if err := verifyUnixCredentialDir(dataFile, dataInfo, filepath.Join(profileDir, dataName)); err != nil {
 		return nil, &credentialTrustError{msg: err.Error(), present: true}
 	}
 	credFile, err := openatNoFollow(int(dataFile.Fd()), fileName, syscall.O_RDONLY)
@@ -165,16 +170,23 @@ func readVerifiedCredential(f *os.File, path string) ([]byte, error) {
 		return nil, err
 	}
 	if err := verifyUnixPrivateFile(fi, path); err != nil {
-		data, readErr := io.ReadAll(f)
-		if readErr != nil {
-			return nil, &credentialTrustError{msg: err.Error(), present: true}
-		}
-		return nil, &credentialTrustError{msg: err.Error(), present: credentialsBytesHaveValues(data)}
+		return credentialPermFailure(f, err)
+	}
+	if err := rejectDarwinForeignFile(f, path, "file", darwinACLScopeFile); err != nil {
+		return credentialPermFailure(f, err)
 	}
 	if credentialReadHook != nil {
 		credentialReadHook()
 	}
 	return io.ReadAll(f)
+}
+
+func credentialPermFailure(f *os.File, err error) ([]byte, error) {
+	data, readErr := io.ReadAll(f)
+	if readErr != nil {
+		return nil, &credentialTrustError{msg: err.Error(), present: true}
+	}
+	return nil, &credentialTrustError{msg: err.Error(), present: credentialsBytesHaveValues(data)}
 }
 
 func openatNoFollow(dirfd int, name string, flags int) (*os.File, error) {
