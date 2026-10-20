@@ -726,16 +726,17 @@ func TestGeneratedREADMEPathsSectionFollowsAuthSurface(t *testing.T) {
 // TestGeneratedREADMENamesWindowsPathsBesideUnix asserts a rendered README
 // keeps the macOS/Unix setup strings and names the Windows forms beside
 // them. The Windows config path follows the emitted resolver
-// (os.UserHomeDir + .config + <name>-pp-cli + config.<format>), including
-// the empty-format fallback to json.
+// (os.UserHomeDir + .config + <name>-pp-cli + config.<format>). An omitted
+// format is normalized to toml before render; an explicit json format stays json.
 func TestGeneratedREADMENamesWindowsPathsBesideUnix(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		format     string
-		configPath string
-		wantFile   string
+		name         string
+		format       string
+		configPath   string
+		wantUnixPath string
+		wantFile     string
 	}{
 		{
 			name:       "toml-default",
@@ -750,9 +751,10 @@ func TestGeneratedREADMENamesWindowsPathsBesideUnix(t *testing.T) {
 			wantFile:   "config.json",
 		},
 		{
-			name:     "format-fallback",
-			format:   "",
-			wantFile: "config.json",
+			name:         "omitted-format",
+			format:       "",
+			wantUnixPath: "~/.config/omitted-format-pp-cli/config.toml",
+			wantFile:     "config.toml",
 		},
 	}
 
@@ -795,7 +797,11 @@ func TestGeneratedREADMENamesWindowsPathsBesideUnix(t *testing.T) {
 				"Under `"+psAssign+"`, the four dirs resolve to `C:\\srv\\"+tt.name+"\\config`, `C:\\srv\\"+tt.name+"\\data`, `C:\\srv\\"+tt.name+"\\state`, and `C:\\srv\\"+tt.name+"\\cache`.")
 
 			windowsConfig := `%USERPROFILE%\.config\` + tt.name + `-pp-cli\` + tt.wantFile
-			unixClause := "The platform-default config path is `" + tt.configPath + "` on macOS/Linux and `" + windowsConfig + "` on Windows;"
+			unixPath := tt.wantUnixPath
+			if unixPath == "" {
+				unixPath = tt.configPath
+			}
+			unixClause := "The platform-default config path is `" + unixPath + "` on macOS/Linux and `" + windowsConfig + "` on Windows;"
 			assert.Contains(t, content, unixClause)
 			assert.NotContains(t, content, `%APPDATA%\`+tt.name,
 				"platform-default config dir is the user profile .config tree, not APPDATA")

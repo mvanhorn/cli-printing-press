@@ -2204,9 +2204,38 @@ func validateSessionHandshake(c AuthConfig) error {
 	}
 }
 
+// ConfigFormatTOML is filled in when a spec omits config.format.
+// Templates treat a zero Format as JSON, so the omission has to be filled
+// before render.
+const ConfigFormatTOML = "toml"
+
 type ConfigSpec struct {
-	Format string `yaml:"format" json:"format"` // toml, yaml
+	Format string `yaml:"format" json:"format"` // toml, yaml, or json; empty selects ConfigFormatTOML
 	Path   string `yaml:"path" json:"path"`
+}
+
+// ApplyOmittedConfigDefaults fills a missing config format and path.
+// Any format other than toml is rendered with encoding/json, so a zero
+// Format would emit config.json. Non-empty values are kept.
+func (s *APISpec) ApplyOmittedConfigDefaults() {
+	if s == nil {
+		return
+	}
+	format := strings.TrimSpace(s.Config.Format)
+	if format == "" {
+		format = ConfigFormatTOML
+	}
+	s.Config.Format = format
+	path := strings.TrimSpace(s.Config.Path)
+	if path != "" {
+		s.Config.Path = path
+		return
+	}
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		return
+	}
+	s.Config.Path = fmt.Sprintf("~/.config/%s-pp-cli/config.%s", name, format)
 }
 
 // CacheConfig gates the auto-refresh machinery emitted into a printed CLI.
@@ -3606,6 +3635,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
+	s.ApplyOmittedConfigDefaults()
 	return &s, nil
 }
 
