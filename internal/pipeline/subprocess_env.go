@@ -277,7 +277,12 @@ func applySubprocessEnv(cmd *exec.Cmd, env []string) {
 		applyDefaultSubprocessEnv(cmd)
 		return
 	}
-	cmd.Env = append([]string(nil), env...)
+	// Copy into a non-nil slice. append onto a nil base returns nil when
+	// env is empty, and a nil cmd.Env makes the child inherit the parent
+	// process environment.
+	cloned := make([]string, len(env))
+	copy(cloned, env)
+	cmd.Env = cloned
 }
 
 // putEnv sets key to value, dropping every earlier assignment of that same

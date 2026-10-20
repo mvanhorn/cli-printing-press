@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -53,8 +54,9 @@ func TestApplySubprocessEnvCopiesExplicitEnv(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	applySubprocessEnv(cmd, src)
 	src[0] = "A=mutated"
-	src = append(src, "C=3")
+	grown := append(src, "C=3")
 	assert.Equal(t, []string{"A=1", "B=2"}, cmd.Env)
+	assert.Equal(t, []string{"A=mutated", "B=2", "C=3"}, grown)
 }
 
 func TestApplySubprocessEnvNilUsesSubprocessSnapshot(t *testing.T) {
@@ -65,7 +67,7 @@ func TestApplySubprocessEnvNilUsesSubprocessSnapshot(t *testing.T) {
 }
 
 func TestApplySubprocessEnvEmptyDoesNotInheritAmbient(t *testing.T) {
-	if os.Getenv("PP_SUBPROCESS_ENV_PROBE") == "1" {
+	if slices.Contains(os.Args, "pp-empty-env-child") {
 		if _, ok := os.LookupEnv("PP_AMBIENT_SENTINEL"); ok {
 			_, _ = os.Stderr.WriteString("inherited\n")
 			os.Exit(1)
@@ -75,8 +77,10 @@ func TestApplySubprocessEnvEmptyDoesNotInheritAmbient(t *testing.T) {
 	}
 
 	t.Setenv("PP_AMBIENT_SENTINEL", "secret")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestApplySubprocessEnvEmptyDoesNotInheritAmbient$")
-	applySubprocessEnv(cmd, []string{"PP_SUBPROCESS_ENV_PROBE=1"})
+	cmd := exec.Command(os.Args[0], "-test.run=^TestApplySubprocessEnvEmptyDoesNotInheritAmbient$", "pp-empty-env-child")
+	applySubprocessEnv(cmd, []string{})
+	require.NotNil(t, cmd.Env)
+	require.Empty(t, cmd.Env)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "child output: %s", out)
 	assert.Contains(t, string(out), "clean")
@@ -174,7 +178,7 @@ func TestRunVerifyMockProbesCannotReachRealHost(t *testing.T) {
 
 	require.NotEmpty(t, records)
 	var base string
-	var sawDoctor, sawList, sawCreate, sawHelp, sawEvent bool
+	var sawDoctor, sawList, sawCreate, sawDelete, sawPurge, sawSync, sawImport, sawHelp, sawEvent bool
 	for _, rec := range records {
 		if rec.Verify != "1" || rec.LiveHTTP != "1" || rec.Token != "mock-token-for-testing" {
 			t.Fatalf("probe missing mock env: %+v", rec)
@@ -200,17 +204,29 @@ func TestRunVerifyMockProbesCannotReachRealHost(t *testing.T) {
 			sawList = true
 		case len(rec.Args) == 1 && rec.Args[0] == "create":
 			sawCreate = true
+		case len(rec.Args) == 1 && rec.Args[0] == "delete":
+			sawDelete = true
+		case len(rec.Args) == 1 && rec.Args[0] == "purge":
+			sawPurge = true
+		case len(rec.Args) == 1 && rec.Args[0] == "sync":
+			sawSync = true
+		case len(rec.Args) == 1 && rec.Args[0] == "import":
+			sawImport = true
 		}
-		if containsArg(rec.Args, "--help") {
+		if slices.Contains(rec.Args, "--help") {
 			sawHelp = true
 		}
-		if containsArg(rec.Args, "--event") && containsArg(rec.Args, "mock-event-123") {
+		if slices.Contains(rec.Args, "--event") && slices.Contains(rec.Args, "mock-event-123") {
 			sawEvent = true
 		}
 	}
 	assert.True(t, sawDoctor, "bare doctor probe did not run")
 	assert.True(t, sawList, "bare list probe did not run")
 	assert.True(t, sawCreate, "bare create probe did not run")
+	assert.True(t, sawDelete, "bare delete probe did not run in mock mode")
+	assert.True(t, sawPurge, "bare purge probe did not run in mock mode")
+	assert.True(t, sawSync, "bare sync probe did not run in mock mode")
+	assert.True(t, sawImport, "bare import probe did not run in mock mode")
 	assert.True(t, sawHelp, "help probe did not run")
 	assert.True(t, sawEvent, "required-flag discovery did not survive the mock env")
 	assert.Equal(t, int32(0), hits.Load())
@@ -244,7 +260,7 @@ func TestRunVerifyLiveProbesKeepLiveEnv(t *testing.T) {
 		if rec.Token == "mock-token-for-testing" || loopbackHost(rec.Base) {
 			t.Fatalf("live probe received mock target: %+v", rec)
 		}
-		dryRun := containsArg(rec.Args, "--dry-run")
+		dryRun := slices.Contains(rec.Args, "--dry-run")
 		doctorJSON := len(rec.Args) >= 2 && rec.Args[0] == "doctor" && rec.Args[1] == "--json"
 		if dryRun || doctorJSON {
 			if rec.Verify != "1" {
@@ -265,7 +281,7 @@ func TestRunVerifyLiveProbesKeepLiveEnv(t *testing.T) {
 		if doctorJSON {
 			sawDoctorJSON = true
 		}
-		if len(rec.Args) >= 2 && rec.Args[0] == "list" && containsArg(rec.Args, "--json") && !dryRun {
+		if len(rec.Args) >= 2 && rec.Args[0] == "list" && slices.Contains(rec.Args, "--json") && !dryRun {
 			sawListJSON = true
 		}
 	}
@@ -274,6 +290,122 @@ func TestRunVerifyLiveProbesKeepLiveEnv(t *testing.T) {
 	assert.True(t, sawDoctorJSON, "live browser-session proof did not run")
 	assert.True(t, sawListJSON, "live read execute did not run")
 	assert.Equal(t, int32(0), hits.Load())
+}
+
+func TestBareProbeAllowedSkipsLiveMutationsUntilDestructive(t *testing.T) {
+	cases := []struct {
+		name  string
+		mode  string
+		allow bool
+		cmd   discoveredCommand
+		side  bool
+		want  bool
+	}{
+		{name: "live delete", mode: "live", cmd: discoveredCommand{Name: "delete", Kind: "write"}, want: false},
+		{name: "live purge", mode: "live", cmd: discoveredCommand{Name: "purge", Kind: "write"}, want: false},
+		{name: "live annotated delete", mode: "live", cmd: discoveredCommand{Name: "items", Kind: "write", Annotations: map[string]string{endpointMethodAnnotation: "DELETE"}}, want: false},
+		{name: "live sync", mode: "live", cmd: discoveredCommand{Name: "sync", Kind: "data-layer"}, want: false},
+		{name: "live import", mode: "live", cmd: discoveredCommand{Name: "import", Kind: "data-layer"}, want: false},
+		{name: "live sql", mode: "live", cmd: discoveredCommand{Name: "sql", Kind: "data-layer"}, want: false},
+		{name: "live view side effect", mode: "live", cmd: discoveredCommand{Name: "view", Kind: "read"}, side: true, want: false},
+		{name: "live write when destructive allowed", mode: "live", allow: true, cmd: discoveredCommand{Name: "delete", Kind: "write"}, side: true, want: true},
+		{name: "live data-layer when destructive allowed", mode: "live", allow: true, cmd: discoveredCommand{Name: "import", Kind: "data-layer"}, want: true},
+		{name: "live list", mode: "live", cmd: discoveredCommand{Name: "list", Kind: "read"}, want: true},
+		{name: "live doctor", mode: "live", cmd: discoveredCommand{Name: "doctor", Kind: "local"}, want: true},
+		{name: "live unknown kind", mode: "live", cmd: discoveredCommand{Name: "widgets", Kind: ""}, want: false},
+		{name: "mock write", mode: "mock", cmd: discoveredCommand{Name: "delete", Kind: "write"}, want: true},
+		{name: "mock side effect", mode: "mock", cmd: discoveredCommand{Name: "view", Kind: "read"}, side: true, want: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, bareProbeAllowed(tt.mode, tt.allow, tt.cmd, tt.side))
+		})
+	}
+}
+
+func TestRunVerifyLiveBareWriteProbeRespectsAllowDestructive(t *testing.T) {
+	t.Run("blocked", func(t *testing.T) {
+		report, records, hits := runLiveProbeVerify(t, false)
+		if report == nil || report.Verdict != "PASS" || report.Mode != "live" || hits != 0 {
+			t.Fatalf("blocked live verify mode=%s verdict=%s hits=%d\nreport=%s\nlog=%s",
+				verifyModeOf(report), verifyVerdict(report), hits, marshalReport(report), formatProbeRecords(records))
+		}
+		var sawDeleteDryRun, sawRead bool
+		for _, rec := range records {
+			if rec.Token != "live-secret" {
+				t.Fatalf("live credential missing on a probe that did run: %+v", rec)
+			}
+			name := ""
+			if len(rec.Args) > 0 {
+				name = rec.Args[0]
+			}
+			bare := len(rec.Args) == 1
+			if bare && (name == "delete" || name == "purge" || name == "view" || name == "sync" || name == "import") {
+				t.Fatalf("bare live mutation ran: %+v", rec)
+			}
+			if (name == "delete" || name == "purge" || name == "sync" || name == "import") && !helpOrDryRun(rec.Args) {
+				t.Fatalf("live mutation body ran: %+v", rec)
+			}
+			if name == "delete" && slices.Contains(rec.Args, "--dry-run") {
+				sawDeleteDryRun = true
+			}
+			if bare && (name == "doctor" || name == "list") {
+				sawRead = true
+			}
+		}
+		assert.True(t, sawDeleteDryRun, "delete dry-run did not keep the live credential")
+		assert.True(t, sawRead, "live read probes were skipped with the writes")
+		assert.Equal(t, int32(0), hits)
+	})
+
+	t.Run("allowed", func(t *testing.T) {
+		report, records, hits := runLiveProbeVerify(t, true)
+		if report == nil || report.Verdict != "PASS" || report.Mode != "live" || hits == 0 {
+			t.Fatalf("allowed live verify mode=%s verdict=%s hits=%d\nreport=%s\nlog=%s",
+				verifyModeOf(report), verifyVerdict(report), hits, marshalReport(report), formatProbeRecords(records))
+		}
+		saw := map[string]bool{}
+		for _, rec := range records {
+			if len(rec.Args) == 1 {
+				saw[rec.Args[0]] = true
+			}
+		}
+		for _, name := range []string{"delete", "purge", "view", "sync", "import"} {
+			assert.Truef(t, saw[name], "AllowDestructive did not bare-probe %s", name)
+		}
+		assert.Greater(t, hits, int32(0))
+	})
+}
+
+func runLiveProbeVerify(t *testing.T, allowDestructive bool) (*VerifyReport, []probeRecord, int32) {
+	t.Helper()
+	dir, specPath := writeProbeCLI(t)
+	sentinel, hits := startLeakSentinel(t)
+	logPath := filepath.Join(t.TempDir(), "probe.log")
+	t.Setenv("PRINTING_PRESS_VERIFY", "0")
+	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "0")
+	t.Setenv("PROBE_BASE_URL", "https://jobs.example")
+	t.Setenv("PROBE_TOKEN", "ambient-should-lose-to-api-key")
+	t.Setenv("PP_PROBE_LOG", logPath)
+	t.Setenv("PP_SENTINEL_URL", sentinel.URL)
+	t.Setenv("PP_PROBE_MODE", "live")
+	t.Setenv("PP_PROBE_DIAL_BODY", "1")
+
+	report, err := RunVerify(VerifyConfig{
+		Dir:              dir,
+		SpecPath:         specPath,
+		APIKey:           "live-secret",
+		AllowDestructive: allowDestructive,
+	})
+	records := readProbeRecords(t, logPath)
+	if err != nil {
+		t.Fatalf("live verify: %v\nreport=%s\nlog=%s", err, marshalReport(report), formatProbeRecords(records))
+	}
+	return report, records, hits.Load()
+}
+
+func helpOrDryRun(args []string) bool {
+	return slices.Contains(args, "--help") || slices.Contains(args, "-h") || slices.Contains(args, "help") || slices.Contains(args, "--dry-run")
 }
 
 func browserProofAuth() apispec.AuthConfig {
@@ -327,7 +459,7 @@ func readProbeRecords(t *testing.T, path string) []probeRecord {
 		t.Fatalf("read probe log: %v", err)
 	}
 	var records []probeRecord
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -372,15 +504,6 @@ func verifyModeOf(report *VerifyReport) string {
 		return ""
 	}
 	return report.Mode
-}
-
-func containsArg(args []string, want string) bool {
-	for _, arg := range args {
-		if arg == want {
-			return true
-		}
-	}
-	return false
 }
 
 func loopbackHost(raw string) bool {
@@ -515,6 +638,12 @@ func main() {
 		contactSentinel()
 		os.Exit(2)
 	}
+	if len(args) == 1 && os.Getenv("PP_PROBE_DIAL_BODY") == "1" {
+		switch args[0] {
+		case "delete", "purge", "view", "sync", "import":
+			contactSentinel()
+		}
+	}
 	if doctorJSON(args) {
 		if os.Getenv("PRINTING_PRESS_VERIFY") == "1" {
 			_, _ = os.Stdout.WriteString("{\"browser_session_proof\":\"valid\",\"browser_session_proof_detail\":\"synthetic\"}\n")
@@ -573,13 +702,15 @@ func writeHelp(args []string) {
 	}
 	switch cmd {
 	case "":
-		_, _ = os.Stdout.WriteString("probe fixture\n\nUsage:\n  probe-pp-cli [command]\n\nAvailable Commands:\n  doctor  Check connectivity\n  list    List items\n  create  Create an item\n\nFlags:\n  -h, --help   help for probe-pp-cli\n")
+		_, _ = os.Stdout.WriteString("probe fixture\n\nUsage:\n  probe-pp-cli [command]\n\nAvailable Commands:\n  doctor  Check connectivity\n  list    List items\n  create  Create an item\n  delete  Delete an item\n  purge   Purge items\n  view    Open an item\n  sync    Sync items\n  import  Import items\n\nFlags:\n  -h, --help   help for probe-pp-cli\n")
 	case "doctor":
 		_, _ = os.Stdout.WriteString("Check connectivity\n\nUsage:\n  probe-pp-cli doctor [flags]\n")
 	case "list":
 		_, _ = os.Stdout.WriteString("List items\n\nUsage:\n  probe-pp-cli list [flags]\n")
 	case "create":
 		_, _ = os.Stdout.WriteString("Create an item\n\nUsage:\n  probe-pp-cli create <id> [flags]\n")
+	case "view":
+		_, _ = os.Stdout.WriteString("Open an item in a browser tab\n\nUsage:\n  probe-pp-cli view [flags]\n")
 	default:
 		_, _ = os.Stdout.WriteString("Usage:\n  probe-pp-cli " + cmd + " [flags]\n")
 	}

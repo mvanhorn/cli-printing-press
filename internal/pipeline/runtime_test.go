@@ -179,7 +179,7 @@ func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	binary := buildCommandProbeBinary(t)
 	cmd := discoveredCommand{Name: "items", Kind: "read"}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false, true)
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
 	assert.False(t, result.Execute)
@@ -196,7 +196,7 @@ func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false, true)
 
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
@@ -217,7 +217,7 @@ func TestRunCommandTestsUsesSafeHappyArgsArgv(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", env, false)
+	result := runCommandTests(binary, cmd, "mock", env, false, true)
 
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
@@ -602,7 +602,7 @@ func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
 		Args: []string{"mock-value"},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false, true)
 
 	assert.True(t, result.Help)
 	assert.False(t, result.DryRun)
@@ -1543,13 +1543,13 @@ func TestRunCommandTestsSkipsLiveWriteExecuteUnlessAllowed(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "live", env, false)
+	result := runCommandTests(binary, cmd, "live", env, false, true)
 	require.True(t, result.Execute, "live write execute is treated as skipped/pass")
 	assert.Equal(t, 3, result.Score)
 	assert.NotContains(t, readProbeLog(t, logFile), "whereabouts Alice --query sunset --json")
 
 	require.NoError(t, os.Remove(logFile))
-	result = runCommandTests(binary, cmd, "live", env, true)
+	result = runCommandTests(binary, cmd, "live", env, true, true)
 	require.True(t, result.Execute)
 	assert.Equal(t, 3, result.Score)
 	assert.Contains(t, readProbeLog(t, logFile), "whereabouts Alice --query sunset --json")

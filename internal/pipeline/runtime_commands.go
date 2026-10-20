@@ -183,11 +183,14 @@ func commandHappyArgs(cmd discoveredCommand) happyArgs {
 	return parseHappyArgsAnnotation(cmd.Annotations[happyArgsAnnotation])
 }
 
-func commandInvocationInputs(binary string, cmd discoveredCommand, env []string) ([]string, []string) {
+func commandInvocationInputs(binary string, cmd discoveredCommand, env []string, bareProbe bool) ([]string, []string) {
 	happy := commandHappyArgs(cmd)
 	positionals := mergeHappyPositionals(cmd.Args, happy.positionals)
 
-	flags := inferRequiredFlags(binary, cmd.Name, env)
+	var flags []string
+	if bareProbe {
+		flags = inferRequiredFlags(binary, cmd.Name, env)
+	}
 	if flags == nil {
 		flags = workflowTestFlags(cmd.Name)
 	}

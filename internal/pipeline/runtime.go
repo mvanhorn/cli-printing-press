@@ -296,18 +296,22 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 7. Run tests
 	for i, cmd := range commands {
 		env := buildEnv()
-		// Mock-mode side-effect detection: if the command opens a
-		// browser tab or otherwise performs a visible action that the
-		// PRINTING_PRESS_VERIFY env var alone may not gate, skip its
-		// Execute test to avoid spamming the user's environment during
-		// verify. The DryRun and Help tests still run — those are read-
-		// only by definition.
-		if report.Mode == "mock" && isSideEffectCommand(binaryPath, &commands[i], cfg.Dir, env) {
+		// Mock mode skips Execute for commands that open a browser or
+		// dial out, because PRINTING_PRESS_VERIFY alone may not gate an
+		// older handler. Live mode still needs that scan when destructive
+		// calls are off: the bare required-flag probe runs the command
+		// body before the execute gate, and a side-effect read would
+		// otherwise dial with the live credential.
+		sideEffect := false
+		if report.Mode == "mock" || (report.Mode == "live" && !cfg.AllowDestructive) {
+			sideEffect = isSideEffectCommand(binaryPath, &commands[i], cfg.Dir, env)
+		}
+		if report.Mode == "mock" && sideEffect {
 			result := runSideEffectSafeCommandTests(binaryPath, commands[i], env)
 			report.Results = append(report.Results, result)
 			continue
 		}
-		result := runCommandTests(binaryPath, cmd, report.Mode, env, cfg.AllowDestructive)
+		result := runCommandTests(binaryPath, cmd, report.Mode, env, cfg.AllowDestructive, bareProbeAllowed(report.Mode, cfg.AllowDestructive, cmd, sideEffect))
 		commands[i] = cmd // preserve classification
 		report.Results = append(report.Results, result)
 	}
@@ -499,8 +503,37 @@ func runSideEffectSafeCommandTests(binary string, cmd discoveredCommand, env []s
 	return result
 }
 
+// bareProbeAllowed reports whether required-flag discovery may invoke the
+// command with no arguments. That probe runs the command body before the
+// live execute gate. With a live credential injected, a parameterless
+// mutation (or a side-effect read) would send a real request, so those
+// commands stay unprobed unless destructive calls are allowed. Mock mode
+// still probes them; the mock server absorbs the body.
+//
+// Data-layer commands are not kind write: classification returns before
+// the mutation check, which hides writers such as import. Dry-run and
+// execute are already skipped for that kind, so the bare probe's only
+// effect is to run the body. Kinds other than read and local are denied
+// so a new or missing classification cannot run a live body.
+func bareProbeAllowed(mode string, allowDestructive bool, cmd discoveredCommand, sideEffect bool) bool {
+	if mode != "live" || allowDestructive {
+		return true
+	}
+	if sideEffect {
+		return false
+	}
+	switch cmd.Kind {
+	case "read", "local":
+		return true
+	default:
+		return false
+	}
+}
+
 // runCommandTests executes the test suite for a single command.
-func runCommandTests(binary string, cmd discoveredCommand, mode string, env []string, allowDestructive bool) CommandResult {
+// bareProbe is false when the no-argument required-flag probe would run a
+// live write or side-effect body. Help and dry-run still run.
+func runCommandTests(binary string, cmd discoveredCommand, mode string, env []string, allowDestructive, bareProbe bool) CommandResult {
 	result := CommandResult{
 		Command: cmd.Name,
 		Kind:    cmd.Kind,
@@ -514,7 +547,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Get any required flags/args for this command.
 	// First, probe the binary for cobra-declared required flags (generic, spec-agnostic).
 	// Then fall back to the positional-arg map for commands that take bare positionals.
-	positionals, extraFlags := commandInvocationInputs(binary, cmd, env)
+	positionals, extraFlags := commandInvocationInputs(binary, cmd, env, bareProbe)
 
 	// Build positional args + flags for test invocations
 	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {
