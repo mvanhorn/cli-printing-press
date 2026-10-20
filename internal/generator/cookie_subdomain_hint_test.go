@@ -44,6 +44,8 @@ const composedLiveMissRuntime = `package cli
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,6 +88,10 @@ func main() {
 	}
 
 	t.Setenv("PATH", dir)
+	// extractLiveCookies lists DevTools targets over HTTP on localhost:9222
+	// and :9229. Clearing PATH hides browser-use and agent-browser, but those
+	// probes still reach a debugging browser and can return cookies.
+	blockDevToolsProbes(t)
 
 	cmd := newAuthLoginCmd(&rootFlags{})
 	var buf bytes.Buffer
@@ -105,6 +111,24 @@ func main() {
 	if !strings.Contains(combined, want) || !strings.Contains(combined, "\"_csrf\"") {
 		t.Fatalf("live-miss path omitted recapture\nerror: %v\noutput:\n%s", err, out)
 	}
+}
+
+func blockDevToolsProbes(t *testing.T) {
+	t.Helper()
+	prev := http.DefaultTransport
+	http.DefaultTransport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Hostname() == "localhost" && (r.URL.Port() == "9222" || r.URL.Port() == "9229") {
+			return nil, fmt.Errorf("blocked DevTools probe %s", r.URL.Host)
+		}
+		return prev.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = prev })
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 `
 
