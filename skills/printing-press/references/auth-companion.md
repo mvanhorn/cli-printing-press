@@ -62,7 +62,8 @@ press-auth login <domain> \
   --jwt-carrier-cookie <carrier> \
   [--complete-selector <selector>] \
   [--complete-cookie <name>] \
-  [--refresh-endpoint <path>]
+  [--refresh-endpoint <path>] \
+  [--include-subdomains]
 ```
 
 `<domain>` is the cookie domain (e.g., `alaskaair.com`), not a URL.
@@ -72,6 +73,8 @@ completion signal and replaces the sign-out heuristic; pass the same name
 as `<carrier>` only when that cookie should both finish login and drive
 refresh. `--complete-selector` also replaces the heuristic. When both are
 set, either signal finishes login.
+
+`--include-subdomains` is off by default. Pass it only when `press-auth login --help` lists the flag and a required cookie is host-only on a subdomain of `<domain>` (for example a regional CSRF cookie). The default capture keeps RFC 6265 matching, so a host-only cookie is stored only when its host equals `<domain>`. Do not pass the flag for an ordinary apex capture: it widens the cookies press-auth stores under that domain.
 
 The first `press-auth login` for a given domain triggers a macOS keychain
 prompt: "press-auth wants to use your confidential information stored in the
@@ -103,6 +106,7 @@ press-auth at runtime.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "No Chrome found" | chromedp can't locate the Chrome binary. | Install Google Chrome at the default location (`/Applications/Google Chrome.app`). chromedp auto-detects from there. |
+| A required cookie is missing after an apex capture (`cookie "<name>" not found`) | The cookie is host-only on a subdomain. The default filter keeps a host-only cookie only for an exact host match. | If `press-auth login --help` lists `--include-subdomains`, re-run `press-auth login <domain> --login-url <login-url> --include-subdomains --force`. `--force` is required: that domain already has a capture, and login refuses to open Chrome until the saved state can be replaced. `press-auth cookies <domain>` then prints the stored cookies, including that host-only subdomain cookie. Capturing under the subdomain host instead stores a different domain key, which the printed CLI will not read. |
 | Login window opens, user signs in, but capture never completes (10-min timeout) | No completion flag was set and the sign-out heuristic did not match any page tab (path changed, no password field, sign-out link or button). The signed-in page may have no such control, or it may be on a tab other than the first. A configured `--complete-cookie` that is still absent does not fall through to that heuristic. | Re-run with `--complete-cookie <name>` for a cookie that appears only after sign-in, or `--complete-selector` for an element that is visible after login (`a[href*=signout]`, `[data-testid=user-menu]`, `nav .account-name`). Either flag replaces the heuristic, so capture waits for that signal. `--complete-selector` is checked on every page tab. When both flags are set, either signal finishes login. |
 | `press-auth cookies <domain>` returns 401 after weeks of working | Refresh window exceeded; the underlying session is dead. | Re-run `press-auth login <domain>`. Lazy refresh only extends sessions while the carrier cookie is still refreshable. |
 | Keychain prompt repeats on every `press-auth cookies` call | User clicked "Allow" instead of "Always Allow" on the first prompt. | `press-auth forget <domain>` then `press-auth login <domain>` again. Choose **Always Allow**. |

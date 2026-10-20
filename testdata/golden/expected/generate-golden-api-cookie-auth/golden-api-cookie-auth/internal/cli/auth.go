@@ -171,6 +171,7 @@ profile by name when the installed backend supports it.`,
 						fmt.Fprintln(w, "Falling back to other extraction methods.")
 						fmt.Fprintln(w, "If you haven't logged in yet, run:")
 						fmt.Fprintf(w, "\n  press-auth login %s --login-url <login-url>\n\n", domain)
+						fmt.Fprintln(w, hostOnlySubdomainRecapture(domain, ""))
 					}
 				}
 			}
@@ -257,7 +258,8 @@ profile by name when the installed backend supports it.`,
 					fmt.Fprintf(w, "\n  %s\n\n", loginURL)
 					fmt.Fprintln(w, "Then run this command again:")
 					fmt.Fprintf(w, "\n  golden-api-cookie-auth-pp-cli auth login --chrome\n")
-					return authErr(fmt.Errorf("cookie %q not found for %s", name, domain))
+					fmt.Fprintln(w, hostOnlySubdomainRecapture(domain, name))
+					return authErr(fmt.Errorf("cookie %q not found for %s; %s", name, domain, hostOnlySubdomainRecapture(domain, name)))
 				}
 				kept = append(kept, name+"="+v)
 			}
@@ -469,6 +471,18 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// hostOnlySubdomainRecapture tells the operator how to recapture a cookie
+// that press-auth's default RFC 6265 filter drops. An empty name is the
+// hint printed when press-auth itself has not captured a session yet. A
+// named hint replaces an existing apex capture, so it passes --force;
+// without that, login refuses to open Chrome.
+func hostOnlySubdomainRecapture(domain, name string) string {
+	if name == "" {
+		return fmt.Sprintf("If a required cookie is host-only on a subdomain of %s, add --include-subdomains.", domain)
+	}
+	return fmt.Sprintf("If %q is host-only on a subdomain of %s, recapture with: press-auth login %s --login-url <login-url> --include-subdomains --force", name, domain, domain)
 }
 
 // --- Chrome profile discovery ---
