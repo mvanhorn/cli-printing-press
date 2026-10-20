@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"os"
 	"os/exec"
@@ -3690,6 +3691,16 @@ func extractCommandNames(helpOutput string) []string {
 	return cmds
 }
 
+// configFieldNameRe is the shape of a config key. Dots and hyphens appear in
+// viper-style keys. Spaces and expression punctuation are not keys; a
+// quote-to-quote scan used to report the Go between adjacent literals as one.
+var configFieldNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
+
+// Free literals on a matching line are kept only when they look like a
+// credential key. Explicit config.Set / viper captures skip this filter, so a
+// key such as "timeout" still counts.
+var configFieldKeywordRe = regexp.MustCompile(`(?i)token|credential|secret|key|auth`)
+
 // checkConfigConsistency scans CLI source for token/credential write and read
 // sites, then verifies they reference the same config field names.
 func checkConfigConsistency(dir string) ConfigConsistResult {
@@ -3722,9 +3733,6 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 		regexp.MustCompile(`(?i)viper\.Get\s*\(\s*"([^"]+)"`),
 	}
 
-	// Also look for string literals that name token fields
-	fieldExtractRe := regexp.MustCompile(`"([^"]*(?i:token|credential|secret|key|auth)[^"]*)"`)
-
 	writeFields := make(map[string]struct{})
 	readFields := make(map[string]struct{})
 
@@ -3735,8 +3743,8 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 		}
 		content := string(data)
 
-		collectConfigFields(content, writePatterns, fieldExtractRe, writeFields)
-		collectConfigFields(content, readPatterns, fieldExtractRe, readFields)
+		collectConfigFields(content, writePatterns, writeFields)
+		collectConfigFields(content, readPatterns, readFields)
 	}
 
 	result.WriteFields = sortedKeys(writeFields)
@@ -3771,7 +3779,7 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 	return result
 }
 
-func collectConfigFields(content string, patterns []*regexp.Regexp, fieldExtractRe *regexp.Regexp, fields map[string]struct{}) {
+func collectConfigFields(content string, patterns []*regexp.Regexp, fields map[string]struct{}) {
 	for _, pat := range patterns {
 		if !pat.MatchString(content) {
 			continue
@@ -3779,19 +3787,53 @@ func collectConfigFields(content string, patterns []*regexp.Regexp, fieldExtract
 		matches := pat.FindAllStringSubmatch(content, -1)
 		for _, m := range matches {
 			if len(m) > 1 && m[1] != "" {
-				fields[m[1]] = struct{}{}
+				addConfigField(fields, m[1])
 			}
 		}
 		for line := range strings.SplitSeq(content, "\n") {
 			if !pat.MatchString(line) {
 				continue
 			}
-			fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
-			for _, fm := range fieldMatches {
-				fields[fm[1]] = struct{}{}
+			for _, lit := range goStringLiterals(line) {
+				if configFieldKeywordRe.MatchString(lit) {
+					addConfigField(fields, lit)
+				}
 			}
 		}
 	}
+}
+
+func addConfigField(fields map[string]struct{}, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" || !configFieldNameRe.MatchString(name) {
+		return
+	}
+	fields[name] = struct{}{}
+}
+
+// Quote-to-quote matching treats the closer of "" and the opener of the next
+// "" as one string, so SaveTokens("", "", token, "") looked like a field.
+func goStringLiterals(line string) []string {
+	var sc scanner.Scanner
+	fs := token.NewFileSet()
+	file := fs.AddFile("", fs.Base(), len(line))
+	sc.Init(file, []byte(line), func(token.Position, string) {}, 0)
+	var lits []string
+	for {
+		_, tok, lit := sc.Scan()
+		if tok == token.EOF {
+			break
+		}
+		if tok != token.STRING {
+			continue
+		}
+		val, err := strconv.Unquote(lit)
+		if err != nil {
+			continue
+		}
+		lits = append(lits, val)
+	}
+	return lits
 }
 
 // workflowManifest represents the structure of workflow_verify.yaml.
