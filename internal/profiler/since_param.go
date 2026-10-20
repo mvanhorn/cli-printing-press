@@ -26,6 +26,10 @@ var (
 	sinceDateExampleRE     = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 	sinceNaiveClockRE      = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}`)
 	sinceZonedClockRE      = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:?\d{2})`)
+	// Letter clocks such as YYYY-MM-DDTHH:mm:ssZ are timestamps. The digit
+	// patterns above do not see them, and the date-only check would otherwise
+	// match the YYYY-MM-DD prefix and drop the time.
+	sinceTimestampPlaceholderRE = regexp.MustCompile(`(?i)t['"]?\s*hh:mm:ss`)
 )
 
 var sinceRejectTokens = map[string]struct{}{
@@ -346,9 +350,23 @@ func naiveLocalZone(desc string) string {
 }
 
 func hasDateOnlyHint(desc string) bool {
-	if sinceNaiveClockRE.MatchString(desc) || sinceZonedClockRE.MatchString(desc) {
+	if sinceNaiveClockRE.MatchString(desc) || sinceZonedClockRE.MatchString(desc) || sinceTimestampPlaceholderRE.MatchString(desc) {
 		return false
 	}
 	lower := strings.ToLower(desc)
+	// RFC3339 and ISO-8601 datetime wording name a timestamp even when the
+	// same sentence also shows a YYYY-MM-DD fragment. Sending that fragment
+	// alone makes timestamp-only endpoints reject the filter.
+	if strings.Contains(lower, "rfc3339") || iso8601DateTimeWording(lower) {
+		return false
+	}
 	return strings.Contains(lower, "yyyy-mm-dd") || sinceDateExampleRE.MatchString(desc)
+}
+
+func iso8601DateTimeWording(lower string) bool {
+	if !strings.Contains(lower, "datetime") && !strings.Contains(lower, "date-time") && !strings.Contains(lower, "date time") {
+		return false
+	}
+	compact := strings.NewReplacer("-", "", " ", "").Replace(lower)
+	return strings.Contains(compact, "iso8601")
 }

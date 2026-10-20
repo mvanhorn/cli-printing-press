@@ -9321,7 +9321,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token"} {
+		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token", "page_key"} {
 			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
 				pag.CursorParam = p.Name
 				pag.Type = "cursor"

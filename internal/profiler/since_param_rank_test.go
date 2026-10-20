@@ -490,6 +490,26 @@ func TestSinceValueFormatFromSpec(t *testing.T) {
 			format: "",
 		},
 		{
+			name:   "timestamp placeholder is not date",
+			param:  spec.Param{Description: "Format YYYY-MM-DDTHH:mm:ssZ"},
+			format: "",
+		},
+		{
+			name:   "rfc3339 wording keeps the timestamp",
+			param:  spec.Param{Description: "RFC3339 timestamp (YYYY-MM-DD)"},
+			format: "",
+		},
+		{
+			name:   "rfc3339 placeholder keeps the timestamp",
+			param:  spec.Param{Description: "RFC3339 timestamp (YYYY-MM-DDTHH:mm:ssZ)"},
+			format: "",
+		},
+		{
+			name:   "iso8601 datetime wording keeps the timestamp",
+			param:  spec.Param{Description: "ISO-8601 datetime (YYYY-MM-DD)"},
+			format: "",
+		},
+		{
 			name:   "yyyy-mm-dd hint",
 			param:  spec.Param{Description: "Format YYYY-MM-DD"},
 			format: "date",
@@ -602,6 +622,16 @@ func TestDateWindowIsNotInferredCursor(t *testing.T) {
 		{Name: "before", Type: "string", Format: "date", In: "query"},
 		{Name: "page_key", Type: "string", In: "query"},
 	}})
+	assert.Equal(t, "page_key", cursor)
+
+	cursor, _ = inferPaginationParamsFromEndpoint(spec.Endpoint{Params: []spec.Param{
+		{Name: "page_key", Type: "string", Format: "date", In: "query"},
+	}})
+	assert.Empty(t, cursor)
+
+	cursor, _ = inferPaginationParamsFromEndpoint(spec.Endpoint{Params: []spec.Param{
+		{Name: "page_key", Type: "string", In: "header"},
+	}})
 	assert.Empty(t, cursor)
 
 	cursor, _ = inferPaginationParamsFromEndpoint(spec.Endpoint{Params: []spec.Param{
@@ -694,7 +724,7 @@ func TestProfileRanksSinceAgainstCursor(t *testing.T) {
 	require.Contains(t, byName, "sales")
 	assert.Equal(t, "after", byName["sales"].SinceParam)
 	assert.Equal(t, "date", byName["sales"].SinceParamFormat)
-	assert.NotEqual(t, "after", byName["sales"].PaginationCursorParam)
+	assert.Equal(t, "page_key", byName["sales"].PaginationCursorParam)
 
 	require.Contains(t, byName, "issues")
 	assert.Equal(t, "updated_on", byName["issues"].SinceParam)

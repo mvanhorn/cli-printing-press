@@ -1199,7 +1199,7 @@ var (
 		"maxrecords": true, "max_records": true, "page[size]": true,
 	}
 	cursorParamCandidates = map[string]bool{
-		"after": true, "cursor": true, "page_token": true, "offset": true, "skip": true,
+		"after": true, "cursor": true, "page_token": true, "page_key": true, "offset": true, "skip": true,
 		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
 	}
 )

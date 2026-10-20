@@ -32,7 +32,7 @@ func TestGeneratedSinceParamRanking(t *testing.T) {
 
 	assert.Equal(t, "after", sales.param)
 	assert.Equal(t, "date", sales.format)
-	assert.NotEqual(t, "after", sales.cursor)
+	assert.Equal(t, "page_key", sales.cursor)
 
 	assert.Equal(t, "updatedMin", events.param)
 	assert.Empty(t, events.format)
