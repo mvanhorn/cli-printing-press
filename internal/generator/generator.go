@@ -4887,6 +4887,11 @@ type visionRenderData struct {
 	AgentMoneyWorkflow           AgentMoneyWorkflow
 	HTMLSyncStub                 bool
 	HTMLPageModeResources        []criticalResourceEntry
+	// SyncSinceNeedsTZData is true when a since value is rewritten into a
+	// named zone. The sync template blank-imports time/tzdata only then, so
+	// Windows and minimal images can load the zone and other CLIs do not
+	// embed the zone database.
+	SyncSinceNeedsTZData bool
 }
 
 type resourceIDFieldOverrideEntry struct {
@@ -5483,13 +5488,16 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		}
 	}
 
+	syncable := withEffectiveSyncableRequestPaths(g.Spec, g.profile.SyncableResources)
+	dependent := withEffectiveDependentRequestPaths(g.Spec, g.profile.DependentSyncResources)
 	return visionRenderData{
 		APISpec:                      g.Spec,
 		VisionSet:                    g.VisionSet,
 		CommandNames:                 maps.Clone(g.visionCommandNames),
 		HasSync:                      g.hasGeneratedSyncImplementation(),
-		SyncableResources:            withEffectiveSyncableRequestPaths(g.Spec, g.profile.SyncableResources),
-		DependentSyncResources:       withEffectiveDependentRequestPaths(g.Spec, g.profile.DependentSyncResources),
+		SyncableResources:            syncable,
+		DependentSyncResources:       dependent,
+		SyncSinceNeedsTZData:         syncSinceFormatsNeedTZData(syncable, dependent),
 		SyncResourcesExample:         syncResourcesExample(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		TenantScopedParents:          g.profile.TenantScopedParents(),
 		MembershipScopedParents:      g.profile.MembershipScopedParents(),
@@ -5510,6 +5518,20 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		HTMLSyncStub:                 g.htmlSyncStubSelected,
 		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
 	}
+}
+
+func syncSinceFormatsNeedTZData(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) bool {
+	for _, resource := range syncable {
+		if strings.HasPrefix(resource.SinceParamFormat, "local-datetime:") {
+			return true
+		}
+	}
+	for _, resource := range dependent {
+		if strings.HasPrefix(resource.SinceParamFormat, "local-datetime:") {
+			return true
+		}
+	}
+	return false
 }
 
 func searchResponsePaths(apiSpec *spec.APISpec, searchEndpointPath, searchEndpointMethod string) []string {
