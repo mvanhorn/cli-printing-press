@@ -43,6 +43,8 @@ the default leaked into an opted-out spec.
 
 Do not activate this CLI for requests that require creating, updating, deleting, publishing, commenting, upvoting, inviting, ordering, sending messages, booking, purchasing, or changing remote state. This printed CLI exposes read-only commands for inspection, export, sync, and analysis.
 
+`--ca-cert`, `LEARN_DISABLED_EXAMPLE_CA_CERT`, or `ca_cert` adds a PEM CA bundle to the system trust roots. `--tls-server-name`, `LEARN_DISABLED_EXAMPLE_TLS_SERVER_NAME`, or `tls_server_name` is the name checked against the certificate. Precedence is flag, then environment, then the config file. A config file other users can change does not supply these settings. `doctor` reports the trust in use and names the setting that fixes a chain or hostname failure.
+
 ## Command Reference
 
 **games** — Minimal syncable resource so the disabled shape still keeps its profile-derived store; the opt-out must remove the learn surface, not the ordinary data layer.

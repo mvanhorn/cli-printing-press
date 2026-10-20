@@ -252,6 +252,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["config"] = "ok"
 				report["config_path"] = cfg.Path
 				report["base_url"] = cfg.BaseURL
+				flags.applyTLSFlags(cfg)
+				report["tls"] = client.TLSTrustSummary(cfg)
 				// agentcookie integration is soft: if the agentcookie daemon manages
 				// this CLI's config, it writes a marker file alongside the config and
 				// AuthSource is upgraded to "agentcookie" in config.Load. Surface the
@@ -390,6 +392,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 			} else if cfg != nil && cfg.BaseURL != "" {
 				c, clientErr := flags.newClient()
+				if clientErr != nil && errors.Is(clientErr, client.ErrTLSConfig) {
+					return clientErr
+				}
 				if clientErr != nil {
 					report["api"] = fmt.Sprintf("client init error: %s", clientErr)
 				} else {
@@ -427,6 +432,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							// Do not call the host unreachable: the probe was refused
 							// before a dial. "refused:" fails every --fail-on gate.
 							report["api"] = "refused: not probed (" + reachErr.Error() + ")"
+						} else if kind, fix, ok := client.ClassifyTLSVerification(reachErr); ok {
+							report["api"] = fmt.Sprintf("unreachable: %s verification failure; %s", kind, fix)
 						} else {
 							// Network-level failure: DNS, connection refused, TLS,
 							// transport init, etc. The transport itself didn't
@@ -534,7 +541,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
 			}
 			// Print info keys without status indicator
-			for _, key := range []string{"config_path", "base_url", "auth_source", "auth_refusals", "credentials_location", "version"} {
+			for _, key := range []string{"config_path", "base_url", "tls", "auth_source", "auth_refusals", "credentials_location", "version"} {
 				if v, ok := report[key]; ok {
 					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}
@@ -725,6 +732,7 @@ func legacyCredentialProbePaths(cfg *config.Config) []string {
 var doctorInfoKeys = map[string]bool{
 	"config_path":                  true,
 	"base_url":                     true,
+	"tls":                          true,
 	"auth_source":                  true,
 	"auth_domain":                  true,
 	"auth_hint":                    true,

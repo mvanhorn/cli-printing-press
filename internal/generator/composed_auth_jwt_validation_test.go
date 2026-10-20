@@ -148,7 +148,7 @@ func TestValidateComposedAuthFallsBackForOpaqueCredential(t *testing.T) {
 }
 
 func TestValidateComposedAuthProbeSkipStillRejectsExpiredJWT(t *testing.T) {
-	err := validateComposedAuthProbe("Bearer "+expiredJWT, "session="+expiredJWT, false)
+	err := validateComposedAuthProbe("Bearer "+expiredJWT, "session="+expiredJWT, false, nil)
 	if err == nil {
 		t.Fatal("validateComposedAuthProbe(skip origin) error = nil, want expired JWT error")
 	}
@@ -158,7 +158,7 @@ func TestValidateComposedAuthProbeSkipStillRejectsExpiredJWT(t *testing.T) {
 }
 
 func TestValidateComposedAuthProbeSkipDoesNotDialOrigin(t *testing.T) {
-	if err := validateComposedAuthProbe("Bearer opaque-session", "session=opaque-skip-probe", false); err != nil {
+	if err := validateComposedAuthProbe("Bearer opaque-session", "session=opaque-skip-probe", false, nil); err != nil {
 		t.Fatalf("validateComposedAuthProbe(skip origin) error = %%v, want nil for opaque credentials", err)
 	}
 }

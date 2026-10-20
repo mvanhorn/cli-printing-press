@@ -11,6 +11,8 @@ import (
 	"compress/zlib"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -56,9 +58,10 @@ const maxErrorBodyBytes = 4096
 var ErrPlaceholderCredential = errors.New("auth placeholder credential")
 
 type Client struct {
-	BaseURL    string
-	Config     *config.Config
-	HTTPClient *http.Client
+	BaseURL      string
+	Config       *config.Config
+	HTTPClient   *http.Client
+	tlsConfigErr error
 	// When unset, binary/stream bodies skip the whole-call client Timeout
 	// so a large download is not killed by the default JSON budget.
 	timeoutExplicit   bool
@@ -78,6 +81,13 @@ type Client struct {
 
 func (c *Client) IsDryRun() bool {
 	return c != nil && c.DryRun
+}
+
+func (c *Client) TLSConfigError() error {
+	if c == nil {
+		return nil
+	}
+	return c.tlsConfigErr
 }
 
 // BindPlatformSession installs the result of the live fail-closed tenant gate.
@@ -233,16 +243,142 @@ func isPathPlaceholderName(name string) bool {
 // 32 covers any sane worker count with margin.
 const maxIdleConnsPerHost = 32
 
-func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
+// ErrTLSConfig is a trust setting that cannot be applied. Callers exit as a
+// config error and must not send the request.
+var ErrTLSConfig = errors.New("tls configuration")
+
+type tlsSettings struct {
+	CACert     string
+	ServerName string
+	Insecure   bool
+}
+
+type resolvedTLS struct {
+	pool       *x509.CertPool
+	serverName string
+	insecure   bool
+}
+
+// Keeps a nil jar out of the newHTTPClient argument list. Cookie-auth
+// output is rejected if that call is spelled with a nil jar.
+func plainNilJar() http.CookieJar { return nil }
+
+func tlsSettingsFromConfig(cfg *config.Config) tlsSettings {
+	if cfg == nil {
+		return tlsSettings{}
+	}
+	return tlsSettings{
+		CACert:     cfg.CACert,
+		ServerName: cfg.TLSServerName,
+	}
+}
+
+var writeTLSWarning = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
+var (
+	tlsWarnMu   sync.Mutex
+	lastTLSWarn string
+)
+
+func warnTLSOnce(msg string) {
+	tlsWarnMu.Lock()
+	defer tlsWarnMu.Unlock()
+	if msg == lastTLSWarn {
+		return
+	}
+	lastTLSWarn = msg
+	writeTLSWarning("%s", msg)
+}
+
+func resolveTLS(trust tlsSettings) (resolvedTLS, error) {
+	ca := strings.TrimSpace(trust.CACert)
+	name := strings.TrimSpace(trust.ServerName)
+	if trust.Insecure {
+		if ca != "" || name != "" {
+			warnTLSOnce("warning: --insecure disables certificate verification and overrides ca-cert and tls-server-name\n")
+		}
+		return resolvedTLS{insecure: true}, nil
+	}
+	pool, err := loadCACertPool(ca)
+	if err != nil {
+		return resolvedTLS{}, err
+	}
+	return resolvedTLS{pool: pool, serverName: name}, nil
+}
+
+var systemCertPool = x509.SystemCertPool
+
+func loadCACertPool(path string) (*x509.CertPool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading CA bundle %s: %v", ErrTLSConfig, path, err)
+	}
+	pool, err := systemCertPool()
+	if err != nil || pool == nil {
+		if err == nil {
+			err = errors.New("system roots unavailable")
+		}
+		return nil, fmt.Errorf("%w: loading system roots: %v", ErrTLSConfig, err)
+	}
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("%w: no certificates in CA bundle %s", ErrTLSConfig, path)
+	}
+	return pool, nil
+}
+
+func cloneDefaultHTTPTransport() (*http.Transport, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || base == nil {
+		return nil, fmt.Errorf("%w: default HTTP transport is not *http.Transport", ErrTLSConfig)
+	}
+	return base.Clone(), nil
+}
+
+func applyTrust(tr *http.Transport, pool *x509.CertPool, serverName string) {
+	if tr == nil || (pool == nil && serverName == "") {
+		return
+	}
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	}
+	if pool != nil {
+		tr.TLSClientConfig.RootCAs = pool
+	}
+	if serverName != "" {
+		tr.TLSClientConfig.ServerName = serverName
+	}
+}
+
+func newHTTPClient(timeout time.Duration, jar http.CookieJar, trust tlsSettings) (*http.Client, error) {
+	resolved, err := resolveTLS(trust)
+	if err != nil {
+		return nil, err
+	}
 	// Clone (do NOT build a bare &http.Transport{}) so Proxy=ProxyFromEnvironment,
 	// IdleConnTimeout, and dialer keep-alive survive — a bare struct would break
 	// corporate-proxy users (a public-build regression).
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr, err := cloneDefaultHTTPTransport()
+	if err != nil {
+		return nil, err
+	}
 	tr.MaxIdleConnsPerHost = maxIdleConnsPerHost
 	if tr.MaxIdleConns < maxIdleConnsPerHost {
 		tr.MaxIdleConns = maxIdleConnsPerHost
 	}
-	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}
+	if resolved.insecure {
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{}
+		}
+		tr.TLSClientConfig.InsecureSkipVerify = true
+	} else {
+		applyTrust(tr, resolved.pool, resolved.serverName)
+	}
+	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}, nil
 }
 
 func (c *Client) SetTimeoutExplicit(explicit bool) {
@@ -832,10 +968,16 @@ func GuardTokenRequest(httpClient *http.Client, req *http.Request, body []byte) 
 
 // NewPlainHTTPClient is the non-browser probe client with the same dial guard
 // as the API client.
-func NewPlainHTTPClient(timeout time.Duration) *http.Client {
-	c := &http.Client{Timeout: timeout}
+func NewPlainHTTPClient(timeout time.Duration, cfg *config.Config) (*http.Client, error) {
+	c, err := newHTTPClient(timeout, plainNilJar(), tlsSettingsFromConfig(cfg))
+	if err != nil || c == nil {
+		if err == nil {
+			err = fmt.Errorf("%w: http client unavailable", ErrTLSConfig)
+		}
+		return nil, err
+	}
 	guardHTTPClient(c, "")
-	return c
+	return c, nil
 }
 
 func guardOutbound(req *http.Request, jar http.CookieJar, authHeader string, body []byte) (*http.Request, error) {
@@ -1011,14 +1153,18 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	if dir, err := cliutil.CacheDir(); err == nil {
 		cacheDir = filepath.Join(dir, "http")
 	}
-	httpClient := newHTTPClient(timeout, nil)
+	httpClient, tlsErr := newHTTPClient(timeout, nil, tlsSettingsFromConfig(cfg))
 	c := &Client{
-		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		Config:     cfg,
-		HTTPClient: httpClient,
-		cacheDir:   cacheDir,
-		limiter:    newRateLimiter(rateLimit),
-		refreshMu:  &sync.Mutex{},
+		BaseURL:      strings.TrimRight(cfg.BaseURL, "/"),
+		Config:       cfg,
+		HTTPClient:   httpClient,
+		tlsConfigErr: tlsErr,
+		cacheDir:     cacheDir,
+		limiter:      newRateLimiter(rateLimit),
+		refreshMu:    &sync.Mutex{},
+	}
+	if httpClient == nil {
+		return c
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound
@@ -1825,6 +1971,9 @@ func (c *Client) doMutation(ctx context.Context, method, path string, params map
 // mutationIntent extends that gate to GET action endpoints whose wire method
 // is not itself a mutating verb.
 func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool, mutationIntent bool) (json.RawMessage, int, error) {
+	if c != nil && c.tlsConfigErr != nil {
+		return nil, 0, c.tlsConfigErr
+	}
 	// Verify-mode transport-layer gate. When the verifier (or any consumer
 	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb or explicit
 	// mutation intent without the LIVE_HTTP=1 opt-in, return a synthetic
@@ -2048,7 +2197,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
-			if attempt < maxRetries && canRetryAmbiguousFailure && !isPermanentDNSError(err) {
+			if attempt < maxRetries && canRetryAmbiguousFailure && !isPermanentDNSError(err) && !isCertificateVerificationError(err) {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				if !retryWithinBudget(wait) {
 					return nil, 0, lastErr
@@ -3125,6 +3274,57 @@ func clientMaxRetries() int {
 		return 0
 	}
 	return 3
+}
+
+func isCertificateVerificationError(err error) bool {
+	var hostErr x509.HostnameError
+	if errors.As(err, &hostErr) {
+		return true
+	}
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		return true
+	}
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &invalid) {
+		return true
+	}
+	var roots x509.SystemRootsError
+	if errors.As(err, &roots) {
+		return true
+	}
+	var verified *tls.CertificateVerificationError
+	return errors.As(err, &verified)
+}
+
+func ClassifyTLSVerification(err error) (kind, fix string, ok bool) {
+	var hostErr x509.HostnameError
+	if errors.As(err, &hostErr) {
+		return "hostname", "set --tls-server-name, PRINTING_PRESS_OAUTH2_TLS_SERVER_NAME, or tls_server_name", true
+	}
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		return "chain", "set --ca-cert, PRINTING_PRESS_OAUTH2_CA_CERT, or ca_cert", true
+	}
+	var roots x509.SystemRootsError
+	if errors.As(err, &roots) {
+		return "chain", "set --ca-cert, PRINTING_PRESS_OAUTH2_CA_CERT, or ca_cert", true
+	}
+	return "", "", false
+}
+
+func TLSTrustSummary(cfg *config.Config) string {
+	if cfg == nil {
+		return "system roots"
+	}
+	parts := []string{"system roots"}
+	if p := strings.TrimSpace(cfg.CACert); p != "" {
+		parts = append(parts, "ca-cert "+p)
+	}
+	if n := strings.TrimSpace(cfg.TLSServerName); n != "" {
+		parts = append(parts, "tls-server-name "+n)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // isPermanentDNSError identifies known resolver failures that cannot succeed

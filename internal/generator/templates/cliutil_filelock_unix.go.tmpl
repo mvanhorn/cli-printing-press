@@ -8,7 +8,9 @@ package cliutil
 
 import (
 	"errors"
+	"io"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -26,4 +28,67 @@ func tryLockFile(f *os.File) error {
 
 func unlockFile(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// ReadConfigTrust opens path once and reports whether ca_cert and
+// tls_server_name from those bytes may be applied. A symlink is followed
+// at this open, so the verdict and the bytes are the same file.
+func ReadConfigTrust(path string) ([]byte, bool, error) {
+	f, err := os.Open(path) // #nosec G304 -- app-derived config path; verdict and bytes share this descriptor.
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, false, err
+	}
+	return data, trustFileAllowsSettings(fi, f, path), nil
+}
+
+func TrustConfigAllowsSettings(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return true
+	}
+	_, allow, err := ReadConfigTrust(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true
+		}
+		return false
+	}
+	return allow
+}
+
+func trustFileAllowsSettings(fi os.FileInfo, f *os.File, path string) bool {
+	if fi == nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return false
+	}
+	uid, ok := trustFileUID(fi)
+	if !ok || uid != uint32(os.Geteuid()) {
+		return false
+	}
+	return rejectDarwinForeignFile(f, path, "config file", darwinACLScopeFile) == nil
+}
+
+func trustFileUID(fi os.FileInfo) (uint32, bool) {
+	switch st := fi.Sys().(type) {
+	case *syscall.Stat_t:
+		if st == nil {
+			return 0, false
+		}
+		return st.Uid, true
+	case syscall.Stat_t:
+		return st.Uid, true
+	default:
+		return 0, false
+	}
 }

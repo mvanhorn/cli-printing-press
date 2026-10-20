@@ -261,11 +261,12 @@ var confirmationBypassRootFlags = map[string]bool{
 // caller swap auth credentials, redirect the API base URL, select a different
 // per-client filesystem, relocate the config/data/state/cache roots, load a
 // malicious config file, change receipt destinations, change the delivery
-// target, or skip a command's own confirmation prompt, all of which sit
-// outside the per-command surface the agent is supposed to be calling.
+// target, redirect TLS trust, or skip a command's own confirmation prompt, all
+// of which sit outside the per-command surface the agent is supposed to be calling.
 var blockedRootFlags = map[string]bool{
 	"audit-dir":               true,
 	"base-url":                true,
+	"ca-cert":                 true,
 	"client":                  true,
 	"config":                  true,
 	confirmationBypassYesFlag: true,
@@ -274,6 +275,7 @@ var blockedRootFlags = map[string]bool{
 	"insecure":                true,
 	"profile":                 true,
 	"receipt-file":            true,
+	"tls-server-name":         true,
 	"token":                   true,
 }
 

@@ -645,6 +645,8 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 Run `{{.Name}}-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `{{.Config.Path}}` on macOS/Linux and `%USERPROFILE%\.config\{{.Name}}-pp-cli\config.{{or .Config.Format "json"}}` on Windows; `--home`, `{{envName .Name}}_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
+
+`--ca-cert`, `{{envPrefix .Name}}_CA_CERT`, or `ca_cert` adds a PEM CA bundle to the system trust roots. `--tls-server-name`, `{{envPrefix .Name}}_TLS_SERVER_NAME`, or `tls_server_name` is the name checked against the certificate when the dialed address does not match it. Precedence is flag, then environment, then the config file. A config file other users can change does not supply these settings. Certificate verification failures are not retried.
 {{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}
 
 Environment variables:
@@ -705,7 +707,7 @@ This CLI uses standard HTTP transport with HTTP/2 disabled for browser-facing en
 
 This CLI uses Chrome-compatible HTTP transport{{if .UsesBrowserHTTP3Transport}} over HTTP/3{{end}} for browser-facing endpoints. It does not require a resident browser process for normal API calls.
 
-TLS certificates are verified by default. For a trusted development or self-signed endpoint only, pass `--insecure` for one invocation, set `{{envPrefix .Name}}_SKIP_TLS_VERIFY=true` for the current environment, or set `skip_tls_verify = true` in the config file for a persistent override.
+TLS certificates are verified by default. For a trusted development or self-signed endpoint only, pass `--insecure` for one invocation, set `{{envPrefix .Name}}_SKIP_TLS_VERIFY=true` for the current environment, or set `skip_tls_verify = true` in the config file for a persistent override. `--insecure` overrides `--ca-cert` and `--tls-server-name`.
 {{- end}}
 {{- if .TrafficAnalysis}}
 

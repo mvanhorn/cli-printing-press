@@ -33,6 +33,8 @@ type rootFlags struct {
 	dryRun        bool
 	noCache       bool
 	noInput       bool
+	caCert        string
+	tlsServerName string
 	idempotent    bool
 	ignoreMissing bool
 	yes           bool
@@ -315,6 +317,8 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 	rootCmd.PersistentFlags().StringVar(&flags.receiptFile, "receipt-file", "", "Override the run receipt destination")
 	rootCmd.PersistentFlags().StringVar(&flags.auditDir, "audit-dir", "", "Aggregate the receipt and index under this audit directory")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
+	rootCmd.PersistentFlags().StringVar(&flags.caCert, "ca-cert", "", "PEM CA bundle added to the system trust roots")
+	rootCmd.PersistentFlags().StringVar(&flags.tlsServerName, "tls-server-name", "", "DNS name to verify when the dialed host does not match the certificate")
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output")
@@ -764,12 +768,28 @@ func ExitCode(err error) int {
 	return 1
 }
 
+func (f *rootFlags) applyTLSFlags(cfg *config.Config) {
+	if f == nil || cfg == nil {
+		return
+	}
+	if v := strings.TrimSpace(f.caCert); v != "" {
+		cfg.SetCACert(v)
+	}
+	if v := strings.TrimSpace(f.tlsServerName); v != "" {
+		cfg.SetTLSServerName(v)
+	}
+}
+
 func (f *rootFlags) newClient() (*client.Client, error) {
 	cfg, err := config.Load(f.configPath)
 	if err != nil {
 		return nil, configErr(err)
 	}
+	f.applyTLSFlags(cfg)
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	if tlsErr := c.TLSConfigError(); tlsErr != nil {
+		return nil, configErr(tlsErr)
+	}
 	if f.timeoutExplicit {
 		c.SetTimeoutExplicit(true)
 	}

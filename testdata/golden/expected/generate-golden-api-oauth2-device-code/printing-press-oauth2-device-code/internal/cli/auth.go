@@ -108,8 +108,13 @@ for CLIs and agents: no localhost callback server and no client secret.
 				scopes = strings.Fields(scope)
 			}
 
+			tokenHTTP, err := flags.oauthHTTPClient(cfg)
+			if err != nil {
+				return err
+			}
+
 			ctx := cmd.Context()
-			device, err := oauth.RequestDeviceCode(ctx, nil, deviceAuthorizationURL, clientID, scopes)
+			device, err := oauth.RequestDeviceCode(ctx, tokenHTTP, deviceAuthorizationURL, clientID, scopes)
 			if err != nil {
 				return authErr(err)
 			}
@@ -154,7 +159,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 			pollCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			interval := time.Duration(device.Interval) * time.Second
-			tok, err := oauth.PollDeviceToken(pollCtx, nil, tokenURL, clientID, device.DeviceCode, interval)
+			tok, err := oauth.PollDeviceToken(pollCtx, tokenHTTP, tokenURL, clientID, device.DeviceCode, interval)
 			if err != nil {
 				return authTransportErr(err)
 			}
@@ -210,13 +215,17 @@ func newAuthPollCmd(flags *rootFlags) *cobra.Command {
 			if tokenURL == "" {
 				tokenURL = "https://login.device.example/oauth/token"
 			}
+			tokenHTTP, err := flags.oauthHTTPClient(cfg)
+			if err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 			if timeout > 0 {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			tok, err := oauth.PollDeviceToken(ctx, nil, tokenURL, clientID, state.DeviceCode, 0)
+			tok, err := oauth.PollDeviceToken(ctx, tokenHTTP, tokenURL, clientID, state.DeviceCode, 0)
 			if err != nil {
 				return authTransportErr(err)
 			}
@@ -259,7 +268,11 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 			if tokenURL == "" {
 				tokenURL = "https://login.device.example/oauth/token"
 			}
-			tok, err := oauth.RefreshToken(cmd.Context(), nil, tokenURL, cfg.ClientID, cfg.ClientSecret, cfg.RefreshToken)
+			tokenHTTP, err := flags.oauthHTTPClient(cfg)
+			if err != nil {
+				return err
+			}
+			tok, err := oauth.RefreshToken(cmd.Context(), tokenHTTP, tokenURL, cfg.ClientID, cfg.ClientSecret, cfg.RefreshToken)
 			if err != nil {
 				return authTransportErr(err)
 			}

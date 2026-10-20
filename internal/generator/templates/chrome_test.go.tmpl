@@ -24,7 +24,10 @@ import (
 )
 
 func TestChromeClientBindsTimeoutAndJar(t *testing.T) {
-	c := chromeClient(7*time.Second, nil, false)
+	c, err := chromeClient(7*time.Second, nil, resolvedTLS{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c.Timeout != 7*time.Second {
 		t.Fatalf("Timeout = %s, want 7s", c.Timeout)
 	}
@@ -129,7 +132,10 @@ func chromeGetBody(t *testing.T, c *http.Client, url string) string {
 
 func TestChromeClientNegotiatesHTTP2(t *testing.T) {
 	srv := chromeTestServer(t, true)
-	c := chromeClient(5*time.Second, nil, true)
+	c, err := chromeClient(5*time.Second, nil, resolvedTLS{insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := chromeGetBody(t, c, srv.URL); got != "HTTP/2.0" {
 		t.Fatalf("server saw %q, want HTTP/2.0", got)
 	}
@@ -138,7 +144,10 @@ func TestChromeClientNegotiatesHTTP2(t *testing.T) {
 
 func TestChromeClientRefusesHTTP1Origin(t *testing.T) {
 	srv := chromeTestServer(t, false)
-	c := chromeClient(5*time.Second, nil, true)
+	c, err := chromeClient(5*time.Second, nil, resolvedTLS{insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp, err := c.Get(srv.URL)
 	if err == nil {
 		resp.Body.Close()
@@ -149,7 +158,10 @@ func TestChromeClientRefusesHTTP1Origin(t *testing.T) {
 
 func TestChromeClientFallsBackToHTTP1(t *testing.T) {
 	srv := chromeTestServer(t, false)
-	c := chromeClient(5*time.Second, nil, true)
+	c, err := chromeClient(5*time.Second, nil, resolvedTLS{insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := chromeGetBody(t, c, srv.URL); got != "HTTP/1.1" {
 		t.Fatalf("server saw %q, want HTTP/1.1", got)
 	}
@@ -201,7 +213,7 @@ func TestChromeDialTCPHTTPProxyCONNECT(t *testing.T) {
 	chromeProxyEnv(t, proxy.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := chromeDialTCP(ctx, "example.com:443", true)
+	conn, err := chromeDialTCP(ctx, "example.com:443", resolvedTLS{insecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +225,7 @@ func TestChromeDialTCPHTTPSProxyCONNECT(t *testing.T) {
 	chromeProxyEnv(t, proxy.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := chromeDialTCP(ctx, "example.com:443", true)
+	conn, err := chromeDialTCP(ctx, "example.com:443", resolvedTLS{insecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +252,7 @@ func TestChromeProxyCONNECTHonorsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err = chromeDialTCP(ctx, "example.com:443", true)
+	_, err = chromeDialTCP(ctx, "example.com:443", resolvedTLS{insecure: true})
 	if err == nil {
 		t.Fatal("expected a stalled CONNECT to fail")
 	}

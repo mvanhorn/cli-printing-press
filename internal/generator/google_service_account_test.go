@@ -39,6 +39,8 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	assert.Contains(t, authSrc, `google.JWTConfigFromJSON`)
 	assert.Contains(t, authSrc, `--impersonate`)
 	assert.Contains(t, authSrc, `--scopes`)
+	assert.Contains(t, authSrc, "flags.oauthHTTPClient(cfg)")
+	assert.Contains(t, authSrc, "oauth2.HTTPClient")
 
 	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
 	assert.Contains(t, configSrc, "GoogleImpersonate")
@@ -49,6 +51,8 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	assert.Contains(t, clientSrc, "context.WithTimeout")
 	assert.Contains(t, clientSrc, "googleServiceAccountAuthHeader")
 	assert.Contains(t, clientSrc, `return "Bearer " + token.AccessToken`)
+	assert.Contains(t, clientSrc, "oauth2.HTTPClient")
+	assert.Contains(t, clientSrc, "cliutil.OAuthTokenHTTPClient(c.HTTPClient)")
 
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	assert.Contains(t, doctorSrc, "Google service account")
@@ -67,6 +71,16 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	}
 	noTokenURLDir := filepath.Join(t.TempDir(), naming.CLI(noTokenURLSpec.Name))
 	require.NoError(t, New(noTokenURLSpec, noTokenURLDir).Generate())
+	noTokenAuth := readGeneratedFile(t, noTokenURLDir, "internal", "cli", "auth.go")
+	noTokenClient := readGeneratedFile(t, noTokenURLDir, "internal", "client", "client.go")
+	assert.Contains(t, noTokenAuth, "flags.oauthHTTPClient(cfg)")
+	assert.Contains(t, noTokenAuth, "oauth2.HTTPClient")
+	assert.NotContains(t, noTokenAuth, "cliutil.OAuthTokenHTTPClient",
+		"service-account login uses NewPlainHTTPClient; its redirect callback does not call authHeader")
+	assert.Contains(t, noTokenClient, "oauth2.HTTPClient")
+	assert.Contains(t, noTokenClient, "cliutil.OAuthTokenHTTPClient(c.HTTPClient)")
+	_, statErr := os.Stat(filepath.Join(noTokenURLDir, "internal", "cliutil", "oauth_token.go"))
+	require.NoError(t, statErr)
 	requireGeneratedCompiles(t, noTokenURLDir)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -86,11 +100,14 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	runtimeTest := fmt.Sprintf(`package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -148,10 +165,29 @@ func TestMintGoogleServiceAccountToken(t *testing.T) {
 	}
 }
 
-`, keyPath)
+func TestServiceAccountLoginRejectsBadCA(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	root := RootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--config", configPath, "--ca-cert", missing, "auth", "service-account", "--key", %q})
+	err := root.Execute()
+	if ExitCode(err) != 10 || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("exit=%%d err=%%v out=%%s", ExitCode(err), err, out.String())
+	}
+}
+
+`, keyPath, keyPath)
 	runtimeTest = strings.ReplaceAll(runtimeTest, "{{MODULE}}", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "google_service_account_runtime_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestMintGoogleServiceAccountToken", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestMintGoogleServiceAccountToken|TestServiceAccountLoginRejectsBadCA", "-count=1")
 
 	clientRuntimeTest := fmt.Sprintf(`package client
 
@@ -230,7 +266,36 @@ func TestGoogleServiceAccountAuthHeader(t *testing.T) {
 	}
 }
 
-`, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath)
+func TestGoogleServiceAccountAuthHeaderUsesAPIClient(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(%q))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		GoogleApplicationCredentials: %q,
+		GoogleScopes: []string{"scope-one"},
+		TokenURL: server.URL,
+	}
+	c := New(cfg, 5*time.Second, 0)
+	c.HTTPClient = server.Client()
+	header, err := c.googleServiceAccountAuthHeader(context.Background())
+	if err != nil {
+		t.Fatalf("auth header: %%v", err)
+	}
+	if header != "Bearer runtime-token" {
+		t.Fatalf("header = %%q", header)
+	}
+	if requests != 1 {
+		t.Fatalf("token endpoint requests = %%d, want 1", requests)
+	}
+}
+
+`, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath)
 	clientRuntimeTest = strings.ReplaceAll(clientRuntimeTest, "{{MODULE}}", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "google_service_account_runtime_test.go"), []byte(clientRuntimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestGoogleServiceAccountAuthHeader", "-count=1")
@@ -266,4 +331,118 @@ func TestGoogleServiceAccountSettingsPersist(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "google_service_account_runtime_test.go"), []byte(configRuntimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestGoogleServiceAccountSettingsPersist", "-count=1")
+
+	// Spec TokenURL is empty, so the exchange targets the key's token_uri.
+	// New() installs the API CheckRedirect, which calls authHeader on a
+	// same-host hop. That hop must return a token instead of taking googleMu twice.
+	hangTest := fmt.Sprintf(`package client
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"{{MODULE}}/internal/config"
+)
+
+func TestGoogleServiceAccountSameHostTokenRedirectDoesNotHang(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	t.Setenv("GOOGLE_OAUTH_ACCESS_TOKEN", "")
+
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Location", "/token-real")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/token-real", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse token request: %%v", err)
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" || r.Form.Get("assertion") == "" {
+			t.Errorf("grant_type=%%q assertion empty=%%v", r.Form.Get("grant_type"), r.Form.Get("assertion") == "")
+			http.Error(w, "bad assertion", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `+"`"+`{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`+"`"+`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	raw, err := os.ReadFile(%q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var key map[string]any
+	if err := json.Unmarshal(raw, &key); err != nil {
+		t.Fatal(err)
+	}
+	key["token_uri"] = srv.URL + "/token"
+	rewritten, err := json.Marshal(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "service-account.json")
+	if err := os.WriteFile(keyPath, rewritten, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		BaseURL:                      srv.URL,
+		GoogleApplicationCredentials: keyPath,
+		GoogleScopes:                 []string{"scope-one"},
+		Path:                         filepath.Join(t.TempDir(), "config.toml"),
+	}
+	c := New(cfg, 5*time.Second, 0)
+	if err := c.TLSConfigError(); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		header string
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		header, err := c.authHeader(context.Background())
+		done <- result{header, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("auth header: %%v", got.err)
+		}
+		if got.header != "Bearer runtime-token" {
+			t.Fatalf("header = %%q", got.header)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("same-host token redirect hung while exchanging a service-account token")
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("token endpoint hits = %%d, want 2", hits.Load())
+	}
+}
+`, keyPath)
+	hangTest = strings.ReplaceAll(hangTest, "{{MODULE}}", naming.CLI(noTokenURLSpec.Name))
+	require.NoError(t, os.WriteFile(filepath.Join(noTokenURLDir, "internal", "client", "google_service_account_redirect_test.go"), []byte(hangTest), 0o644))
+	runGoCommand(t, noTokenURLDir, "test", "./internal/client", "-run", "TestGoogleServiceAccountSameHostTokenRedirectDoesNotHang", "-count=1")
 }

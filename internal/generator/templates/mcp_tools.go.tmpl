@@ -1377,6 +1377,9 @@ func newMCPConfig() (*config.Config, error) {
 
 func newMCPClientFromConfig(ctx context.Context, cfg *config.Config) (*client.Client, *platform.Session, error) {
 	c := client.New(cfg, 60*time.Second, defaultMCPRateLimit)
+	if tlsErr := c.TLSConfigError(); tlsErr != nil {
+		return nil, nil, tlsErr
+	}
 	// Agents calling through MCP need fresh data every call. The on-disk
 	// response cache survives across MCP server invocations, so a
 	// DELETE/PATCH followed by a GET would otherwise return the

@@ -49,6 +49,8 @@ var nonCredentialEnvSuffixes = []string{
 	"_TOKEN_URL",
 	"_AUTH_ROLE",
 	"_SKIP_TLS_VERIFY",
+	"_CA_CERT",
+	"_TLS_SERVER_NAME",
 	"_OAUTH_SCOPE",
 	"_TENANT_ID",
 	"_SUBDOMAIN",
@@ -304,6 +306,8 @@ func discoveredEnvHasWorkingDefault(dir, name string) bool {
 	switch {
 	case strings.HasSuffix(name, "_USER_AGENT"),
 		strings.HasSuffix(name, "_SKIP_TLS_VERIFY"),
+		strings.HasSuffix(name, "_CA_CERT"),
+		strings.HasSuffix(name, "_TLS_SERVER_NAME"),
 		strings.HasSuffix(name, "_AUTH_ROLE"),
 		strings.HasSuffix(name, "_OAUTH_SCOPE"),
 		strings.HasSuffix(name, "_AUTHORIZATION_URL"),

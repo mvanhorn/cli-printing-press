@@ -44,10 +44,10 @@ func TestGeneratedBrowserClearanceAuthLoginSucceedsAsGenerated(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
-	assert.Contains(t, authGo, "client.NewProbeHTTPClient(5*time.Second, false)")
+	assert.Contains(t, authGo, "client.NewProbeHTTPClient(5*time.Second, cfg)")
 	assert.NotContains(t, authGo, "&http.Client{Timeout: 5 * time.Second}")
 	assert.Contains(t, authGo, `"skip-validation"`)
-	assert.Contains(t, authGo, "validateComposedAuthProbe(composed, validationCookies, !skipValidation)")
+	assert.Contains(t, authGo, "validateComposedAuthProbe(composed, validationCookies, !skipValidation, cfg)")
 	assert.Contains(t, authGo, "cookieNameLooksCSRF")
 	assert.Contains(t, authGo, "decodeCookieValue")
 	assert.Contains(t, authGo, "url.PathUnescape")
@@ -57,8 +57,8 @@ func TestGeneratedBrowserClearanceAuthLoginSucceedsAsGenerated(t *testing.T) {
 	assert.NotContains(t, authGo, "domainPattern")
 
 	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
-	assert.Contains(t, clientGo, "func NewProbeHTTPClient(timeout time.Duration, skipTLSVerify bool) *http.Client")
-	assert.Contains(t, clientGo, "newHTTPClient(timeout, nil, skipTLSVerify)")
+	assert.Contains(t, clientGo, "func NewProbeHTTPClient(timeout time.Duration, cfg *config.Config) (*http.Client, error)")
+	assert.Contains(t, clientGo, "newHTTPClient(timeout, plainNilJar(), tlsSettingsFromConfig(cfg))")
 
 	requireGeneratedCompiles(t, outputDir)
 
@@ -135,9 +135,9 @@ func TestInspectCookiesForDomainRejectsUnrelatedDomain(t *testing.T) {
 }
 
 func TestNewProbeHTTPClientIsUsable(t *testing.T) {
-	httpClient := client.NewProbeHTTPClient(5*time.Second, false)
-	if httpClient == nil {
-		t.Fatal("NewProbeHTTPClient returned nil")
+	httpClient, err := client.NewProbeHTTPClient(5*time.Second, nil)
+	if err != nil || httpClient == nil {
+		t.Fatalf("NewProbeHTTPClient: %%v", err)
 	}
 	if httpClient.Timeout != 5*time.Second {
 		t.Fatalf("Timeout = %%v, want 5s", httpClient.Timeout)

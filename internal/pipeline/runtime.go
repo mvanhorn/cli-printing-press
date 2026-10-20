@@ -1115,8 +1115,10 @@ func discoverCLIEnvVars(dir string) []string {
 	var envVars []string
 	for _, m := range matches {
 		name := m[1]
-		// Skip base URL and config path env vars — only want auth-related ones
-		if strings.HasSuffix(name, "_BASE_URL") || strings.HasSuffix(name, "_CONFIG") {
+		// Routing and TLS trust are not request credentials. Mock mode
+		// writes a placeholder token into every discovered credential;
+		// that token is not a CA bundle or a certificate name.
+		if isNonCredentialVerifyEnv(name) {
 			continue
 		}
 		if templateVarNames[name] {
@@ -1128,6 +1130,18 @@ func discoverCLIEnvVars(dir string) []string {
 		}
 	}
 	return envVars
+}
+
+func isNonCredentialVerifyEnv(name string) bool {
+	switch {
+	case strings.HasSuffix(name, "_BASE_URL"),
+		strings.HasSuffix(name, "_CONFIG"),
+		strings.HasSuffix(name, "_CA_CERT"),
+		strings.HasSuffix(name, "_TLS_SERVER_NAME"):
+		return true
+	default:
+		return false
+	}
 }
 
 // discoverCLITemplateVarEnvs returns the env var names that feed

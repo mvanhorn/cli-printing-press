@@ -43,7 +43,10 @@ func TestCommunityClientReachesHTTP1OnlyOrigin(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	httpClient := newHTTPClient(time.Second, nil, true)
+	httpClient, err := newHTTPClient(time.Second, nil, tlsSettings{Insecure: true})
+	if err != nil {
+		t.Fatalf("newHTTPClient: %v", err)
+	}
 	resp, err := httpClient.Get(server.URL)
 	if err != nil {
 		t.Fatalf("HTTP/1.1 origin: %v", err)

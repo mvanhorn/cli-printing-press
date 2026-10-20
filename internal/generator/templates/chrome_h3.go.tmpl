@@ -11,11 +11,18 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-func chromeH3RoundTripper(skipTLSVerify bool) http.RoundTripper {
+func chromeH3RoundTripper(trust resolvedTLS) http.RoundTripper {
+	cfg := &tls.Config{InsecureSkipVerify: trust.insecure}
+	if trust.pool != nil {
+		cfg.RootCAs = trust.pool
+	}
+	if trust.serverName != "" {
+		cfg.ServerName = trust.serverName
+	}
 	// HTTP/3 has no TCP dial hook. Off-origin redirects are still refused
 	// before the hop; a DNS answer that changes before the QUIC handshake
 	// is not pinned on this transport.
 	return &http3.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify},
+		TLSClientConfig: cfg,
 	}
 }

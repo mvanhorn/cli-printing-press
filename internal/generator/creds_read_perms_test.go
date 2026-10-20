@@ -40,8 +40,19 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	winSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_windows.go")
 	require.Contains(t, winSrc, "func VerifyCredsPerms", "Windows read-time guard must be emitted")
-	require.Contains(t, winSrc, "func resolveSDDLAlias", "Windows shell must resolve machine-local aliases such as LA")
+	require.NotContains(t, winSrc, "func resolveSDDLAlias", "the alias resolver lives in the shared Windows account file")
+	require.NotContains(t, winSrc, "func currentUserSID")
+	require.Contains(t, winSrc, "currentUserSID()")
 	require.Contains(t, winSrc, "evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias)", "Windows guard must pass the alias resolver into the evaluator")
+
+	accountSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "windows_account.go")
+	require.Contains(t, accountSrc, "func currentUserSID", "Windows account lookup is shared by credential and config-trust checks")
+	require.Contains(t, accountSrc, "func resolveSDDLAlias", "Windows shell must resolve machine-local aliases such as LA")
+	trustSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "filelock_windows.go")
+	require.NotContains(t, trustSrc, "func trustCurrentUserSID")
+	require.NotContains(t, trustSrc, "func trustResolveSDDLAlias")
+	require.Contains(t, trustSrc, "currentUserSID()")
+	require.Contains(t, trustSrc, "resolveSDDLAlias")
 
 	winTestSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "creds_perms_windows_test.go")
 	require.Contains(t, winTestSrc, "//go:build windows", "Windows resolver test must be Windows-only")
@@ -334,9 +345,10 @@ func dropGeneratedImportLines(src, needle string) string {
 	return strings.Join(kept, "\n")
 }
 
-// TestGenerate_NoCredsPermsForNonAuthSpec proves the guard is gated on
-// shouldEmitAuth(): a spec with no auth persists no token, so shipping the
-// check would be dead weight. public-param-names declares auth.type: none.
+// TestGenerate_NoCredsPermsForNonAuthSpec proves credential persistence stays
+// gated on shouldEmitAuth(). The DACL evaluator is shared: auth-none config
+// trust uses it, and a spec with no auth still persists no token.
+// public-param-names declares auth.type: none.
 func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
 	if testing.Short() {
 		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
@@ -350,9 +362,15 @@ func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_eval.go"))
-	require.True(t, os.IsNotExist(err), "creds_perms_eval.go must not be emitted for a non-auth spec")
+	require.NoError(t, err, "creds_perms_eval.go is shared by auth-none config trust")
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_windows_test.go"))
 	require.True(t, os.IsNotExist(err), "Windows resolver test must not be emitted for a non-auth spec")
+	accountSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "windows_account.go")
+	require.Contains(t, accountSrc, "func resolveSDDLAlias")
+	trustSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "filelock_windows.go")
+	require.Contains(t, trustSrc, "currentUserSID()")
+	require.Contains(t, trustSrc, "resolveSDDLAlias")
+	require.NotContains(t, trustSrc, "func currentUserSID")
 
 	winSrc := readGeneratedFile(t, outputDir, "internal", "platform", "perms_windows.go")
 	require.Contains(t, winSrc, "func verifyPrivatePerms")

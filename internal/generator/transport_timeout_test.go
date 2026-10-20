@@ -38,7 +38,7 @@ func TestBrowserTransport_TimeoutReachesTransport(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
-	require.Contains(t, clientSrc, "return chromeClient(timeout, jar, skipTLSVerify)",
+	require.Contains(t, clientSrc, "return chromeClient(timeout, jar, resolved)",
 		"test fixture must trigger UsesBrowserHTTPTransport")
 	require.NotContains(t, clientSrc, "github.com/enetx/")
 
@@ -94,7 +94,7 @@ func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe
 	require.NoError(t, gen.Generate())
 
 	src := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
-	require.Contains(t, src, "return chromeClient(timeout, jar, skipTLSVerify)",
+	require.Contains(t, src, "return chromeClient(timeout, jar, resolved)",
 		"sniffed CLIs keep the Chrome TLS transport when impersonation is unsafe")
 	require.NotContains(t, src, "github.com/enetx/")
 	require.Contains(t, src, `req.Header.Set("User-Agent", "transport-content-negotiation-canary-pp-cli/0.1.0")`,

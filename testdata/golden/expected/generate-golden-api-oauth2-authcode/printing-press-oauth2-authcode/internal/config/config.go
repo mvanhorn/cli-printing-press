@@ -19,6 +19,8 @@ import (
 
 type Config struct {
 	BaseURL            string                      `toml:"base_url"`
+	CACert             string                      `toml:"ca_cert,omitempty"`
+	TLSServerName      string                      `toml:"tls_server_name,omitempty"`
 	AuthHeaderVal      string                      `toml:"auth_header"`
 	Headers            map[string]string           `toml:"headers,omitempty"`
 	AuthSource         string                      `toml:"-"`
@@ -99,6 +101,12 @@ func Load(configPath string) (*Config, error) {
 	cfg.snapshotFileConfig()
 
 	// Env var overrides
+	if v := strings.TrimSpace(cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_CA_CERT")); v != "" {
+		cfg.SetCACert(v)
+	}
+	if v := strings.TrimSpace(cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_TLS_SERVER_NAME")); v != "" {
+		cfg.SetTLSServerName(v)
+	}
 	if cfg.credentialRouteBlocked() {
 		if cfg.envHasCredential() {
 			cfg.addCredentialRefusal(cliutil.CredentialRefusal{
@@ -305,6 +313,7 @@ func (c *Config) acceptOpenedConfig(opened cliutil.OpenedConfig, path, owner str
 		parsed.clearCredentialFields()
 	}
 	if opened.PermErr != nil {
+		parsed.dropUntrustedTLSSettings()
 		parsed.dropUntrustedRouting(defaultBase)
 	}
 	*c = parsed
@@ -1011,11 +1020,37 @@ func (c *Config) ClearTokens() error {
 	return c.save()
 }
 
+func (c *Config) dropUntrustedTLSSettings() {
+	if c == nil {
+		return
+	}
+	if strings.TrimSpace(c.CACert) == "" && strings.TrimSpace(c.TLSServerName) == "" {
+		return
+	}
+	where := strings.TrimSpace(c.Path)
+	if where == "" {
+		where = "config file"
+	}
+	fmt.Fprintf(os.Stderr, "warning: ignoring ca_cert and tls_server_name from %s because other users can change it\n", where)
+	c.CACert = ""
+	c.TLSServerName = ""
+}
+
 func (c *Config) markEnvOverride(field string) {
 	if c.envOverrides == nil {
 		c.envOverrides = map[string]bool{}
 	}
 	c.envOverrides[field] = true
+}
+
+func (c *Config) SetCACert(value string) {
+	c.CACert = value
+	c.markEnvOverride("CACert")
+}
+
+func (c *Config) SetTLSServerName(value string) {
+	c.TLSServerName = value
+	c.markEnvOverride("TLSServerName")
 }
 
 // cloneStringMap returns an independent copy of m (nil stays nil). The fileConfig
@@ -1046,6 +1081,12 @@ func (c *Config) snapshotFileConfig() {
 func (c *Config) configForSave() Config {
 	out := *c
 	if c.fileConfig != nil {
+		if c.envOverrides["CACert"] {
+			out.CACert = c.fileConfig.CACert
+		}
+		if c.envOverrides["TLSServerName"] {
+			out.TLSServerName = c.fileConfig.TLSServerName
+		}
 		if c.envOverrides["PrintingPressOauth2Oauth2AuthCode"] {
 			out.PrintingPressOauth2Oauth2AuthCode = c.fileConfig.PrintingPressOauth2Oauth2AuthCode
 		}
@@ -1136,6 +1177,8 @@ func (c *Config) scrubLegacyCredentials() {
 
 type persistedConfig struct {
 	BaseURL          string            `toml:"base_url"`
+	CACert           string            `toml:"ca_cert,omitempty"`
+	TLSServerName    string            `toml:"tls_server_name,omitempty"`
 	Headers          map[string]string `toml:"headers,omitempty"`
 	AuthorizationURL string            `toml:"authorization_url,omitempty"`
 	TokenURL         string            `toml:"token_url,omitempty"`
@@ -1144,6 +1187,8 @@ type persistedConfig struct {
 func (c *Config) persisted() persistedConfig {
 	return persistedConfig{
 		BaseURL:          c.BaseURL,
+		CACert:           c.CACert,
+		TLSServerName:    c.TLSServerName,
 		Headers:          c.Headers,
 		AuthorizationURL: c.AuthorizationURL,
 		TokenURL:         c.TokenURL,

@@ -271,6 +271,8 @@ Run `learn-disabled-example-pp-cli doctor` to see the resolved config, data, sta
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 
+`--ca-cert`, `LEARN_DISABLED_EXAMPLE_CA_CERT`, or `ca_cert` adds a PEM CA bundle to the system trust roots. `--tls-server-name`, `LEARN_DISABLED_EXAMPLE_TLS_SERVER_NAME`, or `tls_server_name` is the name checked against the certificate when the dialed address does not match it. Precedence is flag, then environment, then the config file. A config file other users can change does not supply these settings. Certificate verification failures are not retried.
+
 Environment variables:
 
 | Name | Kind | Required | Description |

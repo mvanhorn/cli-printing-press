@@ -92,21 +92,23 @@ func TestDescriptionForPrefersShort(t *testing.T) {
 // are local command flags, because MCP clients do not get to choose disk paths.
 func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	in := map[string]any{
-		"args":         "contacts",
-		"audit-dir":    "/tmp/evil-audit",
-		"base-url":     "https://evil.example.com",
-		"client":       "attacker-client",
-		"config":       "/tmp/evil.yaml",
-		"db":           "/tmp/evil.db",
-		"deliver":      "fd:3",
-		"home":         "/tmp/evil-home",
-		"insecure":     true,
-		"o":            "/tmp/evil-short.json",
-		"output":       "/tmp/evil.json",
-		"profile":      "attacker",
-		"receipt-file": "/tmp/evil-receipt.json",
-		"token":        "your-token-here",
-		"yes":          true,
+		"args":            "contacts",
+		"audit-dir":       "/tmp/evil-audit",
+		"base-url":        "https://evil.example.com",
+		"ca-cert":         "/tmp/evil-ca.pem",
+		"client":          "attacker-client",
+		"config":          "/tmp/evil.yaml",
+		"db":              "/tmp/evil.db",
+		"deliver":         "fd:3",
+		"home":            "/tmp/evil-home",
+		"insecure":        true,
+		"o":               "/tmp/evil-short.json",
+		"output":          "/tmp/evil.json",
+		"profile":         "attacker",
+		"receipt-file":    "/tmp/evil-receipt.json",
+		"tls-server-name": "evil.example",
+		"token":           "your-token-here",
+		"yes":             true,
 		// Keys containing "=" must not be emitted verbatim as flag=value.
 		"base-url=https://evil.example.com": true,
 		"config=/tmp/evil.yaml":             true,
@@ -116,31 +118,49 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"limit": float64(10),
 	}
 	got := cliArgsFromMCP(in, map[string]bool{
-		"args":         true,
-		"audit-dir":    true,
-		"base-url":     true,
-		"client":       true,
-		"config":       true,
-		"db":           true,
-		"deliver":      true,
-		"home":         true,
-		"insecure":     true,
-		"o":            true,
-		"output":       true,
-		"profile":      true,
-		"receipt-file": true,
-		"token":        true,
-		"yes":          true,
+		"args":            true,
+		"audit-dir":       true,
+		"base-url":        true,
+		"ca-cert":         true,
+		"client":          true,
+		"config":          true,
+		"db":              true,
+		"deliver":         true,
+		"home":            true,
+		"insecure":        true,
+		"o":               true,
+		"output":          true,
+		"profile":         true,
+		"receipt-file":    true,
+		"tls-server-name": true,
+		"token":           true,
+		"yes":             true,
 	})
 	want := []string{"--limit=10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--audit-dir", "--base-url", "--client", "--config", "--db", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--token", "--yes", "--args"} {
+	for _, blocked := range []string{"--audit-dir", "--base-url", "--ca-cert", "--client", "--config", "--db", "--deliver", "--home", "--insecure", "--o", "--output", "--profile", "--receipt-file", "--tls-server-name", "--token", "--yes", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)
 			}
+		}
+	}
+}
+
+func TestBlockedRootFlagsIncludeTLSTrust(t *testing.T) {
+	if !blockedRootFlags["ca-cert"] || !blockedRootFlags["tls-server-name"] {
+		t.Fatal("ca-cert and tls-server-name must stay out of MCP tool arguments")
+	}
+	got := cliArgsFromMCP(map[string]any{
+		"ca-cert":         "/tmp/evil-ca.pem",
+		"tls-server-name": "evil.example",
+		"limit":           float64(1),
+	}, blockedRootFlags)
+	for _, tok := range got {
+		if strings.Contains(tok, "ca-cert") || strings.Contains(tok, "tls-server-name") || strings.Contains(tok, "evil") {
+			t.Fatalf("MCP args redirected TLS trust: %q", got)
 		}
 	}
 }

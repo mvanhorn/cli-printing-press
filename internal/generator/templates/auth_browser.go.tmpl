@@ -30,7 +30,7 @@ import (
 {{- if or $hasCookieBrowserAuth $hasBrowserCapture}}
 	"encoding/json"
 {{- end}}
-{{- if $hasBrowserCapture}}
+{{- if or $hasBrowserCapture (eq .Auth.Type "composed")}}
 	"errors"
 {{- end}}
 	"fmt"
@@ -59,7 +59,7 @@ import (
 	"strings"
 	"time"
 
-{{- if or .Auth.RequiresBrowserSession .Auth.HasCookies (and (eq .Auth.Type "composed") .UsesBrowserHTTPTransport)}}
+{{- if or .Auth.RequiresBrowserSession .Auth.HasCookies (eq .Auth.Type "composed")}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 {{- if or (not (eq .Auth.Type "none")) $hasQueryRefresh (not .UsesBrowserManagedUserAgent)}}
@@ -386,7 +386,22 @@ profile by name when the installed backend supports it.`,
 
 {{- if not .Auth.RequiresBrowserSession}}
 			fmt.Fprintf(w, "Validating session...")
-			if err := validateComposedAuthProbe(composed, validationCookies, !skipValidation); err != nil {
+			{
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			flags.applyTLSFlags(cfg)
+{{- if .UsesBrowserHTTPTransport}}
+			if flags.insecure {
+				cfg.SetSkipTLSVerify(true)
+			}
+{{- end}}
+			if err := validateComposedAuthProbe(composed, validationCookies, !skipValidation, cfg); err != nil {
+				if cfgErr := preservedConfigErr(err); cfgErr != nil {
+					fmt.Fprintf(w, " %s\n", red("failed"))
+					return cfgErr
+				}
 				loginURL := "https://" + strings.TrimPrefix(domain, ".")
 				fmt.Fprintf(w, " %s\n", red("expired"))
 				fmt.Fprintln(w, "")
@@ -400,6 +415,7 @@ profile by name when the installed backend supports it.`,
 					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome --skip-validation\n")
 				}
 				return authErr(fmt.Errorf("session expired for %s", domain))
+			}
 			}
 			if skipValidation {
 				fmt.Fprintf(w, " %s (origin probe skipped)\n", green("ok"))
@@ -447,6 +463,9 @@ profile by name when the installed backend supports it.`,
 {{- end}}
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
+				if cfgErr := preservedConfigErr(err); cfgErr != nil {
+					return cfgErr
+				}
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
 			}
 			fmt.Fprintf(w, " %s\n", green("valid"))
@@ -521,6 +540,9 @@ profile by name when the installed backend supports it.`,
 {{- end}}
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
+				if cfgErr := preservedConfigErr(err); cfgErr != nil {
+					return cfgErr
+				}
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
 			}
 			fmt.Fprintf(w, " %s\n", green("valid"))
@@ -814,6 +836,9 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProofWithRetry(cmd.Context(), cfg, flags, waitTimeout); err != nil {
 				fmt.Fprintf(w, " %s\n", red("failed"))
+				if cfgErr := preservedConfigErr(err); cfgErr != nil {
+					return cfgErr
+				}
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
 			}
 			fmt.Fprintf(w, " %s\n", green("valid"))
@@ -2268,6 +2293,24 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 }
 {{- end}}
 
+{{- if or (eq .Auth.Type "composed") .Auth.RequiresBrowserSession}}
+// ExitCode reports the outer cliError, so wrapping this in authErr would
+// turn a bad CA bundle into an authentication failure.
+func preservedConfigErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var typed *cliError
+	if errors.As(err, &typed) && typed.code == 10 {
+		return err
+	}
+	if errors.Is(err, client.ErrTLSConfig) {
+		return configErr(err)
+	}
+	return nil
+}
+{{- end}}
+
 {{- if eq .Auth.Type "composed"}}
 func cookieNameLooksCSRF(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
@@ -2313,10 +2356,10 @@ func composeCookieHeader(requiredCookies []string, cookieMap map[string]string) 
 // validateComposedAuth rejects expired JWTs locally before falling back to a
 // lightweight probe for opaque composed credentials.
 func validateComposedAuth(authHeader, cookieHeader string) error {
-	return validateComposedAuthProbe(authHeader, cookieHeader, true)
+	return validateComposedAuthProbe(authHeader, cookieHeader, true, nil)
 }
 
-func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool) error {
+func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool, cfg *config.Config) error {
 	for _, credential := range []string{authHeader, cookieHeader} {
 		if expiry, ok := composedAuthJWTExpiry(credential); ok {
 			if !time.Now().Before(expiry) {
@@ -2364,10 +2407,13 @@ func validateComposedAuthProbe(authHeader, cookieHeader string, probeOrigin bool
 {{- end}}
 
 {{- if .UsesBrowserHTTPTransport}}
-	httpClient := client.NewProbeHTTPClient(5*time.Second, false)
+	httpClient, err := client.NewProbeHTTPClient(5*time.Second, cfg)
 {{- else}}
-	httpClient := client.NewPlainHTTPClient(5 * time.Second)
+	httpClient, err := client.NewPlainHTTPClient(5*time.Second, cfg)
 {{- end}}
+	if err != nil {
+		return err
+	}
 	req, err = client.PrepareRequest(httpClient, req)
 	if err != nil {
 		return err
@@ -2554,7 +2600,16 @@ func validateAndWriteBrowserSessionProof(ctx context.Context, cfg *config.Config
 		return fmt.Errorf("no browser session credentials were saved")
 	}
 
+	flags.applyTLSFlags(cfg)
+{{- if .UsesBrowserHTTPTransport}}
+	if flags.insecure {
+		cfg.SetSkipTLSVerify(true)
+	}
+{{- end}}
 	c := client.New(cfg, flags.timeout, flags.rateLimit)
+	if tlsErr := c.TLSConfigError(); tlsErr != nil {
+		return configErr(tlsErr)
+	}
 	c.NoCache = true
 	status, err := c.ProbeGet(ctx, validationPath)
 	if err != nil {
@@ -2588,6 +2643,9 @@ func validateAndWriteBrowserSessionProofWithRetry(ctx context.Context, cfg *conf
 	var lastErr error
 	for {
 		if err := validateAndWriteBrowserSessionProof(ctx, cfg, flags); err != nil {
+			if cfgErr := preservedConfigErr(err); cfgErr != nil {
+				return cfgErr
+			}
 			lastErr = err
 		} else {
 			return nil

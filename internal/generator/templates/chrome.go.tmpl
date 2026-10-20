@@ -29,20 +29,23 @@ import (
 {{- end}}
 )
 
-func chromeClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool) *http.Client {
+func chromeClient(timeout time.Duration, jar http.CookieJar, trust resolvedTLS) (*http.Client, error) {
 	if jar == nil {
 		jar, _ = cookiejar.New(nil)
 	}
 {{- if .UsesBrowserHTTP3Transport}}
-	var rt http.RoundTripper = chromeH3RoundTripper(skipTLSVerify)
+	var rt http.RoundTripper = chromeH3RoundTripper(trust)
 {{- else}}
-	var rt http.RoundTripper = newChromeTransport(timeout, skipTLSVerify)
+	rt, err := newChromeTransport(timeout, trust)
+	if err != nil {
+		return nil, err
+	}
 {{- end}}
 {{- if .UseChromeImpersonation}}
 	rt = chromeHeaderTripper{next: rt}
 {{- end}}
 	rt = &chromeAllowTripper{next: rt, state: &chromeAllowState{}}
-	return &http.Client{Timeout: timeout, Jar: jar, Transport: rt}
+	return &http.Client{Timeout: timeout, Jar: jar, Transport: rt}, nil
 }
 {{- if .UseChromeImpersonation}}
 
@@ -77,10 +80,10 @@ var errChromeNotH2 = errors.New("chrome transport: server did not negotiate h2")
 
 const chromeIdleConnTimeout = 90 * time.Second
 
-func newChromeH2Transport(skipTLSVerify bool) *http2.Transport {
+func newChromeH2Transport(trust resolvedTLS) *http2.Transport {
 	return &http2.Transport{
 		DialTLSContext: func(ctx context.Context, _, addr string, _ *tls.Config) (net.Conn, error) {
-			return chromeDialH2(ctx, addr, skipTLSVerify)
+			return chromeDialH2(ctx, addr, trust)
 		},
 		MaxEncoderHeaderTableSize: chromeHeaderTableSize,
 		MaxDecoderHeaderTableSize: chromeHeaderTableSize,
@@ -89,8 +92,8 @@ func newChromeH2Transport(skipTLSVerify bool) *http2.Transport {
 }
 {{- if .UsesBrowserHTTP2Transport}}
 
-func newChromeTransport(_ time.Duration, skipTLSVerify bool) http.RoundTripper {
-	return newChromeH2Transport(skipTLSVerify)
+func newChromeTransport(_ time.Duration, trust resolvedTLS) (http.RoundTripper, error) {
+	return newChromeH2Transport(trust), nil
 }
 {{- else}}
 
@@ -102,8 +105,11 @@ type chromeTransport struct {
 	h1Hosts map[string]bool
 }
 
-func newChromeTransport(timeout time.Duration, skipTLSVerify bool) http.RoundTripper {
-	h1 := http.DefaultTransport.(*http.Transport).Clone()
+func newChromeTransport(timeout time.Duration, trust resolvedTLS) (http.RoundTripper, error) {
+	h1, err := cloneDefaultHTTPTransport()
+	if err != nil {
+		return nil, err
+	}
 	// chromeDialTCP tunnels CONNECT itself so the Chrome ClientHello, not
 	// crypto/tls, reaches the origin through a proxy.
 	h1.Proxy = nil
@@ -114,17 +120,20 @@ func newChromeTransport(timeout time.Duration, skipTLSVerify bool) http.RoundTri
 		h1.MaxIdleConns = maxIdleConnsPerHost
 	}
 	h1.ResponseHeaderTimeout = timeout
+	if !trust.insecure {
+		applyTrust(h1, trust.pool, trust.serverName)
+	}
 	h1.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return guardedDial(ctx, network, addr, dialGuardFrom(ctx).allow, nil)
 	}
 	h1.DialTLSContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-		return chromeDialTLS(ctx, addr, []string{"http/1.1"}, skipTLSVerify)
+		return chromeDialTLS(ctx, addr, []string{"http/1.1"}, trust)
 	}
 	return &chromeTransport{
-		h2:      newChromeH2Transport(skipTLSVerify),
+		h2:      newChromeH2Transport(trust),
 		h1:      h1,
 		h1Hosts: map[string]bool{},
-	}
+	}, nil
 }
 
 func (t *chromeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -146,8 +155,8 @@ func (t *chromeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 {{- end}}
 
-func chromeDialH2(ctx context.Context, addr string, skipTLSVerify bool) (net.Conn, error) {
-	conn, err := chromeDialTLS(ctx, addr, chromeALPN, skipTLSVerify)
+func chromeDialH2(ctx context.Context, addr string, trust resolvedTLS) (net.Conn, error) {
+	conn, err := chromeDialTLS(ctx, addr, chromeALPN, trust)
 	if err != nil {
 		return nil, err
 	}
@@ -158,12 +167,12 @@ func chromeDialH2(ctx context.Context, addr string, skipTLSVerify bool) (net.Con
 	return conn, nil
 }
 
-func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerify bool) (*utls.UConn, error) {
+func chromeDialTLS(ctx context.Context, addr string, alpn []string, trust resolvedTLS) (*utls.UConn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := chromeDialTCP(ctx, addr, skipTLSVerify)
+	raw, err := chromeDialTCP(ctx, addr, trust)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +186,13 @@ func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerif
 			a.AlpnProtocols = alpn
 		}
 	}
-	conn := utls.UClient(raw, &utls.Config{ServerName: host, InsecureSkipVerify: skipTLSVerify}, utls.HelloCustom)
+	serverName := host
+	if trust.serverName != "" {
+		serverName = trust.serverName
+	}
+	// Handshake uses this config. Transport.TLSClientConfig is unused
+	// because DialTLSContext replaces the default TLS dial.
+	conn := utls.UClient(raw, &utls.Config{ServerName: serverName, InsecureSkipVerify: trust.insecure, RootCAs: trust.pool}, utls.HelloCustom)
 	if err := conn.ApplyPreset(&spec); err != nil {
 		raw.Close()
 		return nil, err
@@ -189,7 +204,7 @@ func chromeDialTLS(ctx context.Context, addr string, alpn []string, skipTLSVerif
 	return conn, nil
 }
 
-func chromeDialTCP(ctx context.Context, addr string, skipTLSVerify bool) (net.Conn, error) {
+func chromeDialTCP(ctx context.Context, addr string, trust resolvedTLS) (net.Conn, error) {
 	proxyURL, err := httpproxy.FromEnvironment().ProxyFunc()(&url.URL{Scheme: "https", Host: addr})
 	if err != nil {
 		return nil, err
@@ -222,7 +237,7 @@ func chromeDialTCP(ctx context.Context, addr string, skipTLSVerify bool) (net.Co
 			conn.Close()
 			return nil, splitErr
 		}
-		tlsConn := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: skipTLSVerify})
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: trust.insecure, RootCAs: trust.pool})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			conn.Close()
 			return nil, err

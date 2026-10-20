@@ -8,7 +8,9 @@ package cliutil
 
 import (
 	"errors"
+	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -30,4 +32,54 @@ func tryLockFile(f *os.File) error {
 func unlockFile(f *os.File) error {
 	var ol windows.Overlapped
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &ol)
+}
+
+// ReadConfigTrust opens path once and reports whether ca_cert and
+// tls_server_name from those bytes may be applied. Mode bits are not a
+// Windows trust signal; the DACL on this handle is.
+func ReadConfigTrust(path string) ([]byte, bool, error) {
+	f, err := os.Open(path) // #nosec G304 -- app-derived config path; verdict and bytes share this handle.
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, false, err
+	}
+	if fi == nil || !fi.Mode().IsRegular() {
+		return data, false, nil
+	}
+	sd, err := windows.GetSecurityInfo(
+		windows.Handle(f.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return data, false, nil
+	}
+	me, err := currentUserSID()
+	if err != nil {
+		return data, false, nil
+	}
+	return data, evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias) == nil, nil
+}
+
+func TrustConfigAllowsSettings(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return true
+	}
+	_, allow, err := ReadConfigTrust(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true
+		}
+		return false
+	}
+	return allow
 }

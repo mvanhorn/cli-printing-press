@@ -66,6 +66,7 @@ type SessionManager struct {
 	jar        http.CookieJar
 	token      string
 	configPath string
+	tlsErr     error
 }
 
 // newSessionManager constructs a SessionManager with a cookie jar attached to
@@ -76,21 +77,36 @@ type SessionManager struct {
 // the handshake itself — otherwise the very calls that establish the session
 // run as a vanilla net/http client and get rate-limited away even when the
 // data client would have cleared the bot wall.
-func newSessionManager(timeout time.Duration, configPath string{{if .UsesBrowserHTTPTransport}}, skipTLSVerify bool{{end}}) *SessionManager {
+func newSessionManager(timeout time.Duration, configPath string, trust tlsSettings) *SessionManager {
 	jar, _ := cookiejar.New(nil)
+	httpClient, tlsErr := newHTTPClient(timeout, jar, trust)
 	m := &SessionManager{
 		jar:        jar,
-		client:     newHTTPClient(timeout, jar{{if .UsesBrowserHTTPTransport}}, skipTLSVerify{{end}}),
+		client:     httpClient,
 		configPath: configPath,
+		tlsErr:     tlsErr,
+	}
+	if httpClient == nil {
+		return m
 	}
 	guardHTTPClient(m.client, sessionDataBaseURL)
 	m.loadFromDisk()
 	return m
 }
 
+func (m *SessionManager) TLSConfigError() error {
+	if m == nil {
+		return nil
+	}
+	return m.tlsErr
+}
+
 // AttachTo hooks this SessionManager's cookie jar onto the shared client so
 // every data request reuses the bootstrapped cookies.
 func (m *SessionManager) AttachTo(c *http.Client) {
+	if m == nil || c == nil {
+		return
+	}
 	if c.Jar == nil {
 		c.Jar = m.jar
 	}
@@ -112,6 +128,12 @@ func (m *SessionManager) Token() string {
 // The network calls happen under the manager's lock — concurrent callers wait
 // for a single in-flight handshake.
 func (m *SessionManager) EnsureToken() (string, error) {
+	if m == nil || m.tlsErr != nil || m.client == nil {
+		if m != nil && m.tlsErr != nil {
+			return "", m.tlsErr
+		}
+		return "", fmt.Errorf("%w: http client unavailable", ErrTLSConfig)
+	}
 	m.mu.Lock()
 	if m.token != "" {
 		t := m.token

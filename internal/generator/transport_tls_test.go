@@ -44,12 +44,18 @@ func TestGeneratedTLSVerificationDefaultsSecureWithExplicitOptOut(t *testing.T) 
 	server.StartTLS()
 	defer server.Close()
 
-	secureClient := newHTTPClient(time.Second, nil, false)
+	secureClient, err := newHTTPClient(time.Second, nil, tlsSettings{})
+	if err != nil {
+		t.Fatalf("secure client: %v", err)
+	}
 	if _, err := secureClient.Get(server.URL); err == nil {
 		t.Fatal("default client accepted an untrusted TLS certificate")
 	}
 
-	insecureClient := newHTTPClient(time.Second, nil, true)
+	insecureClient, err := newHTTPClient(time.Second, nil, tlsSettings{Insecure: true})
+	if err != nil {
+		t.Fatalf("insecure client: %v", err)
+	}
 	resp, err := insecureClient.Get(server.URL)
 	if err != nil {
 		t.Fatalf("explicit insecure client rejected test certificate: %v", err)

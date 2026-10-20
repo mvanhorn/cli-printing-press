@@ -2033,7 +2033,7 @@ resources:
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(clientGo), `req.Header.Set("User-Agent"`)
-	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, skipTLSVerify)")
+	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, resolved)")
 	assert.NotContains(t, string(clientGo), "github.com/enetx/")
 	// HAR distribution declares H/2 majority -> the ClientHello offers only
 	// h2 and no HTTP/3 transport is emitted. With an empty distribution the
@@ -2119,7 +2119,7 @@ resources:
 
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, skipTLSVerify)")
+	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, resolved)")
 	assert.NotContains(t, string(clientGo), "github.com/enetx/")
 	// HAR distribution declares H/2 majority -> the ClientHello offers only h2.
 	chromeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "chrome.go"))
@@ -5032,7 +5032,7 @@ resources:
 	assert.FileExists(t, filepath.Join(outputDir, "README.md"))
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, skipTLSVerify)")
+	assert.Contains(t, string(clientGo), "return chromeClient(timeout, jar, resolved)")
 	assert.NotContains(t, string(clientGo), "github.com/enetx/")
 }
 

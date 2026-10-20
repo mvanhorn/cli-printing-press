@@ -46,7 +46,7 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 		"cookie-auth New() must fall back to the spec cookie domain for env and set-token")
 	assert.Contains(t, clientSrc, "SeedCookieJarForDomain(cookieJar, seedBaseURL, cfg.CookieCredential(), seedDomain)",
 		"cookie-auth New() must seed the jar from the stored cookie credential at the https canonical host")
-	assert.Contains(t, clientSrc, "httpClient := newHTTPClient(timeout, cookieJar)",
+	assert.Contains(t, clientSrc, "httpClient, tlsErr := newHTTPClient(timeout, cookieJar, tlsSettingsFromConfig(cfg))",
 		"cookie-auth client must use the seeded jar, not a nil jar")
 	assert.NotContains(t, clientSrc, "newHTTPClient(timeout, nil)",
 		"cookie-auth client must never construct an HTTP client with a nil jar")
@@ -284,7 +284,7 @@ func TestBearerAuthClientOmitsCookieJarSeed(t *testing.T) {
 		"bearer auth must not load a cookie jar")
 	assert.NotContains(t, clientSrc, "CookieCredential",
 		"bearer auth must not reference CookieCredential")
-	assert.Contains(t, clientSrc, "newHTTPClient(timeout, nil)",
+	assert.Contains(t, clientSrc, "newHTTPClient(timeout, nil, tlsSettingsFromConfig(cfg))",
 		"bearer auth must construct the client with a nil jar")
 
 	if _, err := os.Stat(filepath.Join(outputDir, "internal", "client", "cookiejar.go")); !os.IsNotExist(err) {

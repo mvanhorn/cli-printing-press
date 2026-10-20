@@ -31,6 +31,8 @@ If `--version` reports "command not found" after install, the runtime cannot see
 
 Purpose-built fixture for golden generation coverage.
 
+`--ca-cert`, `PRINTING_PRESS_GOLDEN_CA_CERT`, or `ca_cert` adds a PEM CA bundle to the system trust roots. `--tls-server-name`, `PRINTING_PRESS_GOLDEN_TLS_SERVER_NAME`, or `tls_server_name` is the name checked against the certificate. Precedence is flag, then environment, then the config file. A config file other users can change does not supply these settings. `doctor` reports the trust in use and names the setting that fixes a chain or hostname failure.
+
 ## Command Reference
 
 **currencies** — Manage currencies

@@ -2280,6 +2280,12 @@ func Load() *Config {
 	if v := os.Getenv("SHOPIFY_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+	if v := cliutil.EnvOverride("SHOPIFY_CA_CERT"); v != "" {
+		cfg.CACert = v
+	}
+	if v := cliutil.EnvOverride("SHOPIFY_TLS_SERVER_NAME"); v != "" {
+		cfg.ServerName = v
+	}
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}
 	}

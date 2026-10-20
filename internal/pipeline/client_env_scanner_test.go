@@ -400,6 +400,53 @@ func read() string { return os.Getenv("ESPN_USER_AGENT") }
 		assert.False(t, ok, "USER_AGENT must be omitted from user_config when the binary already defaults it")
 	})
 
+	t.Run("TLS trust env vars stay out of the install prompt", func(t *testing.T) {
+		dir := t.TempDir()
+		cli := CLIManifest{
+			APIName:     "hudu",
+			DisplayName: "Hudu",
+			MCPBinary:   "hudu-pp-mcp",
+			AuthType:    "api_key",
+			AuthEnvVars: []string{"HUDU_API_KEY"},
+		}
+		writeMCPBManifest(t, dir, MCPBManifest{
+			Name: "hudu-pp-mcp",
+			Server: MCPBServer{
+				MCPConfig: MCPBLaunchSpec{Env: map[string]string{"HUDU_API_KEY": "${user_config.hudu_api_key}"}},
+			},
+			UserConfig: map[string]MCPBVar{
+				"hudu_api_key": {Type: "string", Title: "HUDU_API_KEY", Required: true, Sensitive: true},
+			},
+		})
+		writeConfigFile(t, dir, "config.go", `package config
+
+import "os"
+
+func Load() {
+	_ = os.Getenv("HUDU_API_KEY")
+	if v := os.Getenv("HUDU_CA_CERT"); v != "" {
+		_ = v
+	}
+	if v := os.Getenv("HUDU_TLS_SERVER_NAME"); v != "" {
+		_ = v
+	}
+}
+`)
+
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
+
+		got := readMCPBManifest(t, dir)
+		for _, name := range []string{"HUDU_CA_CERT", "HUDU_TLS_SERVER_NAME"} {
+			_, declared := got.Server.MCPConfig.Env[name]
+			assert.False(t, declared, "%s has a working default and must not be an install prompt", name)
+		}
+		_, hasCA := got.UserConfig["hudu_ca_cert"]
+		_, hasName := got.UserConfig["hudu_tls_server_name"]
+		assert.False(t, hasCA)
+		assert.False(t, hasName)
+		assert.Equal(t, "${user_config.hudu_api_key}", got.Server.MCPConfig.Env["HUDU_API_KEY"])
+	})
+
 	t.Run("undeclared BASE_URL without compile-time default stays required", func(t *testing.T) {
 		dir := t.TempDir()
 		cli := CLIManifest{

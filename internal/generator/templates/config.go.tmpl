@@ -42,6 +42,8 @@ type Config struct {
 {{- if .UsesBrowserHTTPTransport}}
 	SkipTLSVerify  bool `{{configTag .Config.Format}}:"skip_tls_verify,omitempty"`
 {{- end}}
+	CACert         string `{{configTag .Config.Format}}:"ca_cert,omitempty"`
+	TLSServerName  string `{{configTag .Config.Format}}:"tls_server_name,omitempty"`
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
 	Headers        map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
@@ -158,8 +160,17 @@ func Load(configPath string) (*Config, error) {
 			return nil, err
 		}
 {{- else}}
-		if err := readConfigFile(path, cfg, "config-kind path"); err != nil && !os.IsNotExist(err) {
+		data, allowTrust, err := cliutil.ReadConfigTrust(path)
+		if err != nil && !os.IsNotExist(err) {
 			return nil, err
+		}
+		if err == nil {
+			if err := parseConfigData(data, cfg, path, "config-kind path"); err != nil {
+				return nil, err
+			}
+			if !allowTrust {
+				cfg.dropUntrustedTLSSettings()
+			}
 		}
 {{- end}}
 	} else {
@@ -172,7 +183,15 @@ func Load(configPath string) (*Config, error) {
 			return nil, err
 		}
 {{- else}}
-		data, sourcePath, err := cliutil.ReadFileWithLegacyFallback(path, legacyPath)
+		// One open supplies both the bytes and the trust verdict. A second
+		// check could apply a bundle that was readable only while the file
+		// was loose.
+		data, allowTrust, err := cliutil.ReadConfigTrust(path)
+		sourcePath := path
+		if err != nil && os.IsNotExist(err) && legacyPath != "" && legacyPath != path {
+			data, allowTrust, err = cliutil.ReadConfigTrust(legacyPath)
+			sourcePath = legacyPath
+		}
 		if err != nil {
 			if !os.IsNotExist(err) {
 				return nil, err
@@ -191,6 +210,9 @@ func Load(configPath string) (*Config, error) {
 				}
 			} else {
 				*cfg = parsed
+				if !allowTrust {
+					cfg.dropUntrustedTLSSettings()
+				}
 			}
 		}
 {{- end}}
@@ -215,6 +237,12 @@ func Load(configPath string) (*Config, error) {
 		cfg.SetSkipTLSVerify(true)
 	}
 {{- end}}
+	if v := strings.TrimSpace(cliutil.EnvOverride("{{envPrefix .Name}}_CA_CERT")); v != "" {
+		cfg.SetCACert(v)
+	}
+	if v := strings.TrimSpace(cliutil.EnvOverride("{{envPrefix .Name}}_TLS_SERVER_NAME")); v != "" {
+		cfg.SetTLSServerName(v)
+	}
 {{- if .Auth.Inferred}}
 	// Auth inferred from API description — verify the env var below is correct
 {{- end}}
@@ -546,6 +574,7 @@ func (c *Config) acceptOpenedConfig(opened cliutil.OpenedConfig, path, owner str
 		parsed.clearCredentialFields()
 	}
 	if opened.PermErr != nil {
+		parsed.dropUntrustedTLSSettings()
 		parsed.dropUntrustedRouting(defaultBase)
 	}
 	*c = parsed
@@ -2158,6 +2187,22 @@ func (c *Config) ClearTokens() error {
 }
 {{- end}}
 
+func (c *Config) dropUntrustedTLSSettings() {
+	if c == nil {
+		return
+	}
+	if strings.TrimSpace(c.CACert) == "" && strings.TrimSpace(c.TLSServerName) == "" {
+		return
+	}
+	where := strings.TrimSpace(c.Path)
+	if where == "" {
+		where = "config file"
+	}
+	fmt.Fprintf(os.Stderr, "warning: ignoring ca_cert and tls_server_name from %s because other users can change it\n", where)
+	c.CACert = ""
+	c.TLSServerName = ""
+}
+
 func (c *Config) markEnvOverride(field string) {
 	if c.envOverrides == nil {
 		c.envOverrides = map[string]bool{}
@@ -2171,6 +2216,16 @@ func (c *Config) SetSkipTLSVerify(value bool) {
 	c.markEnvOverride("SkipTLSVerify")
 }
 {{- end}}
+
+func (c *Config) SetCACert(value string) {
+	c.CACert = value
+	c.markEnvOverride("CACert")
+}
+
+func (c *Config) SetTLSServerName(value string) {
+	c.TLSServerName = value
+	c.markEnvOverride("TLSServerName")
+}
 
 // cloneStringMap returns an independent copy of m (nil stays nil). The fileConfig
 // snapshot must not share reference-type map fields (such as Headers) with the
@@ -2208,6 +2263,12 @@ func (c *Config) configForSave() Config {
 			out.SkipTLSVerify = c.fileConfig.SkipTLSVerify
 		}
 {{- end}}
+		if c.envOverrides["CACert"] {
+			out.CACert = c.fileConfig.CACert
+		}
+		if c.envOverrides["TLSServerName"] {
+			out.TLSServerName = c.fileConfig.TLSServerName
+		}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
 		if c.envOverrides["{{resolveEnvVarField .Name}}"] {
@@ -2382,6 +2443,8 @@ type persistedConfig struct {
 {{- if .UsesBrowserHTTPTransport}}
 	SkipTLSVerify bool `{{configTag .Config.Format}}:"skip_tls_verify,omitempty"`
 {{- end}}
+	CACert string `{{configTag .Config.Format}}:"ca_cert,omitempty"`
+	TLSServerName string `{{configTag .Config.Format}}:"tls_server_name,omitempty"`
 	Headers map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 {{- if .Auth.RequiresBrowserSession}}
 	ChromeProfile string `{{configTag .Config.Format}}:"chrome_profile,omitempty"`
@@ -2419,6 +2482,8 @@ func (c *Config) persisted() persistedConfig {
 {{- if .UsesBrowserHTTPTransport}}
 		SkipTLSVerify: c.SkipTLSVerify,
 {{- end}}
+		CACert: c.CACert,
+		TLSServerName: c.TLSServerName,
 		Headers: c.Headers,
 {{- if .Auth.RequiresBrowserSession}}
 		ChromeProfile: c.ChromeProfile,

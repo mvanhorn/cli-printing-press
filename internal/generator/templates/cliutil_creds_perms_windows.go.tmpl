@@ -17,45 +17,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
-
-// currentUserSID returns the current process's user SID as an SDDL string.
-func currentUserSID() (string, error) {
-	tok, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return "", err
-	}
-	defer tok.Close()
-	u, err := tok.GetTokenUser()
-	if err != nil {
-		return "", err
-	}
-	return u.User.Sid.String(), nil
-}
-
-// resolveSDDLAlias maps an SDDL alias to a SID via ConvertStringSidToSid.
-// The alias counts only when rendering that SID back to SDDL produces the same
-// alias. A resolver/renderer mismatch fails closed instead of matching a
-// different account.
-func resolveSDDLAlias(alias string) (string, bool) {
-	sid, err := windows.StringToSid(alias)
-	if err != nil {
-		return "", false
-	}
-	s := sid.String()
-	sd, err := windows.SecurityDescriptorFromString("O:" + s)
-	if err != nil {
-		return "", false
-	}
-	m := ownerRe.FindStringSubmatch(sd.String())
-	if m == nil || !strings.EqualFold(m[1], alias) {
-		return "", false
-	}
-	return s, true
-}
 
 // VerifyCredsPerms returns a non-nil error if path's owner/DACL is unsafe for a
 // secret file. The error names remediation only — NEVER the file contents (S3).

@@ -26,16 +26,18 @@ import (
 )
 
 type rootFlags struct {
-	asJSON  bool
-	compact bool
-	csv     bool
-	plain   bool
-	quiet   bool
-	dryRun  bool
-	noCache bool
-	noInput bool
-	yes     bool
-	agent   bool
+	asJSON        bool
+	compact       bool
+	csv           bool
+	plain         bool
+	quiet         bool
+	dryRun        bool
+	noCache       bool
+	noInput       bool
+	caCert        string
+	tlsServerName string
+	yes           bool
+	agent         bool
 	// noLearn disables both teach (write) and recall (read) for this
 	// invocation. Mirrors the LEARN_LOOP_EXAMPLE_NO_LEARN env var.
 	noLearn                 bool
@@ -335,6 +337,8 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().StringVar(&flags.receiptFile, "receipt-file", "", "Override the run receipt destination")
 	rootCmd.PersistentFlags().StringVar(&flags.auditDir, "audit-dir", "", "Aggregate the receipt and index under this audit directory")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
+	rootCmd.PersistentFlags().StringVar(&flags.caCert, "ca-cert", "", "PEM CA bundle added to the system trust roots")
+	rootCmd.PersistentFlags().StringVar(&flags.tlsServerName, "tls-server-name", "", "DNS name to verify when the dialed host does not match the certificate")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (explicit confirmation for scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
@@ -783,12 +787,28 @@ func ExitCode(err error) int {
 	return 1
 }
 
+func (f *rootFlags) applyTLSFlags(cfg *config.Config) {
+	if f == nil || cfg == nil {
+		return
+	}
+	if v := strings.TrimSpace(f.caCert); v != "" {
+		cfg.SetCACert(v)
+	}
+	if v := strings.TrimSpace(f.tlsServerName); v != "" {
+		cfg.SetTLSServerName(v)
+	}
+}
+
 func (f *rootFlags) newClient() (*client.Client, error) {
 	cfg, err := config.Load(f.configPath)
 	if err != nil {
 		return nil, configErr(err)
 	}
+	f.applyTLSFlags(cfg)
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	if tlsErr := c.TLSConfigError(); tlsErr != nil {
+		return nil, configErr(tlsErr)
+	}
 	if f.timeoutExplicit {
 		c.SetTimeoutExplicit(true)
 	}

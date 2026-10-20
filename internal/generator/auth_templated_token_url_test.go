@@ -129,34 +129,67 @@ func TestRefreshResolvesTemplatedTokenURL(t *testing.T) {
 
 import (
 	"bytes"
+	"context"
+	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
-type captureRoundTripper struct {
-	got *http.Request
+type tlsCapture struct {
+	mu     sync.Mutex
+	got    *http.Request
+	caPath string
 }
 
-func (c *captureRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	c.got = r.Clone(r.Context())
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(` + "`" + `{"access_token":"minted","expires_in":3600}` + "`" + `)),
-		Request:    r,
-	}, nil
+func (c *tlsCapture) request() *http.Request {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.got
+}
+
+func startTemplatedCapture(t *testing.T) *tlsCapture {
+	t.Helper()
+	cap := &tlsCapture{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.mu.Lock()
+		cap.got = r.Clone(r.Context())
+		cap.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `{"access_token":"minted","expires_in":3600}` + "`" + `)
+	}))
+	t.Cleanup(srv.Close)
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatalf("writing CA: %v", err)
+	}
+	cap.caPath = caPath
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	prev := http.DefaultTransport
+	http.DefaultTransport = base
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	return cap
+}
+
+func requestHost(req *http.Request) string {
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host
 }
 
 func TestAuthLoginResolvesTemplatedTokenURL(t *testing.T) {
-	rt := &captureRoundTripper{}
-	prev := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: rt}
-	t.Cleanup(func() { http.DefaultClient = prev })
-
+	cap := startTemplatedCapture(t)
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
@@ -170,18 +203,20 @@ func TestAuthLoginResolvesTemplatedTokenURL(t *testing.T) {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"--config", configPath, "auth", "login"})
+	root.SetArgs([]string{"--config", configPath, "--ca-cert", cap.caPath, "--tls-server-name", "example.com", "auth", "login"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("auth login error = %v; output:\n%s", err, out.String())
 	}
-	if rt.got == nil {
+	req := cap.request()
+	if req == nil {
 		t.Fatal("token endpoint was not called")
 	}
-	if strings.Contains(rt.got.URL.String(), "{") {
-		t.Fatalf("token URL still contains a placeholder: %s", rt.got.URL.String())
+	host := requestHost(req)
+	if strings.Contains(host, "{") || strings.Contains(req.URL.Path, "{") {
+		t.Fatalf("token URL still contains a placeholder: host=%q path=%q", host, req.URL.Path)
 	}
-	if rt.got.URL.Host != "acme.example.com" || rt.got.URL.Path != "/auth/token" {
-		t.Fatalf("token URL = %s, want https://acme.example.com/auth/token", rt.got.URL.String())
+	if host != "acme.example.com" || req.URL.Path != "/auth/token" {
+		t.Fatalf("token request host=%q path=%q, want acme.example.com /auth/token", req.Host, req.URL.Path)
 	}
 }
 `
@@ -383,39 +418,69 @@ func TestTemplatedDeviceAuthURLsResolveAtRuntime(t *testing.T) {
 
 import (
 	"bytes"
+	"context"
+	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
-type captureRoundTripper struct {
-	got *http.Request
+type tlsCapture struct {
+	mu     sync.Mutex
+	got    *http.Request
+	dials  int
+	caPath string
 }
 
-func (c *captureRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	c.got = r.Clone(r.Context())
-	body := ` + "`" + `{"access_token":"minted","expires_in":3600,"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"https://example.com/device","expires_in":600,"interval":5}` + "`" + `
-	if strings.Contains(r.URL.Path, "/auth/device") {
-		body = ` + "`" + `{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"https://example.com/device","expires_in":600,"interval":5}` + "`" + `
-	}
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Request:    r,
-	}, nil
+func (c *tlsCapture) request() *http.Request {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.got
 }
 
-func useCapture(t *testing.T) *captureRoundTripper {
+func (c *tlsCapture) dialCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dials
+}
+
+func useCapture(t *testing.T) *tlsCapture {
 	t.Helper()
-	rt := &captureRoundTripper{}
-	prev := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: rt}
-	t.Cleanup(func() { http.DefaultClient = prev })
-	return rt
+	cap := &tlsCapture{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cap.mu.Lock()
+		cap.got = r.Clone(r.Context())
+		cap.mu.Unlock()
+		body := ` + "`" + `{"access_token":"minted","refresh_token":"refresh","expires_in":3600}` + "`" + `
+		if strings.Contains(r.URL.Path, "/auth/device") {
+			body = ` + "`" + `{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"https://example.com/device","expires_in":600,"interval":5}` + "`" + `
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatalf("writing CA: %v", err)
+	}
+	cap.caPath = caPath
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		cap.mu.Lock()
+		cap.dials++
+		cap.mu.Unlock()
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}
+	prev := http.DefaultTransport
+	http.DefaultTransport = base
+	t.Cleanup(func() { http.DefaultTransport = prev })
+	return cap
 }
 
 func writeConfig(t *testing.T, body string) string {
@@ -427,17 +492,32 @@ func writeConfig(t *testing.T, body string) string {
 	return configPath
 }
 
-func assertConcreteHost(t *testing.T, rt *captureRoundTripper, path string) {
+func requestHost(req *http.Request) string {
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host
+}
+
+func assertConcreteHost(t *testing.T, rt *tlsCapture, path string) {
 	t.Helper()
-	if rt.got == nil {
+	req := rt.request()
+	if req == nil {
 		t.Fatal("endpoint was not called")
 	}
-	if strings.Contains(rt.got.URL.String(), "{") {
-		t.Fatalf("URL still contains a placeholder: %s", rt.got.URL.String())
+	host := requestHost(req)
+	if strings.Contains(host, "{") || strings.Contains(req.URL.Path, "{") {
+		t.Fatalf("URL still contains a placeholder: host=%q path=%q", host, req.URL.Path)
 	}
-	if rt.got.URL.Host != "acme.example.com" || rt.got.URL.Path != path {
-		t.Fatalf("URL = %s, want host acme.example.com path %s", rt.got.URL.String(), path)
+	if host != "acme.example.com" || req.URL.Path != path {
+		t.Fatalf("request host=%q path=%q, want host acme.example.com path %s", req.Host, req.URL.Path, path)
 	}
+}
+
+func trustArgs(configPath string, rt *tlsCapture, rest ...string) []string {
+	args := []string{"--config", configPath, "--ca-cert", rt.caPath, "--tls-server-name", "example.com"}
+	return append(args, rest...)
 }
 
 func TestDeviceLoginResolvesTemplatedAuthorizationURL(t *testing.T) {
@@ -448,7 +528,7 @@ func TestDeviceLoginResolvesTemplatedAuthorizationURL(t *testing.T) {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"--config", writeConfig(t, ""), "auth", "login", "--device-code", "--poll=false", "--client-id", "client-id"})
+	root.SetArgs(trustArgs(writeConfig(t, ""), rt, "auth", "login", "--device-code", "--poll=false", "--client-id", "client-id"))
 	if err := root.Execute(); err != nil {
 		t.Fatalf("auth login error = %v; output:\n%s", err, out.String())
 	}
@@ -465,8 +545,8 @@ func TestDeviceLoginRejectsMissingTemplateValues(t *testing.T) {
 	if err := root.Execute(); err == nil {
 		t.Fatalf("auth login error = nil, want missing template var; output:\n%s", out.String())
 	}
-	if rt.got != nil {
-		t.Fatalf("device endpoint was called with %s", rt.got.URL.String())
+	if rt.dialCount() != 0 || rt.request() != nil {
+		t.Fatal("device endpoint was called")
 	}
 }
 
@@ -484,7 +564,7 @@ func TestDevicePollResolvesTemplatedTokenURL(t *testing.T) {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"--config", configPath, "auth", "poll", "--timeout", "5s"})
+	root.SetArgs(trustArgs(configPath, rt, "auth", "poll", "--timeout", "5s"))
 	if err := root.Execute(); err != nil {
 		t.Fatalf("auth poll error = %v; output:\n%s", err, out.String())
 	}
@@ -507,8 +587,8 @@ func TestDevicePollRejectsMissingTemplateValues(t *testing.T) {
 	if err := root.Execute(); err == nil {
 		t.Fatalf("auth poll error = nil, want missing template var; output:\n%s", out.String())
 	}
-	if rt.got != nil {
-		t.Fatalf("token endpoint was called with %s", rt.got.URL.String())
+	if rt.dialCount() != 0 || rt.request() != nil {
+		t.Fatal("token endpoint was called")
 	}
 }
 
@@ -521,7 +601,7 @@ func TestDeviceRefreshResolvesTemplatedTokenURL(t *testing.T) {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"--config", configPath, "auth", "refresh"})
+	root.SetArgs(trustArgs(configPath, rt, "auth", "refresh"))
 	if err := root.Execute(); err != nil {
 		t.Fatalf("auth refresh error = %v; output:\n%s", err, out.String())
 	}
@@ -539,8 +619,8 @@ func TestDeviceRefreshRejectsMissingTemplateValues(t *testing.T) {
 	if err := root.Execute(); err == nil {
 		t.Fatalf("auth refresh error = nil, want missing template var; output:\n%s", out.String())
 	}
-	if rt.got != nil {
-		t.Fatalf("token endpoint was called with %s", rt.got.URL.String())
+	if rt.dialCount() != 0 || rt.request() != nil {
+		t.Fatal("token endpoint was called")
 	}
 }
 `

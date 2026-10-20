@@ -154,9 +154,9 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"func newHTTPClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool) *http.Client",
-		"return chromeClient(timeout, jar, skipTLSVerify)",
-		"newHTTPClient(timeout, sess.CookieJar(), cfg.SkipTLSVerify)",
+		"func newHTTPClient(timeout time.Duration, jar http.CookieJar, trust tlsSettings) (*http.Client, error)",
+		"return chromeClient(timeout, jar, resolved)",
+		"newHTTPClient(timeout, sess.CookieJar(), trust)",
 	} {
 		if !strings.Contains(string(clientContent), want) {
 			t.Errorf("client.go missing expected substring %q", want)
@@ -183,7 +183,7 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 	// handshake itself uses vanilla net/http and the bot wall returns 429
 	// on the very call that would have established the session, even when
 	// the data client could have cleared it.
-	if !strings.Contains(string(sessionContent), "client:     newHTTPClient(timeout, jar, skipTLSVerify)") {
+	if !strings.Contains(string(sessionContent), "newHTTPClient(timeout, jar, trust)") {
 		t.Error("session.go's newSessionManager must use newHTTPClient so the handshake inherits the browser-impersonated transport, not a vanilla &http.Client{}")
 	}
 	if strings.Contains(string(sessionContent), "&http.Client{Timeout: timeout, Jar: jar}") {
