@@ -4590,11 +4590,9 @@ func (c *Client) googleServiceAccountAuthHeader(ctx context.Context) (string, er
 	exchangeCtx, cancel := context.WithTimeout(ctx, c.ConfiguredTimeout())
 	defer cancel()
 	if exchangeCtx.Value(oauth2.HTTPClient) == nil && c.HTTPClient != nil {
-		tokenHTTP := c.HTTPClient
-{{- if .Auth.TokenURL}}
-		tokenHTTP = cliutil.OAuthTokenHTTPClient(c.HTTPClient)
-{{- end}}
-		exchangeCtx = context.WithValue(exchangeCtx, oauth2.HTTPClient, tokenHTTP)
+		// The API CheckRedirect calls authHeader on a same-host hop. This
+		// exchange already holds googleMu, so that callback deadlocks.
+		exchangeCtx = context.WithValue(exchangeCtx, oauth2.HTTPClient, cliutil.OAuthTokenHTTPClient(c.HTTPClient))
 	}
 	token, err := jwtConfig.TokenSource(exchangeCtx).Token()
 	if err != nil {

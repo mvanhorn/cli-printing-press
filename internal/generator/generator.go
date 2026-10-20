@@ -4610,7 +4610,10 @@ func (g *Generator) emitsConcurrentTokenRaceTest() bool {
 // client.go emits mintClientCredentials — and a compile-time reference to
 // OAuthTokenHTTPClient — for every client_credentials grant, including
 // specs with an empty TokenURL. TokenURL and AuthorizationURL cover the
-// other call sites (refresh, auth-code exchange, device poll).
+// other call sites (refresh, auth-code exchange, device poll). Google
+// service-account exchange references it even when the spec TokenURL is
+// empty: the key's token_uri is still fetched through the API transport,
+// and that client's redirect callback must not re-enter auth.
 func (g *Generator) hasOAuthTokenExchange() bool {
 	if g == nil || g.Spec == nil {
 		return false
@@ -4618,7 +4621,8 @@ func (g *Generator) hasOAuthTokenExchange() bool {
 	auth := g.Spec.Auth
 	return strings.TrimSpace(auth.TokenURL) != "" ||
 		strings.TrimSpace(auth.AuthorizationURL) != "" ||
-		auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials
+		auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials ||
+		auth.Subtype == spec.AuthSubtypeGoogleServiceAccount
 }
 
 func (g *Generator) emitsTopLevelOAuthLogin() bool {
