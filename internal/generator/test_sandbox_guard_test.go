@@ -1,8 +1,10 @@
 package generator
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -43,6 +45,59 @@ func TestGeneratedTestsIsolateThroughTestenv(t *testing.T) {
 			"%s redirects HOME by hand; isolate through testenv.Isolate so the redirect is verified", rel)
 		require.Contains(t, source, "testenv.Isolate(t",
 			"%s must sandbox its user directories through testenv.Isolate", rel)
+	}
+}
+
+// homeRedirectByHand matches a test that points HOME or USERPROFILE at a
+// directory itself. That skips <PREFIX>_HOME and <PREFIX>_*_DIR, which
+// ResolveKindDir consults first, so the test can still reach a relocated store.
+var homeRedirectByHand = regexp.MustCompile(`\bSetenv\("(HOME|USERPROFILE)"`)
+
+// TestTemplatesNeverRedirectHomeByHand scans template sources instead of
+// prints, so a test template that no fixture emits cannot bypass testenv
+// unseen.
+func TestTemplatesNeverRedirectHomeByHand(t *testing.T) {
+	t.Parallel()
+
+	var byHand []string
+	err := filepath.WalkDir("templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".tmpl") {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if homeRedirectByHand.Match(data) {
+			byHand = append(byHand, filepath.ToSlash(path))
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, byHand,
+		"templates redirect HOME by hand; isolate through testenv.Isolate so <PREFIX>_HOME and <PREFIX>_*_DIR are cleared too")
+}
+
+// TestGeneratedMintTestsIsolateThroughTestenv covers the OAuth mint tests,
+// which a petstore print never emits, so emittedTestHelperFiles cannot list
+// them.
+func TestGeneratedMintTestsIsolateThroughTestenv(t *testing.T) {
+	t.Parallel()
+
+	const isolate = "testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)"
+	for _, tc := range []struct {
+		fixture string
+		files   []string
+	}{
+		{"golden-api-oauth2-cc.yaml", []string{"token_race_test.go", "untrusted_mint_test.go"}},
+		{"golden-api-oauth2-authcode.yaml", []string{"token_race_test.go"}},
+	} {
+		_, outputDir := generateGoldenFixture(t, tc.fixture)
+		for _, file := range tc.files {
+			source := readGeneratedFile(t, outputDir, "internal", "client", file)
+			require.Contains(t, source, isolate, "%s %s must sandbox its user directories through testenv.Isolate", tc.fixture, file)
+			require.False(t, homeRedirectByHand.MatchString(source), "%s %s redirects HOME by hand", tc.fixture, file)
+		}
 	}
 }
 
