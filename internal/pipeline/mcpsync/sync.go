@@ -1017,11 +1017,15 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) (prior strin
 		return "", true
 	}
 	prior = parsed.Name
+	specmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
+	parsed.Name = apiName
+	// Omitted-config defaults remember the path they synthesized and follow
+	// this rename. Paths the parsers wrote without that marker (OpenAPI and
+	// other canonical toml paths) still migrate by shape.
+	parsed.ApplyOmittedConfigDefaults()
 	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
 		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(apiName))
 	}
-	specmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
-	parsed.Name = apiName
 	return prior, true
 }
 
@@ -1159,6 +1163,7 @@ func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom 
 			}
 		}
 		parsed.Name = expected
+		parsed.ApplyOmittedConfigDefaults()
 		return "", nil
 	}
 	if expected == parsed.Name {
@@ -1174,6 +1179,7 @@ func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom 
 	}
 	oldName := parsed.Name
 	parsed.Name = expected
+	parsed.ApplyOmittedConfigDefaults()
 	return oldName, nil
 }
 

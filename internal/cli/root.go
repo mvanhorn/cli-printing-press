@@ -449,11 +449,19 @@ func newGenerateCmd() *cobra.Command {
 				// `canvas`), prefer the state.json slug so the generated
 				// cmd/<slug>-pp-cli matches what manifest/publish-validate look
 				// for. Explicit --name still wins.
+				renamed := false
 				if cliName != "" {
 					specmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
+					renamed = true
 				} else if researchName := pipeline.LoadAPINameFromResearchDir(researchDir); researchName != "" {
 					apiSpec.Name = researchName
+					renamed = true
+				}
+				if renamed {
+					// Parse fills a default config path from the spec name.
+					// --name and the research slug replace that name before render.
+					apiSpec.ApplyOmittedConfigDefaults()
 				}
 			} else {
 				if cliName == "" {

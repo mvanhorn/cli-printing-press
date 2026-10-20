@@ -84,3 +84,90 @@ func TestApplyOmittedConfigDefaultsIsIdempotent(t *testing.T) {
 	assert.Equal(t, "~/.config/demo-pp-cli/config.toml", spec.Config.Path)
 	assert.False(t, strings.Contains(spec.Config.Path, "config.json"))
 }
+
+func TestApplyOmittedConfigDefaultsFollowsRename(t *testing.T) {
+	const tail = `resources:
+  items:
+    description: Items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`
+	omitted, err := ParseBytes([]byte(`name: old
+description: omitted config
+version: "0.1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+` + tail))
+	require.NoError(t, err)
+	require.Equal(t, "~/.config/old-pp-cli/config.toml", omitted.Config.Path)
+	omitted.Name = "new"
+	omitted.ApplyOmittedConfigDefaults()
+	assert.Equal(t, ConfigFormatTOML, omitted.Config.Format)
+	assert.Equal(t, "~/.config/new-pp-cli/config.toml", omitted.Config.Path)
+
+	jsonOmitted, err := ParseBytes([]byte(`name: old
+description: json config
+version: "0.1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: json
+` + tail))
+	require.NoError(t, err)
+	jsonOmitted.Name = "new"
+	jsonOmitted.ApplyOmittedConfigDefaults()
+	assert.Equal(t, "json", jsonOmitted.Config.Format)
+	assert.Equal(t, "~/.config/new-pp-cli/config.json", jsonOmitted.Config.Path)
+
+	explicit, err := ParseBytes([]byte(`name: old
+description: explicit path
+version: "0.1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/custom/settings.toml
+` + tail))
+	require.NoError(t, err)
+	explicit.Name = "new"
+	explicit.ApplyOmittedConfigDefaults()
+	assert.Equal(t, "~/.config/custom/settings.toml", explicit.Config.Path)
+
+	// An authored path that happens to equal the old default must not be
+	// treated as synthesized just because it matches the formula.
+	canonical, err := ParseBytes([]byte(`name: old
+description: explicit canonical path
+version: "0.1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  path: ~/.config/old-pp-cli/config.toml
+` + tail))
+	require.NoError(t, err)
+	canonical.Name = "new"
+	canonical.ApplyOmittedConfigDefaults()
+	assert.Equal(t, "~/.config/old-pp-cli/config.toml", canonical.Config.Path)
+
+	edited := &APISpec{Name: "old"}
+	edited.ApplyOmittedConfigDefaults()
+	edited.Name = "new"
+	edited.Config.Path = "~/.config/custom/kept.toml"
+	edited.ApplyOmittedConfigDefaults()
+	assert.Equal(t, "~/.config/custom/kept.toml", edited.Config.Path)
+
+	cleared := &APISpec{Name: "old"}
+	cleared.ApplyOmittedConfigDefaults()
+	cleared.Name = "  "
+	cleared.ApplyOmittedConfigDefaults()
+	assert.Empty(t, cleared.Config.Path)
+	cleared.Name = "restored"
+	cleared.ApplyOmittedConfigDefaults()
+	assert.Equal(t, "~/.config/restored-pp-cli/config.toml", cleared.Config.Path)
+}

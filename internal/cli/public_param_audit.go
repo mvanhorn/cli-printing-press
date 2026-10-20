@@ -105,6 +105,7 @@ func parsePublicParamAuditSpec(specFiles []string, cliName string, opts openapi.
 	if len(specs) == 1 {
 		if cliName != "" {
 			specs[0].Name = cliName
+			specs[0].ApplyOmittedConfigDefaults()
 		}
 		return specs[0], nil
 	}
