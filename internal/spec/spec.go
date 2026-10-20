@@ -3064,6 +3064,17 @@ func (p Param) WireName() string {
 	return p.Name
 }
 
+// HasDateFormat reports whether this param is a calendar value. Cursor
+// inference skips those so a date window is not reused as a page token.
+func (p Param) HasDateFormat() bool {
+	switch strings.ToLower(strings.TrimSpace(p.Format)) {
+	case "date", "date-time":
+		return true
+	default:
+		return false
+	}
+}
+
 // BodyWireName returns the request-body key for this param when emitted in a
 // generated HTTP request body. BodyName takes precedence when set; otherwise
 // Name is used.

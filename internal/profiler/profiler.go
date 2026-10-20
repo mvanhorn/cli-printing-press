@@ -163,16 +163,13 @@ type SyncableResource struct {
 	// policy. Defaults to false.
 	Critical bool
 
-	// SinceParam is the actual query parameter name this resource's list
-	// endpoint declares for incremental temporal filtering (since,
-	// updated_after, modified_since, …). Empty when the endpoint declares
-	// no such parameter; the sync template skips temporal filtering for
-	// those resources and emits one resource_not_incremental warning per
-	// run when --since/incremental sync was requested.
+	// SinceParam is the query param sync advances. Empty when the endpoint
+	// has no usable incremental lower bound; the sync template then warns
+	// and paginates the whole collection.
 	SinceParam string
-	// SinceParamFormat mirrors the OpenAPI format hint for SinceParam. The
-	// sync template uses "date" to send YYYY-MM-DD values instead of RFC3339
-	// timestamps to date-only endpoints.
+	// SinceParamFormat is the wire shape for SinceParam: OpenAPI date or
+	// date-time when the schema says so, otherwise an operator prefix or a
+	// zone-named clock time taken from the description.
 	SinceParamFormat string
 
 	// SupportsPagination is true when the chosen list endpoint declares a
@@ -727,11 +724,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// Fallback for specs that expose pagination via plain params
 				// instead of a structured pagination: block.
 				for _, param := range endpoint.Params {
-					if param.PathParam || param.Positional {
+					if !isSyncQueryParam(param) {
 						continue
 					}
 					lower := strings.ToLower(param.Name)
-					if cursorParamCandidates[lower] {
+					if cursorParamCandidates[lower] && !param.HasDateFormat() {
 						cursorParams[param.Name]++
 					}
 					if pageSizeParamCandidates[lower] {
@@ -1202,7 +1199,7 @@ var (
 		"maxrecords": true, "max_records": true, "page[size]": true,
 	}
 	cursorParamCandidates = map[string]bool{
-		"after": true, "cursor": true, "page_token": true, "offset": true, "skip": true,
+		"after": true, "cursor": true, "page_token": true, "page_key": true, "offset": true, "skip": true,
 		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
 	}
 )
@@ -3710,11 +3707,12 @@ func inferPaginationParamsFromEndpoint(endpoint spec.Endpoint) (string, string) 
 	var cursorParam string
 	var limitParam string
 	for _, param := range endpoint.Params {
-		if param.PathParam || param.Positional {
+		if !isSyncQueryParam(param) {
 			continue
 		}
 		lower := strings.ToLower(param.Name)
-		if cursorParam == "" && cursorParamCandidates[lower] {
+		// A calendar value cannot carry a page token.
+		if cursorParam == "" && cursorParamCandidates[lower] && !param.HasDateFormat() {
 			cursorParam = param.Name
 		}
 		if limitParam == "" && pageSizeParamCandidates[lower] {
@@ -3846,23 +3844,6 @@ func isAscendingSortValue(value string) bool {
 	return lower == "asc" || strings.Contains(lower, "ascending") ||
 		strings.Contains(lower, ":asc") || strings.HasSuffix(lower, "_asc") ||
 		strings.HasPrefix(lower, "+") || strings.Contains(lower, "oldest")
-}
-
-func detectEndpointSinceParamAndFormat(endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
-	for _, p := range endpoint.Params {
-		name := strings.ToLower(p.Name)
-		if isEndpointSinceParamName(name) {
-			return p.Name, strings.ToLower(strings.TrimSpace(p.Format))
-		}
-	}
-	for _, p := range endpoint.Params {
-		if strings.EqualFold(strings.TrimSpace(p.Name), "conditions") {
-			if field := detectODataConditionsTimestampField(endpoint, types); field != "" {
-				return p.Name, "odata-conditions:" + field
-			}
-		}
-	}
-	return "", ""
 }
 
 func detectODataConditionsTimestampField(endpoint spec.Endpoint, types map[string]spec.TypeDef) string {
