@@ -91,7 +91,11 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 			if tokenURL == "" {
 				tokenURL = "https://api.cc.example/oauth/token"
 			}
-			tok, err := mintClientCredentialsToken(http.DefaultClient, tokenURL, clientID, clientSecret)
+			tokenHTTP, err := flags.oauthHTTPClient(cfg)
+			if err != nil {
+				return err
+			}
+			tok, err := mintClientCredentialsToken(tokenHTTP, tokenURL, clientID, clientSecret)
 			if err != nil {
 				return authTransportErr(err)
 			}

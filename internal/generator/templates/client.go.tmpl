@@ -55,6 +55,7 @@ import (
 	"unicode"
 
 {{- if eq .Auth.Subtype "google_service_account"}}
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 {{- end}}
 	"{{modulePath}}/internal/cliutil"
@@ -4588,6 +4589,13 @@ func (c *Client) googleServiceAccountAuthHeader(ctx context.Context) (string, er
 {{- end}}
 	exchangeCtx, cancel := context.WithTimeout(ctx, c.ConfiguredTimeout())
 	defer cancel()
+	if exchangeCtx.Value(oauth2.HTTPClient) == nil && c.HTTPClient != nil {
+		tokenHTTP := c.HTTPClient
+{{- if .Auth.TokenURL}}
+		tokenHTTP = cliutil.OAuthTokenHTTPClient(c.HTTPClient)
+{{- end}}
+		exchangeCtx = context.WithValue(exchangeCtx, oauth2.HTTPClient, tokenHTTP)
+	}
 	token, err := jwtConfig.TokenSource(exchangeCtx).Token()
 	if err != nil {
 		return "", fmt.Errorf("exchanging Google service-account JWT: %w", err)

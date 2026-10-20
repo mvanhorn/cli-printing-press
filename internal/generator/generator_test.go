@@ -124,6 +124,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/filelock.go",
 		"internal/cliutil/filelock_unix.go",
 		"internal/cliutil/filelock_windows.go",
+		"internal/cliutil/windows_account.go",
 		"internal/cliutil/filelock_test.go",
 		"internal/cliutil/creds_perms_eval.go",
 		"internal/cliutil/darwin_acl.go",
@@ -176,9 +177,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +4: darwin ACL judgment (darwin_acl.go, darwin_acl_darwin.go,
 		// darwin_acl_test.go, darwin_acl_live_test.go). Always emitted:
 		// profile checks exist when auth is none.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 192},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 196},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 193},
+		// +1: cliutil/windows_account.go, the shared Windows SID helpers.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 193},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 197},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 194},
 	}
 
 	for _, tt := range tests {
@@ -377,7 +379,7 @@ func TestGenerateCliutilPackage(t *testing.T) {
 
 	// All cliutil files must be emitted.
 	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
-	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "query.go", "query_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "filelock_test.go", "darwin_acl.go", "darwin_acl_darwin.go", "darwin_acl_test.go", "darwin_acl_live_test.go"} {
+	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go", "query.go", "query_test.go", "filelock.go", "filelock_unix.go", "filelock_windows.go", "windows_account.go", "filelock_test.go", "darwin_acl.go", "darwin_acl_darwin.go", "darwin_acl_test.go", "darwin_acl_live_test.go"} {
 		_, err := os.Stat(filepath.Join(cliutilDir, name))
 		require.NoError(t, err, "expected %s to be emitted", name)
 	}
@@ -407,6 +409,9 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"filelock_windows.go", "golang.org/x/sys/windows"},
 		{"filelock_windows.go", "windows.LockFileEx("},
 		{"filelock_windows.go", "windows.LOCKFILE_FAIL_IMMEDIATELY"},
+		{"filelock_windows.go", "currentUserSID()"},
+		{"windows_account.go", "func currentUserSID("},
+		{"windows_account.go", "func resolveSDDLAlias("},
 		{"darwin_acl.go", "func CheckDarwinPrivateFileACL("},
 		{"darwin_acl.go", "chmod -N"},
 		{"darwin_acl_darwin.go", "unix.SYS_FGETATTRLIST"},
@@ -422,6 +427,8 @@ func TestGenerateCliutilPackage(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(winLock), "syscall.LockFileEx",
 		"Windows file lock must use golang.org/x/sys/windows, not syscall.LockFileEx")
+	assert.NotContains(t, string(winLock), "func trustCurrentUserSID")
+	assert.NotContains(t, string(winLock), "func trustResolveSDDLAlias")
 
 	textSrc, err := os.ReadFile(filepath.Join(cliutilDir, "text.go"))
 	require.NoError(t, err)
@@ -1987,6 +1994,10 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `cliutil.IsVerifyEnv()`, "login and refresh short-circuit in verify mode")
 	assert.Equal(t, 3, strings.Count(authGo, "return authTransportErr(err)"),
 		"device poll and refresh must classify a plaintext credential refusal as a config error")
+	assert.Equal(t, 3, strings.Count(authGo, "flags.oauthHTTPClient(cfg)"),
+		"device login, poll, and refresh must build the trust-aware token client")
+	assert.NotContains(t, oauthGo, "http.DefaultClient")
+	assert.Contains(t, oauthGo, "oauth http client is required")
 	assert.Contains(t, authGo, `Annotations: map[string]string{"mcp:hidden": "true"}`, "interactive auth commands stay out of MCP")
 	assert.Contains(t, oauthGo, `const DeviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"`)
 	assert.Contains(t, oauthGo, "cliutil.OAuthTokenHTTPClient(httpClient).Do(req)",

@@ -39,6 +39,8 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	assert.Contains(t, authSrc, `google.JWTConfigFromJSON`)
 	assert.Contains(t, authSrc, `--impersonate`)
 	assert.Contains(t, authSrc, `--scopes`)
+	assert.Contains(t, authSrc, "flags.oauthHTTPClient(cfg)")
+	assert.Contains(t, authSrc, "oauth2.HTTPClient")
 
 	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
 	assert.Contains(t, configSrc, "GoogleImpersonate")
@@ -49,6 +51,8 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	assert.Contains(t, clientSrc, "context.WithTimeout")
 	assert.Contains(t, clientSrc, "googleServiceAccountAuthHeader")
 	assert.Contains(t, clientSrc, `return "Bearer " + token.AccessToken`)
+	assert.Contains(t, clientSrc, "oauth2.HTTPClient")
+	assert.Contains(t, clientSrc, "cliutil.OAuthTokenHTTPClient(c.HTTPClient)")
 
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	assert.Contains(t, doctorSrc, "Google service account")
@@ -67,6 +71,13 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	}
 	noTokenURLDir := filepath.Join(t.TempDir(), naming.CLI(noTokenURLSpec.Name))
 	require.NoError(t, New(noTokenURLSpec, noTokenURLDir).Generate())
+	noTokenAuth := readGeneratedFile(t, noTokenURLDir, "internal", "cli", "auth.go")
+	noTokenClient := readGeneratedFile(t, noTokenURLDir, "internal", "client", "client.go")
+	assert.Contains(t, noTokenAuth, "flags.oauthHTTPClient(cfg)")
+	assert.Contains(t, noTokenAuth, "oauth2.HTTPClient")
+	assert.NotContains(t, noTokenAuth, "cliutil.OAuthTokenHTTPClient")
+	assert.Contains(t, noTokenClient, "oauth2.HTTPClient")
+	assert.NotContains(t, noTokenClient, "cliutil.OAuthTokenHTTPClient")
 	requireGeneratedCompiles(t, noTokenURLDir)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -86,11 +97,14 @@ func TestGenerateGoogleServiceAccountAuthScaffold(t *testing.T) {
 	runtimeTest := fmt.Sprintf(`package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -148,10 +162,29 @@ func TestMintGoogleServiceAccountToken(t *testing.T) {
 	}
 }
 
-`, keyPath)
+func TestServiceAccountLoginRejectsBadCA(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	root := RootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--config", configPath, "--ca-cert", missing, "auth", "service-account", "--key", %q})
+	err := root.Execute()
+	if ExitCode(err) != 10 || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("exit=%%d err=%%v out=%%s", ExitCode(err), err, out.String())
+	}
+}
+
+`, keyPath, keyPath)
 	runtimeTest = strings.ReplaceAll(runtimeTest, "{{MODULE}}", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "google_service_account_runtime_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestMintGoogleServiceAccountToken", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestMintGoogleServiceAccountToken|TestServiceAccountLoginRejectsBadCA", "-count=1")
 
 	clientRuntimeTest := fmt.Sprintf(`package client
 
@@ -230,7 +263,36 @@ func TestGoogleServiceAccountAuthHeader(t *testing.T) {
 	}
 }
 
-`, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath)
+func TestGoogleServiceAccountAuthHeaderUsesAPIClient(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(%q))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL: server.URL,
+		GoogleApplicationCredentials: %q,
+		GoogleScopes: []string{"scope-one"},
+		TokenURL: server.URL,
+	}
+	c := New(cfg, 5*time.Second, 0)
+	c.HTTPClient = server.Client()
+	header, err := c.googleServiceAccountAuthHeader(context.Background())
+	if err != nil {
+		t.Fatalf("auth header: %%v", err)
+	}
+	if header != "Bearer runtime-token" {
+		t.Fatalf("header = %%q", header)
+	}
+	if requests != 1 {
+		t.Fatalf("token endpoint requests = %%d, want 1", requests)
+	}
+}
+
+`, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath, `{"access_token":"runtime-token","token_type":"Bearer","expires_in":3600}`, keyPath)
 	clientRuntimeTest = strings.ReplaceAll(clientRuntimeTest, "{{MODULE}}", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "google_service_account_runtime_test.go"), []byte(clientRuntimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestGoogleServiceAccountAuthHeader", "-count=1")

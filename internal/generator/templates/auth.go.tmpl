@@ -155,6 +155,12 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err != nil {
 		return err
 	}
+	// Reject a bad CA bundle before prompting, printing a dry-run URL, or
+	// opening a browser. The token exchange below reuses this client.
+	tokenHTTP, err := flags.oauthHTTPClient(cfg)
+	if err != nil {
+		return err
+	}
 	// Credential-free harness probes cannot construct an authorize URL.
 	// A user's --dry-run still resolves credentials, so a missing client
 	// ID fails the same way as a real login. Supplied or configured client
@@ -321,41 +327,9 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	// The browser-wait timeout above does not apply here; the token exchange
 	// is a plain server-to-server POST and gets its own short network timeout,
 	// while cmd.Context() keeps it cancellable from the terminal.
-	tokenReq, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, tokenURL, strings.NewReader(tokenParams.Encode()))
+	tokenResp, err := exchangeAuthorizationCode(cmd.Context(), tokenHTTP, tokenURL, tokenParams)
 	if err != nil {
-		return fmt.Errorf("building token request: %w", err)
-	}
-	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	tokenReq, err = client.GuardTokenRequest(nil, tokenReq, []byte(tokenParams.Encode()))
-	if err != nil {
-		return authTransportErr(err)
-	}
-	tokenClient := cliutil.OAuthTokenHTTPClient(&http.Client{Timeout: 30 * time.Second})
-	resp, err := tokenClient.Do(tokenReq)
-	if err != nil {
-		return fmt.Errorf("exchanging code for token: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		var body map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
-			return fmt.Errorf("exchanging code for token: HTTP %d: %v", resp.StatusCode, body)
-		}
-		return fmt.Errorf("exchanging code for token: HTTP %d", resp.StatusCode)
-	}
-
-	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("parsing token response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return fmt.Errorf("no access token in response")
+		return err
 	}
 
 	// Guard against non-conformant servers that return expires_in: 0.
@@ -376,6 +350,48 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expires at %s\n", green("OK"), expiry.Format(time.RFC3339))
 	}
 	return nil
+}
+
+type authorizationCodeToken struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+func exchangeAuthorizationCode(ctx context.Context, httpClient *http.Client, tokenURL string, params url.Values) (*authorizationCodeToken, error) {
+	encoded := params.Encode()
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("building token request: %w", err)
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenReq, err = client.GuardTokenRequest(httpClient, tokenReq, []byte(encoded))
+	if err != nil {
+		return nil, authTransportErr(err)
+	}
+	resp, err := cliutil.OAuthTokenHTTPClient(httpClient).Do(tokenReq)
+	if err != nil {
+		return nil, fmt.Errorf("exchanging code for token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+			return nil, fmt.Errorf("exchanging code for token: HTTP %d: %v", resp.StatusCode, body)
+		}
+		return nil, fmt.Errorf("exchanging code for token: HTTP %d", resp.StatusCode)
+	}
+
+	var tokenResp authorizationCodeToken
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return nil, fmt.Errorf("parsing token response: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("no access token in response")
+	}
+	return &tokenResp, nil
 }
 
 func resolveOAuthCredentials(cmd *cobra.Command, flags *rootFlags, cfg *config.Config, clientID, clientSecret string) (string, string, error) {

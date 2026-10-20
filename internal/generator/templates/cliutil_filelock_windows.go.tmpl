@@ -62,11 +62,11 @@ func ReadConfigTrust(path string) ([]byte, bool, error) {
 	if err != nil {
 		return data, false, nil
 	}
-	me, err := trustCurrentUserSID()
+	me, err := currentUserSID()
 	if err != nil {
 		return data, false, nil
 	}
-	return data, evalCredsSecurityResolved(sd.String(), me, trustResolveSDDLAlias) == nil, nil
+	return data, evalCredsSecurityResolved(sd.String(), me, resolveSDDLAlias) == nil, nil
 }
 
 func TrustConfigAllowsSettings(path string) bool {
@@ -82,34 +82,4 @@ func TrustConfigAllowsSettings(path string) bool {
 		return false
 	}
 	return allow
-}
-
-func trustCurrentUserSID() (string, error) {
-	tok, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return "", err
-	}
-	defer tok.Close()
-	u, err := tok.GetTokenUser()
-	if err != nil {
-		return "", err
-	}
-	return u.User.Sid.String(), nil
-}
-
-func trustResolveSDDLAlias(alias string) (string, bool) {
-	sid, err := windows.StringToSid(alias)
-	if err != nil {
-		return "", false
-	}
-	s := sid.String()
-	sd, err := windows.SecurityDescriptorFromString("O:" + s)
-	if err != nil {
-		return "", false
-	}
-	m := ownerRe.FindStringSubmatch(sd.String())
-	if m == nil || !strings.EqualFold(m[1], alias) {
-		return "", false
-	}
-	return s, true
 }

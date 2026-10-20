@@ -115,6 +115,7 @@ func TestGeneratePKCEVerifierShapeAndUniqueness(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "oauth_pkce_test.go"), []byte(runtimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "-race", "./internal/cli", "-run", "Test(PKCECodeChallengeS256|GeneratePKCEVerifier)")
 
-	require.Contains(t, auth, "http.NewRequestWithContext(cmd.Context(), http.MethodPost, tokenURL", "token exchange should be context-cancellable")
+	require.Contains(t, auth, "exchangeAuthorizationCode(cmd.Context(), tokenHTTP, tokenURL, tokenParams)", "token exchange should be context-cancellable")
+	require.Contains(t, auth, "http.NewRequestWithContext(ctx, http.MethodPost, tokenURL", "token exchange should be context-cancellable")
 	require.False(t, strings.Contains(auth, "http.PostForm(tokenURL"), "token exchange should use a client with its own timeout, not the shared default client")
 }

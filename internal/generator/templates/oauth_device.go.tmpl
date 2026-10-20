@@ -43,9 +43,17 @@ type tokenError struct {
 	ErrorDescription string `json:"error_description"`
 }
 
-func RequestDeviceCode(ctx context.Context, httpClient *http.Client, endpoint, clientID string, scopes []string) (*DeviceCodeResponse, error) {
+func requireOAuthHTTPClient(httpClient *http.Client) (*http.Client, error) {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		return nil, errors.New("oauth http client is required")
+	}
+	return httpClient, nil
+}
+
+func RequestDeviceCode(ctx context.Context, httpClient *http.Client, endpoint, clientID string, scopes []string) (*DeviceCodeResponse, error) {
+	httpClient, err := requireOAuthHTTPClient(httpClient)
+	if err != nil {
+		return nil, err
 	}
 	form := url.Values{"client_id": {clientID}}
 	if len(scopes) > 0 {
@@ -76,8 +84,9 @@ func RequestDeviceCode(ctx context.Context, httpClient *http.Client, endpoint, c
 }
 
 func PollDeviceToken(ctx context.Context, httpClient *http.Client, tokenURL, clientID, deviceCode string, interval time.Duration) (*TokenResponse, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	httpClient, err := requireOAuthHTTPClient(httpClient)
+	if err != nil {
+		return nil, err
 	}
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -152,8 +161,9 @@ func pollDeviceTokenOnce(ctx context.Context, httpClient *http.Client, tokenURL,
 }
 
 func RefreshToken(ctx context.Context, httpClient *http.Client, tokenURL, clientID, clientSecret, refreshToken string) (*TokenResponse, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	httpClient, err := requireOAuthHTTPClient(httpClient)
+	if err != nil {
+		return nil, err
 	}
 	form := url.Values{
 		"grant_type":    {"refresh_token"},

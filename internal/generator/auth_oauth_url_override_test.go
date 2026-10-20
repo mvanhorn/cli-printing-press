@@ -53,7 +53,9 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 		"login flow must read cfg.TokenURL before falling back to spec default")
 	require.Contains(t, auth, `authURL+"?"+cliutil.EncodeQuery(params)`,
 		"authorization URL query must percent-encode spaces")
-	require.Contains(t, auth, `strings.NewReader(tokenParams.Encode())`,
+	require.Contains(t, auth, "encoded := params.Encode()",
+		"token request body stays form-encoded")
+	require.Contains(t, auth, "strings.NewReader(encoded)",
 		"token request body stays form-encoded")
 	require.NotContains(t, auth, `authURL+"?"+params.Encode()`)
 

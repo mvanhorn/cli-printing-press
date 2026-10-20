@@ -42,6 +42,7 @@ import (
 
 	"github.com/spf13/cobra"
 {{- if eq .Auth.Subtype "google_service_account"}}
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 {{- end}}
 {{- if or (eq .Auth.Type "session_handshake") (and (eq .Auth.Subtype "google_service_account") (authURLNeedsTemplateSubstitution .Auth.TokenURL))}}
@@ -141,7 +142,18 @@ func newAuthServiceAccountCmd(flags *rootFlags) *cobra.Command {
 			tokenURL = resolved
 {{- end}}
 {{- end}}
-			accessToken, expiry, err := mintGoogleServiceAccountToken(cmd.Context(), keyPath, tokenURL, impersonate, scopes)
+			loginCtx := cmd.Context()
+			if loginCtx.Value(oauth2.HTTPClient) == nil {
+				tokenHTTP, httpErr := flags.oauthHTTPClient(cfg)
+				if httpErr != nil {
+					return httpErr
+				}
+{{- if .Auth.TokenURL}}
+				tokenHTTP = cliutil.OAuthTokenHTTPClient(tokenHTTP)
+{{- end}}
+				loginCtx = context.WithValue(loginCtx, oauth2.HTTPClient, tokenHTTP)
+			}
+			accessToken, expiry, err := mintGoogleServiceAccountToken(loginCtx, keyPath, tokenURL, impersonate, scopes)
 			if err != nil {
 				return authErr(err)
 			}
