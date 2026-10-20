@@ -32,9 +32,9 @@ auth:                             # object (AuthConfig)
   in: header                      # string optional: header | query | cookie
 auth_warnings:                    # []string optional sniffed-auth rejection notes
 
-config:                           # object (ConfigSpec)
-  format: toml                    # string config format: toml | yaml (other values fall back to json tags)
-  path: "~/.config/my-api/config.toml" # string config file path
+config:                           # object (ConfigSpec). Omit the block to get format toml and path ~/.config/<name>-pp-cli/config.toml
+  format: toml                    # string config format: toml | yaml | json. Empty defaults to toml. A non-empty value is kept
+  path: "~/.config/my-api/config.toml" # string config file path. Empty defaults to ~/.config/<name>-pp-cli/config.<format>, using the final CLI name after --name
 
 learn:                            # object (LearnConfig) per-CLI vocabulary for the default-on learn loop
   disabled: false                 # bool generation-time opt-out; the authoritative off switch (enabled: false is a no-op once the loop is default-on; disabled: true with an explicit enabled: true is rejected at parse time)

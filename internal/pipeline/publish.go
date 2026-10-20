@@ -494,6 +494,7 @@ func applyPublishSpecMetadata(parsed *spec.APISpec, apiName string) {
 		specmeta.RebaseAuthEnvPrefix(&parsed.Auth, priorName, apiName)
 	}
 	parsed.Name = apiName
+	parsed.ApplyOmittedConfigDefaults()
 }
 
 // loadResearchForPromote returns the research.json relevant to the

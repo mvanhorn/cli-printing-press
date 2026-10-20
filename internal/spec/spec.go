@@ -212,6 +212,11 @@ type APISpec struct {
 	// PlaceholderBaseURL fallback because the source declared no real host.
 	// The generate command refuses to ship in that state — see internal/cli/root.go.
 	BaseURLIsPlaceholder bool `yaml:"-" json:"-"`
+	// omittedConfigPath is the path synthesized from Name. generate --name
+	// and other post-parse renames run after that fill; a later
+	// ApplyOmittedConfigDefaults refreshes a path only while it still
+	// equals this value. Author-supplied paths are not recorded here.
+	omittedConfigPath string
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.
@@ -2204,9 +2209,43 @@ func validateSessionHandshake(c AuthConfig) error {
 	}
 }
 
+// ConfigFormatTOML is filled in when a spec omits config.format.
+// Templates treat a zero Format as JSON, so the omission has to be filled
+// before render.
+const ConfigFormatTOML = "toml"
+
 type ConfigSpec struct {
-	Format string `yaml:"format" json:"format"` // toml, yaml
+	Format string `yaml:"format" json:"format"` // toml, yaml, or json; empty selects ConfigFormatTOML
 	Path   string `yaml:"path" json:"path"`
+}
+
+// ApplyOmittedConfigDefaults fills a missing config format and path.
+// Any format other than toml is rendered with encoding/json, so a zero
+// Format would emit config.json. A path this function synthesized is
+// refreshed when Name changes; an author-supplied path is kept.
+func (s *APISpec) ApplyOmittedConfigDefaults() {
+	if s == nil {
+		return
+	}
+	format := strings.TrimSpace(s.Config.Format)
+	if format == "" {
+		format = ConfigFormatTOML
+	}
+	s.Config.Format = format
+	path := strings.TrimSpace(s.Config.Path)
+	if path != "" && path != s.omittedConfigPath {
+		s.Config.Path = path
+		s.omittedConfigPath = ""
+		return
+	}
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		s.Config.Path = ""
+		s.omittedConfigPath = ""
+		return
+	}
+	s.Config.Path = fmt.Sprintf("~/.config/%s-pp-cli/config.%s", name, format)
+	s.omittedConfigPath = s.Config.Path
 }
 
 // CacheConfig gates the auto-refresh machinery emitted into a printed CLI.
@@ -3606,6 +3645,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
+	s.ApplyOmittedConfigDefaults()
 	return &s, nil
 }
 

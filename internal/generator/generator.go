@@ -3670,6 +3670,7 @@ func shouldSanitizeCapturedResourceIDs(apiSpec *spec.APISpec) bool {
 
 func (g *Generator) Generate() error {
 	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	g.Spec.ApplyOmittedConfigDefaults()
 	// CanonicalEnvVar fills EnvVarSpecs as a side effect. Single-file templates
 	// render in map order, so an env_vars-only spec otherwise emits different
 	// config depending on which file runs first.
@@ -3966,6 +3967,7 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 // emitted when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
 	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	g.Spec.ApplyOmittedConfigDefaults()
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	if err := g.prepareOutput(); err != nil {
 		return err

@@ -261,7 +261,7 @@ Verifies configuration and connectivity to the API.
 
 ## Configuration
 
-Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `` on macOS/Linux and `%USERPROFILE%\.config\public-param-golden-pp-cli\config.json` on Windows; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
+Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/public-param-golden-pp-cli/config.toml` on macOS/Linux and `%USERPROFILE%\.config\public-param-golden-pp-cli\config.toml` on Windows; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 
