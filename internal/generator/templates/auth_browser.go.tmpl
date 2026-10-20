@@ -326,18 +326,17 @@ profile by name when the installed backend supports it.`,
 			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
 
 			// Check if all required cookies were found on disk
-			allFound := true
+			var missing []string
 			for _, name := range requiredCookies {
 				if _, ok := cookieMap[name]; !ok {
-					allFound = false
-					break
+					missing = append(missing, name)
 				}
 			}
 
 			// If required cookies are missing, they may be session cookies
 			// (in-memory only, not written to Chrome's cookie DB).
 			// Try reading them from a live Chrome session via browser tools.
-			if !allFound {
+			if len(missing) > 0 {
 				fmt.Fprintf(w, "Required cookies not in Chrome's cookie DB (likely session cookies).\n")
 				fmt.Fprintf(w, "Attempting to read from live Chrome session...\n")
 
@@ -353,7 +352,12 @@ profile by name when the installed backend supports it.`,
 					fmt.Fprintln(w, "If this keeps failing, install a browser tool:")
 					fmt.Fprintln(w, "  pip install browser-use        # or")
 					fmt.Fprintln(w, "  npm install -g agent-browser")
-					return authErr(fmt.Errorf("session cookies not accessible for %s", domain))
+					// Retrying auth login reads the same press-auth capture that
+					// omitted a host-only subdomain cookie, so name the recapture.
+					for _, name := range missing {
+						fmt.Fprintln(w, hostOnlySubdomainRecapture(domain, name))
+					}
+					return authErr(fmt.Errorf("session cookies not accessible for %s; %s", domain, hostOnlySubdomainRecapture(domain, missing[0])))
 				}
 
 				// Merge live cookies into the map
@@ -1533,15 +1537,15 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 }
 
 // hostOnlySubdomainRecapture tells the operator how to recapture a cookie
-// that press-auth's default RFC 6265 filter drops: a host-only cookie set
-// on a subdomain of the apex the CLI asked for. An empty name is the hint
-// printed when press-auth itself has not captured a session yet. The
-// default command stays narrow; the flag is opt-in.
+// that press-auth's default RFC 6265 filter drops. An empty name is the
+// hint printed when press-auth itself has not captured a session yet. A
+// named hint replaces an existing apex capture, so it passes --force;
+// without that, login refuses to open Chrome.
 func hostOnlySubdomainRecapture(domain, name string) string {
 	if name == "" {
 		return fmt.Sprintf("If a required cookie is host-only on a subdomain of %s, add --include-subdomains.", domain)
 	}
-	return fmt.Sprintf("If %q is host-only on a subdomain of %s, recapture with: press-auth login %s --login-url <login-url> --include-subdomains", name, domain, domain)
+	return fmt.Sprintf("If %q is host-only on a subdomain of %s, recapture with: press-auth login %s --login-url <login-url> --include-subdomains --force", name, domain, domain)
 }
 
 // --- Chrome profile discovery ---

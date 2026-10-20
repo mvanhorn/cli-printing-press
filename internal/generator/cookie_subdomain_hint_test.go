@@ -27,12 +27,83 @@ func TestHostOnlySubdomainRecaptureHint(t *testing.T) {
 	}
 
 	named := hostOnlySubdomainRecapture("concursolutions.com", "_csrf")
-	wantCmd := "press-auth login concursolutions.com --login-url <login-url> --include-subdomains"
+	wantCmd := "press-auth login concursolutions.com --login-url <login-url> --include-subdomains --force"
 	if !strings.Contains(named, wantCmd) || !strings.Contains(named, "\"_csrf\"") {
 		t.Fatalf("named = %q", named)
 	}
+	if strings.Contains(unnamed, "--force") {
+		t.Fatalf("unnamed hint required --force before a capture exists: %q", unnamed)
+	}
 	if named == unnamed {
 		t.Fatal("named and unnamed hints collapsed")
+	}
+}
+`
+
+const composedLiveMissRuntime = `package cli
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func TestComposedLiveMissPrintsSubdomainRecapture(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fakepress\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const src = ` + "`" + `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) < 2 || os.Args[1] != "cookies" {
+		os.Stderr.WriteString("unexpected args\n")
+		os.Exit(2)
+	}
+	fmt.Print("session=ok")
+}
+` + "`" + `
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binName := "press-auth"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", binName, ".")
+	build.Dir = dir
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fake press-auth: %v\n%s", err, out)
+	}
+
+	t.Setenv("PATH", dir)
+
+	cmd := newAuthLoginCmd(&rootFlags{})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--chrome"})
+	err := cmd.Execute()
+	out := buf.String()
+	if err == nil {
+		t.Fatalf("expected login to fail, output:\n%s", out)
+	}
+	combined := err.Error() + "\n" + out
+	if !strings.Contains(combined, "session cookies not accessible") {
+		t.Fatalf("live-miss path not taken: %v\n%s", err, out)
+	}
+	want := "press-auth login example.com --login-url <login-url> --include-subdomains --force"
+	if !strings.Contains(combined, want) || !strings.Contains(combined, "\"_csrf\"") {
+		t.Fatalf("live-miss path omitted recapture\nerror: %v\noutput:\n%s", err, out)
 	}
 }
 `
@@ -70,9 +141,11 @@ func TestGeneratedHostOnlySubdomainHint(t *testing.T) {
 		auth := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
 		assertHostOnlySubdomainHint(t, auth)
 		assert.Contains(t, auth, `cookie %q not found for %s; %s`)
+		assert.Contains(t, auth, `session cookies not accessible for %s; %s`)
 		requireGeneratedCompiles(t, outputDir)
 		require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "host_only_subdomain_hint_test.go"), []byte(hostOnlySubdomainHintRuntime), 0o644))
-		runGoCommand(t, outputDir, "test", "./internal/cli", "-count=1", "-run", "TestHostOnlySubdomainRecaptureHint")
+		require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "composed_live_miss_test.go"), []byte(composedLiveMissRuntime), 0o644))
+		runGoCommand(t, outputDir, "test", "./internal/cli", "-count=1", "-run", "TestHostOnlySubdomainRecaptureHint|TestComposedLiveMissPrintsSubdomainRecapture")
 	})
 }
 
