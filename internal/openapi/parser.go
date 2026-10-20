@@ -9311,18 +9311,19 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 
-	// Detect cursor param and pagination type
+	// Date-formatted names such as after/before are range filters. Skip them
+	// so a later opaque cursor is still detected.
 	for _, name := range []string{"pagetoken", "page_token"} {
-		if orig, ok := originalCase[name]; ok {
-			pag.CursorParam = orig
+		if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
+			pag.CursorParam = p.Name
 			pag.Type = "page_token"
 			break
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token"} {
-			if orig, ok := originalCase[name]; ok {
-				pag.CursorParam = orig
+		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token", "page_key"} {
+			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
+				pag.CursorParam = p.Name
 				pag.Type = "cursor"
 				break
 			}
@@ -9330,8 +9331,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"offset", "skip"} {
-			if orig, ok := originalCase[name]; ok {
-				pag.CursorParam = orig
+			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
+				pag.CursorParam = p.Name
 				pag.Type = "offset"
 				break
 			}
@@ -9343,8 +9344,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	// CursorParam as an integer when no body cursor is extracted.
 	if pag.Type == "" {
 		for _, name := range []string{"page", "pagenumber", "page_number", "page[number]"} {
-			if orig, ok := originalCase[name]; ok {
-				pag.CursorParam = orig
+			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
+				pag.CursorParam = p.Name
 				pag.Type = "page"
 				break
 			}

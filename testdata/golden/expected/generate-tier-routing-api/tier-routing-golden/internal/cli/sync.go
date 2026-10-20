@@ -489,16 +489,16 @@ func syncResource(ctx context.Context, c interface {
 		// UTC so the zone renders as "Z"; see the --since resolution above.
 		effectiveSince = lastSynced.UTC().Format(time.RFC3339)
 	}
-	// Resources whose list endpoint declares no temporal-filter parameter
-	// fall back to plain pagination — sending a synthetic since=... would
+	// Resources whose list endpoint has no usable incremental lower bound
+	// fall back to plain pagination. Sending a synthetic since value would
 	// reach the API as an unknown query param and (for strict APIs like
 	// Notion) fail the whole resource with a 400. Warn once per resource
-	// when the user expected incremental behavior.
+	// when the caller asked for incremental sync.
 	if effectiveSince != "" && sinceParam == "" {
 		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "  %s: incremental sync ignored (endpoint declares no temporal filter; falling back to full pagination)\n", resource)
+			fmt.Fprintf(os.Stderr, "  %s: incremental sync ignored (endpoint has no usable incremental temporal filter; falling back to full pagination)\n", resource)
 		} else {
-			fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint does not declare a temporal filter parameter; incremental sync has no effect for this resource"}`+"\n", resource)
+			fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint has no usable incremental temporal filter; incremental sync has no effect for this resource"}`+"\n", resource)
 		}
 		effectiveSince = ""
 	}
@@ -1167,8 +1167,8 @@ func resourceSupportsPagination(resource string) bool {
 }
 
 // syncResourceSinceParam returns the query parameter name this resource's
-// list endpoint declares for incremental temporal filtering, or "" when the
-// endpoint declares none. Skipping the param for "" resources avoids
+// list endpoint uses to advance incremental sync, or "" when no usable
+// lower bound was detected. Skipping the param for "" resources avoids
 // validation-error 400s on APIs that reject unknown query keys.
 func syncResourceSinceParam(resource string) string {
 	switch resource {
@@ -1212,18 +1212,79 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 		}
 		return fmt.Sprintf("%s > [%s]", field, value)
 	}
+	if layout, ok := strings.CutPrefix(paramFormat, "operator:"); ok {
+		return formatSyncSinceOperatorValue(value, layout)
+	}
+	if zone, ok := strings.CutPrefix(paramFormat, "local-datetime:"); ok {
+		return formatSyncSinceLocalValue(value, zone)
+	}
 	if strings.EqualFold(paramFormat, "date") {
-		if ts, err := time.Parse(time.RFC3339, value); err == nil {
-			return ts.Format("2006-01-02")
-		}
-		if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return ts.Format("2006-01-02")
-		}
-		if _, err := time.Parse("2006-01-02", value); err == nil {
-			return value
+		if formatted, ok := formatSyncSinceDate(value); ok {
+			return formatted
 		}
 	}
 	return value
+}
+
+func formatSyncSinceDate(value string) (string, bool) {
+	if ts, err := time.Parse(time.RFC3339, value); err == nil {
+		return ts.Format("2006-01-02"), true
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return ts.Format("2006-01-02"), true
+	}
+	if _, err := time.Parse("2006-01-02", value); err == nil {
+		return value, true
+	}
+	return "", false
+}
+
+// An unparsable watermark must not gain an operator prefix; the API would
+// receive a string it cannot compare.
+func formatSyncSinceOperatorValue(value, layout string) string {
+	op, dateLayout, ok := strings.Cut(layout, ":")
+	if !ok || strings.TrimSpace(op) == "" {
+		return value
+	}
+	switch dateLayout {
+	case "date":
+		formatted, parsed := formatSyncSinceDate(value)
+		if !parsed {
+			return value
+		}
+		return op + formatted
+	case "date-time":
+		if _, err := time.Parse(time.RFC3339, value); err != nil {
+			if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+				return value
+			}
+		}
+		return op + value
+	default:
+		return value
+	}
+}
+
+// Only zones the spec format can name are loaded. Anything else leaves the
+// RFC3339 watermark untouched so a bad format cannot shift the clock.
+func formatSyncSinceLocalValue(value, zone string) string {
+	switch zone {
+	case "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "UTC":
+	default:
+		return value
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return value
+	}
+	ts, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		ts, err = time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return value
+		}
+	}
+	return ts.In(loc).Format("2006-01-02T15:04:05")
 }
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
