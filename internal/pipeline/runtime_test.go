@@ -125,7 +125,7 @@ func TestRunBrowserSessionProofTestRequiresValidDoctorProof(t *testing.T) {
 	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
 		RequiresBrowserSession:       true,
 		BrowserSessionValidationPath: "/api/items",
-	})
+	}, nil)
 
 	assert.Equal(t, 0, result.Score)
 	assert.False(t, result.Execute)
@@ -138,7 +138,7 @@ func TestRunBrowserSessionProofTestPassesValidDoctorProof(t *testing.T) {
 	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
 		RequiresBrowserSession:       true,
 		BrowserSessionValidationPath: "/api/items",
-	})
+	}, nil)
 
 	assert.Equal(t, 3, result.Score)
 	assert.True(t, result.Execute)
@@ -168,7 +168,7 @@ func TestRunBrowserSessionProofTestPropagatesVerifyEnv(t *testing.T) {
 	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
 		RequiresBrowserSession:       true,
 		BrowserSessionValidationPath: "/api/items",
-	})
+	}, nil)
 
 	assert.Equal(t, 3, result.Score)
 	assert.True(t, result.Execute)
@@ -179,7 +179,7 @@ func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	binary := buildCommandProbeBinary(t)
 	cmd := discoveredCommand{Name: "items", Kind: "read"}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false, true)
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
 	assert.False(t, result.Execute)
@@ -196,7 +196,7 @@ func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false, true)
 
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
@@ -217,7 +217,7 @@ func TestRunCommandTestsUsesSafeHappyArgsArgv(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", env, false)
+	result := runCommandTests(binary, cmd, "mock", env, false, true)
 
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
@@ -602,7 +602,7 @@ func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
 		Args: []string{"mock-value"},
 	}
 
-	result := runCommandTests(binary, cmd, "mock", os.Environ(), false)
+	result := runCommandTests(binary, cmd, "mock", os.Environ(), false, true)
 
 	assert.True(t, result.Help)
 	assert.False(t, result.DryRun)
@@ -1278,7 +1278,7 @@ func main() {
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
 
-	commands := discoverCommands(dir, binaryPath)
+	commands := discoverCommands(dir, binaryPath, nil)
 
 	// Should use help output: iecon-items-440 (not camelToKebab's iecon-items440).
 	assert.Len(t, commands, 2)
@@ -1301,7 +1301,7 @@ func initRoot() {
 `)
 
 	// Pass a non-existent binary path — should fall back to source parsing.
-	commands := discoverCommands(dir, "/nonexistent/binary")
+	commands := discoverCommands(dir, "/nonexistent/binary", nil)
 
 	assert.Len(t, commands, 2)
 	names := make([]string, len(commands))
@@ -1321,7 +1321,7 @@ func initRoot() {
 }
 `)
 
-	commands := discoverCommands(dir, "")
+	commands := discoverCommands(dir, "", nil)
 	assert.Len(t, commands, 1)
 	assert.Equal(t, "users-list", commands[0].Name)
 }
@@ -1543,13 +1543,13 @@ func TestRunCommandTestsSkipsLiveWriteExecuteUnlessAllowed(t *testing.T) {
 		},
 	}
 
-	result := runCommandTests(binary, cmd, "live", env, false)
+	result := runCommandTests(binary, cmd, "live", env, false, true)
 	require.True(t, result.Execute, "live write execute is treated as skipped/pass")
 	assert.Equal(t, 3, result.Score)
 	assert.NotContains(t, readProbeLog(t, logFile), "whereabouts Alice --query sunset --json")
 
 	require.NoError(t, os.Remove(logFile))
-	result = runCommandTests(binary, cmd, "live", env, true)
+	result = runCommandTests(binary, cmd, "live", env, true, true)
 	require.True(t, result.Execute)
 	assert.Equal(t, 3, result.Score)
 	assert.Contains(t, readProbeLog(t, logFile), "whereabouts Alice --query sunset --json")
@@ -1695,7 +1695,7 @@ Usage:
 Examples:
   fixture-pp-cli open recipes-1`)
 	cmd := &discoveredCommand{Name: "open"}
-	assert.True(t, helpScanIndicatesSideEffect(binaryPath, cmd),
+	assert.True(t, helpScanIndicatesSideEffect(binaryPath, cmd, nil),
 		"help text mentioning 'browser' should be classified as side-effecting")
 }
 
@@ -1708,7 +1708,7 @@ Usage:
 Examples:
   fixture-pp-cli list --json`)
 	cmd := &discoveredCommand{Name: "list"}
-	assert.False(t, helpScanIndicatesSideEffect(binaryPath, cmd),
+	assert.False(t, helpScanIndicatesSideEffect(binaryPath, cmd, nil),
 		"benign help text should not be classified as side-effecting")
 }
 
@@ -2063,7 +2063,7 @@ func TestRequiredFlagsRegex(t *testing.T) {
 
 func TestInferRequiredFlags_UnknownBinaryReturnsNil(t *testing.T) {
 	// Probing a non-existent binary should return nil cleanly, not panic or hang.
-	result := inferRequiredFlags("/nonexistent/binary/path", "somecmd")
+	result := inferRequiredFlags("/nonexistent/binary/path", "somecmd", nil)
 	assert.Nil(t, result)
 }
 

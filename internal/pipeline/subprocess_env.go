@@ -264,3 +264,39 @@ func applyDefaultSubprocessEnv(cmd *exec.Cmd) {
 	}
 	cmd.Env = subprocessEnv()
 }
+
+// applySubprocessEnv sets the printed CLI's environment. A nil env is the
+// scoped subprocess snapshot. An explicit env is copied so a later append
+// on the caller's slice cannot drop mock-mode overrides, and so an empty
+// slice stays empty instead of inheriting the parent process environment.
+func applySubprocessEnv(cmd *exec.Cmd, env []string) {
+	if cmd == nil {
+		return
+	}
+	if env == nil {
+		applyDefaultSubprocessEnv(cmd)
+		return
+	}
+	// Copy into a non-nil slice. append onto a nil base returns nil when
+	// env is empty, and a nil cmd.Env makes the child inherit the parent
+	// process environment.
+	cloned := make([]string, len(env))
+	copy(cloned, env)
+	cmd.Env = cloned
+}
+
+// putEnv sets key to value, dropping every earlier assignment of that same
+// key. Ambient credentials are copied in by subprocessEnv and must not win
+// just because they appear first. The match is the key before the first '=',
+// so PRINTING_PRESS_VERIFY does not collide with PRINTING_PRESS_VERIFY_LIVE_HTTP.
+func putEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && name == key {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, key+"="+value)
+}

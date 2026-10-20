@@ -30,7 +30,9 @@ func runStructuralVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	}
 	report.Binary = binaryPath
 
-	commands := discoverCommands(cfg.Dir, binaryPath)
+	// No mock server in structural verify. Stay on the scoped ambient env;
+	// PRINTING_PRESS_VERIFY would change which commands actually run.
+	commands := discoverCommands(cfg.Dir, binaryPath, subprocessEnv())
 
 	for _, cmd := range commands {
 		result := runStructuralCommandTests(binaryPath, cmd)

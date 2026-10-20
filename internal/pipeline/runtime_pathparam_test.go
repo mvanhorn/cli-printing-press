@@ -264,7 +264,7 @@ Flags:
 func TestDiscoverPathParamProbes_WalksNestedTree(t *testing.T) {
 	binary := buildPathParamProbeFixture(t)
 
-	probes := discoverPathParamProbes(binary)
+	probes := discoverPathParamProbes(binary, nil)
 	require.Len(t, probes, 3, "should find the 3 nested leaves at depth 3 and skip the depth-1 'recipe' leaf")
 
 	paths := make([]string, 0, len(probes))
@@ -279,7 +279,7 @@ func TestDiscoverPathParamProbes_WalksNestedTree(t *testing.T) {
 }
 
 func TestDiscoverPathParamProbes_EmptyBinaryReturnsNil(t *testing.T) {
-	assert.Nil(t, discoverPathParamProbes(""))
+	assert.Nil(t, discoverPathParamProbes("", nil))
 }
 
 // TestDiscoverPathParamProbes_SkipsParentGroupsWithPlaceholders pins the
@@ -291,7 +291,7 @@ func TestDiscoverPathParamProbes_EmptyBinaryReturnsNil(t *testing.T) {
 // anything meaningful.
 func TestDiscoverPathParamProbes_SkipsParentGroupsWithPlaceholders(t *testing.T) {
 	binary := buildParentGroupWithPlaceholderFixture(t)
-	probes := discoverPathParamProbes(binary)
+	probes := discoverPathParamProbes(binary, nil)
 	paths := make([]string, 0, len(probes))
 	for _, p := range probes {
 		paths = append(paths, strings.Join(p.path, " "))

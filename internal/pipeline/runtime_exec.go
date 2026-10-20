@@ -109,7 +109,7 @@ func runCLIWithOutput(binary string, args []string, env []string, timeout time.D
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Env = env
+	applySubprocessEnv(cmd, env)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("exit %w: %s", err, string(out))
