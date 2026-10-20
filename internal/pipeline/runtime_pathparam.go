@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -68,7 +67,7 @@ type PathParamProbeResult struct {
 // the synthetic value as a subcommand, producing an "unknown command"
 // exit that silently passes the sentinel check and inflates Total /
 // Passed without testing anything meaningful.
-func discoverPathParamProbes(binary string) []pathParamProbe {
+func discoverPathParamProbes(binary string, env []string) []pathParamProbe {
 	if binary == "" {
 		return nil
 	}
@@ -79,7 +78,7 @@ func discoverPathParamProbes(binary string) []pathParamProbe {
 			return
 		}
 
-		helpOut, ok := readCommandHelp(binary, path)
+		helpOut, ok := readCommandHelp(binary, path, env)
 		if !ok {
 			return
 		}
@@ -104,13 +103,9 @@ func discoverPathParamProbes(binary string) []pathParamProbe {
 	return probes
 }
 
-func readCommandHelp(binary string, path []string) (string, bool) {
+func readCommandHelp(binary string, path []string, env []string) (string, bool) {
 	args := append(append([]string{}, path...), "--help")
-	ctx, cancel := context.WithTimeout(context.Background(), pathParamProbeTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, args...)
-	applyDefaultSubprocessEnv(cmd)
-	out, err := cmd.CombinedOutput()
+	out, err := runCLIWithOutput(binary, args, env, pathParamProbeTimeout)
 	if err != nil {
 		return "", false
 	}
@@ -140,7 +135,7 @@ func extractPositionalsFromUsage(helpOut string) []string {
 // the per-name fallback. The resolution chain matches inferPositionalArgs
 // so the probe uses the same synthetic value the top-level matrix uses.
 func runPathParamProbes(binary string, env []string, paramDefaults map[string]string) []PathParamProbeResult {
-	probes := discoverPathParamProbes(binary)
+	probes := discoverPathParamProbes(binary, env)
 	if len(probes) == 0 {
 		return nil
 	}

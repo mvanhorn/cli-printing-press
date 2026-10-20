@@ -156,27 +156,6 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		defer mockServer.Close()
 	}
 
-	// 5. Discover commands
-	commands := discoverCommands(cfg.Dir, binaryPath)
-
-	// 5.5. Infer positional args from --help output. Pass the spec's
-	// ParamDefaults so positionals named in the spec with a `default:`
-	// (e.g., a real recipe slug for food52, a real symbol for a finance
-	// API) win over the generic canonicalargs registry and the legacy
-	// per-name switch.
-	var paramDefaults map[string]string
-	if spec != nil {
-		paramDefaults = spec.ParamDefaults
-	}
-	for i := range commands {
-		inferPositionalArgs(binaryPath, &commands[i], paramDefaults)
-	}
-
-	// 6. Classify and run each command
-	for i := range commands {
-		classifyCommandKind(&commands[i], spec)
-	}
-
 	// Collect auth env var names from the normalized spec model, then augment
 	// it with env vars actually read by the generated CLI's config.go.
 	authEnvVarSpecs := []apispec.AuthEnvVar{{
@@ -244,7 +223,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		if report.Mode == "live" {
 			for _, ev := range authEnvVars {
 				if val := os.Getenv(ev); val != "" {
-					env = append(env, ev+"="+val)
+					env = putEnv(env, ev, val)
 				}
 			}
 			// Also pass the explicit --api-key under request credential env var
@@ -252,13 +231,13 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// OAuth inputs such as client IDs and client secrets.
 			if cfg.APIKey != "" {
 				for _, ev := range requestAuthEnvVars {
-					env = append(env, ev+"="+cfg.APIKey)
+					env = putEnv(env, ev, cfg.APIKey)
 				}
 			}
 		} else {
-			env = append(env, baseURLEnvVar+"="+baseURLOverride)
+			env = putEnv(env, baseURLEnvVar, baseURLOverride)
 			for _, ev := range requestAuthEnvVars {
-				env = append(env, ev+"=mock-token-for-testing")
+				env = putEnv(env, ev, "mock-token-for-testing")
 			}
 			// Templated URLs (e.g. /admin/api/{api_version}/graphql.json)
 			// need every {var} resolved before buildURL succeeds. Without
@@ -267,7 +246,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// "mock" is opaque to the test server, which echoes whatever
 			// path it receives.
 			for _, ev := range templateVarEnvs {
-				env = append(env, ev+"=mock")
+				env = putEnv(env, ev, "mock")
 			}
 			// Defense-in-depth: every mock-mode subprocess inherits this
 			// env var. Generated commands that perform visible side
@@ -277,7 +256,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// command itself doesn't spam the user's environment during
 			// verify. Documented in skills/printing-press/SKILL.md and
 			// AGENTS.md.
-			env = append(env, "PRINTING_PRESS_VERIFY=1")
+			env = putEnv(env, "PRINTING_PRESS_VERIFY", "1")
 			// Verify owns its httptest mock-server and needs the real
 			// wire path to assert against, so it opts back in to the
 			// transport-layer mutating-verb gate that every other
@@ -286,9 +265,32 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// DELETE/POST/PUT/PATCH and the mock server never sees the
 			// request — collapsing verify's pass-rate signal to zero
 			// for those verbs.
-			env = append(env, "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
+			env = putEnv(env, "PRINTING_PRESS_VERIFY_LIVE_HTTP", "1")
 		}
 		return env
+	}
+
+	// Command discovery, positional parsing, and the side-effect help
+	// scan all spawn the printed CLI. They get the same env as the
+	// execute probes so a --help walk cannot carry ambient credentials
+	// or a real base URL into mock mode.
+	commands := discoverCommands(cfg.Dir, binaryPath, buildEnv())
+
+	// Infer positional args from --help output. Pass the spec's
+	// ParamDefaults so positionals named in the spec with a `default:`
+	// (e.g., a real recipe slug for food52, a real symbol for a finance
+	// API) win over the generic canonicalargs registry and the legacy
+	// per-name switch.
+	var paramDefaults map[string]string
+	if spec != nil {
+		paramDefaults = spec.ParamDefaults
+	}
+	for i := range commands {
+		inferPositionalArgs(binaryPath, &commands[i], paramDefaults, buildEnv())
+	}
+
+	for i := range commands {
+		classifyCommandKind(&commands[i], spec)
 	}
 
 	// 7. Run tests
@@ -300,7 +302,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		// Execute test to avoid spamming the user's environment during
 		// verify. The DryRun and Help tests still run — those are read-
 		// only by definition.
-		if report.Mode == "mock" && isSideEffectCommand(binaryPath, &commands[i], cfg.Dir) {
+		if report.Mode == "mock" && isSideEffectCommand(binaryPath, &commands[i], cfg.Dir, env) {
 			result := runSideEffectSafeCommandTests(binaryPath, commands[i], env)
 			report.Results = append(report.Results, result)
 			continue
@@ -328,7 +330,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 
 	if spec != nil && spec.Auth.RequiresBrowserSession {
 		report.BrowserSessionRequired = true
-		browserProof := runBrowserSessionProofTest(binaryPath, spec.Auth)
+		browserProof := runBrowserSessionProofTest(binaryPath, spec.Auth, buildEnv())
 		report.Results = append(report.Results, browserProof)
 		if browserProof.Score >= 2 {
 			report.BrowserSessionProof = "valid"
@@ -512,7 +514,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Get any required flags/args for this command.
 	// First, probe the binary for cobra-declared required flags (generic, spec-agnostic).
 	// Then fall back to the positional-arg map for commands that take bare positionals.
-	positionals, extraFlags := commandInvocationInputs(binary, cmd)
+	positionals, extraFlags := commandInvocationInputs(binary, cmd, env)
 
 	// Build positional args + flags for test invocations
 	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {
@@ -567,15 +569,19 @@ func dryRunProbeEnv(mode string, env []string) []string {
 	if mode != "live" {
 		return env
 	}
-	const key = "PRINTING_PRESS_VERIFY="
-	out := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		if strings.HasPrefix(entry, key) {
-			continue
-		}
-		out = append(out, entry)
+	return putEnv(env, "PRINTING_PRESS_VERIFY", "1")
+}
+
+// browserSessionProofEnv keeps the verify subprocess env and forces
+// PRINTING_PRESS_VERIFY=1. Mock mode therefore still carries the mock base
+// URL and mock credentials; a nil env is the scoped snapshot direct callers
+// already relied on. A stale PRINTING_PRESS_VERIFY=0 in that snapshot is
+// replaced rather than left in front of the forced value.
+func browserSessionProofEnv(env []string) []string {
+	if env == nil {
+		env = subprocessEnv()
 	}
-	return append(out, "PRINTING_PRESS_VERIFY=1")
+	return putEnv(env, "PRINTING_PRESS_VERIFY", "1")
 }
 
 func buildRuntimeTestArgs(cmdName string, positionalArgs, flags []string, extra ...string) []string {
@@ -601,7 +607,7 @@ func isIntentionalStubExit(err error) bool {
 		strings.Contains(msg, `"cf_gated": true`)
 }
 
-func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandResult {
+func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig, env []string) CommandResult {
 	result := CommandResult{
 		Command: "browser-session-proof",
 		Kind:    "auth",
@@ -615,15 +621,13 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 		return result
 	}
 
-	// cliutil.IsVerifyEnv() drives doctor's synthetic browser-session
-	// proof short-circuit. Without PRINTING_PRESS_VERIFY=1 the probe
-	// asks the CLI to validate against a real session, which a clean
-	// shipcheck environment doesn't have — every cookie-auth CLI then
-	// scores 0 even when the synthetic proof would have passed. Match
-	// the env-augmentation buildEnv() uses for the other mock-mode
-	// probes so this probe is self-contained.
-	env := append(subprocessEnv(), "PRINTING_PRESS_VERIFY=1")
-	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, env, 20*time.Second)
+	// Doctor's reachability GET uses cfg.BaseURL. The caller passes the
+	// same env as the rest of this verify run so mock mode hits the
+	// loopback server. VERIFY=1 is forced on top: the synthetic
+	// browser-session proof short-circuit does not run without it, and
+	// a stale PRINTING_PRESS_VERIFY=0 inherited from the operator must
+	// not win.
+	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, browserSessionProofEnv(env), 20*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("doctor --json failed: %v", err)
 		result.Score = 0
