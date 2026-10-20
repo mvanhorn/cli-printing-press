@@ -69,12 +69,18 @@ var (
 )
 
 var bareHostFileExt = map[string]bool{
-	"css": true, "csv": true, "gif": true, "go": true, "html": true, "jpeg": true,
-	"jpg": true, "js": true, "json": true, "lock": true, "m3u8": true, "m4s": true,
-	"md": true, "mod": true, "mp3": true, "mp4": true, "mpd": true, "pdf": true,
-	"png": true, "proto": true, "sum": true, "svg": true, "toml": true, "ts": true,
-	"tsv": true, "txt": true, "wav": true, "webp": true, "xml": true, "yaml": true,
-	"yml": true,
+	"css": true, "csv": true, "db": true, "gif": true, "go": true, "html": true, "jpeg": true,
+	"jpg": true, "js": true, "json": true, "jsonl": true, "lock": true, "log": true,
+	"m3u8": true, "m4s": true, "md": true, "mod": true, "mp3": true, "mp4": true,
+	"mpd": true, "pdf": true, "png": true, "proto": true, "sum": true, "svg": true,
+	"toml": true, "ts": true, "tsv": true, "txt": true, "wav": true, "webp": true,
+	"xml": true, "yaml": true, "yml": true,
+}
+
+// specialUseHostTLD lists registry-reserved labels the public suffix list does
+// not mark as ICANN. Documentation hosts such as api.vendor.example still count.
+var specialUseHostTLD = map[string]bool{
+	"example": true, "invalid": true, "localhost": true, "test": true,
 }
 
 var documentedURLListNames = map[string]bool{
@@ -562,10 +568,22 @@ func bareHostname(raw string) string {
 		return ""
 	}
 	last := host[strings.LastIndex(host, ".")+1:]
-	if bareHostFileExt[last] {
+	// Extensions win even when the label is also a delegated TLD (md).
+	if bareHostFileExt[last] || !isHostTLD(last) {
 		return ""
 	}
 	return normalizeNovelHost(host)
+}
+
+// The final label is checked on its own so a private-suffix host
+// (www.googleapis.com) still counts while a dotted identifier
+// (tables.create, VM.Audit) does not.
+func isHostTLD(label string) bool {
+	if specialUseHostTLD[label] {
+		return true
+	}
+	suffix, icann := publicsuffix.PublicSuffix(label)
+	return icann && suffix == label
 }
 
 func normalizeNovelHost(host string) string {

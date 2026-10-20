@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1047,6 +1048,38 @@ func TestDottedProseIdentifierIsNotAHost(t *testing.T) {
 		}},
 	})
 	assert.Empty(t, findings)
+}
+
+func TestNovelHostLiteralClassification(t *testing.T) {
+	tests := []struct {
+		literal string
+		want    []string
+	}{
+		{literal: "events.jsonl"},
+		{literal: "exchange-snapshots.db"},
+		{literal: "audit.log"},
+		{literal: "notes.md"},
+		{literal: "8.0.1.0"},
+		{literal: "2.0"},
+		{literal: "tables.create"},
+		{literal: "VM.Audit"},
+		{literal: "articles.get"},
+		{literal: "api.vendor.example", want: []string{"api.vendor.example"}},
+		{literal: "evil.example.com", want: []string{"evil.example.com"}},
+		{literal: "www.googleapis.com", want: []string{"www.googleapis.com"}},
+		{literal: "cdn.example.test", want: []string{"cdn.example.test"}},
+		{literal: "https://evil.example.com/v1", want: []string{"evil.example.com"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.literal, func(t *testing.T) {
+			src := "package cli\n\nfunc newPlayCmd() {\n\t_ = " + strconv.Quote(tt.literal) + "\n}\n"
+			var got []string
+			for _, decl := range hostsInGoSource("play.go", src, "play") {
+				got = append(got, decl.host)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestRepeatedUnverifiedHostUsesFeatureLine(t *testing.T) {
