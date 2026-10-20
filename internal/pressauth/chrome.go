@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -44,13 +45,14 @@ var errTabUnreadable = errors.New("tab unreadable")
 // chromedp launcher. Domain is the target the captured cookies will be
 // stored under; LoginURL is what the controlled window first navigates to.
 type CaptureOptions struct {
-	Domain           string
-	LoginURL         string
-	CompleteSelector string
-	CompleteCookie   string
-	RefreshEndpoint  string
-	JWTCarrierCookie string
-	Timeout          time.Duration
+	Domain            string
+	LoginURL          string
+	CompleteSelector  string
+	CompleteCookie    string
+	IncludeSubdomains bool
+	RefreshEndpoint   string
+	JWTCarrierCookie  string
+	Timeout           time.Duration
 }
 
 // Capture launches a controlled Chrome window via chromedp, navigates to
@@ -123,7 +125,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (*State, error) {
 		return nil, classifyChromeErr("snapshot cookies", err)
 	}
 
-	filtered := filterCookies(cookies, opts.Domain)
+	filtered := filterCookies(cookies, opts.Domain, opts.IncludeSubdomains)
 	var jwtExpiry time.Time
 	if opts.JWTCarrierCookie != "" {
 		if token, err := ExtractJWT(filtered[opts.JWTCarrierCookie]); err == nil {
@@ -466,16 +468,103 @@ func snapshotCookies(ctx context.Context) ([]*network.Cookie, error) {
 // filterCookies reduces the full browser cookie list to a name -> value
 // map for the cookies whose Domain attribute matches the target. Values
 // are never logged; the only place they should reach is the encrypted
-// state blob.
-func filterCookies(all []*network.Cookie, target string) map[string]string {
+// state blob. includeSubdomains adds host-only cookies on strict
+// subdomains; it does not change which domain cookies match.
+func filterCookies(all []*network.Cookie, target string, includeSubdomains bool) map[string]string {
 	out := make(map[string]string, len(all))
 	for _, c := range all {
-		if c == nil || !cookieDomainMatches(c.Domain, target) {
+		if c == nil || !cookieIncluded(c.Domain, target, includeSubdomains) {
 			continue
 		}
 		out[c.Name] = c.Value
 	}
 	return out
+}
+
+func cookieIncluded(cookieDomain, target string, includeSubdomains bool) bool {
+	if cookieDomainMatches(cookieDomain, target) {
+		return true
+	}
+	return includeSubdomains && hostOnlySubdomainCookie(cookieDomain, target)
+}
+
+// A leading dot is a domain cookie and stays on the RFC 6265 path, including
+// a domain cookie scoped only to a subdomain.
+func hostOnlySubdomainCookie(cookieDomain, target string) bool {
+	cookieHost, ok := canonicalDNSHost(cookieDomain, false)
+	if !ok {
+		return false
+	}
+	targetHost, ok := canonicalDNSHost(target, true)
+	if !ok {
+		return false
+	}
+	if cookieHost == targetHost {
+		return false
+	}
+	return strings.HasSuffix(cookieHost, "."+targetHost)
+}
+
+// canonicalDNSHost returns the ASCII hostname used for the opt-in subdomain
+// check. Unicode case folding and IDNA mapping are not applied: a Kelvin
+// sign, a unicode dot, or a confusable letter must not become a suffix of
+// the capture domain. Chrome stores IDN hosts as punycode, which compares
+// literally.
+func canonicalDNSHost(raw string, allowLeadingDot bool) (string, bool) {
+	host := trimASCIISpace(raw)
+	if host == "" || !isASCII(host) {
+		return "", false
+	}
+	host = strings.ToLower(host)
+	if allowLeadingDot {
+		host = strings.TrimPrefix(host, ".")
+	}
+	if host == "" || strings.HasPrefix(host, ".") {
+		return "", false
+	}
+	host = strings.TrimRight(host, ".")
+	if host == "" || strings.Contains(host, "..") || len(host) > 253 || net.ParseIP(host) != nil {
+		return "", false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	for _, label := range labels {
+		if !validDNSLabel(label) {
+			return "", false
+		}
+	}
+	return host, true
+}
+
+func trimASCIISpace(s string) string {
+	return strings.Trim(s, " \t\r\n\v\f")
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func validDNSLabel(label string) bool {
+	if label == "" || len(label) > 63 {
+		return false
+	}
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(label); i++ {
+		c := label[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // cookieDomainMatches applies RFC 6265 §5.1.3 domain matching:

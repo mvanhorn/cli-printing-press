@@ -16,12 +16,13 @@ import (
 // (rather than closure-captured locals) so the launch helper can take a
 // pointer without reshuffling Cobra wiring.
 type LoginFlags struct {
-	LoginURL         string
-	CompleteSelector string
-	CompleteCookie   string
-	RefreshEndpoint  string
-	JWTCarrierCookie string
-	Force            bool
+	LoginURL          string
+	CompleteSelector  string
+	CompleteCookie    string
+	IncludeSubdomains bool
+	RefreshEndpoint   string
+	JWTCarrierCookie  string
+	Force             bool
 }
 
 func newLoginCmd(_ *GlobalFlags) *cobra.Command {
@@ -55,6 +56,13 @@ both are set, either signal finishes login and the heuristic does not run.
 --complete-cookie does not replace --jwt-carrier-cookie; pass the same name
 to both when that cookie should also drive refresh.
 
+By default a cookie is kept only when it domain-matches <domain> under
+RFC 6265, so a host-only cookie is kept only for that exact host. Pass
+--include-subdomains to also keep host-only cookies set on subdomains of
+<domain>. Domain cookies stay on the RFC 6265 rules. Leave the flag off
+unless a required cookie is host-only on a subdomain; it widens the set
+stored under <domain>.
+
 Provide --refresh-endpoint and --jwt-carrier-cookie when the API issues a
 JWT session you want press-auth to refresh lazily on expiry.`,
 		Example: `  press-auth login example.com --login-url https://example.com/login
@@ -63,7 +71,9 @@ JWT session you want press-auth to refresh lazily on expiry.`,
   press-auth login example.com --login-url https://example.com/login \
       --complete-selector "a[href*=signout]"
   press-auth login example.com --login-url https://example.com/login \
-      --complete-cookie session`,
+      --complete-cookie session
+  press-auth login example.com --login-url https://example.com/login \
+      --include-subdomains`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain := args[0]
@@ -77,6 +87,7 @@ JWT session you want press-auth to refresh lazily on expiry.`,
 	cmd.Flags().StringVar(&lf.LoginURL, "login-url", "", "URL press-auth opens in the controlled Chrome window for you to log in")
 	cmd.Flags().StringVar(&lf.CompleteSelector, "complete-selector", "", "CSS selector that signals login is complete; checked on every page tab and replaces the sign-out heuristic")
 	cmd.Flags().StringVar(&lf.CompleteCookie, "complete-cookie", "", "Cookie name whose presence in the capture browser means login is complete; replaces the sign-out heuristic")
+	cmd.Flags().BoolVar(&lf.IncludeSubdomains, "include-subdomains", false, "Also keep host-only cookies set on subdomains of <domain> (default is RFC 6265 exact-host matching)")
 	cmd.Flags().StringVar(&lf.RefreshEndpoint, "refresh-endpoint", "", "API path press-auth GETs to refresh an expiring JWT (e.g. /account/token)")
 	cmd.Flags().StringVar(&lf.JWTCarrierCookie, "jwt-carrier-cookie", "", "Name of the cookie that holds the JWT; its exp claim drives refresh timing")
 	cmd.Flags().BoolVar(&lf.Force, "force", false, "Overwrite existing state for <domain> without prompting")
@@ -111,22 +122,20 @@ func runLogin(ctx context.Context, out io.Writer, domain string, lf *LoginFlags)
 		ctx = context.Background()
 	}
 	state, err := Capture(ctx, CaptureOptions{
-		Domain:           domain,
-		LoginURL:         lf.LoginURL,
-		CompleteSelector: lf.CompleteSelector,
-		CompleteCookie:   strings.TrimSpace(lf.CompleteCookie),
-		RefreshEndpoint:  lf.RefreshEndpoint,
-		JWTCarrierCookie: lf.JWTCarrierCookie,
-		Timeout:          defaultCaptureTimeout,
+		Domain:            domain,
+		LoginURL:          lf.LoginURL,
+		CompleteSelector:  lf.CompleteSelector,
+		CompleteCookie:    strings.TrimSpace(lf.CompleteCookie),
+		IncludeSubdomains: lf.IncludeSubdomains,
+		RefreshEndpoint:   lf.RefreshEndpoint,
+		JWTCarrierCookie:  lf.JWTCarrierCookie,
+		Timeout:           defaultCaptureTimeout,
 	})
 	if err != nil {
 		return &ExitError{Code: ExitUnknownError, Err: fmt.Errorf("capture failed: %w", err)}
 	}
 	if len(state.Cookies) == 0 {
-		return &ExitError{
-			Code: ExitNoNewCookies,
-			Err:  fmt.Errorf("no cookies matched domain %s — check the login flow really set cookies for that host", domain),
-		}
+		return noMatchedCookiesError(domain, lf.IncludeSubdomains)
 	}
 	// Defensive: never persist a state with a zero CapturedAt.
 	if state.CapturedAt.IsZero() {
@@ -142,6 +151,17 @@ func runLogin(ctx context.Context, out io.Writer, domain string, lf *LoginFlags)
 	}
 	fmt.Fprintf(out, "captured %d cookies for %s; JWT carrier: %s (expiry will be set on first refresh)\n", len(state.Cookies), domain, carrier)
 	return nil
+}
+
+// noMatchedCookiesError is the exit when the browser had no cookie that
+// matched the capture domain. The subdomain hint is omitted once the
+// operator already opted into that wider match.
+func noMatchedCookiesError(domain string, includeSubdomains bool) error {
+	msg := fmt.Sprintf("no cookies matched domain %s — check the login flow really set cookies for that host", domain)
+	if !includeSubdomains {
+		msg += "; if cookies are host-only on a subdomain, re-run with --include-subdomains"
+	}
+	return &ExitError{Code: ExitNoNewCookies, Err: errors.New(msg)}
 }
 
 // validateLoginURL rejects anything that is not http://localhost,

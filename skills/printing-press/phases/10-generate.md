@@ -499,7 +499,9 @@ it captures cookies once via a controlled Chrome window and serves them to
 generated CLIs on demand, avoiding the on-disk session-cookie blind spot
 that breaks `auth login --chrome` against a daily Chrome profile. See
 [references/auth-companion.md](../references/auth-companion.md) for the
-recommendation flow, install command, and debug playbook.
+recommendation flow, install command, and debug playbook. That reference
+covers host-only cookies set on a subdomain of the apex; leave the default
+capture scope unchanged.
 
 ### Pre-Generation MCP Enrichment
 

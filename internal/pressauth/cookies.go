@@ -53,6 +53,8 @@ the user at the login subcommand.`,
 				state = refreshed
 			}
 
+			// Domain filtering happened at capture. Filtering again would drop
+			// host-only subdomain cookies stored with --include-subdomains.
 			fmt.Fprintln(cmd.OutOrStdout(), formatCookieHeader(state.Cookies))
 			return nil
 		},

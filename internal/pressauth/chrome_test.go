@@ -82,7 +82,7 @@ func TestFilterCookiesByDomain(t *testing.T) {
 		".other.example.test/drop-dot": "v4",
 		"/keep-empty-domain":           "v5", // empty Domain attr
 	})
-	got := filterCookies(all, "www.example.test")
+	got := filterCookies(all, "www.example.test", false)
 	if _, ok := got["keep"]; !ok {
 		t.Errorf("expected 'keep' cookie (matches .example.test)")
 	}
@@ -97,6 +97,220 @@ func TestFilterCookiesByDomain(t *testing.T) {
 	}
 	if _, ok := got["drop-dot"]; ok {
 		t.Errorf("'drop-dot' cookie (.other.example.test) leaked into result")
+	}
+}
+
+func TestFilterCookiesIncludeSubdomains(t *testing.T) {
+	t.Setenv("PRESSAUTH_INCLUDE_SUBDOMAINS", "1")
+
+	all := []*network.Cookie{
+		{Domain: ".example.com", Name: "JWT", Value: "jwt"},
+		{Domain: "example.com", Name: "session", Value: "sess"},
+		{Domain: "us2.example.com", Name: "_csrf", Value: "csrf-us"},
+		{Domain: "eu.example.com", Name: "_csrf", Value: "csrf-eu"},
+		{Domain: "US2.Example.COM", Name: "regional", Value: "r"},
+		{Domain: "us2.example.com.", Name: "dotted", Value: "d"},
+		{Domain: ".us2.example.com", Name: "scoped", Value: "no"},
+		{Domain: "api.example.com", Name: "sibling", Value: "sib"},
+		{Domain: "evilconcursolutions.com", Name: "lookalike", Value: "no"},
+		{Domain: "us2.evilconcursolutions.com", Name: "lookalike-sub", Value: "no"},
+		{Domain: "notexample.com", Name: "suffix", Value: "no"},
+		{Domain: "example.com.evil.net", Name: "embed", Value: "no"},
+		{Domain: "other.test", Name: "nope", Value: "x"},
+		{Domain: "", Name: "empty-domain", Value: "e"},
+		nil,
+	}
+
+	def := filterCookies(all, "example.com", false)
+	if _, ok := def["_csrf"]; ok {
+		t.Error("default filter kept host-only _csrf from a subdomain")
+	}
+	if _, ok := def["regional"]; ok {
+		t.Error("default filter kept mixed-case host-only subdomain cookie")
+	}
+	if _, ok := def["dotted"]; ok {
+		t.Error("default filter kept a trailing-dot subdomain cookie")
+	}
+	if _, ok := def["scoped"]; ok {
+		t.Error("default filter kept a domain cookie scoped to a subdomain")
+	}
+	if def["JWT"] != "jwt" || def["session"] != "sess" || def["empty-domain"] != "e" {
+		t.Errorf("default filter dropped an RFC match: %#v", def)
+	}
+	for _, name := range []string{"lookalike", "lookalike-sub", "suffix", "embed", "nope", "sibling"} {
+		if _, ok := def[name]; ok {
+			t.Errorf("default filter kept %s", name)
+		}
+	}
+
+	wide := filterCookies(all, "example.com", true)
+	if wide["JWT"] != "jwt" || wide["session"] != "sess" || wide["empty-domain"] != "e" {
+		t.Errorf("opt-in filter dropped an RFC match: %#v", wide)
+	}
+	if wide["_csrf"] != "csrf-eu" {
+		t.Errorf("_csrf = %q, want the later host-only subdomain value csrf-eu", wide["_csrf"])
+	}
+	if wide["regional"] != "r" {
+		t.Errorf("regional = %q, want case-insensitive subdomain match", wide["regional"])
+	}
+	if wide["dotted"] != "d" {
+		t.Errorf("dotted = %q, want trailing-dot subdomain cookie", wide["dotted"])
+	}
+	if _, ok := wide["scoped"]; ok {
+		t.Error("opt-in kept a leading-dot cookie scoped only to a subdomain")
+	}
+	for _, name := range []string{"lookalike", "lookalike-sub", "suffix", "embed", "nope"} {
+		if _, ok := wide[name]; ok {
+			t.Errorf("opt-in kept %s", name)
+		}
+	}
+	if _, ok := wide["sibling"]; !ok {
+		t.Error("opt-in dropped host-only api.example.com")
+	}
+
+	header := formatCookieHeader(wide)
+	for _, want := range []string{"JWT=jwt", "_csrf=csrf-eu", "session=sess", "regional=r", "dotted=d", "sibling=sib"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("stored header %q missing %s", header, want)
+		}
+	}
+	for _, leaked := range []string{"nope=", "scoped=", "lookalike=", "suffix=", "embed="} {
+		if strings.Contains(header, leaked) {
+			t.Errorf("stored header leaked %s: %s", leaked, header)
+		}
+	}
+
+	sibling := filterCookies(all, "www.example.com", true)
+	if _, ok := sibling["sibling"]; ok {
+		t.Error("api.example.com is not a subdomain of www.example.com")
+	}
+	if sibling["JWT"] != "jwt" {
+		t.Error("domain cookie on .example.com should still match www.example.com")
+	}
+
+	dottedTarget := filterCookies(
+		[]*network.Cookie{{Domain: "us2.example.com", Name: "_csrf", Value: "csrf"}},
+		".example.com.",
+		true,
+	)
+	if dottedTarget["_csrf"] != "csrf" {
+		t.Error("leading-dot capture target with a trailing dot should match a host-only subdomain cookie")
+	}
+}
+
+func TestHostOnlySubdomainCookieSecurity(t *testing.T) {
+	const (
+		apex = "concursolutions.com"
+		ok   = "us2.concursolutions.com"
+	)
+	cases := []struct {
+		name   string
+		cookie string
+		target string
+		want   bool
+	}{
+		{name: "apex host-only subdomain", cookie: ok, target: apex, want: true},
+		{name: "case", cookie: "US2.ConcurSolutions.COM", target: "ConcurSolutions.COM", want: true},
+		{name: "cookie trailing dot", cookie: ok + ".", target: apex, want: true},
+		{name: "target trailing dot", cookie: ok, target: apex + ".", want: true},
+		{name: "both trailing dots", cookie: ok + ".", target: apex + ".", want: true},
+		{name: "extra trailing dots", cookie: ok + "...", target: apex, want: true},
+		{name: "ascii padding", cookie: "  " + ok + "\t", target: "\n" + apex + " ", want: true},
+		{name: "leading-dot target", cookie: ok, target: "." + apex, want: true},
+		{name: "deep subdomain", cookie: "a.b." + apex, target: apex, want: true},
+		{name: "hyphen label", cookie: "my-host." + apex, target: apex, want: true},
+		{name: "punycode subdomain", cookie: "shop.xn--mnchen-3ya.de", target: "xn--mnchen-3ya.de", want: true},
+		{name: "exact host is not the opt-in path", cookie: apex, target: apex, want: false},
+		{name: "exact host trailing dot", cookie: apex + ".", target: apex, want: false},
+		{name: "lookalike registrable domain", cookie: "evilconcursolutions.com", target: apex, want: false},
+		{name: "lookalike subdomain", cookie: "us2.evilconcursolutions.com", target: apex, want: false},
+		{name: "lookalike trailing dot", cookie: "us2.evilconcursolutions.com.", target: apex, want: false},
+		{name: "lookalike case", cookie: "US2.EvilConcurSolutions.COM", target: apex, want: false},
+		{name: "suffix embed", cookie: apex + ".evil.com", target: apex, want: false},
+		{name: "prefix embed", cookie: "not" + apex, target: apex, want: false},
+		{name: "digit lookalike", cookie: "us2.concurs0lutions.com", target: apex, want: false},
+		{name: "punycode glued to apex", cookie: "us2.xn--" + apex, target: apex, want: false},
+		{name: "sibling of www", cookie: "api.example.com", target: "www.example.com", want: false},
+		{name: "parent of www", cookie: "example.com", target: "www.example.com", want: false},
+		{name: "domain cookie on subdomain", cookie: ".us2." + apex, target: apex, want: false},
+		{name: "domain cookie padded", cookie: " .us2." + apex, target: apex, want: false},
+		{name: "double-dot target", cookie: ok, target: ".." + apex, want: false},
+		{name: "empty label", cookie: "us2.." + apex, target: apex, want: false},
+		{name: "single-label target", cookie: "evil.com", target: "com", want: false},
+		{name: "single-label trailing dot", cookie: "evil.com", target: "com.", want: false},
+		{name: "ip target", cookie: "evil.127.0.0.1", target: "127.0.0.1", want: false},
+		{name: "ipv6 target", cookie: "evil.example.com", target: "::1", want: false},
+		{name: "unicode dot", cookie: "us2.example。com", target: "example.com", want: false},
+		{name: "fullwidth letter", cookie: "us2.ｅxample.com", target: "example.com", want: false},
+		{name: "cyrillic lookalike", cookie: "us2.еxample.com", target: "example.com", want: false},
+		{name: "kelvin sign", cookie: "us2.exa\u212Aple.com", target: "example.com", want: false},
+		{name: "kelvin in target", cookie: "us2.example.com", target: "exa\u212Aple.com", want: false},
+		{name: "unicode dot in target", cookie: "us2.example.com", target: "example\u3002com", want: false},
+		{name: "fullwidth dot", cookie: "us2\uff0eexample\uff0ecom", target: "example.com", want: false},
+		{name: "halfwidth dot", cookie: "us2\uff61example\uff61com", target: "example.com", want: false},
+		{name: "null before real suffix", cookie: "evil.com\x00.example.com", target: "example.com", want: false},
+		{name: "scheme target", cookie: "us2.example.com", target: "https://example.com", want: false},
+		{name: "url cookie", cookie: "https://us2.example.com", target: "example.com", want: false},
+		{name: "nbsp padding", cookie: ok + "\u00a0", target: apex, want: false},
+		{name: "unicode host not mapped to punycode", cookie: "shop.münchen.de", target: "xn--mnchen-3ya.de", want: false},
+		{name: "percent encoding", cookie: "us2.example%2ecom", target: "example.com", want: false},
+		{name: "null byte", cookie: "us2.example.com\x00", target: "example.com", want: false},
+		{name: "at sign", cookie: "us2.evil@example.com", target: "example.com", want: false},
+		{name: "backslash", cookie: `us2.example.com\evil`, target: "example.com", want: false},
+		{name: "slash", cookie: "us2.example.com/evil", target: "example.com", want: false},
+		{name: "wildcard", cookie: "*.example.com", target: "example.com", want: false},
+		{name: "port", cookie: "us2.example.com:443", target: "example.com", want: false},
+		{name: "target port", cookie: "us2.example.com", target: "example.com:443", want: false},
+		{name: "userinfo target", cookie: ok, target: "user@" + apex, want: false},
+		{name: "underscore label", cookie: "my_host.example.com", target: "example.com", want: false},
+		{name: "empty cookie", cookie: "", target: apex, want: false},
+		{name: "empty target", cookie: ok, target: "", want: false},
+		{name: "label too long", cookie: strings.Repeat("a", 64) + ".example.com", target: "example.com", want: false},
+		{name: "leading hyphen", cookie: "-bad.example.com", target: "example.com", want: false},
+		{name: "trailing hyphen", cookie: "bad-.example.com", target: "example.com", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hostOnlySubdomainCookie(tc.cookie, tc.target); got != tc.want {
+				t.Fatalf("hostOnlySubdomainCookie(%q, %q) = %v, want %v", tc.cookie, tc.target, got, tc.want)
+			}
+			included := cookieIncluded(tc.cookie, tc.target, true)
+			if tc.want && !included {
+				t.Fatalf("cookieIncluded opt-in (%q, %q) = false, want true", tc.cookie, tc.target)
+			}
+			if !tc.want && included && !cookieDomainMatches(tc.cookie, tc.target) {
+				t.Fatalf("opt-in included %q for %q outside RFC 6265", tc.cookie, tc.target)
+			}
+			if tc.want && cookieIncluded(tc.cookie, tc.target, false) {
+				t.Fatalf("default include kept %q for %q", tc.cookie, tc.target)
+			}
+		})
+	}
+
+	longLabel := strings.Repeat("a", 63)
+	longHost := longLabel + "." + longLabel + "." + longLabel + "." + longLabel
+	if len(longHost) <= 253 {
+		t.Fatalf("fixture host length = %d, want >253", len(longHost))
+	}
+	if hostOnlySubdomainCookie("us2."+longHost, longHost) {
+		t.Fatal("over-long hostname was accepted")
+	}
+
+	// Exact and domain-cookie matches stay on the RFC path when the opt-in is on.
+	if !cookieIncluded(".example.com", "www.example.com", false) || !cookieIncluded(".example.com", "www.example.com", true) {
+		t.Fatal("domain cookie .example.com should match www.example.com with or without the opt-in")
+	}
+	if !cookieIncluded("example.com", "example.com", false) || !cookieIncluded("example.com", "EXAMPLE.COM", true) {
+		t.Fatal("exact host-only cookie should match regardless of the opt-in")
+	}
+	if cookieIncluded("us2.example.com", "example.com", false) {
+		t.Fatal("default match widened to a host-only subdomain")
+	}
+	if !cookieIncluded("us2.example.com", "example.com", true) {
+		t.Fatal("opt-in missed a host-only subdomain cookie")
+	}
+	if cookieIncluded(".us2.example.com", "example.com", true) {
+		t.Fatal("opt-in widened to a domain cookie scoped to a subdomain")
 	}
 }
 
