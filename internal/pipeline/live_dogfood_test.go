@@ -3984,6 +3984,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 	_, skipped, reason, _ := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "non-id positional")
+	assert.Contains(t, reason, happyArgsFixtureHint)
 
 	// id-shape positional (bare `id`) but no companion → skip.
 	cmd = liveDogfoodCommand{
@@ -3993,6 +3994,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
+	assert.Contains(t, reason, happyArgsFixtureHint)
 
 	// camelCase id-shape positional (movieId) but no companion → skip.
 	cmd = liveDogfoodCommand{
@@ -4008,8 +4010,10 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"get"},
 		Help: "Usage:\n  cli get <id> <name> [flags]\n",
 	}
-	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, 0, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, 0, ctx)
 	assert.True(t, skipped)
+	assert.Contains(t, reason, "fewer segments than placeholders")
+	assert.Contains(t, reason, happyArgsFixtureHint)
 
 	// A top-level command with one positional is valid. Without an explicit
 	// fixture it still skips because no real ID source is available, but the
@@ -4022,6 +4026,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"last-bus", "example-stop"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.NotContains(t, reason, "fewer segments than placeholders")
+	assert.Contains(t, reason, happyArgsFixtureHint)
 
 	// A positional pp:happy-args fixture makes the same top-level command
 	// runnable without a companion lookup.
@@ -6044,6 +6049,7 @@ func TestRunLiveDogfoodResolveSuccessNegativeCacheSentinel(t *testing.T) {
 		"first sibling (describe) should skip with fresh companion-failure reason")
 	assert.Contains(t, descResult.Reason, "list companion failed at depth",
 		"first sibling reason should reference the actual depth-keyed failure, not the cached sentinel")
+	assert.Contains(t, descResult.Reason, happyArgsFixtureHint)
 
 	getResult := findResultByCommandKind(report, "failing-resource get", LiveDogfoodTestHappy)
 	require.NotNil(t, getResult)
@@ -6051,6 +6057,7 @@ func TestRunLiveDogfoodResolveSuccessNegativeCacheSentinel(t *testing.T) {
 		"second sibling (get) should skip via the cached negative-cache sentinel")
 	assert.Contains(t, getResult.Reason, "list companion previously failed at depth",
 		"second sibling reason should reference the cached sentinel, not re-fail the companion")
+	assert.Contains(t, getResult.Reason, happyArgsFixtureHint)
 
 	// Filter to the actual companion call (--json excludes --help). The
 	// walker probes `failing-resource list` for both happy_path and
@@ -7046,6 +7053,7 @@ func TestRunLiveDogfoodErrorPathRealSkipMatchesHappyPathReason(t *testing.T) {
 		"error_path_real skip reason must match happy_path skip reason")
 	assert.Contains(t, errorReal.Reason, "no list companion",
 		"resolve-skipped reason should surface the list-companion gap")
+	assert.Contains(t, errorReal.Reason, happyArgsFixtureHint)
 }
 
 func TestRunLiveDogfoodSkipsErrorPathForMutatorWithDryRun(t *testing.T) {

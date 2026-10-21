@@ -60,6 +60,7 @@ func TestPhase5Marker_WriterOutputMatchesPublishedSchema(t *testing.T) {
 			TestsUnverified:   258,
 			CoverageHollow:    true,
 			HollowFeatures:    []string{"approvals answer"},
+			HollowReasons:     map[string]string{"approvals answer": "non-id positional \"query\" at depth 0; set pp:happy-args"},
 			SourceFingerprint: "deadbeef",
 			SourceFiles:       map[string]string{"go.mod": "cafe"},
 			AuthContext: pipeline.Phase5AuthContext{
@@ -141,6 +142,7 @@ func TestPhase5Marker_SchemaDeclaresNoPhantomProperties(t *testing.T) {
 		TestsFailed:          1,
 		CoverageHollow:       true,
 		HollowFeatures:       []string{"x"},
+		HollowReasons:        map[string]string{"x": "non-id positional \"dimension\" at depth 0; set pp:happy-args"},
 		ProofCoveredFeatures: []pipeline.ProofCoveredFeature{{Command: "x", Proof: "x.md"}},
 		SkipReason:           "x",
 		SourceFingerprint:    "x",

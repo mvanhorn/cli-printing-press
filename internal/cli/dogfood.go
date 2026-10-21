@@ -136,7 +136,7 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 	if report.Verdict == "unverified-device" {
 		fmt.Println("Coverage:   UNVERIFIED - device CLI requires manual live testing")
 	} else if report.CoverageHollow {
-		fmt.Printf("Coverage:   HOLLOW - %d novel feature(s) never executed: %s\n", len(report.HollowFeatures), strings.Join(report.HollowFeatures, ", "))
+		fmt.Printf("Coverage:   HOLLOW - %d novel feature(s) never executed: %s\n", len(report.HollowFeatures), pipeline.FormatHollowCoverage(report.HollowFeatures, report.HollowReasons))
 	} else {
 		fmt.Println("Coverage:   headline novel features executed")
 	}

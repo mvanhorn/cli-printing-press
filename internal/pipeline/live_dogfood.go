@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +83,10 @@ const liveDogfoodVerdictCookieAuthNoSession = "skip-cookie-auth-no-session"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
 
+// happyArgsFixtureHint is appended to positional-resolution skips so hollow
+// coverage can tell the author which annotation supplies the missing value.
+const happyArgsFixtureHint = "set pp:happy-args"
+
 const reasonLiveHappyExplicitOutputMode = "live happy path uses an explicit non-JSON output mode"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
@@ -133,6 +138,10 @@ type LiveDogfoodReport struct {
 	PassRate       float64  `json:"pass_rate"`
 	CoverageHollow bool     `json:"coverage_hollow,omitempty"`
 	HollowFeatures []string `json:"hollow_features,omitempty"`
+	// HollowReasons is the happy_path skip reason for each hollow feature,
+	// keyed by the feature command string. Empty when the feature was not
+	// built, so publish can name a missing fixture without inventing one.
+	HollowReasons map[string]string `json:"hollow_reasons,omitempty"`
 	// ProofCoveredFeatures are novel features with no live happy-path pass
 	// that an operator-written proof file backs instead.
 	ProofCoveredFeatures []ProofCoveredFeature   `json:"proof_covered_features,omitempty"`
@@ -653,6 +662,24 @@ var liveDogfoodFrameworkSkip = map[string]bool{
 	"version":       true,
 }
 
+// liveDogfoodHollowExemptPaths are generator commands on every printed CLI.
+// Their examples need a saved profile, a learning id, or a placeholder the
+// sandbox cannot satisfy, so the matrix skips them. They are not novel
+// coverage. Match the full path: a leaf named "save" is not profile save.
+var liveDogfoodHollowExemptPaths = map[string]bool{
+	"which":             true,
+	"tail":              true,
+	"api":               true,
+	"import":            true,
+	"profile save":      true,
+	"profile show":      true,
+	"profile use":       true,
+	"profile delete":    true,
+	"learnings forget":  true,
+	"learnings confirm": true,
+	"learnings reject":  true,
+}
+
 // crossAPIListVerbs are leaf names a modern API CLI may expose as a
 // list-shape companion to a get-shape command.
 var crossAPIListVerbs = map[string]bool{
@@ -892,10 +919,13 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, annotatedPositionals int, ctx resolveCtx) ([]string, bool, string, string) {
 	// Explicit pp:happy-args positionals are authoritative — skip placeholder
 	// re-resolution, which would otherwise overwrite them via a list companion.
-	// Flag-only pp:happy-args still allow the normal ID fixture resolver to fill
-	// the command's positional placeholders.
+	// Flag-only pp:happy-args are the invocation: drop optional example
+	// positionals, and still resolve required ones.
 	if annotatedPositionals > 0 {
 		return happyArgs, false, "", ""
+	}
+	if happyArgsAreFlagOnly(command) {
+		happyArgs = omitOptionalPositionals(command, happyArgs)
 	}
 	placeholders, usageDepth := liveDogfoodPlaceholdersToResolve(command, happyArgs)
 	if len(placeholders) == 0 {
@@ -910,8 +940,8 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 	if pathLen < usageDepth {
 		// More placeholders than path segments before the verb. Unusual
 		// shape (top-level command with multiple positionals); skip.
-		return nil, true, fmt.Sprintf(
-			"command path %v has fewer segments than placeholders (%d)", command.Path, usageDepth), ""
+		return nil, true, positionalFixtureSkipReason(fmt.Sprintf(
+			"command path %v has fewer segments than placeholders (%d)", command.Path, usageDepth)), ""
 	}
 
 	resolved := make([]string, 0, nPlaceholders)
@@ -923,7 +953,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 		// generator.go exampleValue's predicate — no spec type info is available
 		// from CLI help text, so the string-type fence applied there is omitted.
 		if !isIDShapePlaceholderName(nameLower) {
-			return nil, true, fmt.Sprintf("non-id positional %q at depth %d", name, i), ""
+			return nil, true, positionalFixtureSkipReason(fmt.Sprintf("non-id positional %q at depth %d", name, i)), ""
 		}
 
 		// parent path of the verb that expects this placeholder.
@@ -941,7 +971,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			if liveDogfoodSyntheticPositionalValue(happyArgs, command.Path, i, usageDepth) {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
-			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name), ""
+			return nil, true, positionalFixtureSkipReason(fmt.Sprintf("no list companion at depth %d for %q", i, name)), ""
 		}
 
 		listArgs := append([]string{}, listCmd.Path...)
@@ -964,8 +994,8 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 				} else if storeAvailable {
 					return nil, true, reasonRequiredParamFixture, ""
 				}
-				return nil, true, fmt.Sprintf(
-					"list companion previously failed at depth %d for %q", i, name), ""
+				return nil, true, positionalFixtureSkipReason(fmt.Sprintf(
+					"list companion previously failed at depth %d for %q", i, name)), ""
 			}
 			resolved = append(resolved, id)
 			continue
@@ -981,8 +1011,8 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			} else if storeAvailable {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
-			return nil, true, fmt.Sprintf(
-				"list companion failed at depth %d: exit %d", i, run.exitCode), ""
+			return nil, true, positionalFixtureSkipReason(fmt.Sprintf(
+				"list companion failed at depth %d: exit %d", i, run.exitCode)), ""
 		}
 
 		id, ok := extractFirstIDFromJSON(run.stdout)
@@ -995,8 +1025,8 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			} else if storeAvailable {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
-			return nil, true, fmt.Sprintf(
-				"no id parseable from companion at depth %d", i), ""
+			return nil, true, positionalFixtureSkipReason(fmt.Sprintf(
+				"no id parseable from companion at depth %d", i)), ""
 		}
 
 		ctx.cache.results[cacheKey] = id
@@ -1008,6 +1038,167 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 		fixtureSource = "store"
 	}
 	return substitutePositionals(happyArgs, command.Path, resolved), false, "", fixtureSource
+}
+
+func positionalFixtureSkipReason(detail string) string {
+	if detail == "" || detail == reasonRequiredParamFixture || strings.Contains(detail, happyArgsFixtureHint) {
+		return detail
+	}
+	return detail + "; " + happyArgsFixtureHint
+}
+
+// happyArgsAreFlagOnly reports a pp:happy-args value that sets flags and no
+// positionals. An annotation that parses to nothing is not flag-only: it
+// must not discard the Example's positionals.
+func happyArgsAreFlagOnly(command liveDogfoodCommand) bool {
+	raw := strings.TrimSpace(command.Annotations[happyArgsAnnotation])
+	if raw == "" {
+		return false
+	}
+	parsed := parseHappyArgsAnnotation(raw)
+	return len(parsed.positionals) == 0 && len(parsed.flags) > 0
+}
+
+// omitOptionalPositionals drops optional Usage positionals from happy args.
+// Flag values follow the same consumption rules as
+// liveDogfoodSuppliedPositionalCount so `--limit 5` and `-l 5` stay flags.
+func omitOptionalPositionals(command liveDogfoodCommand, happyArgs []string) []string {
+	specs := extractPositionalPlaceholderSpecs(liveDogfoodUsageSuffix(command.Help))
+	anyOptional := false
+	for _, spec := range specs {
+		if spec.optional {
+			anyOptional = true
+			break
+		}
+	}
+	if !anyOptional {
+		return happyArgs
+	}
+
+	valueFlags := liveDogfoodFlagValueNames(command.Help)
+	shorthands := liveDogfoodShorthandTypes(command.Help)
+	positionalCount := len(specs)
+	start := min(len(command.Path), len(happyArgs))
+	out := append([]string{}, happyArgs[:start]...)
+	pos := 0
+	afterTerminator := false
+	for i := start; i < len(happyArgs); i++ {
+		arg := happyArgs[i]
+		if arg == "--" && !afterTerminator {
+			afterTerminator = true
+			out = append(out, arg)
+			continue
+		}
+		if !afterTerminator && isLiveDogfoodFlagToken(arg) {
+			out = append(out, arg)
+			if cluster, short := strings.CutPrefix(arg, "-"); short && !strings.HasPrefix(cluster, "-") {
+				consumesNext, known := liveDogfoodShorthandClusterValue(cluster, shorthands)
+				if known {
+					if consumesNext && i+1 < len(happyArgs) && !isLiveDogfoodFlagToken(happyArgs[i+1]) {
+						i++
+						out = append(out, happyArgs[i])
+					}
+					continue
+				}
+			}
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValueWithTypes(happyArgs, start, i, positionalCount, valueFlags) {
+				i++
+				out = append(out, happyArgs[i])
+			}
+			continue
+		}
+		if pos < len(specs) && specs[pos].optional {
+			pos++
+			continue
+		}
+		out = append(out, arg)
+		pos++
+	}
+	return out
+}
+
+// resolveLiveDogfoodHappyArgs resolves positional fixtures, then substitutes
+// a no-arg framework invocation when the command documents one. A
+// blocked-fixture skip stays: the author already said no portable value exists.
+func resolveLiveDogfoodHappyArgs(command liveDogfoodCommand, happyArgs []string, annotatedPositionals int, ctx resolveCtx) ([]string, bool, string, string) {
+	args, skipped, reason, source := resolveCommandPositionals(command, happyArgs, annotatedPositionals, ctx)
+	if !skipped || reason == reasonRequiredParamFixture {
+		return args, skipped, reason, source
+	}
+	if pressArgs, ok := pressFrameworkHappyArgs(command); ok {
+		return pressArgs, false, "", ""
+	}
+	return nil, true, reason, ""
+}
+
+// pressFrameworkHappyArgs is the no-fixture read for generator commands whose
+// empty form exits 0. which lists its index with the query omitted. tail
+// lists known resources when every positional is optional and --json is
+// supported. A required positional is not invented: older tails reject a bare
+// call, and that must stay a skip rather than a matrix failure. A non-empty
+// pp:happy-args on tail is the author's fixture.
+func pressFrameworkHappyArgs(command liveDogfoodCommand) ([]string, bool) {
+	switch strings.Join(command.Path, " ") {
+	case "which":
+		if !liveDogfoodPositionalsAllOptional(command) {
+			return nil, false
+		}
+		return append([]string{}, command.Path...), true
+	case "tail":
+		if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
+			return nil, false
+		}
+		if !commandSupportsJSON(command.Help) || !liveDogfoodPositionalsAllOptional(command) {
+			return nil, false
+		}
+		return append(append([]string{}, command.Path...), "--json"), true
+	default:
+		return nil, false
+	}
+}
+
+func liveDogfoodPositionalsAllOptional(command liveDogfoodCommand) bool {
+	specs := extractPositionalPlaceholderSpecs(liveDogfoodUsageSuffix(command.Help))
+	if len(specs) == 0 {
+		return false
+	}
+	for _, spec := range specs {
+		if !spec.optional {
+			return false
+		}
+	}
+	return true
+}
+
+func liveDogfoodHollowExempt(feature NovelFeature, paths map[string]bool) bool {
+	plan := commandPath(feature.Command)
+	return plan != "" && paths[plan] && liveDogfoodHollowExemptPaths[plan]
+}
+
+func liveDogfoodHappySkipReason(feature NovelFeature, tests []LiveDogfoodTestResult) string {
+	for _, result := range tests {
+		if result.Kind != LiveDogfoodTestHappy || result.Status != LiveDogfoodStatusSkip {
+			continue
+		}
+		if matchNovelFeature(feature, map[string]bool{commandPath(result.Command): true}, nil) {
+			return result.Reason
+		}
+	}
+	return ""
+}
+
+func addHollowFeature(report *LiveDogfoodReport, feature, reason string) {
+	report.HollowFeatures = append(report.HollowFeatures, feature)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	if report.HollowReasons == nil {
+		report.HollowReasons = make(map[string]string)
+	}
+	if _, exists := report.HollowReasons[feature]; !exists {
+		report.HollowReasons[feature] = reason
+	}
 }
 
 // liveDogfoodPlaceholdersToResolve returns the Usage positionals that need a
@@ -1897,7 +2088,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	fixtureSkip := happyPathFileFixtureSkipForCommand(command, happyArgs, ctx.cliDir)
-	resolvedArgs, resolveSkipped, resolveReason, fixtureSource := resolveCommandPositionals(command, happyArgs, len(parsedHappyArgs.positionals), ctx)
+	resolvedArgs, resolveSkipped, resolveReason, fixtureSource := resolveLiveDogfoodHappyArgs(command, happyArgs, len(parsedHappyArgs.positionals), ctx)
 	syntheticParamSkip := ""
 	if fixtureSkip == "" && !resolveSkipped {
 		syntheticParamSkip = happyPathSyntheticParamFixtureSkip(command, resolvedArgs, parsedHappyArgs, previewHappy)
@@ -4009,7 +4200,7 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 
 	for _, feature := range research.NovelFeatures {
 		if !matchNovelFeature(feature, paths, leaves) {
-			report.HollowFeatures = append(report.HollowFeatures, feature.Command)
+			addHollowFeature(report, feature.Command, "")
 			continue
 		}
 		featurePassed := false
@@ -4030,7 +4221,10 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 			report.ProofCoveredFeatures = append(report.ProofCoveredFeatures, covered)
 			continue
 		}
-		report.HollowFeatures = append(report.HollowFeatures, feature.Command)
+		if liveDogfoodHollowExempt(feature, paths) {
+			continue
+		}
+		addHollowFeature(report, feature.Command, liveDogfoodHappySkipReason(feature, report.Tests))
 	}
 	sort.Strings(report.HollowFeatures)
 	sort.Slice(report.ProofCoveredFeatures, func(i, j int) bool {
@@ -4109,6 +4303,7 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		TestsFailed:          report.Failed,
 		CoverageHollow:       report.CoverageHollow,
 		HollowFeatures:       append([]string(nil), report.HollowFeatures...),
+		HollowReasons:        maps.Clone(report.HollowReasons),
 		ProofCoveredFeatures: append([]ProofCoveredFeature(nil), report.ProofCoveredFeatures...),
 		SourceFingerprint:    source.Digest,
 		SourceFiles:          source.Files,
