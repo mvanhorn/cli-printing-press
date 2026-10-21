@@ -1229,7 +1229,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- else}}
 				return mcpToolError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 {{- if eq .Auth.Type "oauth2"}}
-					{{printf "%q" (printf "\nhint: your token may have expired. Re-run '%s-pp-cli auth login' to re-authenticate" .Name)}} +
+					{{printf "%q" (printf "\nhint: your token may have expired. Re-run '%s-pp-cli %s' to re-authenticate" .Name (authRecoveryCommand))}} +
 {{- else if eq .Auth.Type "api_key"}}
 					{{printf "%q" (printf "\nhint: %s" (authErrorCheckHint .Auth))}} +
 {{- else if eq .Auth.Type "bearer_token"}}
@@ -1262,7 +1262,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- else}}
 				return mcpToolError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
 {{- if eq .Auth.Type "oauth2"}}
-					{{printf "%q" (printf "\nhint: your token may lack required scopes. Re-run '%s-pp-cli auth login' to re-authorize" .Name)}} +
+					{{printf "%q" (printf "\nhint: your token may lack required scopes. Re-run '%s-pp-cli %s' to re-authorize" .Name (authRecoveryCommand))}} +
 {{- else}}
 					"\nhint: your credentials are valid but lack access to this resource. Check that they have the required permissions and match the API's expected auth scheme." +
 {{- end}}

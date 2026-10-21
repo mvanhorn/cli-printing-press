@@ -1599,7 +1599,7 @@ func classifyAPIErrorOnly(err error) error {
 {{- end}}
 	case strings.Contains(msg, "HTTP 401"):
 {{- if eq .Auth.Type "oauth2"}}
-		return authErr(fmt.Errorf("%w\nhint: your token may have expired. Re-run '{{.Name}}-pp-cli auth login' to re-authenticate"+
+		return authErr(fmt.Errorf("%w\nhint: your token may have expired. Re-run '{{.Name}}-pp-cli {{authRecoveryCommand}}' to re-authenticate"+
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
@@ -1657,7 +1657,7 @@ func classifyAPIErrorOnly(err error) error {
 {{- end}}
 	case strings.Contains(msg, "HTTP 403"):
 {{- if eq .Auth.Type "oauth2"}}
-		return authErr(fmt.Errorf("%w\nhint: permission denied. Your token may lack required scopes. Re-run '{{.Name}}-pp-cli auth login' to re-authorize"+
+		return authErr(fmt.Errorf("%w\nhint: permission denied. Your token may lack required scopes. Re-run '{{.Name}}-pp-cli {{authRecoveryCommand}}' to re-authorize"+
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
