@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -306,8 +307,10 @@ func buildSearchCLI(t *testing.T, apiSpec *spec.APISpec) (string, string) {
 	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Search: true, MCP: true}
 	require.NoError(t, gen.Generate())
 	requireGeneratedCompiles(t, outputDir)
-	binary := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	// go build appends .exe on Windows; the launch path has to match.
+	binary := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binary, "./cmd/"+naming.CLI(apiSpec.Name))
+	require.FileExists(t, binary)
 	return outputDir, binary
 }
 
