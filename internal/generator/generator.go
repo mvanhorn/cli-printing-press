@@ -921,6 +921,7 @@ type HelperFlags struct {
 	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
 	HasRawRequest        bool // spec has non-JSON request bodies → emit raw file/stdin reader
 	HasPromotedMutations bool // promoted write commands stamp a dry-run envelope; omit the helper otherwise
+	HasStampedDryRun     bool // store-less promoted write commands print through printStampedDryRunOutput; omit it otherwise
 	HasNoStoreReadDryRun bool // no-store reads print a dry-run envelope; omit the helper otherwise
 }
 
@@ -3325,6 +3326,7 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
 			hFlags.HasPromotedMutations = promotedCommandsIncludeMutation(g.Spec, g.PromotedCommands)
+			hFlags.HasStampedDryRun = hFlags.HasPromotedMutations && !g.hasDataLayer()
 			hFlags.HasNoStoreReadDryRun = !g.hasDataLayer() && specEmitsReadDryRunBranch(g.Spec, g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:          g.Spec,

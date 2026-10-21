@@ -178,16 +178,18 @@ func assertPromotedDryRunSources(t *testing.T, outputDir string, withStore bool)
 
 	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	require.Contains(t, helpers, "func stampDryRunEnvelope(")
-	require.Contains(t, helpers, "func printStampedDryRunOutput(")
 	if withStore {
 		require.NotContains(t, helpers, "func printNoStoreReadDryRun(")
+		// Store-backed promoted writes stamp inline, so the formatted-output helper would be dead code.
+		require.NotContains(t, helpers, "func printStampedDryRunOutput(")
 	} else {
 		require.Contains(t, helpers, "func printNoStoreReadDryRun(")
+		require.Contains(t, helpers, "func printStampedDryRunOutput(")
+		stampFn := helpers[strings.Index(helpers, "func printStampedDryRunOutput("):]
+		formatAt := strings.Index(stampFn, "printOutputWithFlagsMeta(")
+		stampAt := strings.Index(stampFn, "stampDryRunEnvelope(")
+		require.Greater(t, stampAt, formatAt, "dry-run keys must be stamped after --agent/--select/--compact formatting")
 	}
-	stampFn := helpers[strings.Index(helpers, "func printStampedDryRunOutput("):]
-	formatAt := strings.Index(stampFn, "printOutputWithFlagsMeta(")
-	stampAt := strings.Index(stampFn, "stampDryRunEnvelope(")
-	require.Greater(t, stampAt, formatAt, "dry-run keys must be stamped after --agent/--select/--compact formatting")
 
 	widget := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_widgets.go")
 	session := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_sessions.go")

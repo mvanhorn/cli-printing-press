@@ -2921,6 +2921,47 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": resolveAgentOutputSource(flags, data)})
 }
 
+// Provenance and platform wrappers nest the client sentinel under results.
+// The dry-run JSON contract reads only top-level keys, so stamping has to
+// happen after those wrappers or dry_run and action never surface.
+func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, error) {
+	var envelope map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return nil, err
+		}
+	}
+	if envelope == nil {
+		envelope = map[string]any{}
+	}
+	envelope["dry_run"] = true
+	envelope["action"] = action
+	stamped, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(stamped), nil
+}
+
+// --agent, --select, and --compact wrap or filter before the dry-run contract
+// can see top-level keys. Stamp after that formatting so the keys stay on the
+// envelope the contract reads.
+func printStampedDryRunOutput(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, action string, documentedFields ...map[string]bool) error {
+	var buf bytes.Buffer
+	formatErr := printOutputWithFlagsMeta(&buf, data, flags, agentMeta, documentedFields...)
+	if formatErr != nil && buf.Len() == 0 {
+		return formatErr
+	}
+	stamped, err := stampDryRunEnvelope(bytes.TrimSpace(buf.Bytes()), action)
+	if err != nil {
+		return err
+	}
+	if err := printOutput(w, stamped, true); err != nil {
+		return err
+	}
+	return formatErr
+}
+
 // isDryRunResponse detects the exact sentinel returned by client.dryRun.
 func isDryRunResponse(dryRun bool, data json.RawMessage) bool {
 	if !dryRun {
@@ -2954,6 +2995,12 @@ func handleBinaryResponseDelivery(cmd *cobra.Command, flags *rootFlags, data jso
 		}
 		printDryRun := flags.asJSON || flags.agent || flags.csv || flags.compact || flags.plain || flags.selectFields != "" || !isTerminal(cmd.OutOrStdout())
 		if printDryRun {
+			// The dry-run JSON contract needs a top-level action; the client sentinel carries only dry_run.
+			// Stamp after formatting so --select still sees the sentinel and --agent cannot nest the keys.
+			// --csv/--plain keep their text formats; only JSON output carries the contract.
+			if method := cmd.Annotations["pp:method"]; method != "" && !flags.csv && !flags.plain && (flags.asJSON || !isTerminal(cmd.OutOrStdout())) {
+				return true, printStampedDryRunOutput(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"}, strings.ToLower(method))
+			}
 			return true, printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "dry-run"})
 		}
 		return true, nil

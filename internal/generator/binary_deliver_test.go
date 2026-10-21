@@ -214,8 +214,21 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.NoError(t, err, out)
 		require.NotContains(t, out, "binary response cannot be rendered as structured output")
 		require.Contains(t, out, `"dry_run"`)
+		require.Regexp(t, `"action":\s*"get"`, out, "binary GET dry-run JSON must carry the action live dogfood requires")
 		_, statErr := os.Stat(dest)
 		require.Error(t, statErr)
+	})
+
+	t.Run("endpoint-dry-run-select-and-agent-keep-contract", func(t *testing.T) {
+		for _, extra := range [][]string{{"--json", "--select", "id"}, {"--agent"}} {
+			args := append([]string{"reports", "export", "report-year", "--dry-run"}, extra...)
+			out, err := runGeneratedCLI(t, binaryPath, baseEnv, args...)
+			require.NoError(t, err, "%v: %s", extra, out)
+			var envelope map[string]any
+			require.NoError(t, json.Unmarshal([]byte(firstJSONObject(out)), &envelope), "%v: %s", extra, out)
+			require.Equal(t, true, envelope["dry_run"], "%v must keep dry_run top-level: %s", extra, out)
+			require.Equal(t, "get", envelope["action"], "%v must keep action top-level: %s", extra, out)
+		}
 	})
 
 	t.Run("endpoint-dry-run-plain-prints", func(t *testing.T) {
@@ -240,6 +253,7 @@ func TestBinaryResponseHonorsDeliverAndDryRun(t *testing.T) {
 		require.NoError(t, err, out)
 		require.NotContains(t, out, "binary response cannot be rendered as structured output")
 		require.Contains(t, out, `"dry_run"`)
+		require.Regexp(t, `"action":\s*"post"`, out, "binary POST dry-run JSON must carry the action live dogfood requires")
 	})
 
 	t.Run("promoted-json-deliver-writes-raw-bytes", func(t *testing.T) {
@@ -280,4 +294,21 @@ func decodeLastJSONObject(t *testing.T, out string) map[string]any {
 	var receipt map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out[start:]), &receipt), out)
 	return receipt
+}
+
+// firstJSONObject returns the first JSON object in combined CLI output, which
+// can interleave a human-readable request preview from stderr.
+func firstJSONObject(out string) string {
+	for i := strings.Index(out, "{"); i >= 0; {
+		var raw json.RawMessage
+		if err := json.NewDecoder(strings.NewReader(out[i:])).Decode(&raw); err == nil {
+			return string(raw)
+		}
+		next := strings.Index(out[i+1:], "{")
+		if next < 0 {
+			break
+		}
+		i += next + 1
+	}
+	return out
 }
