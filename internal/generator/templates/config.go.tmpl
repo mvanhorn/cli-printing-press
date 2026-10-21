@@ -1991,6 +1991,20 @@ func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
 	}
 }
 
+{{if bearerCredShadowsAccessToken .Auth .BearerRefresh.Enabled}}
+// ClearShadowingRequestCredentials drops saved request credentials that
+// AuthHeader sends before AccessToken. set-token then stores the pasted
+// bearer in AccessToken. Load reapplies an explicit environment variable,
+// which still wins.
+func (c *Config) ClearShadowingRequestCredentials() {
+{{- range shadowingRequestCredFields .Auth}}
+	c.{{.}} = ""
+	delete(c.envOverrides, {{printf "%q" .}})
+	c.updateFileConfigField({{printf "%q" .}})
+{{- end}}
+}
+
+{{end}}
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
 	c.ClientID = clientID
 	c.ClientSecret = clientSecret

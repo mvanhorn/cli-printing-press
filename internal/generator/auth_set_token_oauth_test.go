@@ -41,6 +41,56 @@ func TestAuthSetTokenScheme(t *testing.T) {
 	}
 }
 
+func TestBearerRequestCredentialShadowsAccessToken(t *testing.T) {
+	t.Parallel()
+
+	authorizeOnly := spec.AuthConfig{
+		Type:             "bearer_token",
+		Format:           "Bearer {token}",
+		AuthorizationURL: "https://auth.example.com/authorize",
+		EnvVars:          []string{"COBOT_OAUTH2"},
+	}
+	require.True(t, bearerRequestCredentialShadowsAccessToken(authorizeOnly, false))
+	require.Equal(t, []string{"CobotOauth2"}, shadowingRequestCredentialFields(authorizeOnly))
+
+	withTokenURL := authorizeOnly
+	withTokenURL.TokenURL = "https://auth.example.com/token"
+	require.False(t, bearerRequestCredentialShadowsAccessToken(withTokenURL, false))
+	require.Empty(t, shadowingRequestCredentialFields(withTokenURL))
+
+	require.False(t, bearerRequestCredentialShadowsAccessToken(authorizeOnly, true))
+	require.Equal(t, []string{"CobotOauth2"}, shadowingRequestCredentialFields(authorizeOnly))
+
+	plain := spec.AuthConfig{Type: "bearer_token", EnvVars: []string{"PLAIN_TOKEN"}}
+	require.False(t, bearerRequestCredentialShadowsAccessToken(plain, false))
+
+	noEnv := authorizeOnly
+	noEnv.EnvVars = nil
+	require.False(t, bearerRequestCredentialShadowsAccessToken(noEnv, false))
+
+	flowInput := authorizeOnly
+	flowInput.EnvVars = nil
+	flowInput.EnvVarSpecs = []spec.AuthEnvVar{{
+		Name: "COBOT_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true,
+	}}
+	require.False(t, bearerRequestCredentialShadowsAccessToken(flowInput, false))
+
+	builtin := authorizeOnly
+	builtin.EnvVars = []string{"COBOT_ACCESS_TOKEN"}
+	require.False(t, bearerRequestCredentialShadowsAccessToken(builtin, false))
+	require.Empty(t, shadowingRequestCredentialFields(builtin))
+
+	google := authorizeOnly
+	google.Subtype = spec.AuthSubtypeGoogleServiceAccount
+	require.False(t, bearerRequestCredentialShadowsAccessToken(google, false))
+
+	orCase := authorizeOnly
+	orCase.EnvVars = nil
+	orCase.EnvVarSpecs = spec.NewORCaseEnvVarSpecs([]string{"COBOT_OAUTH2", "COBOT_ALT"})
+	require.True(t, bearerRequestCredentialShadowsAccessToken(orCase, false))
+	require.Equal(t, []string{"CobotOauth2", "CobotAlt"}, shadowingRequestCredentialFields(orCase))
+}
+
 func TestAuthCodeTemplateSelectionLocksSetToken(t *testing.T) {
 	t.Parallel()
 
@@ -369,6 +419,8 @@ func TestOAuth2BearerSetTokenPersistsWireToken(t *testing.T) {
 	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
 	require.Contains(t, authSrc, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
 	require.Contains(t, authSrc, "cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, token, cfg.RefreshToken, time.Time{})")
+	require.NotContains(t, authSrc, "ClearShadowingRequestCredentials")
+	require.NotContains(t, readGeneratedFile(t, outputDir, "internal", "config", "config.go"), "ClearShadowingRequestCredentials")
 	require.NotContains(t, authSrc, `SaveTokens("", "", token, "")`)
 	require.NotContains(t, authSrc, "set-token <token>")
 	readme := readGeneratedFile(t, outputDir, "README.md")
@@ -513,6 +565,92 @@ func TestOAuth2BearerSetTokenPersistsWireToken(t *testing.T) {
 	require.NotRegexp(t, accessTokenPattern("env-token"), envBody)
 }
 
+func TestAuthorizeOnlyBearerSetTokenReplacesSavedRequestCredential(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cobotauth")
+	apiSpec.BaseURL = "https://api.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "bearer_token",
+		Header:           "Authorization",
+		Format:           "Bearer {token}",
+		AuthorizationURL: "https://auth.example.com/oauth/authorize",
+		EnvVars:          []string{"COBOT_OAUTH2"},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	setToken := generatedSourceBlock(t, authSrc, "func newAuthSetTokenCmd(", "func stripAuthSchemePrefix(")
+	clearAt := strings.Index(setToken, "cfg.ClearShadowingRequestCredentials()")
+	saveAt := strings.Index(setToken, "cfg.SaveTokens(")
+	require.NotEqual(t, -1, clearAt)
+	require.Less(t, clearAt, saveAt)
+	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	require.Contains(t, configSrc, "func (c *Config) ClearShadowingRequestCredentials()")
+	require.Contains(t, configSrc, `c.CobotOauth2 = ""`)
+	require.Contains(t, configSrc, `delete(c.envOverrides, "CobotOauth2")`)
+	require.Contains(t, configSrc, `c.updateFileConfigField("CobotOauth2")`)
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "authorize_only_set_token_test.go"), []byte(authorizeOnlySetTokenClientTest), 0o644))
+
+	binName := naming.CLI(apiSpec.Name)
+	binPath := filepath.Join(outputDir, binName)
+	runGoCommandRequired(t, outputDir, "build", "-o", "./"+binName, "./cmd/"+binName)
+
+	env := func(home string, extra ...string) []string {
+		base := doctorEnv(home, naming.EnvPrefix("cobotauth"))
+		base = append(base, "COBOT_OAUTH2=")
+		return append(base, extra...)
+	}
+	replacedHome := t.TempDir()
+	replacedCred := seedAuthorizeOnlyCreds(t, replacedHome)
+	saved, code := runCLI(t, binPath, env(replacedHome), "new-token\n", "auth", "set-token")
+	require.Equal(t, 0, code, saved)
+	replacedBody := readCredFile(t, replacedCred)
+	requireAccessToken(t, replacedBody, "new-token")
+	requireCredField(t, replacedBody, "client_id", "keep-id")
+	requireCredField(t, replacedBody, "client_secret", "keep-secret")
+	requireCredField(t, replacedBody, "refresh_token", "keep-refresh")
+	require.NotContains(t, replacedBody, "old-token")
+	require.NotContains(t, replacedBody, "stale-access")
+	require.NotContains(t, replacedBody, "shadowed-header")
+	require.NotContains(t, replacedBody, "auth_header")
+	require.NotContains(t, replacedBody, "token_expiry")
+
+	envSaveHome := t.TempDir()
+	envSaveCred := seedAuthorizeOnlyCreds(t, envSaveHome)
+	envSaved, code := runCLI(t, binPath, env(envSaveHome, "COBOT_OAUTH2=env-during-save"), "stdin-token\n", "auth", "set-token")
+	require.Equal(t, 0, code, envSaved)
+	envSaveBody := readCredFile(t, envSaveCred)
+	requireAccessToken(t, envSaveBody, "stdin-token")
+	require.NotContains(t, envSaveBody, "old-token")
+	require.NotContains(t, envSaveBody, "env-during-save")
+
+	out, err := runGoCommandOutputWithEnv(t, outputDir, []string{
+		"SET_TOKEN_HOME=" + replacedHome,
+		"SET_TOKEN_ENVSAVE_HOME=" + envSaveHome,
+	}, "test", "-count=1", "-run", "TestAuthorizeOnlySetTokenSendsReplacement", "./internal/client")
+	require.NoError(t, err, out)
+}
+
+func seedAuthorizeOnlyCreds(t *testing.T, home string) string {
+	t.Helper()
+	cred := filepath.Join(home, ".local", "share", naming.CLI("cobotauth"), "credentials.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(cred), 0o700))
+	require.NoError(t, os.WriteFile(cred, []byte(strings.Join([]string{
+		`client_id = "keep-id"`,
+		`client_secret = "keep-secret"`,
+		`refresh_token = "keep-refresh"`,
+		`access_token = "stale-access"`,
+		`oauth2 = "old-token"`,
+		`auth_header = "Bearer shadowed-header"`,
+		`token_expiry = 2020-01-01T00:00:00Z`,
+		"",
+	}, "\n")), 0o600))
+	return cred
+}
+
 func TestAPIKeyAuthorizeURLSetTokenPersistsHeaderField(t *testing.T) {
 	t.Parallel()
 
@@ -531,7 +669,10 @@ func TestAPIKeyAuthorizeURLSetTokenPersistsHeaderField(t *testing.T) {
 	setToken := generatedSourceBlock(t, authSrc, "func newAuthSetTokenCmd(", "func stripAuthSchemePrefix(")
 	require.Contains(t, setToken, "cfg.SaveCredential(token)")
 	require.NotContains(t, setToken, "cfg.SaveTokens(")
-	require.Contains(t, readGeneratedFile(t, outputDir, "internal", "config", "config.go"), "func (c *Config) SaveCredential(")
+	require.NotContains(t, setToken, "ClearShadowingRequestCredentials")
+	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	require.Contains(t, configSrc, "func (c *Config) SaveCredential(")
+	require.NotContains(t, configSrc, "ClearShadowingRequestCredentials")
 
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "api_key_set_token_test.go"), []byte(apiKeySetTokenClientTest), 0o644))
 	binPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
@@ -875,5 +1016,79 @@ func TestPastedAccessTokenBeatsEnvAndSkipsRefresh(t *testing.T) {
 	if hits == 0 {
 		t.Fatalf("past expiry did not reach the token endpoint (err=%v); zero expiry would not prove the refresh gate", err)
 	}
+}
+`
+
+const authorizeOnlySetTokenClientTest = `package client
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+
+	"cobotauth-pp-cli/internal/config"
+)
+
+func TestAuthorizeOnlySetTokenSendsReplacement(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+	}))
+	defer srv.Close()
+
+	assertSent := func(home, oauthEnv, want string) {
+		t.Helper()
+		got = nil
+		header := requestAuthorization(t, home, srv.URL, oauthEnv)
+		if header != want {
+			t.Fatalf("Authorization = %q, want %q (seen %q)", header, want, got)
+		}
+		if len(got) == 0 {
+			t.Fatal("request did not reach the server")
+		}
+		for _, sent := range got {
+			if sent != want {
+				t.Fatalf("server Authorization = %q, want %q", sent, want)
+			}
+		}
+	}
+
+	assertSent(os.Getenv("SET_TOKEN_HOME"), "", "Bearer new-token")
+	assertSent(os.Getenv("SET_TOKEN_HOME"), "env-token", "Bearer env-token")
+	assertSent(os.Getenv("SET_TOKEN_ENVSAVE_HOME"), "", "Bearer stdin-token")
+}
+
+func requestAuthorization(t *testing.T, home, baseURL, oauthEnv string) string {
+	t.Helper()
+	if home == "" {
+		t.Fatal("seeded home is empty")
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	for _, suffix := range []string{"HOME", "CONFIG", "CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR", "BASE_URL"} {
+		t.Setenv("COBOTAUTH_"+suffix, "")
+	}
+	t.Setenv("COBOTAUTH_BASE_URL", baseURL)
+	t.Setenv("COBOT_OAUTH2", oauthEnv)
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	c := New(cfg, time.Second, 0)
+	c.NoCache = true
+	if _, err := c.Get(context.Background(), "/items", nil); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	return cfg.AuthHeader()
 }
 `

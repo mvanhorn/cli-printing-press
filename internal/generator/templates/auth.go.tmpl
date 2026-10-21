@@ -610,6 +610,12 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 {{- else}}
+{{- if bearerCredShadowsAccessToken .Auth .BearerRefresh.Enabled}}
+			// AuthHeader reads a saved request credential before AccessToken.
+			// Drop that file value so the pasted bearer is what the next
+			// request sends. Load reapplies an explicit env var, which still wins.
+			cfg.ClearShadowingRequestCredentials()
+{{- end}}
 			// Keep login's client id, secret, and refresh token. Zero expiry
 			// so a stale timestamp cannot refresh this pasted bearer away.
 			if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, token, cfg.RefreshToken, time.Time{}); err != nil {

@@ -337,6 +337,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authSetupHint":                       g.alignedAuthSetupHint,
 		"authBrowserLoginAvailable":           authBrowserLoginAvailable,
 		"authCodeSetTokenAvailable":           authCodeSetTokenAvailable,
+		"bearerCredShadowsAccessToken":        bearerRequestCredentialShadowsAccessToken,
+		"shadowingRequestCredFields":          shadowingRequestCredentialFields,
 		"authSetTokenScheme":                  authSetTokenScheme,
 		"authLoginCommandAvailable":           func() bool { return g.authLoginCommandAvailable() },
 		"authSetupCommandAvailable":           func() bool { return g.authSetupCommandAvailable() },
@@ -2256,6 +2258,50 @@ func authCodeSetTokenAvailable(auth spec.AuthConfig) bool {
 		return false
 	}
 	return oauth2AccessTokenAuth(auth) || authSetTokenAvailable(auth)
+}
+
+// shadowingRequestCredentialFields lists per-call fields AuthHeader sends
+// before AccessToken. set-token must clear them, or a saved request
+// credential keeps the previous bearer on the wire.
+func shadowingRequestCredentialFields(auth spec.AuthConfig) []string {
+	if auth.Type != "bearer_token" || auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		return nil
+	}
+	if !authCodeTemplateSelected(auth) || oauth2AccessTokenAuth(auth) {
+		return nil
+	}
+	auth.NormalizeEnvVarSpecs("")
+	if hasAuthEnvVarKind(auth.EnvVarSpecs, string(spec.AuthEnvVarKindAuthFlowInput)) ||
+		hasAuthEnvVarKind(auth.EnvVarSpecs, string(spec.AuthEnvVarKindHarvested)) {
+		return nil
+	}
+	var fields []string
+	seen := make(map[string]struct{}, len(auth.EnvVarSpecs))
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.Kind != spec.AuthEnvVarKindPerCall || envVarIsBuiltinField(envVar.Name) {
+			continue
+		}
+		field := resolveEnvVarField(envVar.Name)
+		if field == "" {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+// bearerRequestCredentialShadowsAccessToken reports whether set-token must
+// clear those fields. Bearer refresh already prefers AccessToken, so the
+// saved request credential is not what the next request sends.
+func bearerRequestCredentialShadowsAccessToken(auth spec.AuthConfig, bearerRefreshEnabled bool) bool {
+	if bearerRefreshEnabled {
+		return false
+	}
+	return len(shadowingRequestCredentialFields(auth)) > 0
 }
 
 // oauth2RegistersAuthLogin reports whether a type=oauth2 spec's own
