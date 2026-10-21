@@ -12662,6 +12662,7 @@ func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
 		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 		assert.Contains(t, doctor, `report["auth_hint"] = "oauth2codehints-pp-cli login"`)
 		assert.Contains(t, doctor, `remediationHint := "run auth login or auth logout"`)
+		requireGeneratedCompiles(t, outputDir)
 	})
 
 	t.Run("oauth2 on the browser template names login", func(t *testing.T) {
@@ -12687,6 +12688,7 @@ func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
 		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 		assert.Contains(t, doctor, `report["auth_hint"] = "Run 'oauth2browserhints-pp-cli auth login' to re-authenticate."`)
 		assert.NotContains(t, doctor, "oauth2browserhints-pp-cli auth setup")
+		requireGeneratedCompiles(t, outputDir)
 	})
 
 	t.Run("bearer token 401 branches keep a single set-token hint", func(t *testing.T) {
