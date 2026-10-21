@@ -125,6 +125,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Test Go floor scripts
+        run: |
+          python3 scripts/verify_go_floor_test.py
+          python3 scripts/govulncheck_stdlib_test.py
+
       - name: Verify Go floor surfaces
         run: python3 scripts/verify-go-floor.py
 

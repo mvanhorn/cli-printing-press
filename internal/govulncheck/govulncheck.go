@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
 
 	"golang.org/x/mod/modfile"
 )
@@ -12,7 +13,25 @@ const (
 	Name        = "govulncheck"
 	ToolVersion = "v1.3.0"
 	ToolModule  = "golang.org/x/vuln/cmd/govulncheck@" + ToolVersion
+	// LiveEnv opts a test binary back into the live vulnerability database.
+	// The value must be exactly "1".
+	LiveEnv = "PP_LIVE_GOVULNCHECK"
 )
+
+// LiveDBEnabled reports whether this process should query the live
+// vulnerability database. Test binaries skip that query unless LiveEnv is
+// exactly "1": a newly published stdlib advisory would otherwise fail every
+// PR whose tests validate a generated CLI. Production commands still scan.
+func LiveDBEnabled() bool {
+	return liveDBEnabled(os.Getenv(LiveEnv), testing.Testing())
+}
+
+func liveDBEnabled(envValue string, inTest bool) bool {
+	if envValue == "1" {
+		return true
+	}
+	return !inTest
+}
 
 // Default mode keeps blocking focused on reachable findings, not dependency
 // presence alone.

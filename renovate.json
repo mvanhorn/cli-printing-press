@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": ["custom.regex"],
+  "automerge": false,
+  "semanticCommits": "enabled",
+  "dependencyDashboard": false,
+  "osvVulnerabilityAlerts": false,
+  "vulnerabilityAlerts": {
+    "enabled": false
+  },
+  "labels": ["go-floor"],
+  "minimumReleaseAge": "1 day",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^go\\.mod$/",
+        "/^internal/generator/go_version\\.go$/"
+      ],
+      "matchStrings": [
+        "\\ngo (?<currentValue>\\d+\\.\\d+\\.\\d+)\\n",
+        "\\ntoolchain go(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n",
+        "const librarySafeGoDirective = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Go security fixes ship as patch releases. Minor and major Go bumps stay manual.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["golang-version"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "description": "Move the root go directive, an optional toolchain line, and librarySafeGoDirective in one PR.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["golang-version"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "Go security floor",
+      "groupSlug": "go-security-floor",
+      "automerge": false,
+      "labels": ["go-floor"],
+      "semanticCommitType": "fix",
+      "semanticCommitScope": "cli"
+    }
+  ]
+}
