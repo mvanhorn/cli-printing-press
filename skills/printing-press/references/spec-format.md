@@ -74,6 +74,9 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             fields: []            # []Param nested fields for object-like params
             enum: []              # []string optional enum hints/constraints
             format: ""           # string optional format hint (date-time, email, uri, etc.)
+          - name: cursor          # string query parameter --all sends the next cursor back on
+            type: string
+            description: "Opaque page cursor"
         body:                     # []Param request body fields, or object schema with properties
           - name: email
             # flag_name and aliases are optional here too; omit unless evidence supports them
@@ -110,7 +113,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
           item: User              # string type name referenced from `types`
         pagination:               # object (Pagination) optional
           type: cursor            # string pagination style: cursor | offset | page_token
-          cursor_field: cursor    # string response field containing next cursor
+          cursor_field: cursor    # string response field containing the next cursor; omitted cursor_param is filled from a matching query parameter
           has_more_field: data.has_more # string response field indicating more results
         response_format: json     # string optional: json | csv | html | binary; defaults to json
         html_extract:             # object optional, only with response_format: html
@@ -126,6 +129,20 @@ types:                            # map[string]TypeDef named response/body model
       - name: user_id             # string field name
         type: string              # string field type (typically string/int/bool/float)
 ```
+
+**Cursor pagination needs a request parameter.** `cursor_field` and
+`next_cursor_path` name the response field that carries the next page token.
+`cursor_param` is the query parameter `--all` sends that token back on. When
+`type` is `cursor` or `page_token`, or `type` is omitted but a response cursor
+path is set, and `cursor_param` is omitted, generation fills `cursor_param`
+from the endpoint's declared query parameters: the cursor field's leaf when it
+matches a query parameter (`offset`, `cursor`, `endCursor`), or, for a
+single-segment cursor-like field such as `next_cursor`, the endpoint's only
+cursor-shaped query parameter (for example `pagination_cursor`). A dotted path
+such as `pageInfo.endCursor` is not mapped onto a differently named query
+parameter such as `after`. If no request parameter can be determined,
+generation fails and names the endpoint. An explicit `cursor_param` is left
+unchanged. `offset` and `page` pagination are not inferred this way.
 
 **`learn:` is the sanctioned home for per-CLI domain vocabulary.** The learn
 loop is emitted by default for every print; the generated `internal/learn`
@@ -237,7 +254,7 @@ resources:
           item: User # Rows map to `types.User`
         pagination:
           type: cursor # Enables cursor pagination helpers
-          cursor_field: "cursor" # Field that contains next cursor token
+          cursor_field: "cursor" # Response path. Omitted cursor_param is filled from the matching cursor query parameter above.
           has_more_field: "results.has_more" # Field used to detect continuation
 
       get: # Creates `stytch-cli users get <user_id>`
