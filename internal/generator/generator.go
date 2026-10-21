@@ -3666,8 +3666,21 @@ func shouldSanitizeCapturedResourceIDs(apiSpec *spec.APISpec) bool {
 	}
 }
 
+// resolveCursorRequestParams fills cursor request parameters before render.
+// Validate does the same for parsed specs, but Generate and GenerateMCPSurface
+// also accept in-memory specs that never passed through Validate.
+func (g *Generator) resolveCursorRequestParams() error {
+	if g == nil || g.Spec == nil {
+		return nil
+	}
+	return g.Spec.ResolveCursorRequestParams()
+}
+
 func (g *Generator) Generate() error {
 	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	if err := g.resolveCursorRequestParams(); err != nil {
+		return err
+	}
 	g.Spec.ApplyOmittedConfigDefaults()
 	// CanonicalEnvVar fills EnvVarSpecs as a side effect. Single-file templates
 	// render in map order, so an env_vars-only spec otherwise emits different
@@ -3965,6 +3978,9 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 // emitted when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
 	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	if err := g.resolveCursorRequestParams(); err != nil {
+		return err
+	}
 	g.Spec.ApplyOmittedConfigDefaults()
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
 	if err := g.prepareOutput(); err != nil {
