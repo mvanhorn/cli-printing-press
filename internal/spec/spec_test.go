@@ -56,6 +56,8 @@ func TestParseStytch(t *testing.T) {
 	assert.Equal(t, "/users", list.Path)
 	assert.NotNil(t, list.Pagination)
 	assert.Equal(t, "cursor", list.Pagination.Type)
+	assert.Equal(t, "cursor", list.Pagination.CursorParam)
+	assert.Equal(t, "cursor", list.Pagination.NextCursorPath)
 
 	// Users create endpoint
 	create := users.Endpoints["create"]
@@ -219,6 +221,7 @@ resources:
 
 	list := s.Resources["contacts"].Endpoints["list"]
 	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "after", list.Pagination.CursorParam)
 	assert.Equal(t, "paging.next.after", list.Pagination.NextCursorPath)
 	assert.Equal(t, "results", list.ResponsePath)
 }

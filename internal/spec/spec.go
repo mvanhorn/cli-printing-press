@@ -5045,6 +5045,11 @@ func (s *APISpec) Validate() error {
 			}
 		}
 	}
+	// Cursor request parameters are resolved last so a missing method or path
+	// is reported before a pagination error on the same spec.
+	if err := s.ResolveCursorRequestParams(); err != nil {
+		return err
+	}
 	return nil
 }
 
