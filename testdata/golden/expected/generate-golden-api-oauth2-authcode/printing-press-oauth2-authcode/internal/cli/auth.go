@@ -40,6 +40,7 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthLoginCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
+	cmd.AddCommand(newAuthSetTokenCmd(flags))
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
 	return cmd
@@ -477,6 +478,86 @@ func generatePKCEVerifier() (string, error) {
 func pkceCodeChallengeS256(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-token",
+		Short: "Save an API token to the credentials file (override the OAuth flow)",
+		Long: "Save an API token to the credentials file (override the OAuth flow).\n\n" +
+			"The token is read from stdin so it never appears in process arguments or shell history.\n" +
+			"A bearer you already hold is stored as the access token the client sends. Client id,\n" +
+			"client secret, and refresh token from a previous login stay in place.",
+		Example: "  echo \"$TOKEN\" | printing-press-oauth2-pp-cli auth set-token\n  printing-press-oauth2-pp-cli auth set-token < token-file",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			token, err := readSecretFromStdin(cmd.InOrStdin())
+			if err != nil {
+				return authErr(err)
+			}
+			token = stripAuthSchemePrefix(token, "Bearer")
+			if token == "" {
+				return authErr(fmt.Errorf("empty token on stdin"))
+			}
+
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+
+			// Clear any legacy auth_header so AuthHeader() falls through to
+			// the newly-saved credential. A pre-existing auth_header value
+			// is checked first and would otherwise shadow set-token.
+			cfg.AuthHeaderVal = ""
+			// Keep login's client id, secret, and refresh token. Zero expiry
+			// so a stale timestamp cannot refresh this pasted bearer away.
+			if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, token, cfg.RefreshToken, time.Time{}); err != nil {
+				return configErr(fmt.Errorf("saving token: %w", err))
+			}
+
+			savePath := credentialSavePath(cfg)
+			if flags.asJSON {
+				out := map[string]any{
+					"saved":       true,
+					"config_path": cfg.Path,
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", savePath)
+			return nil
+		},
+	}
+}
+
+func stripAuthSchemePrefix(token, scheme string) string {
+	scheme = strings.TrimSpace(scheme)
+	if scheme == "" {
+		return token
+	}
+	if strings.EqualFold(token, scheme) {
+		return ""
+	}
+	prefix := scheme + " "
+	if len(token) >= len(prefix) && strings.EqualFold(token[:len(prefix)], prefix) {
+		return strings.TrimSpace(token[len(prefix):])
+	}
+	return token
+}
+
+func credentialSavePath(cfg *config.Config) string {
+	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {
+		return cfg.Path
+	}
+	if path, err := cliutil.CredentialsFilePath(); err == nil {
+		return path
+	}
+	if cfg != nil {
+		return cfg.Path
+	}
+	return ""
 }
 
 func openBrowser(url string) {

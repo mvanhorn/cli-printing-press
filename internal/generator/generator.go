@@ -331,11 +331,18 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authSetTokenAvailable":               authSetTokenAvailable,
 		"authSetCredentialsAvailable":         authSetCredentialsAvailable,
 		"authCredentialPersistenceCommand":    authCredentialPersistenceCommand,
-		"authCredentialConsolidationAction":   authCredentialConsolidationAction,
-		"authPlaceholderCredentialSetup":      authPlaceholderCredentialSetup,
+		"authCredentialConsolidationAction":   g.alignedAuthCredentialConsolidationAction,
+		"authPlaceholderCredentialSetup":      g.alignedAuthPlaceholderCredentialSetup,
 		"authErrorCheckHint":                  authErrorCheckHint,
-		"authSetupHint":                       authSetupHint,
+		"authSetupHint":                       g.alignedAuthSetupHint,
 		"authBrowserLoginAvailable":           authBrowserLoginAvailable,
+		"authCodeSetTokenAvailable":           authCodeSetTokenAvailable,
+		"bearerCredShadowsAccessToken":        bearerRequestCredentialShadowsAccessToken,
+		"shadowingRequestCredFields":          shadowingRequestCredentialFields,
+		"authSetTokenScheme":                  authSetTokenScheme,
+		"authLoginCommandAvailable":           func() bool { return g.authLoginCommandAvailable() },
+		"authSetupCommandAvailable":           func() bool { return g.authSetupCommandAvailable() },
+		"authRecoveryCommand":                 func() string { return g.authRecoveryCommand() },
 		"authEnvPlaceholder":                  authEnvPlaceholder,
 		"authEnvPlaceholderByName":            authEnvPlaceholderByName,
 		"authEnvHintComment":                  authEnvHintComment,
@@ -2069,7 +2076,10 @@ func authCredentialConsolidationAction(auth spec.AuthConfig) string {
 	case authBrowserLoginAvailable(auth):
 		return "auth login"
 	case auth.Type == "oauth2":
-		return "auth login"
+		if oauth2RegistersAuthLogin(auth) {
+			return "auth login"
+		}
+		return "auth setup"
 	case auth.Type == "cookie" || auth.Type == "composed" || auth.Type == "session_handshake":
 		return "auth login"
 	case auth.Subtype == spec.AuthSubtypeGoogleServiceAccount:
@@ -2085,6 +2095,8 @@ func authPlaceholderCredentialSetup(auth spec.AuthConfig, cliName string) string
 		return fmt.Sprintf("%s-pp-cli auth login or %s", cliName, authSetTokenStdinCommand(cliName))
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
 		return fmt.Sprintf("%s-pp-cli auth login --device-code or %s", cliName, authSetTokenStdinCommand(cliName))
+	case auth.Type == "oauth2" && !oauth2RegistersAuthLogin(auth) && !authBrowserLoginAvailable(auth):
+		return fmt.Sprintf("%s-pp-cli auth setup", cliName)
 	case auth.Type == "oauth2" || authBrowserLoginAvailable(auth):
 		return fmt.Sprintf("%s-pp-cli auth login", cliName)
 	case auth.Type == "cookie" || auth.Type == "composed" || auth.Type == "session_handshake":
@@ -2168,7 +2180,10 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 	case "cookie", "composed":
 		return fmt.Sprintf("Run '%s-pp-cli auth login --chrome' to refresh browser-session credentials.", cliName)
 	case "oauth2":
-		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
+		if oauth2RegistersAuthLogin(auth) {
+			return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
+		}
+		return fmt.Sprintf("Run '%s-pp-cli auth setup' for credential setup steps.", cliName)
 	}
 	if authBrowserLoginAvailable(auth) {
 		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
@@ -2220,6 +2235,207 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 func authBrowserLoginAvailable(auth spec.AuthConfig) bool {
 	return strings.TrimSpace(auth.AuthorizationURL) != "" &&
 		auth.EffectiveOAuth2Grant() == spec.OAuth2GrantAuthorizationCode
+}
+
+// authCodeTemplateSelected reports whether auth.go.tmpl is the authorization
+// command file. Client-credentials and device-code win their own templates
+// even when an authorization URL is also set; authTemplateName must agree.
+func authCodeTemplateSelected(auth spec.AuthConfig) bool {
+	if auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "" {
+		return false
+	}
+	if auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "" {
+		return false
+	}
+	return auth.AuthorizationURL != ""
+}
+
+// authCodeSetTokenAvailable reports whether that template should register
+// set-token. Bearer specs that select it already advertise the command, and
+// a pasted access token is a wire credential for authorization code.
+func authCodeSetTokenAvailable(auth spec.AuthConfig) bool {
+	if !authCodeTemplateSelected(auth) {
+		return false
+	}
+	return oauth2AccessTokenAuth(auth) || authSetTokenAvailable(auth)
+}
+
+// shadowingRequestCredentialFields lists per-call fields AuthHeader sends
+// before AccessToken. set-token must clear them, or a saved request
+// credential keeps the previous bearer on the wire.
+func shadowingRequestCredentialFields(auth spec.AuthConfig) []string {
+	if auth.Type != "bearer_token" || auth.Subtype == spec.AuthSubtypeGoogleServiceAccount {
+		return nil
+	}
+	if !authCodeTemplateSelected(auth) || oauth2AccessTokenAuth(auth) {
+		return nil
+	}
+	auth.NormalizeEnvVarSpecs("")
+	if hasAuthEnvVarKind(auth.EnvVarSpecs, string(spec.AuthEnvVarKindAuthFlowInput)) ||
+		hasAuthEnvVarKind(auth.EnvVarSpecs, string(spec.AuthEnvVarKindHarvested)) {
+		return nil
+	}
+	var fields []string
+	seen := make(map[string]struct{}, len(auth.EnvVarSpecs))
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.Kind != spec.AuthEnvVarKindPerCall || envVarIsBuiltinField(envVar.Name) {
+			continue
+		}
+		field := resolveEnvVarField(envVar.Name)
+		if field == "" {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+// bearerRequestCredentialShadowsAccessToken reports whether set-token must
+// clear those fields. Bearer refresh already prefers AccessToken, so the
+// saved request credential is not what the next request sends.
+func bearerRequestCredentialShadowsAccessToken(auth spec.AuthConfig, bearerRefreshEnabled bool) bool {
+	if bearerRefreshEnabled {
+		return false
+	}
+	return len(shadowingRequestCredentialFields(auth)) > 0
+}
+
+// oauth2RegistersAuthLogin reports whether a type=oauth2 spec's own
+// template registers login. Authorization-code, client-credentials, and
+// device-code do. A type=oauth2 spec with none of those flows uses the
+// simple auth file, which has setup and not login.
+func oauth2RegistersAuthLogin(auth spec.AuthConfig) bool {
+	if auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && strings.TrimSpace(auth.TokenURL) != "" {
+		return true
+	}
+	if auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && strings.TrimSpace(auth.DeviceAuthorizationURL) != "" && strings.TrimSpace(auth.TokenURL) != "" {
+		return true
+	}
+	return authCodeTemplateSelected(auth)
+}
+
+// authLoginCommandAvailable reports whether the auth file this generator
+// emits registers login. It follows authTemplateName, including the browser
+// template selected by a traffic-analysis hint.
+func (g *Generator) authLoginCommandAvailable() bool {
+	if g == nil || g.Spec == nil || !g.shouldEmitAuth() {
+		return false
+	}
+	switch g.authTemplateName() {
+	case "auth.go.tmpl", "auth_client_credentials.go.tmpl", "auth_device_code.go.tmpl", "auth_browser.go.tmpl":
+		return true
+	case "auth_simple.go.tmpl":
+		return g.Spec.Auth.Type == "session_handshake"
+	default:
+		return false
+	}
+}
+
+func (g *Generator) authSetupCommandAvailable() bool {
+	if g == nil || g.Spec == nil || !g.shouldEmitAuth() {
+		return false
+	}
+	switch g.authTemplateName() {
+	case "auth.go.tmpl", "auth_device_code.go.tmpl", "auth_simple.go.tmpl":
+		return true
+	default:
+		return false
+	}
+}
+
+// authRecoveryCommand is the auth subcommand error hints should name.
+// doctor is the fallback when this print has no auth subcommand to run.
+func (g *Generator) authRecoveryCommand() string {
+	if g.authLoginCommandAvailable() {
+		return "auth login"
+	}
+	if g.authSetupCommandAvailable() {
+		return "auth setup"
+	}
+	return "doctor"
+}
+
+func (g *Generator) alignedAuthSetupHint(auth spec.AuthConfig, cliName string) string {
+	return g.alignAuthCommandHint(authSetupHint(auth, cliName), cliName)
+}
+
+func (g *Generator) alignedAuthCredentialConsolidationAction(auth spec.AuthConfig) string {
+	action := authCredentialConsolidationAction(auth)
+	switch action {
+	case "auth login":
+		if g.authLoginCommandAvailable() {
+			return action
+		}
+		if g.authSetupCommandAvailable() {
+			return "auth setup"
+		}
+		return ""
+	case "auth setup":
+		if g.authSetupCommandAvailable() {
+			return action
+		}
+		if g.authLoginCommandAvailable() {
+			return "auth login"
+		}
+		return ""
+	default:
+		return action
+	}
+}
+
+func (g *Generator) alignedAuthPlaceholderCredentialSetup(auth spec.AuthConfig, cliName string) string {
+	return g.alignAuthCommandHint(authPlaceholderCredentialSetup(auth, cliName), cliName)
+}
+
+// alignAuthCommandHint rewrites a bare auth login or auth setup phrase when
+// the selected template does not register that subcommand. Flagged forms
+// (auth login --chrome, auth login --device-code) already name a real command.
+func (g *Generator) alignAuthCommandHint(hint, cliName string) string {
+	if g == nil || hint == "" || cliName == "" {
+		return hint
+	}
+	login := cliName + "-pp-cli auth login"
+	setup := cliName + "-pp-cli auth setup"
+	loginSentence := fmt.Sprintf("Run '%s' to re-authenticate.", login)
+	setupSentence := fmt.Sprintf("Run '%s' for credential setup steps.", setup)
+	switch hint {
+	case loginSentence:
+		if !g.authLoginCommandAvailable() && g.authSetupCommandAvailable() {
+			return setupSentence
+		}
+	case setupSentence:
+		if !g.authSetupCommandAvailable() && g.authLoginCommandAvailable() {
+			return loginSentence
+		}
+	}
+	if strings.Contains(hint, login+" ") || strings.Contains(hint, login+"'") {
+		if !g.authLoginCommandAvailable() && g.authSetupCommandAvailable() && !strings.Contains(hint, login+" --") {
+			hint = strings.ReplaceAll(hint, login, setup)
+		}
+	}
+	if strings.Contains(hint, setup) && !g.authSetupCommandAvailable() && g.authLoginCommandAvailable() && !strings.Contains(hint, setup+" ") {
+		hint = strings.ReplaceAll(hint, setup, login)
+	}
+	return hint
+}
+
+// authSetTokenScheme is the prefix stripped from a pasted Authorization
+// value before it is stored. Format owns the scheme when it has one;
+// HeaderPrefix is only the fallback for an empty format.
+func authSetTokenScheme(auth spec.AuthConfig) string {
+	format := strings.TrimSpace(auth.Format)
+	if format == "" {
+		return strings.TrimSpace(auth.HeaderPrefix())
+	}
+	scheme, rest, ok := strings.Cut(format, " ")
+	if !ok || !strings.Contains(rest, "{") {
+		return ""
+	}
+	return strings.TrimSpace(scheme)
 }
 
 func authEnvDomainVendor(envNameUpper, placeholder string) string {
@@ -4543,7 +4759,7 @@ func (g *Generator) authTemplateName() string {
 		return "auth_client_credentials.go.tmpl"
 	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && g.Spec.Auth.DeviceAuthorizationURL != "" && g.Spec.Auth.TokenURL != "":
 		return "auth_device_code.go.tmpl"
-	case g.Spec.Auth.AuthorizationURL != "":
+	case authCodeTemplateSelected(g.Spec.Auth):
 		return "auth.go.tmpl"
 	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
 		return "auth_browser.go.tmpl"
@@ -4580,6 +4796,8 @@ func (g *Generator) emitsStdinSecretReader() bool {
 		return g.Spec.Auth.Type != "none"
 	case "auth_simple.go.tmpl":
 		return authSetTokenAvailable(g.Spec.Auth)
+	case "auth.go.tmpl":
+		return authCodeSetTokenAvailable(g.Spec.Auth)
 	default:
 		return false
 	}

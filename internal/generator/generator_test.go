@@ -2884,17 +2884,19 @@ func TestGenerate403HintsFollowAuthMode(t *testing.T) {
 				EnvVars: []string{"MYAPI_TOKEN"},
 			},
 			helpers: snippetCheck{
-				want: []string{"Your token may lack required scopes", "auth login"},
+				want: []string{"Your token may lack required scopes", "auth setup"},
 				reject: []string{
 					"This API is configured without credentials",
 					"Check that your API key has the required permissions",
+					"auth login",
 				},
 			},
 			mcp: snippetCheck{
-				want: []string{"your token may lack required scopes", "auth login"},
+				want: []string{"your token may lack required scopes", "auth setup"},
 				reject: []string{
 					"this API is configured without credentials",
 					"your credentials are valid but lack access",
+					"auth login",
 				},
 			},
 		},
@@ -12600,7 +12602,7 @@ func TestGeneratedHelpers_BearerTokenAuth(t *testing.T) {
 }
 
 func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
-	t.Run("oauth2 error branches keep a single auth login hint", func(t *testing.T) {
+	t.Run("oauth2 without a login command names auth setup once", func(t *testing.T) {
 		t.Parallel()
 
 		apiSpec := minimalSpec("oauth2hints")
@@ -12614,19 +12616,78 @@ func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
 
 		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
-		assert.Equal(t, 1, strings.Count(helpers401, "auth login"), helpers401)
+		assert.Equal(t, 1, strings.Count(helpers401, "auth setup"), helpers401)
+		assert.NotContains(t, helpers401, "auth login")
 		helpers403 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 403"):`, `case strings.Contains(msg, "HTTP 404"):`)
-		assert.Equal(t, 1, strings.Count(helpers403, "auth login"), helpers403)
+		assert.Equal(t, 1, strings.Count(helpers403, "auth setup"), helpers403)
+		assert.NotContains(t, helpers403, "auth login")
 
 		tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 		tools401 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
-		assert.Equal(t, 1, strings.Count(tools401, "auth login"), tools401)
+		assert.Equal(t, 1, strings.Count(tools401, "auth setup"), tools401)
+		assert.NotContains(t, tools401, "auth login")
 		tools403 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 403"):`, `default:`)
-		assert.Equal(t, 1, strings.Count(tools403, "auth login"), tools403)
+		assert.Equal(t, 1, strings.Count(tools403, "auth setup"), tools403)
+		assert.NotContains(t, tools403, "auth login")
 
 		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
-		assert.Contains(t, doctor, `report["auth_hint"] = "Run 'oauth2hints-pp-cli auth login' to re-authenticate."`)
+		assert.Contains(t, doctor, `report["auth_hint"] = "Run 'oauth2hints-pp-cli auth setup' for credential setup steps."`)
+		assert.Contains(t, doctor, `remediationHint := "run auth setup or auth logout"`)
+		assert.NotContains(t, doctor, "oauth2hints-pp-cli auth login")
+		assert.NotContains(t, doctor, "run auth login")
 
+		requireGeneratedCompiles(t, outputDir)
+	})
+
+	t.Run("oauth2 authorization code keeps a single auth login hint", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("oauth2codehints")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:             "oauth2",
+			AuthorizationURL: "https://auth.example.com/authorize",
+			TokenURL:         "https://auth.example.com/token",
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "oauth2codehints-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Equal(t, 1, strings.Count(helpers401, "auth login"), helpers401)
+		assert.NotContains(t, helpers401, "auth setup")
+		helpers403 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 403"):`, `case strings.Contains(msg, "HTTP 404"):`)
+		assert.Equal(t, 1, strings.Count(helpers403, "auth login"), helpers403)
+
+		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+		assert.Contains(t, doctor, `report["auth_hint"] = "oauth2codehints-pp-cli login"`)
+		assert.Contains(t, doctor, `remediationHint := "run auth login or auth logout"`)
+		requireGeneratedCompiles(t, outputDir)
+	})
+
+	t.Run("oauth2 on the browser template names login", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("oauth2browserhints")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "oauth2",
+			EnvVars: []string{"OAUTH2BROWSERHINTS_TOKEN"},
+		}
+		outputDir := filepath.Join(t.TempDir(), "oauth2browserhints-pp-cli")
+		gen := New(apiSpec, outputDir)
+		gen.TrafficAnalysis = &browsersniff.TrafficAnalysis{GenerationHints: []string{"graphql_persisted_query"}}
+		require.NoError(t, gen.Generate())
+		require.True(t, gen.authLoginCommandAvailable())
+		require.False(t, gen.authSetupCommandAvailable())
+
+		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Contains(t, helpers401, "auth login")
+		assert.NotContains(t, helpers401, "auth setup")
+
+		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+		assert.Contains(t, doctor, `report["auth_hint"] = "Run 'oauth2browserhints-pp-cli auth login' to re-authenticate."`)
+		assert.NotContains(t, doctor, "oauth2browserhints-pp-cli auth setup")
 		requireGeneratedCompiles(t, outputDir)
 	})
 

@@ -410,7 +410,7 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 		expect   string
 	}{
 		{"api_key", "api_key", "export"},
-		{"oauth2", "oauth2", "auth login"},
+		{"oauth2", "oauth2", "auth setup"},
 		{"bearer_token", "bearer_token", "auth set-token"},
 		{"cookie", "cookie", "auth login --chrome"},
 		{"none", "none", "No authentication required"},
@@ -433,6 +433,9 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 
 			assert.True(t, strings.Contains(content, tc.expect),
 				"auth-type %q should produce %q in SKILL.md Auth Setup", tc.authType, tc.expect)
+			if tc.authType == "oauth2" {
+				assert.NotContains(t, content, "auth login")
+			}
 		})
 	}
 }

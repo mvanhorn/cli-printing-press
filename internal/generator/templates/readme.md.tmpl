@@ -127,12 +127,19 @@ export {{(index $deviceEnvVars 0).Name}}=<client-id>
 {{.Name}}-pp-cli auth login --device-code
 {{- end}}
 ```
-{{- else if eq .Auth.Type "oauth2"}}
+{{- else if and (eq .Auth.Type "oauth2") authLoginCommandAvailable}}
 
 The bundle reuses your local OAuth tokens — authenticate first if you haven't:
 
 ```bash
 {{.Name}}-pp-cli auth login
+```
+{{- else if and (eq .Auth.Type "oauth2") authSetupCommandAvailable}}
+
+The bundle needs credentials — set them up first if you haven't:
+
+```bash
+{{.Name}}-pp-cli auth setup
 ```
 {{- else if eq .Auth.Type "oauth2_refresh"}}
 
@@ -267,6 +274,7 @@ Open the verification URL, enter the printed user code, and return to the CLI. Y
 
 ### 2. Authenticate
 
+{{- if authLoginCommandAvailable}}
 Authorize via your browser:
 
 ```bash
@@ -274,6 +282,17 @@ Authorize via your browser:
 ```
 
 This opens a browser window to complete the OAuth2 flow. Your tokens are stored locally and refreshed automatically.
+{{- else if authSetupCommandAvailable}}
+Run `{{.Name}}-pp-cli auth setup` for credential setup steps.
+{{- end}}
+{{- if authCodeSetTokenAvailable .Auth}}
+
+To store a bearer you already hold, pipe it on stdin so it does not land in shell history:
+
+```bash
+echo "$TOKEN" | {{.Name}}-pp-cli auth set-token
+```
+{{- end}}
 {{- else if eq .Auth.Type "oauth2_refresh"}}
 
 ### 2. Set Up OAuth2 Refresh Credentials

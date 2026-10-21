@@ -268,6 +268,11 @@ func TestSetToken_BearerTokenUsesSaveTokens(t *testing.T) {
 		"bearer_token auth must use SaveTokens, not SaveCredential")
 	require.NotContains(t, src, "cfg.SaveCredential(",
 		"SaveCredential is api_key-only; bearer_token must not emit it")
+	require.NotContains(t, src, "ClearShadowingRequestCredentials")
+	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(configSrc), "ClearShadowingRequestCredentials")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestConfigLoad_LabelsConfigFileAuthSource_EnvVarSpecsBranch covers the

@@ -180,7 +180,7 @@ func TestEmittedStdinSecretHelperMatchesAuthSurface(t *testing.T) {
 				TokenURL:         "https://login.example.com/token",
 				EnvVars:          []string{"SCAFFOLD_CLIENT_ID", "SCAFFOLD_CLIENT_SECRET"},
 			},
-			want: false,
+			want: true,
 		},
 		{name: "none_persisted_query", auth: spec.AuthConfig{Type: "none"}, hints: []string{"graphql_persisted_query"}, want: false},
 	}
