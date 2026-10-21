@@ -211,6 +211,23 @@ func TestPrintLiveDogfoodReportDistinguishesPassWithSkips(t *testing.T) {
 	assert.NotContains(t, withSkips, "PASS (all tests run)")
 }
 
+func TestPrintLiveDogfoodReportNamesHappyArgsOnHollowCoverage(t *testing.T) {
+	reason := `non-id positional "dimension" at depth 0; set pp:happy-args`
+	out := captureStdout(t, func() {
+		printLiveDogfoodReport(&pipeline.LiveDogfoodReport{
+			Dir:            t.TempDir(),
+			Level:          "full",
+			Verdict:        "PASS",
+			Passed:         1,
+			CoverageHollow: true,
+			HollowFeatures: []string{"bare", "widgets list"},
+			HollowReasons:  map[string]string{"bare": reason},
+			Commands:       []string{"bare", "widgets list"},
+		})
+	})
+	assert.Contains(t, out, "HOLLOW - 2 novel feature(s) never executed: bare ("+reason+"), widgets list")
+}
+
 func TestDogfoodLiveQuickPassWithSkipsWritesAcceptance(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")

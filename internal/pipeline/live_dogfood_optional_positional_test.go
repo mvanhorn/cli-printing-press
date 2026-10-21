@@ -228,4 +228,5 @@ exit 0
 	require.NotNil(t, replay)
 	assert.Equal(t, LiveDogfoodStatusSkip, replay.Status)
 	assert.Contains(t, replay.Reason, "no id parseable from companion")
+	assert.Contains(t, replay.Reason, happyArgsFixtureHint)
 }

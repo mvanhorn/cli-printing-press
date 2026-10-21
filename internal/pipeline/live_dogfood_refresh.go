@@ -276,7 +276,7 @@ func liveDogfoodResultIsLiveAPIPass(result LiveDogfoodTestResult) bool {
 	if result.Kind != LiveDogfoodTestHappy && result.Kind != LiveDogfoodTestJSON {
 		return false
 	}
-	if slices.Contains(result.Args, "--dry-run") {
+	if liveDogfoodArgsContainDryRun(result.Args) {
 		return false
 	}
 	return true
