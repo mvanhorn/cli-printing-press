@@ -164,7 +164,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 	t.Parallel()
 
 	cases := []authSurfaceCase{
-		{name: "api-key", auth: spec.AuthConfig{Type: "api_key", Header: "X-API-Key", EnvVars: []string{"SURFACE_API_KEY"}}, wantSetToken: boolPtr(true)},
+		{name: "api-key", auth: spec.AuthConfig{Type: "api_key", Header: "X-API-Key", EnvVars: []string{"SURFACE_API_KEY"}}, wantSetToken: new(true)},
 		{
 			name: "api-key-authorize-url",
 			auth: spec.AuthConfig{
@@ -173,9 +173,9 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				AuthorizationURL: "https://auth.example.com/authorize",
 				EnvVars:          []string{"SURFACE_API_KEY"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
-		{name: "bearer", auth: spec.AuthConfig{Type: "bearer_token", Header: "Authorization", Format: "Bearer {token}", EnvVars: []string{"SURFACE_TOKEN"}}, wantSetToken: boolPtr(true)},
+		{name: "bearer", auth: spec.AuthConfig{Type: "bearer_token", Header: "Authorization", Format: "Bearer {token}", EnvVars: []string{"SURFACE_TOKEN"}}, wantSetToken: new(true)},
 		{
 			name: "basic-pair",
 			auth: spec.AuthConfig{
@@ -187,7 +187,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 					{Name: "SURFACE_PASSWORD", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
 				},
 			},
-			wantSetToken: boolPtr(false),
+			wantSetToken: new(false),
 		},
 		{
 			name: "bearer-authcode",
@@ -199,7 +199,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				TokenURL:         "https://auth.example.com/token",
 				EnvVars:          []string{"COBOT_OAUTH2"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name: "bearer-authcode-no-env",
@@ -210,7 +210,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				AuthorizationURL: "https://auth.example.com/authorize",
 				TokenURL:         "https://auth.example.com/token",
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name: "bearer-authorize-only",
@@ -221,7 +221,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				AuthorizationURL: "https://auth.example.com/authorize",
 				EnvVars:          []string{"COBOT_OAUTH2"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name: "oauth2-authcode",
@@ -232,12 +232,12 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				AuthorizationURL: "https://auth.example.com/authorize",
 				TokenURL:         "https://auth.example.com/token",
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name:         "oauth2-no-url",
 			auth:         spec.AuthConfig{Type: "oauth2", EnvVars: []string{"OAUTH2_TOKEN"}},
-			wantSetToken: boolPtr(false),
+			wantSetToken: new(false),
 			forbid:       []string{"auth login", "auth set-token"},
 		},
 		{
@@ -250,7 +250,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				TokenURL:    "https://auth.example.com/token",
 				EnvVars:     []string{"CC_CLIENT_ID", "CC_CLIENT_SECRET"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 			forbid:       []string{"auth setup"},
 		},
 		{
@@ -264,7 +264,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				TokenURL:               "https://auth.example.com/token",
 				EnvVars:                []string{"DEVICE_CLIENT_ID"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name: "cookie",
@@ -276,7 +276,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				Cookies:      []string{"session"},
 				EnvVars:      []string{"COOKIE_SESSION"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name: "composed",
@@ -288,7 +288,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				Cookies:      []string{"session"},
 				EnvVars:      []string{"COMPOSED_SESSION"},
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
 		{
 			name: "oauth2-refresh",
@@ -298,7 +298,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				TokenURL: "https://auth.example.com/token",
 				EnvVars:  []string{"REFRESH_CLIENT_ID", "REFRESH_CLIENT_SECRET", "REFRESH_REFRESH_TOKEN"},
 			},
-			wantSetToken: boolPtr(false),
+			wantSetToken: new(false),
 		},
 		{
 			name: "session-handshake",
@@ -309,7 +309,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				TokenParamName:  "crumb",
 				TokenParamIn:    "query",
 			},
-			wantSetToken: boolPtr(false),
+			wantSetToken: new(false),
 		},
 		{
 			name: "google-service-account",
@@ -321,13 +321,13 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 				EnvVars:     []string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"},
 				EnvVarSpecs: spec.NewORCaseEnvVarSpecs([]string{"GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_OAUTH_ACCESS_TOKEN"}),
 			},
-			wantSetToken: boolPtr(true),
+			wantSetToken: new(true),
 		},
-		{name: "none", auth: spec.AuthConfig{Type: "none"}, wantSetToken: boolPtr(false)},
+		{name: "none", auth: spec.AuthConfig{Type: "none"}, wantSetToken: new(false)},
 		{
 			name:         "none-with-authorize-url",
 			auth:         spec.AuthConfig{Type: "none", AuthorizationURL: "https://auth.example.com/authorize"},
-			wantSetToken: boolPtr(false),
+			wantSetToken: new(false),
 		},
 	}
 	for _, tc := range cases {
@@ -349,8 +349,6 @@ type authSurfaceCase struct {
 	wantSetToken *bool
 	forbid       []string
 }
-
-func boolPtr(v bool) *bool { return &v }
 
 func TestOAuth2BearerSetTokenPersistsWireToken(t *testing.T) {
 	t.Parallel()
@@ -604,14 +602,8 @@ func assertAuthSurface(t *testing.T, outputDir string, wantSetToken *bool, forbi
 			if subs[word] {
 				continue
 			}
-			start := loc[0] - 60
-			if start < 0 {
-				start = 0
-			}
-			end := loc[1] + 60
-			if end > len(text) {
-				end = len(text)
-			}
+			start := max(loc[0]-60, 0)
+			end := min(loc[1]+60, len(text))
 			t.Errorf("%s mentions auth %s, which is not a registered subcommand\n%s", rel, word, text[start:end])
 		}
 		if wantSetToken != nil && !*wantSetToken {
@@ -681,10 +673,7 @@ func authMentionIsInvocation(text string, matchAt int) bool {
 	case strings.HasPrefix(trimmed, "//"), strings.HasPrefix(trimmed, "#"), strings.HasPrefix(trimmed, "/*"), strings.HasPrefix(trimmed, "*"):
 		return false
 	}
-	start := matchAt - 24
-	if start < 0 {
-		start = 0
-	}
+	start := max(matchAt-24, 0)
 	return !strings.Contains(strings.ToLower(text[start:matchAt]), "during")
 }
 
