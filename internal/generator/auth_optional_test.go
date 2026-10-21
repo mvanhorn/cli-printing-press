@@ -272,6 +272,7 @@ func TestSetToken_BearerTokenUsesSaveTokens(t *testing.T) {
 	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	require.NotContains(t, string(configSrc), "ClearShadowingRequestCredentials")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestConfigLoad_LabelsConfigFileAuthSource_EnvVarSpecsBranch covers the
