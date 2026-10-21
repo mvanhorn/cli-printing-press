@@ -600,14 +600,22 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Clear any legacy auth_header so AuthHeader() falls through to
-			// the newly-saved access token. A pre-existing auth_header value
+			// the newly-saved credential. A pre-existing auth_header value
 			// is checked first and would otherwise shadow set-token.
 			cfg.AuthHeaderVal = ""
+{{- if and (eq .Auth.Type "api_key") .Auth.CanonicalEnvVar}}
+			// api_key AuthHeader reads the canonical env-var field. AccessToken
+			// is the bearer slot and would leave the pasted key unused.
+			if err := cfg.SaveCredential(token); err != nil {
+				return configErr(fmt.Errorf("saving token: %w", err))
+			}
+{{- else}}
 			// Keep login's client id, secret, and refresh token. Zero expiry
 			// so a stale timestamp cannot refresh this pasted bearer away.
 			if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, token, cfg.RefreshToken, time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
+{{- end}}
 
 			savePath := credentialSavePath(cfg)
 			if flags.asJSON {

@@ -165,6 +165,16 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 
 	cases := []authSurfaceCase{
 		{name: "api-key", auth: spec.AuthConfig{Type: "api_key", Header: "X-API-Key", EnvVars: []string{"SURFACE_API_KEY"}}, wantSetToken: boolPtr(true)},
+		{
+			name: "api-key-authorize-url",
+			auth: spec.AuthConfig{
+				Type:             "api_key",
+				Header:           "X-API-Key",
+				AuthorizationURL: "https://auth.example.com/authorize",
+				EnvVars:          []string{"SURFACE_API_KEY"},
+			},
+			wantSetToken: boolPtr(true),
+		},
 		{name: "bearer", auth: spec.AuthConfig{Type: "bearer_token", Header: "Authorization", Format: "Bearer {token}", EnvVars: []string{"SURFACE_TOKEN"}}, wantSetToken: boolPtr(true)},
 		{
 			name: "basic-pair",
@@ -328,6 +338,7 @@ func TestGeneratedAuthSubcommandsMatchDocsAndHints(t *testing.T) {
 			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 			require.NoError(t, New(apiSpec, outputDir).Generate())
 			assertAuthSurface(t, outputDir, tc.wantSetToken, tc.forbid)
+			requireGeneratedCompiles(t, outputDir)
 		})
 	}
 }
@@ -502,6 +513,40 @@ func TestOAuth2BearerSetTokenPersistsWireToken(t *testing.T) {
 	envBody := readCredFile(t, cobotCredPath(envHome))
 	requireAccessToken(t, envBody, "stdin-wins")
 	require.NotRegexp(t, accessTokenPattern("env-token"), envBody)
+}
+
+func TestAPIKeyAuthorizeURLSetTokenPersistsHeaderField(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("keyed")
+	apiSpec.BaseURL = "https://api.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "api_key",
+		Header:           "X-API-Key",
+		AuthorizationURL: "https://auth.example.com/authorize",
+		EnvVars:          []string{"KEYED_API_KEY"},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	setToken := generatedSourceBlock(t, authSrc, "func newAuthSetTokenCmd(", "func stripAuthSchemePrefix(")
+	require.Contains(t, setToken, "cfg.SaveCredential(token)")
+	require.NotContains(t, setToken, "cfg.SaveTokens(")
+	require.Contains(t, readGeneratedFile(t, outputDir, "internal", "config", "config.go"), "func (c *Config) SaveCredential(")
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "api_key_set_token_test.go"), []byte(apiKeySetTokenClientTest), 0o644))
+	binPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommandRequired(t, outputDir, "test", "-count=1", "-run", "TestSavedAPIKeyIsTheHeader", "./internal/client")
+	runGoCommandRequired(t, outputDir, "build", "-o", binPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	home := t.TempDir()
+	env := append(doctorEnv(home, naming.EnvPrefix("keyed")), "KEYED_API_KEY=")
+	saved, code := runCLI(t, binPath, env, "pasted-key\n", "auth", "set-token")
+	require.Equal(t, 0, code, saved)
+	body := readCredFile(t, filepath.Join(home, ".local", "share", naming.CLI("keyed"), "credentials.toml"))
+	require.Regexp(t, `(?m)^api_key = ['"]pasted-key['"]$`, body)
+	require.NotRegexp(t, accessTokenPattern("pasted-key"), body)
 }
 
 func assertAuthSurface(t *testing.T, outputDir string, wantSetToken *bool, forbid []string) {
@@ -707,6 +752,61 @@ func runCLI(t *testing.T, bin string, env []string, stdin string, args ...string
 	t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
 	return "", -1
 }
+
+const apiKeySetTokenClientTest = `package client
+
+import (
+	"path/filepath"
+	"testing"
+
+	"keyed-pp-cli/internal/config"
+)
+
+func TestSavedAPIKeyIsTheHeader(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "localapp"))
+	t.Setenv("APPDATA", filepath.Join(home, "appdata"))
+	for _, suffix := range []string{"HOME", "CONFIG", "CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR"} {
+		t.Setenv("KEYED_"+suffix, "")
+	}
+	t.Setenv("KEYED_API_KEY", "env-key")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.AuthHeader(); got != "env-key" {
+		t.Fatalf("env-only AuthHeader() = %q, want env-key", got)
+	}
+	if err := cfg.SaveCredential("file-key"); err != nil {
+		t.Fatalf("SaveCredential() error = %v", err)
+	}
+	withEnv, err := config.Load("")
+	if err != nil {
+		t.Fatalf("reload error = %v", err)
+	}
+	if got := withEnv.AuthHeader(); got != "env-key" {
+		t.Fatalf("AuthHeader() with env set = %q, want the env key to win", got)
+	}
+	t.Setenv("KEYED_API_KEY", "")
+	loaded, err := config.Load("")
+	if err != nil {
+		t.Fatalf("reload without env error = %v", err)
+	}
+	if got := loaded.AuthHeader(); got != "file-key" {
+		t.Fatalf("AuthHeader() = %q, want the saved API key", got)
+	}
+	if loaded.AccessToken != "" {
+		t.Fatalf("AccessToken = %q, want the key stored on its own field", loaded.AccessToken)
+	}
+}
+`
 
 const oauthSetTokenClientTest = `package client
 

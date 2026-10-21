@@ -506,7 +506,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Clear any legacy auth_header so AuthHeader() falls through to
-			// the newly-saved access token. A pre-existing auth_header value
+			// the newly-saved credential. A pre-existing auth_header value
 			// is checked first and would otherwise shadow set-token.
 			cfg.AuthHeaderVal = ""
 			// Keep login's client id, secret, and refresh token. Zero expiry
