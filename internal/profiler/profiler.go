@@ -400,10 +400,11 @@ type APIProfile struct {
 	SearchableFields       map[string][]string
 
 	// SearchEndpointPath is the API path for live search (e.g., "/search", "/users/search").
-	// Empty if the API has no search endpoint.
+	// Empty when no search endpoint can be called without an unbound {param}
+	// or an invented query parameter.
 	SearchEndpointPath string
-	// SearchQueryParam is the query parameter name for the search endpoint (e.g., "q", "query").
-	// Defaults to "q" if a search endpoint exists but no recognized param is found.
+	// SearchQueryParam is the wire name of the search input (e.g., "q", "query", "filter[query]").
+	// Parameterless endpoints keep "q". Empty when SearchEndpointPath is empty.
 	SearchQueryParam string
 	// SearchEndpointMethod is the HTTP method for the search endpoint (GET or POST).
 	SearchEndpointMethod string
@@ -454,6 +455,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 	var getEndpoints int
 	var listCapableEndpoints int
 	var hasSearchEndpoint bool
+	var genericSearchCandidate spec.Endpoint
+	var hasGenericSearchCandidate bool
 
 	cursorParams := make(map[string]int)
 	cursorTypes := make(map[string]int)
@@ -521,74 +524,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 			if containsAny(endpointNameLower, []string{"search"}) || containsAny(pathLower, []string{"search"}) {
 				hasSearchEndpoint = true
-				// Prefer shorter/more general search paths (e.g., /search over /users/search)
-				if p.SearchEndpointPath == "" || len(endpoint.Path) < len(p.SearchEndpointPath) {
-					method := strings.ToUpper(endpoint.Method)
-					p.SearchEndpointPath = endpoint.Path
-					p.SearchEndpointMethod = method
-					p.SearchQueryParam = "q" // default
-					p.SearchBodyFields = nil
-
-					// Find the query parameter
-					searchParamNames := []string{"q", "query", "search", "keyword", "term", "querytext", "searchterm", "searchtext", "text"}
-					isSearchParam := func(name string) bool {
-						lower := strings.ToLower(name)
-						return slices.Contains(searchParamNames, lower)
-					}
-
-					for _, param := range endpoint.Params {
-						if isSearchParam(param.Name) {
-							p.SearchQueryParam = param.Name
-							break
-						}
-					}
-
-					// For POST endpoints, check body params for query param and
-					// capture additional required fields with their defaults
-					if method == "POST" {
-						for _, param := range endpoint.Body {
-							if isSearchParam(param.Name) {
-								p.SearchQueryParam = param.Name
-								continue
-							}
-							// Capture non-query body fields so the template can
-							// construct the full POST body at generation time
-							field := SearchBodyField{
-								Name:     param.Name,
-								Type:     param.Type,
-								Required: param.Required,
-							}
-							// Use spec default if available
-							if param.Default != nil {
-								field.Default = param.Default
-							} else if len(param.Enum) > 0 {
-								// For arrays with enum values, use all enum values as default
-								if param.Type == "array" {
-									field.Default = param.Enum
-								} else {
-									field.Default = param.Enum[0]
-								}
-							} else if param.Type == "array" && len(param.Fields) > 0 && len(param.Fields[0].Enum) > 0 {
-								// Array items have enum — use all enum values (e.g., search all entity types)
-								field.Default = param.Fields[0].Enum
-							} else {
-								// Synthesize reasonable defaults by type
-								switch param.Type {
-								case "integer", "number":
-									field.Default = 10
-								case "boolean":
-									field.Default = true
-								case "string":
-									field.Default = ""
-								case "object":
-									field.Default = map[string]any{}
-								case "array":
-									field.Default = []any{}
-								}
-							}
-							p.SearchBodyFields = append(p.SearchBodyFields, field)
-						}
-					}
+				// Prefer the shortest bindable path (/search over /users/search).
+				// Unbound {param} segments are not candidates: the generic command
+				// would send them literally, and that 404 does not fall back to FTS.
+				if genericSearchPathBindable(endpoint.Path, s) && (!hasGenericSearchCandidate || len(endpoint.Path) < len(genericSearchCandidate.Path)) {
+					genericSearchCandidate = endpoint
+					hasGenericSearchCandidate = true
 				}
 			}
 			if containsAny(pathLower, []string{"webhook", "event", "callback", "notification"}) {
@@ -794,6 +735,16 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	for name, resource := range s.Resources {
 		walk(name, resource, "", "")
+	}
+	if hasGenericSearchCandidate {
+		// Do not retarget a longer endpoint when the shortest bindable path
+		// has no recognized search parameter, and do not invent "q" for it.
+		if param, fields, ok := resolveGenericSearchQuery(genericSearchCandidate); ok {
+			p.SearchEndpointPath = genericSearchCandidate.Path
+			p.SearchEndpointMethod = strings.ToUpper(genericSearchCandidate.Method)
+			p.SearchQueryParam = param
+			p.SearchBodyFields = fields
+		}
 	}
 	applySyncCandidates(syncable, syncCandidates)
 	applyPathDerivedIDFields(syncable, pathDerivedIDFields, s.Types)
