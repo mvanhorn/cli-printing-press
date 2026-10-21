@@ -128,7 +128,7 @@ type validationFixtureSources struct {
 func writeValidationFixture(t *testing.T, dir, cliName string, sources validationFixtureSources) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\ngo 1.26.9\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fixture\n\ngo 1.26.10\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("keep-this-source\n"), 0o644))
 
 	body := validationFixtureMain(sources.broken)
