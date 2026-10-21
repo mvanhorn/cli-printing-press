@@ -266,8 +266,8 @@ func TestRunLiveDogfoodRunsBodyFixtureWhenHappyArgsProvided(t *testing.T) {
 		result := findResultByCommandKind(report, "widgets create", kind)
 		require.NotNil(t, result, "missing %s result", kind)
 		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
-		require.GreaterOrEqual(t, len(result.Args), 4)
-		assert.Equal(t, []string{"widgets", "create", "--dry-run", "true"}, result.Args[:4])
+		require.GreaterOrEqual(t, len(result.Args), 3)
+		assert.Equal(t, []string{"widgets", "create", "--dry-run"}, result.Args[:3])
 	}
 }
 
@@ -7148,7 +7148,7 @@ Examples:
 	}
 	args, ok = liveDogfoodHappyArgs(boolFlagCmd)
 	require.True(t, ok)
-	assert.Equal(t, []string{"widgets", "get", "--verbose", "true", "widget-1"}, args,
+	assert.Equal(t, []string{"widgets", "get", "--verbose", "widget-1"}, args,
 		"boolean flag overlay must not consume the following positional")
 
 	filterBoolFlagCmd := liveDogfoodCommand{
@@ -7163,7 +7163,7 @@ Examples:
 	}
 	args, ok = liveDogfoodHappyArgs(filterBoolFlagCmd)
 	require.True(t, ok)
-	assert.Equal(t, []string{"widgets", "get", "--filter", "active", "--verbose", "true", "widget-1"}, args,
+	assert.Equal(t, []string{"widgets", "get", "--filter", "active", "--verbose", "widget-1"}, args,
 		"preceding flag values must not be counted as consumed positionals")
 
 	// Flag-only pp:happy-args overlays the runnable Example but still leaves

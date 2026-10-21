@@ -2224,7 +2224,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
-				if slices.Contains(jsonArgs, "--dry-run") {
+				if liveDogfoodArgsContainDryRun(jsonArgs) {
 					status, reason := liveDogfoodDryRunJSONContract(jsonRun, true)
 					jsonResult.Status = status
 					jsonResult.Reason = reason
@@ -3341,6 +3341,11 @@ func overlayLiveDogfoodFlags(args, commandPath, flags []string, positionalCount 
 				}
 			} else if liveDogfoodFlagHasSeparateValueWithTypes(out, start, j, positionalCount, valueFlags) {
 				out[j+1] = value
+			} else if !liveDogfoodFlagTakesTypedValue(flag, valueFlags) && liveDogfoodBoolAnnotationValue(value) {
+				// No value slot. A separate "true" would be a positional, and
+				// dropping an optional positional makes the resolver treat it
+				// as the placeholder it just removed.
+				out[j] = liveDogfoodBooleanFlagArg(flag, value)
 			} else {
 				out = append(out[:j+1], append([]string{value}, out[j+1:]...)...)
 			}
@@ -3350,12 +3355,39 @@ func overlayLiveDogfoodFlags(args, commandPath, flags []string, positionalCount 
 		if !replaced {
 			if isNegativeNumericArg(value) {
 				out = append(out, flag+"="+value)
+			} else if !liveDogfoodFlagTakesTypedValue(flag, valueFlags) && liveDogfoodBoolAnnotationValue(value) {
+				out = append(out, liveDogfoodBooleanFlagArg(flag, value))
 			} else {
 				out = append(out, flag, value)
 			}
 		}
 	}
 	return out
+}
+
+func liveDogfoodBooleanFlagArg(flag, value string) string {
+	if liveDogfoodBoolAnnotationTrue(value) {
+		return flag
+	}
+	return flag + "=" + value
+}
+
+func liveDogfoodBoolAnnotationValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "0", "t", "f", "true", "false":
+		return true
+	default:
+		return false
+	}
+}
+
+func liveDogfoodBoolAnnotationTrue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "t", "true":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLiveDogfoodFlagToken(arg string) bool {
@@ -3435,6 +3467,15 @@ func isLiveDogfoodFlagValueType(value string) bool {
 	default:
 		return strings.HasSuffix(value, "slice") || strings.HasSuffix(value, "array")
 	}
+}
+
+func liveDogfoodFlagTakesTypedValue(flag string, valueFlags map[string]struct{}) bool {
+	name, ok := strings.CutPrefix(flag, "--")
+	if !ok || name == "" || strings.Contains(name, "=") {
+		return false
+	}
+	_, takesValue := valueFlags[strings.ToLower(name)]
+	return takesValue
 }
 
 func liveDogfoodFlagHasTypedValue(args []string, flagIndex int, valueFlags map[string]struct{}) bool {
@@ -4012,6 +4053,28 @@ func copyLiveDogfoodFile(src, dst string, info os.FileInfo) error {
 	return os.WriteFile(dst, data, info.Mode().Perm())
 }
 
+// --dry-run=false and --dry-run=0 are explicit offs, so they must not keep a
+// passing run from clearing hollow coverage. Tokens after "--" are positional.
+func liveDogfoodArgsContainDryRun(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "--dry-run" {
+			return true
+		}
+		value, ok := strings.CutPrefix(arg, "--dry-run=")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if !strings.EqualFold(value, "false") && value != "0" {
+			return true
+		}
+	}
+	return false
+}
+
 // Example strings on paid commands usually show --dry-run so copying them is
 // safe; an approved live run must not inherit it. Values after "--" are
 // positional data, not flags, so they are left alone.
@@ -4077,7 +4140,7 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 		case LiveDogfoodStatusPass:
 			report.Passed++
 			report.MatrixSize++
-			if (result.Kind == LiveDogfoodTestHappy || result.Kind == LiveDogfoodTestJSON) && !slices.Contains(result.Args, "--dry-run") {
+			if (result.Kind == LiveDogfoodTestHappy || result.Kind == LiveDogfoodTestJSON) && !liveDogfoodArgsContainDryRun(result.Args) {
 				hasLiveHappyOrJSONPass = true
 			}
 		case LiveDogfoodStatusFail:
@@ -4205,7 +4268,7 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 		}
 		featurePassed := false
 		for _, result := range report.Tests {
-			if result.Kind != LiveDogfoodTestHappy || result.Status != LiveDogfoodStatusPass || slices.Contains(result.Args, "--dry-run") {
+			if result.Kind != LiveDogfoodTestHappy || result.Status != LiveDogfoodStatusPass || liveDogfoodArgsContainDryRun(result.Args) {
 				continue
 			}
 			candidate := map[string]bool{commandPath(result.Command): true}

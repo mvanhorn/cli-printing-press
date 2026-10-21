@@ -298,6 +298,7 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 			{Name: "Profile delete", Command: "profile delete"},
 			{Name: "Yield", Command: "yield"},
 			{Name: "Render", Command: "render"},
+			{Name: "Preview eq", Command: "preview-eq"},
 			{Name: "Unbuilt tail", Command: "tail"},
 		},
 	}, researchDir))
@@ -306,7 +307,7 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 	saveReason := positionalFixtureSkipReason(`non-id positional "name" at depth 0`)
 	searchReason := positionalFixtureSkipReason(`non-id positional "query" at depth 0`)
 	report := &LiveDogfoodReport{
-		Commands: []string{"bare", "save", "search", "which", "profile save", "profile delete", "yield", "render"},
+		Commands: []string{"bare", "save", "search", "which", "profile save", "profile delete", "yield", "render", "preview-eq"},
 		Tests: []LiveDogfoodTestResult{
 			{Command: "bare", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusSkip, Reason: bareReason},
 			{Command: "save", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusSkip, Reason: saveReason},
@@ -316,16 +317,18 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 			{Command: "profile delete", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusSkip, Reason: saveReason},
 			{Command: "yield", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"yield", "--type", "apartment"}},
 			{Command: "render", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"render", "--dry-run"}},
+			{Command: "preview-eq", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"preview-eq", "--dry-run=true"}},
 		},
 	}
 	finalizeLiveDogfoodCoverage(report, researchDir, liveDogfoodProofContext{})
 
-	assert.Equal(t, []string{"bare", "ghost", "render", "save", "search", "tail"}, report.HollowFeatures)
+	assert.Equal(t, []string{"bare", "ghost", "preview-eq", "render", "save", "search", "tail"}, report.HollowFeatures)
 	assert.Equal(t, bareReason, report.HollowReasons["bare"])
 	assert.Equal(t, saveReason, report.HollowReasons["save"])
 	assert.Equal(t, searchReason, report.HollowReasons["search"])
 	assert.NotContains(t, report.HollowReasons, "ghost")
 	assert.NotContains(t, report.HollowReasons, "render")
+	assert.NotContains(t, report.HollowReasons, "preview-eq")
 	assert.NotContains(t, report.HollowReasons, "tail")
 	assert.NotContains(t, report.HollowReasons, "which")
 	assert.NotContains(t, report.HollowFeatures, "which")
@@ -545,6 +548,67 @@ func TestLiveDogfoodTailRequiredStaysSkippedAndNotHollow(t *testing.T) {
 	assert.Contains(t, tail.Reason, happyArgsFixtureHint)
 	assert.Empty(t, report.HollowFeatures)
 	assert.False(t, report.CoverageHollow)
+}
+
+func TestLiveDogfoodHappyArgsParsedBooleanStaysAttached(t *testing.T) {
+	t.Parallel()
+
+	yield := liveDogfoodCommand{
+		Path: []string{"yield"},
+		Help: `Usage:
+  cli yield [id-or-url] [flags]
+
+Examples:
+  fixture-pp-cli yield listing-1
+
+Flags:
+      --json   Output JSON
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--json"},
+	}
+	args, ok, parsed := liveDogfoodHappyArgsParsed(yield)
+	require.True(t, ok)
+	assert.Empty(t, parsed.positionals)
+	assert.Equal(t, []string{"yield", "listing-1", "--json"}, args)
+
+	resolved, skipped, reason, _ := resolveLiveDogfoodHappyArgs(yield, args, len(parsed.positionals), emptyResolveCtx())
+	assert.False(t, skipped, reason)
+	assert.Equal(t, []string{"yield", "--json"}, resolved)
+
+	yield.Annotations = map[string]string{happyArgsAnnotation: "--json=false"}
+	args, ok, parsed = liveDogfoodHappyArgsParsed(yield)
+	require.True(t, ok)
+	assert.Equal(t, []string{"yield", "listing-1", "--json=false"}, args)
+	resolved, skipped, reason, _ = resolveLiveDogfoodHappyArgs(yield, args, len(parsed.positionals), emptyResolveCtx())
+	assert.False(t, skipped, reason)
+	assert.Equal(t, []string{"yield", "--json=false"}, resolved)
+
+	valued := liveDogfoodCommand{
+		Path: []string{"yield"},
+		Help: `Usage:
+  cli yield [id-or-url] [flags]
+
+Examples:
+  fixture-pp-cli yield listing-1
+
+Flags:
+      --commune string   Commune
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--commune=ixelles"},
+	}
+	args, ok, parsed = liveDogfoodHappyArgsParsed(valued)
+	require.True(t, ok)
+	assert.Empty(t, parsed.positionals)
+	assert.Equal(t, []string{"yield", "listing-1", "--commune", "ixelles"}, args)
+	resolved, skipped, reason, _ = resolveLiveDogfoodHappyArgs(valued, args, len(parsed.positionals), emptyResolveCtx())
+	assert.False(t, skipped, reason)
+	assert.Equal(t, []string{"yield", "--commune", "ixelles"}, resolved)
+
+	assert.True(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run"}))
+	assert.True(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run=true"}))
+	assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run=false"}))
+	assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run=0"}))
+	assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--", "--dry-run"}))
 }
 
 func TestPressFrameworkHappyArgsRefusesMissingOptionalShape(t *testing.T) {
