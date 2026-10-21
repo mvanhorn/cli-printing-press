@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -4053,8 +4054,8 @@ func copyLiveDogfoodFile(src, dst string, info os.FileInfo) error {
 	return os.WriteFile(dst, data, info.Mode().Perm())
 }
 
-// --dry-run=false and --dry-run=0 are explicit offs, so they must not keep a
-// passing run from clearing hollow coverage. Tokens after "--" are positional.
+// pflag booleans use strconv.ParseBool, so f, F, false, and 0 are live runs.
+// A value that does not parse still counts, and tokens after "--" are positional.
 func liveDogfoodArgsContainDryRun(args []string) bool {
 	for _, arg := range args {
 		if arg == "--" {
@@ -4067,8 +4068,8 @@ func liveDogfoodArgsContainDryRun(args []string) bool {
 		if !ok {
 			continue
 		}
-		value = strings.TrimSpace(value)
-		if !strings.EqualFold(value, "false") && value != "0" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil || parsed {
 			return true
 		}
 	}

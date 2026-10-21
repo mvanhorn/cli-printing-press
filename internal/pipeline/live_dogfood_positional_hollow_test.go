@@ -299,6 +299,7 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 			{Name: "Yield", Command: "yield"},
 			{Name: "Render", Command: "render"},
 			{Name: "Preview eq", Command: "preview-eq"},
+			{Name: "Live f", Command: "live-f"},
 			{Name: "Unbuilt tail", Command: "tail"},
 		},
 	}, researchDir))
@@ -307,7 +308,7 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 	saveReason := positionalFixtureSkipReason(`non-id positional "name" at depth 0`)
 	searchReason := positionalFixtureSkipReason(`non-id positional "query" at depth 0`)
 	report := &LiveDogfoodReport{
-		Commands: []string{"bare", "save", "search", "which", "profile save", "profile delete", "yield", "render", "preview-eq"},
+		Commands: []string{"bare", "save", "search", "which", "profile save", "profile delete", "yield", "render", "preview-eq", "live-f"},
 		Tests: []LiveDogfoodTestResult{
 			{Command: "bare", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusSkip, Reason: bareReason},
 			{Command: "save", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusSkip, Reason: saveReason},
@@ -318,6 +319,7 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 			{Command: "yield", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"yield", "--type", "apartment"}},
 			{Command: "render", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"render", "--dry-run"}},
 			{Command: "preview-eq", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"preview-eq", "--dry-run=true"}},
+			{Command: "live-f", Kind: LiveDogfoodTestHappy, Status: LiveDogfoodStatusPass, Args: []string{"live-f", "--dry-run=f"}},
 		},
 	}
 	finalizeLiveDogfoodCoverage(report, researchDir, liveDogfoodProofContext{})
@@ -335,6 +337,7 @@ func TestFinalizeLiveDogfoodCoveragePositionalHollowAndFrameworkExempt(t *testin
 	assert.NotContains(t, report.HollowFeatures, "profile save")
 	assert.NotContains(t, report.HollowFeatures, "profile delete")
 	assert.NotContains(t, report.HollowFeatures, "yield")
+	assert.NotContains(t, report.HollowFeatures, "live-f")
 	assert.True(t, report.CoverageHollow)
 }
 
@@ -604,10 +607,12 @@ Flags:
 	assert.False(t, skipped, reason)
 	assert.Equal(t, []string{"yield", "--commune", "ixelles"}, resolved)
 
-	assert.True(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run"}))
-	assert.True(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run=true"}))
-	assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run=false"}))
-	assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--dry-run=0"}))
+	for _, arg := range []string{"--dry-run", "--dry-run=true", "--dry-run=TRUE", "--dry-run=t", "--dry-run=T", "--dry-run=1", "--dry-run=maybe"} {
+		assert.True(t, liveDogfoodArgsContainDryRun([]string{"cmd", arg}), arg)
+	}
+	for _, arg := range []string{"--dry-run=false", "--dry-run=FALSE", "--dry-run=f", "--dry-run=F", "--dry-run=0", "--dry-run= False"} {
+		assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", arg}), arg)
+	}
 	assert.False(t, liveDogfoodArgsContainDryRun([]string{"cmd", "--", "--dry-run"}))
 }
 
