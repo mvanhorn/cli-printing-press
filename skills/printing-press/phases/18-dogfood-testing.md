@@ -116,6 +116,10 @@ runner runs that preview for real. When a failure is an endpoint input no
 portable fixture can satisfy (a continuation cursor, an account-specific path,
 a resource URL), declare it as `--flag=example-value` in `pp:happy-args` so the
 row lands as `blocked-fixture` instead of baking real account data into the CLI.
+When publish validate reports hollow coverage for a command the live matrix
+skipped on a positional, the detail names `pp:happy-args`. Set that annotation
+to a real positional. When every positional is optional, flags alone are enough.
+A novel command with no fixture stays hollow.
 
 **Quick check (auto-selected test subset):**
 1. `doctor` — auth valid, API reachable.

@@ -60,6 +60,24 @@ func TestValidatePhase5Gate_FullPassRejectsHollowCoverage(t *testing.T) {
 	require.False(t, result.Passed)
 	assert.Contains(t, result.Detail, "hollow coverage")
 	assert.Contains(t, result.Detail, "widgets list")
+	assert.NotContains(t, result.Detail, "pp:happy-args")
+}
+
+func TestPhase5AcceptancePassed_HollowReasonNamesHappyArgs(t *testing.T) {
+	reason := positionalFixtureSkipReason(`non-id positional "dimension" at depth 0`)
+	passed, detail := phase5AcceptancePassed(Phase5GateMarker{
+		CoverageHollow: true,
+		HollowFeatures: []string{"bare", "widgets list"},
+		HollowReasons:  map[string]string{"bare": reason},
+		Level:          "full",
+		MatrixSize:     1,
+		TestsPassed:    1,
+	})
+	require.False(t, passed)
+	assert.Equal(t, "phase5 acceptance has hollow coverage for: bare ("+reason+"), widgets list", detail)
+	assert.Contains(t, detail, "pp:happy-args")
+	assert.Equal(t, "bare", FormatHollowCoverage([]string{"bare"}, map[string]string{"bare": "  "}))
+	assert.Equal(t, "widgets list", FormatHollowCoverage([]string{"widgets list"}, nil))
 }
 
 func TestValidatePhase5Gate_QuickPassRejectsFailures(t *testing.T) {

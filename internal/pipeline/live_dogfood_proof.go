@@ -142,7 +142,7 @@ func liveDogfoodProofRejection(path, proofName string, tests []LiveDogfoodTestRe
 		case LiveDogfoodTestDryRunJSON:
 			dryRunPassed = true
 		case LiveDogfoodTestHappy:
-			if slices.Contains(result.Args, "--dry-run") {
+			if liveDogfoodArgsContainDryRun(result.Args) {
 				dryRunPassed = true
 			}
 		}

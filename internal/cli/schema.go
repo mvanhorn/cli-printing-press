@@ -225,6 +225,7 @@ const phase5MarkerSchemaJSON = `{
     "tests_failed": {"type": "integer", "minimum": 0},
     "coverage_hollow": {"type": "boolean"},
     "hollow_features": {"type": "array", "items": {"type": "string"}},
+    "hollow_reasons": {"type": "object", "additionalProperties": {"type": "string"}},
     "proof_covered_features": {"type": "array", "items": {"$ref": "#/$defs/proof_covered_feature"}},
     "skip_reason": {"type": "string"},
     "auth_context": {"$ref": "#/$defs/auth_context"},

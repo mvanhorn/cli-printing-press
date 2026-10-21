@@ -44,18 +44,19 @@ type Phase5AuthContext struct {
 }
 
 type Phase5GateMarker struct {
-	SchemaVersion   int      `json:"schema_version"`
-	APIName         string   `json:"api_name,omitempty"`
-	RunID           string   `json:"run_id,omitempty"`
-	Status          string   `json:"status"`
-	Level           string   `json:"level,omitempty"`
-	MatrixSize      int      `json:"matrix_size,omitempty"`
-	TestsPassed     int      `json:"tests_passed,omitempty"`
-	TestsSkipped    int      `json:"tests_skipped,omitempty"`
-	TestsUnverified int      `json:"tests_unverified,omitempty"`
-	TestsFailed     int      `json:"tests_failed,omitempty"`
-	CoverageHollow  bool     `json:"coverage_hollow,omitempty"`
-	HollowFeatures  []string `json:"hollow_features,omitempty"`
+	SchemaVersion   int               `json:"schema_version"`
+	APIName         string            `json:"api_name,omitempty"`
+	RunID           string            `json:"run_id,omitempty"`
+	Status          string            `json:"status"`
+	Level           string            `json:"level,omitempty"`
+	MatrixSize      int               `json:"matrix_size,omitempty"`
+	TestsPassed     int               `json:"tests_passed,omitempty"`
+	TestsSkipped    int               `json:"tests_skipped,omitempty"`
+	TestsUnverified int               `json:"tests_unverified,omitempty"`
+	TestsFailed     int               `json:"tests_failed,omitempty"`
+	CoverageHollow  bool              `json:"coverage_hollow,omitempty"`
+	HollowFeatures  []string          `json:"hollow_features,omitempty"`
+	HollowReasons   map[string]string `json:"hollow_reasons,omitempty"`
 	// ProofCoveredFeatures lists novel features counted as covered by an
 	// operator proof file in the same proofs directory instead of a live
 	// happy-path pass.
@@ -319,7 +320,7 @@ func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 	if marker.CoverageHollow {
-		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", strings.Join(marker.HollowFeatures, ", "))
+		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", FormatHollowCoverage(marker.HollowFeatures, marker.HollowReasons))
 	}
 	level := phase5Level(marker)
 	switch level {
@@ -358,6 +359,22 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 	default:
 		return false, unknownPhase5AcceptanceLevelDetail(marker.Level)
 	}
+}
+
+func FormatHollowCoverage(features []string, reasons map[string]string) string {
+	parts := make([]string, 0, len(features))
+	for _, feature := range features {
+		reason := ""
+		if reasons != nil {
+			reason = strings.TrimSpace(reasons[feature])
+		}
+		if reason == "" {
+			parts = append(parts, feature)
+			continue
+		}
+		parts = append(parts, feature+" ("+reason+")")
+	}
+	return strings.Join(parts, ", ")
 }
 
 func phase5Level(marker Phase5GateMarker) string {
