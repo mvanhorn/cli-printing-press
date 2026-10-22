@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -1491,6 +1492,41 @@ func TestStageSQLiteSnapshotConsistency(t *testing.T) {
 	})
 }
 
+func TestLiveCheckDirModeBlocksCreates(t *testing.T) {
+	t.Parallel()
+	require.False(t, liveCheckDirModeBlocksCreates("windows"))
+	require.True(t, liveCheckDirModeBlocksCreates("linux"))
+	require.True(t, liveCheckDirModeBlocksCreates("darwin"))
+}
+
+func TestLiveCheckDirCreateBlocked(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writable directory is not blocked and leaves no probe", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.False(t, liveCheckDirCreateBlocked(dir))
+		_, err := os.Stat(filepath.Join(dir, "write-probe"))
+		require.ErrorIs(t, err, os.ErrNotExist)
+	})
+
+	t.Run("mode 0555 agrees with a direct create", func(t *testing.T) {
+		t.Parallel()
+		if !liveCheckDirModeBlocksCreates(runtime.GOOS) {
+			t.Skip("directory mode does not block file creation on Windows")
+		}
+		dir := t.TempDir()
+		require.NoError(t, os.Chmod(dir, 0o555))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		probe := filepath.Join(dir, "direct-probe")
+		err := os.WriteFile(probe, []byte("x"), 0o644)
+		if err == nil {
+			require.NoError(t, os.Remove(probe))
+		}
+		require.Equal(t, err != nil, liveCheckDirCreateBlocked(dir))
+	})
+}
+
 func TestRemoveLiveCheckSnapshotSidecars(t *testing.T) {
 	t.Parallel()
 
@@ -1665,14 +1701,32 @@ func requireCommittedPrefix(t *testing.T, values []string, committed int) {
 
 func lockLiveCheckDirReadOnly(t *testing.T, dir string) {
 	t.Helper()
+	// Windows ignores directory mode bits, so a failed create probe there does
+	// not mean SQLite cannot create the wal index. A privileged Unix process
+	// can also ignore the bits, so the tests run only after a create fails.
+	if !liveCheckDirModeBlocksCreates(runtime.GOOS) {
+		t.Skip("directory mode does not block file creation on Windows")
+	}
 	require.NoError(t, os.Chmod(dir, 0o555))
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if liveCheckDirCreateBlocked(dir) {
+		return
+	}
+	require.NoError(t, os.Chmod(dir, 0o755))
+	t.Skip("directory mode does not block file creation")
+}
+
+func liveCheckDirModeBlocksCreates(goos string) bool {
+	return goos != "windows"
+}
+
+func liveCheckDirCreateBlocked(dir string) bool {
 	probe := filepath.Join(dir, "write-probe")
 	if err := os.WriteFile(probe, []byte("x"), 0o644); err == nil {
 		_ = os.Remove(probe)
-		require.NoError(t, os.Chmod(dir, 0o755))
-		t.Skip("this OS does not stop file creation in a mode 0555 directory")
+		return false
 	}
+	return true
 }
 
 func restoreLiveCheckDir(t *testing.T, dir string) {
