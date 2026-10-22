@@ -373,11 +373,42 @@ func vacuumSQLiteInto(src, dst string) error {
 // non-empty wal is read with mode=ro, which sees those frames. That read
 // updates the wal index (-shm); the database and wal bytes are not written.
 func sqliteSnapshotDSN(src string) string {
-	path := "file:" + filepath.ToSlash(src)
+	path := sqliteFileURI(src)
 	if info, err := os.Stat(src + "-wal"); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
 		return path + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)"
 	}
 	return path + "?mode=ro&immutable=1&_pragma=mmap_size(0)"
+}
+
+// SQLite ends a file: filename at a raw # or ? and decodes %HH, so a path
+// such as client#1 or data%2E.db would open a different file. / and : stay
+// literal so separators and a Windows drive letter do not depend on a
+// decoder that accepts %2F. file:// is avoided because that form is parsed
+// as an authority.
+func sqliteFileURI(path string) string {
+	slash := filepath.ToSlash(path)
+	var b strings.Builder
+	b.Grow(len("file:") + len(slash))
+	b.WriteString("file:")
+	for i := 0; i < len(slash); i++ {
+		c := slash[i]
+		if sqliteURIPathUnescaped(c) {
+			b.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&b, "%%%02X", c)
+	}
+	return b.String()
+}
+
+func sqliteURIPathUnescaped(c byte) bool {
+	switch c {
+	case '-', '_', '.', '~', '/', ':',
+		'!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '@':
+		return true
+	default:
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+	}
 }
 
 func quoteSQLiteString(value string) string {

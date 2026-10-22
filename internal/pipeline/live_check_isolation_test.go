@@ -975,6 +975,38 @@ func TestSQLiteSnapshotDSN(t *testing.T) {
 		require.Contains(t, dsn, "immutable=1")
 	})
 
+	t.Run("ordinary path is not percent-encoded", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join("work", "data.db")
+		require.Equal(t, "file:"+filepath.ToSlash(path), sqliteFileURI(path))
+		require.Equal(t, "file:C:/cli/data.db", sqliteFileURI("C:/cli/data.db"))
+		require.Equal(t, "file:a&b.db", sqliteFileURI("a&b.db"))
+	})
+
+	t.Run("hash question and percent stay in the filename", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join("work", "client#1", "data%2E.db")
+		dsn := sqliteSnapshotDSN(path)
+		filePart, query, ok := strings.Cut(dsn, "?")
+		require.True(t, ok)
+		require.Equal(t, sqliteFileURI(path), filePart)
+		require.Contains(t, filePart, "client%231")
+		require.Contains(t, filePart, "data%252E.db")
+		require.NotContains(t, filePart, "#")
+		require.True(t, strings.HasPrefix(query, "mode=ro"))
+		require.Contains(t, query, "immutable=1")
+
+		// ? is illegal in a Windows filename, so this stays a string.
+		question := filepath.Join("work", "client?1", "data.db")
+		qdsn := sqliteSnapshotDSN(question)
+		qFile, qQuery, ok := strings.Cut(qdsn, "?")
+		require.True(t, ok)
+		require.Equal(t, sqliteFileURI(question), qFile)
+		require.Contains(t, qFile, "client%3F1")
+		require.NotContains(t, qFile, "?")
+		require.True(t, strings.HasPrefix(qQuery, "mode=ro"))
+	})
+
 	t.Run("quote in the destination path is escaped", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
@@ -1136,6 +1168,53 @@ func TestStageSQLiteFileSnapshot(t *testing.T) {
 		require.ErrorIs(t, err, os.ErrNotExist)
 	})
 
+	t.Run("hash in the directory is not read as a uri fragment", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		decoy := filepath.Join(root, "client")
+		seedLiveCheckSQLite(t, decoy, "fragment")
+		realDir := filepath.Join(root, "client#1")
+		require.NoError(t, os.MkdirAll(realDir, 0o755))
+		src := filepath.Join(realDir, "data.db")
+		seedLiveCheckSQLite(t, src, "hash-name")
+		before := snapshotDir(t, root)
+
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, []string{"hash-name"}, liveCheckSQLiteValues(t, dst))
+		require.Equal(t, before, snapshotDir(t, root))
+	})
+
+	t.Run("percent-encoded filename is not decoded to a different file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		decoy := filepath.Join(dir, "data..db")
+		seedLiveCheckSQLite(t, decoy, "decoded-name")
+		src := filepath.Join(dir, "data%2E.db")
+		seedLiveCheckSQLite(t, src, "encoded-name")
+		before := snapshotDir(t, dir)
+
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, []string{"encoded-name"}, liveCheckSQLiteValues(t, dst))
+		require.Equal(t, before, snapshotDir(t, dir))
+	})
+
+	t.Run("space and apostrophe in the path copy that file", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		dir := filepath.Join(root, "my data", "o'brien")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		src := filepath.Join(dir, "a&b.db")
+		seedLiveCheckSQLite(t, src, "literal")
+		before := snapshotDir(t, root)
+
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, []string{"literal"}, liveCheckSQLiteValues(t, dst))
+		require.Equal(t, before, snapshotDir(t, root))
+	})
+
 	t.Run("sqlite snapshot is refused when the budget is too small", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
@@ -1182,12 +1261,12 @@ func readLiveCheckFile(t *testing.T, path string) []byte {
 func liveCheckSQLiteValues(t *testing.T, path string) []string {
 	t.Helper()
 	// immutable keeps this helper from creating a wal index beside the snapshot.
-	return queryLiveCheckSQLite(t, "file:"+filepath.ToSlash(path)+"?mode=ro&immutable=1&_pragma=mmap_size(0)")
+	return queryLiveCheckSQLite(t, sqliteFileURI(path)+"?mode=ro&immutable=1&_pragma=mmap_size(0)")
 }
 
 func liveCheckSQLiteValuesFollowingWAL(t *testing.T, path string) []string {
 	t.Helper()
-	return queryLiveCheckSQLite(t, "file:"+filepath.ToSlash(path)+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)")
+	return queryLiveCheckSQLite(t, sqliteFileURI(path)+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)")
 }
 
 func queryLiveCheckSQLite(t *testing.T, dsn string) []string {
