@@ -2776,10 +2776,10 @@ func runGeneratedBinary(t *testing.T, binaryPath string, args ...string) (string
 // --- Unit 1: Template Regression Tests ---
 
 func TestGenerateWithNoAuth(t *testing.T) {
-	// Validate invokes real module tooling, including the pinned govulncheck
-	// process. Keep this test serial so its external Go processes do not race
-	// the many generated-module tests that otherwise run in parallel and make
-	// the vulnerability gate fail nondeterministically under resource pressure.
+	// Validate runs the generated module's quality gates. Live govulncheck is
+	// skipped unless PP_LIVE_GOVULNCHECK=1, but go test, vet, and build still
+	// spawn real toolchain processes. Keep this test serial so those processes
+	// do not race the other generated-module tests.
 
 	apiSpec := &spec.APISpec{
 		Name:    "noauth",

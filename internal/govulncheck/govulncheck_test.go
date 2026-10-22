@@ -10,6 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLiveDBEnabled(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, liveDBEnabled("", true))
+	assert.False(t, liveDBEnabled("0", true))
+	assert.False(t, liveDBEnabled("true", true))
+	assert.True(t, liveDBEnabled("1", true))
+	assert.True(t, liveDBEnabled("", false))
+	assert.True(t, liveDBEnabled("0", false))
+	assert.True(t, liveDBEnabled("1", false))
+}
+
 func TestToolModuleIsPinned(t *testing.T) {
 	assert.NotContains(t, ToolModule, "@latest")
 	assert.True(t, strings.HasPrefix(ToolVersion, "v"))
