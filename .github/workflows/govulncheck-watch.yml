@@ -143,12 +143,22 @@ jobs:
             exit 1
           fi
 
+          # Reachable stdlib findings make the printed CLI unsafe. The bump
+          # is librarySafeGoDirective in internal/generator.
+          floor_labels=("bug" "priority:P1" "comp:generator")
+          create_label_args=()
+          edit_label_args=()
+          for label in "${floor_labels[@]}"; do
+            create_label_args+=(--label "$label")
+            edit_label_args+=(--add-label "$label")
+          done
+
           if [[ ${#issues[@]} -eq 0 ]]; then
-            created="$(gh issue create --title "$title" --body-file "$body")"
+            created="$(gh issue create --title "$title" --body-file "$body" "${create_label_args[@]}")"
             echo "Opened ${created}"
           else
             primary="${issues[0]}"
-            gh issue edit "$primary" --title "$title" --body-file "$body"
+            gh issue edit "$primary" --title "$title" --body-file "$body" "${edit_label_args[@]}"
             echo "Updated #${primary}"
             if [[ ${#issues[@]} -gt 1 ]]; then
               for extra in "${issues[@]:1}"; do

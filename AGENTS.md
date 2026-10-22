@@ -285,7 +285,7 @@ The root `go.mod` `go` directive is the source of truth. `librarySafeGoDirective
 
 Run `python3 scripts/verify-go-floor.py` and update every surface it reports (generator text, templates, install docs, fixtures, and goldens). Renovate opens the grouped patch PR that bumps the root `go` directive, a root `toolchain` line when one is present, and `librarySafeGoDirective` together. Finish those reported surfaces on that PR. Do not automerge it. On pull requests and main CI the library comparison warns and does not fail the job, including when `.go-version` cannot be fetched. `release.yml` sets `GO_FLOOR_ENFORCE_LIBRARY=1` and refuses to publish when `librarySafeGoDirective` is newer than the library `.go-version`, or when that file cannot be read.
 
-Generated-CLI quality gates skip live `govulncheck` under `go test` unless `PP_LIVE_GOVULNCHECK=1`. The daily `govulncheck-watch` workflow scans the press module and one freshly generated golden CLI with the live database. On a reachable standard-library finding it opens or updates one issue titled `Go floor: bump to <fixed version>`.
+Generated-CLI quality gates skip live `govulncheck` under `go test` unless `PP_LIVE_GOVULNCHECK=1`. The daily `govulncheck-watch` workflow scans the press module and one freshly generated golden CLI with the live database. On a reachable standard-library finding it opens or updates one issue titled `Go floor: bump to <fixed version>`, labeled `bug`, `priority:P1`, and `comp:generator`.
 
 ## Supply-chain hardening
 
