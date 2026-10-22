@@ -3568,8 +3568,18 @@ func credentialDecodedTokens(s string) []string {
 			addBytes(b)
 		}
 	}
+	decodeLabeled := func(tok string) {
+		decodeB64(tok)
+		atoms := credentialB64Atoms(tok)
+		if len(atoms) < 2 {
+			return
+		}
+		for _, atom := range atoms {
+			decodeB64(atom)
+		}
+	}
 	for _, sp := range credentialRuns(s, credentialIsB64, false) {
-		decodeB64(s[sp[0]:sp[1]])
+		decodeLabeled(s[sp[0]:sp[1]])
 	}
 	for _, sp := range credentialMIMESpans(s) {
 		joined := strings.Map(func(r rune) rune {
@@ -3578,7 +3588,7 @@ func credentialDecodedTokens(s string) []string {
 			}
 			return r
 		}, s[sp[0]:sp[1]])
-		decodeB64(joined)
+		decodeLabeled(joined)
 	}
 	for _, sp := range credentialRuns(s, credentialIsHex, false) {
 		tok := s[sp[0]:sp[1]]
@@ -3596,6 +3606,34 @@ func credentialDecodedTokens(s string) []string {
 		}
 	}
 	return out
+}
+
+// An internal '=' is a label separator (echo=<value>). Trailing '=' stays
+// with the value as base64 padding.
+func credentialB64Atoms(tok string) []string {
+	var atoms []string
+	start := 0
+	for i := 0; i < len(tok); i++ {
+		if tok[i] != '=' {
+			continue
+		}
+		j := i
+		for j < len(tok) && tok[j] == '=' {
+			j++
+		}
+		if j >= len(tok) {
+			break
+		}
+		if i > start {
+			atoms = append(atoms, tok[start:i])
+		}
+		start = j
+		i = j - 1
+	}
+	if start < len(tok) {
+		atoms = append(atoms, tok[start:])
+	}
+	return atoms
 }
 
 func credentialRuns(s string, ok func(byte) bool, allowWS bool) [][2]int {

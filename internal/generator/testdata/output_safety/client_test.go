@@ -56,6 +56,28 @@ func TestCredentialEchoAPIErrorMasksEncodedBody(t *testing.T) {
 	}
 }
 
+func TestCredentialEchoMasksLabeledBase64(t *testing.T) {
+	const secret = "Wk8mQ2pL9vBn3cDe"
+	c := newEchoClient(secret)
+	body := "echo=" + base64.StdEncoding.EncodeToString([]byte("credential:"+secret))
+	got := c.maskCredentialText(body, secret)
+	if credentialRecoverable(got, secret) {
+		t.Fatalf("labeled base64 still recoverable: %q", got)
+	}
+	if got != "****" {
+		t.Fatalf("labeled base64 = %q, want ****", got)
+	}
+	padded := "echo=" + base64.StdEncoding.EncodeToString([]byte("abcdef:"+secret))
+	got = c.maskCredentialText("seen "+padded+" end", secret)
+	if credentialRecoverable(got, secret) || got != "seen **** end" {
+		t.Fatalf("padded labeled base64 = %q", got)
+	}
+	other := "echo=" + base64.StdEncoding.EncodeToString([]byte("credential:hello-world"))
+	if got = c.maskCredentialText(other, secret); got != other {
+		t.Fatalf("unrelated labeled base64 changed: %q", got)
+	}
+}
+
 func TestCredentialEchoNegativeCases(t *testing.T) {
 	const secret = "Wk8mQ2pL9vBn3cDe"
 	c := newEchoClient(secret)
