@@ -355,49 +355,21 @@ func snapshotSQLiteFile(src, dst string, info os.FileInfo, budget *liveCheckCopy
 
 func vacuumSQLiteInto(src, dst string) error {
 	// modernc honors mode and the pragmas only when the DSN has a file: prefix.
-	walExisted := liveCheckRegularSidecar(src + "-wal")
-	shmExisted := liveCheckRegularSidecar(src + "-shm")
+	// The read can create a wal and shm beside the source. Leave them. The
+	// connection is closed before any later check, so a size or existence test
+	// is not a lock: removing those files can delete a commit another
+	// connection has already written.
 	db, err := openLiveCheckSnapshot(src)
 	if err != nil {
-		removeLiveCheckSnapshotSidecars(src, walExisted, shmExisted)
 		return fmt.Errorf("snapshot sqlite database: %w", err)
 	}
+	defer func() { _ = db.Close() }()
 	query := "VACUUM INTO " + quoteSQLiteString(filepath.ToSlash(dst))
-	_, err = db.Exec(query)
-	_ = db.Close()
-	// The locking read creates a wal index beside the source. Drop that index
-	// when it has no frames so a settled store stays byte-identical. A wal that
-	// gained frames belongs to a concurrent writer.
-	removeLiveCheckSnapshotSidecars(src, walExisted, shmExisted)
-	if err != nil {
+	if _, err := db.Exec(query); err != nil {
 		removeSQLiteFamily(dst)
 		return fmt.Errorf("snapshot sqlite database: %w", err)
 	}
 	return nil
-}
-
-func liveCheckRegularSidecar(path string) bool {
-	info, err := os.Lstat(path)
-	return err == nil && info.Mode().IsRegular()
-}
-
-func removeLiveCheckSnapshotSidecars(src string, walExisted, shmExisted bool) {
-	if walExisted && shmExisted {
-		return
-	}
-	if info, err := os.Lstat(src + "-wal"); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-		return
-	}
-	if !walExisted {
-		if info, err := os.Lstat(src + "-wal"); err == nil && info.Mode().IsRegular() && info.Size() == 0 {
-			_ = os.Remove(src + "-wal")
-		}
-	}
-	if !shmExisted {
-		if info, err := os.Lstat(src + "-shm"); err == nil && info.Mode().IsRegular() {
-			_ = os.Remove(src + "-shm")
-		}
-	}
 }
 
 // mode=ro takes the shared lock or WAL read mark that VACUUM INTO holds for

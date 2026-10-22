@@ -1075,20 +1075,24 @@ func TestLiveCheckCopyBudget(t *testing.T) {
 func TestStageSQLiteFileSnapshot(t *testing.T) {
 	t.Parallel()
 
-	t.Run("snapshot leaves the source byte-identical and drops the wal", func(t *testing.T) {
+	t.Run("snapshot keeps the wal index it opened", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		src := filepath.Join(dir, "data.db")
 		seedLiveCheckSQLite(t, src, "seed")
 		require.NoError(t, os.RemoveAll(src+"-wal"))
 		require.NoError(t, os.RemoveAll(src+"-shm"))
-		before := snapshotDir(t, dir)
+		dbBefore := readLiveCheckFile(t, src)
 
 		dst := filepath.Join(t.TempDir(), "copy.db")
 		require.NoError(t, stageSQLiteFile(src, dst, nil))
-		require.Equal(t, before, snapshotDir(t, dir))
+		require.Equal(t, dbBefore, readLiveCheckFile(t, src))
+		_, err := os.Stat(src + "-wal")
+		require.NoError(t, err)
+		_, err = os.Stat(src + "-shm")
+		require.NoError(t, err)
 		require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
-		_, err := os.Stat(dst + "-wal")
+		_, err = os.Stat(dst + "-wal")
 		require.ErrorIs(t, err, os.ErrNotExist)
 	})
 
@@ -1343,13 +1347,11 @@ func TestStageSQLiteSnapshotConsistency(t *testing.T) {
 				before := snapshotDir(t, dir)
 				dst := filepath.Join(t.TempDir(), "copy.db")
 				require.NoError(t, stageSQLiteFile(src, dst, nil))
-				if state == "frames" {
-					requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, dir))
-					_, err := os.Stat(src + "-shm")
-					require.NoError(t, err)
-				} else {
-					require.Equal(t, before, snapshotDir(t, dir))
-				}
+				requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, dir))
+				_, err := os.Stat(src + "-wal")
+				require.NoError(t, err)
+				_, err = os.Stat(src + "-shm")
+				require.NoError(t, err)
 				got := liveCheckSQLiteValues(t, dst)
 				require.Contains(t, got, "seed")
 				if state == "frames" {
@@ -1524,70 +1526,6 @@ func TestLiveCheckDirCreateBlocked(t *testing.T) {
 			require.NoError(t, os.Remove(probe))
 		}
 		require.Equal(t, err != nil, liveCheckDirCreateBlocked(dir))
-	})
-}
-
-func TestRemoveLiveCheckSnapshotSidecars(t *testing.T) {
-	t.Parallel()
-
-	t.Run("settled index created by the read is removed", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		src := filepath.Join(dir, "data.db")
-		require.NoError(t, os.WriteFile(src+"-wal", nil, 0o644))
-		require.NoError(t, os.WriteFile(src+"-shm", []byte("index"), 0o644))
-		removeLiveCheckSnapshotSidecars(src, false, false)
-		_, err := os.Stat(src + "-wal")
-		require.ErrorIs(t, err, os.ErrNotExist)
-		_, err = os.Stat(src + "-shm")
-		require.ErrorIs(t, err, os.ErrNotExist)
-	})
-
-	t.Run("pre-existing empty wal stays and a new index is removed", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		src := filepath.Join(dir, "data.db")
-		require.NoError(t, os.WriteFile(src+"-wal", nil, 0o644))
-		require.NoError(t, os.WriteFile(src+"-shm", []byte("index"), 0o644))
-		removeLiveCheckSnapshotSidecars(src, true, false)
-		require.Empty(t, readLiveCheckFile(t, src+"-wal"))
-		_, err := os.Stat(src + "-shm")
-		require.ErrorIs(t, err, os.ErrNotExist)
-	})
-
-	t.Run("wal frames are left with their index", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		src := filepath.Join(dir, "data.db")
-		require.NoError(t, os.WriteFile(src+"-wal", []byte("frames"), 0o644))
-		require.NoError(t, os.WriteFile(src+"-shm", []byte("index"), 0o644))
-		removeLiveCheckSnapshotSidecars(src, false, false)
-		require.Equal(t, "frames", string(readLiveCheckFile(t, src+"-wal")))
-		require.Equal(t, "index", string(readLiveCheckFile(t, src+"-shm")))
-	})
-
-	t.Run("pre-existing index is not removed", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		src := filepath.Join(dir, "data.db")
-		require.NoError(t, os.WriteFile(src+"-wal", []byte("frames"), 0o644))
-		require.NoError(t, os.WriteFile(src+"-shm", []byte("index"), 0o644))
-		removeLiveCheckSnapshotSidecars(src, true, true)
-		require.Equal(t, "index", string(readLiveCheckFile(t, src+"-shm")))
-	})
-
-	t.Run("non-regular wal is not removed", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		src := filepath.Join(dir, "data.db")
-		require.NoError(t, os.MkdirAll(src+"-wal", 0o755))
-		require.NoError(t, os.WriteFile(src+"-shm", []byte("index"), 0o644))
-		removeLiveCheckSnapshotSidecars(src, false, false)
-		info, err := os.Stat(src + "-wal")
-		require.NoError(t, err)
-		require.True(t, info.IsDir())
-		_, err = os.Stat(src + "-shm")
-		require.ErrorIs(t, err, os.ErrNotExist)
 	})
 }
 
