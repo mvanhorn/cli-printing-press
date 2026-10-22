@@ -120,9 +120,9 @@ func isTerminal(w io.Writer) bool {
 	return false
 }
 
-// mirrorWriter duplicates command output for --deliver and still reports the
-// primary writer's terminal mode. io.MultiWriter hides that mode, so a TTY
-// looked like a pipe and skipped control escaping.
+// mirrorWriter duplicates command output for --deliver. It is not a terminal
+// for format selection, so a list still renders as JSON the way io.MultiWriter
+// did. Control escaping follows the primary writer.
 type mirrorWriter struct {
 	primary io.Writer
 	copy    io.Writer
@@ -147,14 +147,27 @@ func (m *mirrorWriter) Write(p []byte) (int, error) {
 }
 
 func (m *mirrorWriter) TerminalOverride() bool {
+	return false
+}
+
+func (m *mirrorWriter) EscapesTerminalControls() bool {
 	return isTerminal(m.primary)
 }
 
 func terminalText(w io.Writer, s string) string {
-	if isTerminal(w) {
+	if escapesTerminalControls(w) {
 		return cliutil.EscapeTerminalControls(s)
 	}
 	return s
+}
+
+func escapesTerminalControls(w io.Writer) bool {
+	if w != nil {
+		if esc, ok := w.(interface{ EscapesTerminalControls() bool }); ok {
+			return esc.EscapesTerminalControls()
+		}
+	}
+	return isTerminal(w)
 }
 
 // terminalStreamFilter escapes controls on a TTY stderr without rewriting the
@@ -3699,7 +3712,7 @@ func printPlain(w io.Writer, data json.RawMessage, documentedFields ...map[strin
 }
 
 func joinPlainFields(w io.Writer, fields []string) string {
-	if !isTerminal(w) {
+	if !escapesTerminalControls(w) {
 		return strings.Join(fields, "\t")
 	}
 	escaped := make([]string, len(fields))

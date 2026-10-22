@@ -322,8 +322,8 @@ func TestOutputSafetyDeliverMirrorPreservesTerminal(t *testing.T) {
 	tty := &ttyBuf{tty: true}
 	var sink bytes.Buffer
 	out := &mirrorWriter{primary: tty, copy: &sink}
-	if !isTerminal(out) {
-		t.Fatal("deliver mirror of a TTY must stay a terminal")
+	if isTerminal(out) || !out.EscapesTerminalControls() {
+		t.Fatal("deliver mirror of a TTY must keep machine format and still escape")
 	}
 	if err := renderSafety("csv", out, payload); err != nil {
 		t.Fatal(err)
@@ -338,7 +338,7 @@ func TestOutputSafetyDeliverMirrorPreservesTerminal(t *testing.T) {
 	pipe := &ttyBuf{}
 	sink.Reset()
 	out = &mirrorWriter{primary: pipe, copy: &sink}
-	if isTerminal(out) {
+	if isTerminal(out) || out.EscapesTerminalControls() {
 		t.Fatal("deliver mirror of a pipe must stay a pipe")
 	}
 	if err := renderSafety("csv", out, payload); err != nil {
@@ -355,8 +355,8 @@ func TestOutputSafetyDeliverMirrorPreservesTerminal(t *testing.T) {
 	t.Cleanup(func() { devNull.Close() })
 	sink.Reset()
 	out = &mirrorWriter{primary: devNull, copy: &sink}
-	if !isTerminal(out) {
-		t.Fatal("char device behind a deliver mirror must stay a terminal")
+	if isTerminal(out) || !out.EscapesTerminalControls() {
+		t.Fatal("char device behind a deliver mirror must escape without selecting a terminal format")
 	}
 	if err := renderSafety("plain", out, payload); err != nil {
 		t.Fatal(err)
@@ -372,7 +372,7 @@ func TestOutputSafetyDeliverMirrorPreservesTerminal(t *testing.T) {
 	t.Cleanup(func() { regular.Close() })
 	sink.Reset()
 	out = &mirrorWriter{primary: regular, copy: &sink}
-	if isTerminal(out) {
+	if isTerminal(out) || out.EscapesTerminalControls() {
 		t.Fatal("regular file behind a deliver mirror must not be a terminal")
 	}
 	if err := renderSafety("plain", out, payload); err != nil {
@@ -387,8 +387,67 @@ func TestOutputSafetyDeliverMirrorPreservesTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed.Close()
-	if !isTerminal(&mirrorWriter{primary: closed, copy: &bytes.Buffer{}}) {
-		t.Fatal("mirror of an unstatable file must stay a terminal")
+	closedMirror := &mirrorWriter{primary: closed, copy: &bytes.Buffer{}}
+	if isTerminal(closedMirror) || !closedMirror.EscapesTerminalControls() {
+		t.Fatal("mirror of an unstatable file must escape without selecting a terminal format")
+	}
+}
+
+func TestOutputSafetyDeliverMirrorKeepsMachineJSON(t *testing.T) {
+	row := map[string]any{
+		"id": "1", "name": "café\x1b]52;c;abc\x07\u0085東京😀", "status": "open",
+		"owner": "a", "region": "b", "count": "3", "note": "kept-field",
+	}
+	payload, err := json.Marshal([]map[string]any{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tty := &ttyBuf{tty: true}
+	var sink bytes.Buffer
+	out := &mirrorWriter{primary: tty, copy: &sink}
+	if wantsHumanTable(out, &rootFlags{}) {
+		t.Fatal("deliver mirror selected a human table")
+	}
+	if err := printOutputWithFlags(out, payload, &rootFlags{}); err != nil {
+		t.Fatal(err)
+	}
+	if tty.String() != sink.String() {
+		t.Fatal("deliver sink diverged from stdout")
+	}
+	assertDeliveredJSON(t, sink.Bytes())
+
+	var bare ttyBuf
+	bare.tty = true
+	if !wantsHumanTable(&bare, &rootFlags{}) {
+		t.Fatal("bare tty should select a human table")
+	}
+	if err := printOutput(&bare, payload, false); err != nil {
+		t.Fatal(err)
+	}
+	if json.Valid(bytes.TrimSpace(bare.Bytes())) {
+		t.Fatalf("bare tty rendered JSON, want a table: %q", bare.String())
+	}
+}
+
+func assertDeliveredJSON(t *testing.T, out []byte) {
+	t.Helper()
+	if hasRawTerminalControl(string(out)) {
+		t.Fatalf("deliver body leaked controls: %q", out)
+	}
+	if !json.Valid(bytes.TrimSpace(out)) {
+		t.Fatalf("deliver body is not JSON: %q", out)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out, &rows); err != nil {
+		t.Fatalf("deliver body unmarshal: %v\n%s", err, out)
+	}
+	if len(rows) != 1 || rows[0]["note"] != "kept-field" {
+		t.Fatalf("deliver body dropped fields: %#v", rows)
+	}
+	name, _ := rows[0]["name"].(string)
+	if !strings.Contains(name, "café") || !strings.Contains(name, "東京") || !strings.Contains(name, "😀") || !strings.Contains(name, "\x1b") {
+		t.Fatalf("deliver body changed name %q", name)
 	}
 }
 
