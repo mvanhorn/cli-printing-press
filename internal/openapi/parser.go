@@ -31,6 +31,7 @@ var (
 	endpointLimitExplicit        = false // true when user set --max-endpoints-per-resource
 	globalScopeParamNormalizerRE = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 	authFormatPlaceholderRE      = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	simpleQueryIdentRE           = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	// Must stay aligned with generated store.unusableResourceID / isoDatePattern.
 	isoDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-Zz]+)?$`)
 )
@@ -4647,10 +4648,20 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 		}
 
 		schema := schemaRefValue(parameter.Schema)
-		// Skip parameters with names that can't be Go identifiers
+		// Skip parameters with names that can't be Go identifiers.
+		// A leading $ on a query name is an OData key ($top): keep the
+		// original as the wire name and the remainder as the flag when
+		// that remainder is an identifier. $.xgafv-style names are not flags.
 		paramName := parameter.Name
+		dollarWire := ""
 		if strings.HasPrefix(paramName, "$") || strings.HasPrefix(paramName, ".") {
-			continue
+			rest := strings.TrimPrefix(paramName, "$")
+			if parameter.In == openapi3.ParameterInQuery && strings.HasPrefix(parameter.Name, "$") && simpleQueryIdentRE.MatchString(rest) {
+				dollarWire = parameter.Name
+				paramName = rest
+			} else {
+				continue
+			}
 		}
 		// Skip phantom names ("" / "[]") that some specs emit for unnamed
 		// array query params. They are not usable MCP/CLI arguments and would
@@ -4687,7 +4698,10 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.
 				urlNameOverrides = readParamURLNameOverrides(pathItem, op)
 				urlNameOverridesRead = true
 			}
-			param.URLName = paramURLName(paramName, parameter.Extensions, urlNameOverrides)
+			param.URLName = paramURLName(parameter.Name, parameter.Extensions, urlNameOverrides)
+			if param.URLName == "" && dollarWire != "" {
+				param.URLName = dollarWire
+			}
 			if dispatch, ok := boolExtension(parameter.Extensions, extensionDispatchParam); ok {
 				param.DispatchParam = dispatch
 				param.DispatchParamSet = true
@@ -9286,25 +9300,36 @@ func selectDescription(summary, description string) string {
 	return description
 }
 
+func paginationParamKey(name string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "$")
+}
+
 func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Pagination {
-	// Map lowercase parameter name back to the spec's original casing so
-	// the detected LimitParam/CursorParam preserves whatever the API
-	// expects (e.g. Google APIs reject `pagesize` but accept `pageSize`).
+	// Map the candidate key back to the wire name so LimitParam/CursorParam
+	// preserve the API's casing and OData $ names (pageSize, $top).
 	originalCase := map[string]string{}
-	paramsByLowerName := map[string]spec.Param{}
+	paramsByKey := map[string]spec.Param{}
 	for _, p := range params {
 		if !isQueryParamLocation(p) || isPathSubstitutionParam(p) {
 			continue
 		}
-		lowerName := strings.ToLower(p.Name)
-		originalCase[lowerName] = p.Name
-		paramsByLowerName[lowerName] = p
+		record := func(key string) {
+			if key == "" {
+				return
+			}
+			originalCase[key] = p.WireName()
+			paramsByKey[key] = p
+		}
+		record(paginationParamKey(p.Name))
+		record(paginationParamKey(p.WireName()))
 	}
 
 	var pag spec.Pagination
 
-	// Detect limit param
-	for _, name := range []string{"limit", "take", "maxresults", "pagesize", "page_size", "max_results", "perpage", "per_page", "page[size]"} {
+	// Detect limit param. top is last so limit still wins when both exist.
+	// count is not a candidate: OData $count is a boolean, and an integer
+	// count is filled later by profiler inference when LimitParam is empty.
+	for _, name := range []string{"limit", "take", "maxresults", "pagesize", "page_size", "max_results", "perpage", "per_page", "page[size]", "top"} {
 		if orig, ok := originalCase[name]; ok {
 			pag.LimitParam = orig
 			break
@@ -9314,16 +9339,16 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	// Date-formatted names such as after/before are range filters. Skip them
 	// so a later opaque cursor is still detected.
 	for _, name := range []string{"pagetoken", "page_token"} {
-		if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
-			pag.CursorParam = p.Name
+		if p, ok := paramsByKey[name]; ok && !p.HasDateFormat() {
+			pag.CursorParam = p.WireName()
 			pag.Type = "page_token"
 			break
 		}
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token", "page_key"} {
-			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
-				pag.CursorParam = p.Name
+			if p, ok := paramsByKey[name]; ok && !p.HasDateFormat() {
+				pag.CursorParam = p.WireName()
 				pag.Type = "cursor"
 				break
 			}
@@ -9331,8 +9356,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"offset", "skip"} {
-			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
-				pag.CursorParam = p.Name
+			if p, ok := paramsByKey[name]; ok && !p.HasDateFormat() {
+				pag.CursorParam = p.WireName()
 				pag.Type = "offset"
 				break
 			}
@@ -9344,8 +9369,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	// CursorParam as an integer when no body cursor is extracted.
 	if pag.Type == "" {
 		for _, name := range []string{"page", "pagenumber", "page_number", "page[number]"} {
-			if p, ok := paramsByLowerName[name]; ok && !p.HasDateFormat() {
-				pag.CursorParam = p.Name
+			if p, ok := paramsByKey[name]; ok && !p.HasDateFormat() {
+				pag.CursorParam = p.WireName()
 				pag.Type = "page"
 				break
 			}
@@ -9354,8 +9379,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	// `size` is also a common domain filter, so require pagination wording in
 	// its description before treating it as the page length.
 	if pag.LimitParam == "" && pag.CursorParam != "" {
-		if sizeParam, ok := paramsByLowerName["size"]; ok && describesPageSize(sizeParam.Description) {
-			pag.LimitParam = sizeParam.Name
+		if sizeParam, ok := paramsByKey["size"]; ok && describesPageSize(sizeParam.Description) {
+			pag.LimitParam = sizeParam.WireName()
 		}
 	}
 

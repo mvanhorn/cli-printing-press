@@ -3841,6 +3841,317 @@ func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T
 	assert.Equal(t, 40, byName["take_agents"].PaginationPageSize)
 }
 
+func TestProfilePagination_ODataWireNamesIgnoreBooleanCount(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "odata-paging",
+		Resources: map[string]spec.Resource{
+			"audit_logs": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/audit-logs",
+						Params: []spec.Param{
+							{Name: "top", Type: "int", URLName: "$top"},
+							{Name: "skip", Type: "int", URLName: "$skip"},
+							{Name: "count", Type: "bool", URLName: "$count"},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"devices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/devices",
+						Params: []spec.Param{
+							{Name: "top", Type: "int", URLName: "$top"},
+							{Name: "skip", Type: "int", URLName: "$skip"},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"offsets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/offsets",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "limit", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/pages",
+						Params:   []spec.Param{{Name: "page", Type: "int"}, {Name: "per_page", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"cursors": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/cursors",
+						Params:   []spec.Param{{Name: "after", Type: "string"}, {Name: "limit", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"long_counts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/long-counts",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "long"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"string_counts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/string-counts",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "string"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"string_limits": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/string-limits",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "limit", Type: "string"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "audit_logs")
+	assert.Equal(t, "$top", byName["audit_logs"].PaginationLimitParam)
+	assert.Equal(t, "$skip", byName["audit_logs"].PaginationCursorParam)
+	assert.Equal(t, "offset", byName["audit_logs"].PaginationCursorType)
+	require.Contains(t, byName, "devices")
+	assert.Equal(t, "$top", byName["devices"].PaginationLimitParam)
+	assert.Equal(t, "$skip", byName["devices"].PaginationCursorParam)
+	assert.NotEmpty(t, byName["devices"].PaginationLimitParam)
+
+	assert.Equal(t, "offset", byName["offsets"].PaginationCursorParam)
+	assert.Equal(t, "offset", byName["offsets"].PaginationCursorType)
+	assert.Equal(t, "limit", byName["offsets"].PaginationLimitParam)
+	assert.Equal(t, "page", byName["pages"].PaginationCursorParam)
+	assert.Equal(t, "page", byName["pages"].PaginationCursorType)
+	assert.Equal(t, "per_page", byName["pages"].PaginationLimitParam)
+	assert.Equal(t, "after", byName["cursors"].PaginationCursorParam)
+	assert.Equal(t, "cursor", byName["cursors"].PaginationCursorType)
+	assert.Equal(t, "limit", byName["cursors"].PaginationLimitParam)
+	require.Contains(t, byName, "long_counts")
+	assert.Equal(t, "count", byName["long_counts"].PaginationLimitParam)
+	require.Contains(t, byName, "string_counts")
+	assert.Empty(t, byName["string_counts"].PaginationLimitParam)
+	require.Contains(t, byName, "string_limits")
+	assert.Equal(t, "limit", byName["string_limits"].PaginationLimitParam)
+}
+
+func TestProfilePagination_CustomWireNameKeepsOffsetAndPageClass(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "wireclass",
+		Resources: map[string]spec.Resource{
+			"starts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/starts",
+						Params:   []spec.Param{{Name: "offset", Type: "int", URLName: "start"}, {Name: "limit", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"indexes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/indexes",
+						Params:   []spec.Param{{Name: "page", Type: "int", URLName: "pageIndex"}, {Name: "per_page", Type: "int", URLName: "pageSize"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"tokens": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tokens",
+						Params:   []spec.Param{{Name: "offset", Type: "int", URLName: "after"}, {Name: "limit", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "starts")
+	assert.Equal(t, "start", byName["starts"].PaginationCursorParam)
+	assert.Equal(t, "offset", byName["starts"].PaginationCursorType)
+	assert.Equal(t, "limit", byName["starts"].PaginationLimitParam)
+	require.Contains(t, byName, "indexes")
+	assert.Equal(t, "pageIndex", byName["indexes"].PaginationCursorParam)
+	assert.Equal(t, "page", byName["indexes"].PaginationCursorType)
+	assert.Equal(t, "pageSize", byName["indexes"].PaginationLimitParam)
+	require.Contains(t, byName, "tokens")
+	assert.Equal(t, "after", byName["tokens"].PaginationCursorParam)
+	assert.Equal(t, "cursor", byName["tokens"].PaginationCursorType)
+}
+
+func TestAutoDependentDropsUnbindableTwoPlaceholderPath(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "scripts",
+		Resources: map[string]spec.Resource{
+			"scripts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/scripts", Response: spec.ResponseDef{Type: "array"}, IDField: "id"},
+				},
+			},
+			"runs": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/scripts/{scriptId}/runs",
+						Response:   spec.ResponseDef{Type: "array"},
+						IDField:    "id",
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params:     []spec.Param{{Name: "scriptId", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"executions": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/scripts/{scriptId}/device/{deviceId}/executions",
+						Response:   spec.ResponseDef{Type: "array"},
+						IDField:    "id",
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{
+							{Name: "scriptId", Type: "string", Required: true, Positional: true},
+							{Name: "deviceId", Type: "string", Required: true, Positional: true},
+						},
+					},
+				},
+			},
+		},
+	}
+	var profile *APIProfile
+	stderr := captureStderr(t, func() {
+		profile = Profile(s)
+	})
+	assert.Contains(t, stderr, "/scripts/{scriptId}/device/{deviceId}/executions")
+	assert.Contains(t, stderr, "x-pp-sync-walker")
+	assert.Contains(t, stderr, "key_param")
+	var runs bool
+	for _, dep := range profile.DependentSyncResources {
+		assert.NotContains(t, dep.Path, "executions")
+		if dep.Path == "/scripts/{scriptId}/runs" {
+			runs = true
+			require.Len(t, dep.PathParams, 1)
+			assert.Equal(t, "scriptId", dep.PathParams[0].Param)
+		}
+	}
+	assert.True(t, runs, "single-placeholder dependent must stay")
+
+	t.Run("explicit walker still syncs distinct fields", func(t *testing.T) {
+		walker := &spec.APISpec{
+			Name: "orgs",
+			Resources: map[string]spec.Resource{
+				"orgs": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/orgs", Response: spec.ResponseDef{Type: "array"}, IDField: "id"},
+					},
+				},
+				"alerts": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/orgs/{orgId}/devices/{deviceId}/alerts",
+							Response: spec.ResponseDef{Type: "array"},
+							IDField:  "id",
+							Params: []spec.Param{
+								{Name: "orgId", Type: "string", Required: true, Positional: true},
+								{Name: "deviceId", Type: "string", Required: true, Positional: true},
+							},
+							Walker: &spec.WalkerConfig{Parent: "orgs", KeyParam: "orgId", KeyField: "id"},
+						},
+					},
+				},
+			},
+		}
+		got := Profile(walker)
+		var alerts *DependentResource
+		for i := range got.DependentSyncResources {
+			if got.DependentSyncResources[i].Path == "/orgs/{orgId}/devices/{deviceId}/alerts" {
+				alerts = &got.DependentSyncResources[i]
+			}
+		}
+		require.NotNil(t, alerts)
+		assert.Equal(t, []DependentPathParam{
+			{Param: "orgId", Field: "id"},
+			{Param: "deviceId", Field: "devices_id"},
+		}, alerts.PathParams)
+	})
+
+	t.Run("template var is not a second placeholder", func(t *testing.T) {
+		tenanted := &spec.APISpec{
+			Name:                 "tenanted",
+			EndpointTemplateVars: []string{"tenant"},
+			Resources: map[string]spec.Resource{
+				"scripts": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/scripts", Response: spec.ResponseDef{Type: "array"}, IDField: "id"},
+					},
+				},
+				"runs": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/{tenant}/scripts/{scriptId}/runs",
+							Response:   spec.ResponseDef{Type: "array"},
+							IDField:    "id",
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+			},
+		}
+		got := Profile(tenanted)
+		var found bool
+		for _, dep := range got.DependentSyncResources {
+			if dep.Path == "/{tenant}/scripts/{scriptId}/runs" {
+				found = true
+			}
+		}
+		assert.True(t, found, "a template var plus one parent id must stay")
+	})
+
+}
+
 // A limit param's declared `maximum` must cap the sync page size: the 100
 // fallback (and any larger default) would otherwise trip an API validation
 // error. Regression guard for the Granola public API, which caps page_size
@@ -4804,13 +5115,72 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 	assert.Equal(t, "projects", dep.ParentResource)
 	assert.Equal(t, "per_parent", dep.ReconcileMode)
 	assert.Equal(t, "projects_id", dep.ParentScopeColumn)
-	assert.Equal(t, "$.project", dep.GenericScopeJSONPath)
+	assert.Equal(t, "$.parent_id", dep.GenericScopeJSONPath)
 	assert.Empty(t, dep.CascadeJunctions, "profiler must leave CascadeJunctions empty (filled by Task 4 seam)")
 
-	t.Run("negative_two_path_params_yields_none", func(t *testing.T) {
-		// A dependent with 2 path params cannot be safely reconciled per-parent.
-		// Both parent segments are declared as flat resources so the child path
-		// is detected as a dependent (and the negative guard is genuinely exercised).
+	t.Run("declared_singular_field_keeps_schema_name", func(t *testing.T) {
+		declared := &spec.APISpec{
+			Name: "project-mgmt",
+			Resources: map[string]spec.Resource{
+				"projects": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/projects", Response: spec.ResponseDef{Type: "array"}},
+					},
+				},
+				"modules": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/projects/{projectId}/modules",
+							Response:   spec.ResponseDef{Type: "array", Item: "Module"},
+							IDField:    "id",
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+			},
+			Types: map[string]spec.TypeDef{
+				"Module": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "project", Type: "string"}}},
+			},
+		}
+		declaredProfile := Profile(declared)
+		require.Len(t, declaredProfile.DependentSyncResources, 1)
+		assert.Equal(t, "$.project", declaredProfile.DependentSyncResources[0].GenericScopeJSONPath)
+	})
+
+	t.Run("object_singular_field_uses_parent_id", func(t *testing.T) {
+		nested := &spec.APISpec{
+			Name: "project-mgmt",
+			Resources: map[string]spec.Resource{
+				"projects": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/projects", Response: spec.ResponseDef{Type: "array"}},
+					},
+				},
+				"modules": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/projects/{projectId}/modules",
+							Response:   spec.ResponseDef{Type: "array", Item: "Module"},
+							IDField:    "id",
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+			},
+			Types: map[string]spec.TypeDef{
+				"Module": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "project", Type: "object"}}},
+			},
+		}
+		nestedProfile := Profile(nested)
+		require.Len(t, nestedProfile.DependentSyncResources, 1)
+		assert.Equal(t, "$.parent_id", nestedProfile.DependentSyncResources[0].GenericScopeJSONPath)
+	})
+
+	t.Run("distinct_two_path_params_stay", func(t *testing.T) {
+		// Distinct placeholder fields stay. Only a collapse onto one field is
+		// dropped, and that child is not per-parent reconcilable.
 		s2 := &spec.APISpec{
 			Name: "deep-nesting",
 			Resources: map[string]spec.Resource{
@@ -4846,18 +5216,16 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 			},
 		}
 		profile2 := Profile(s2)
-		// The 2-placeholder child shards to "projects_issues"; match by Path so the
-		// lookup is robust to the sharded Name.
 		var issues *DependentResource
 		for i := range profile2.DependentSyncResources {
 			if profile2.DependentSyncResources[i].Path == "/workspaces/{workspaceId}/projects/{projectId}/issues" {
 				issues = &profile2.DependentSyncResources[i]
-				break
 			}
 		}
-		require.NotNil(t, issues, "2-path-param child must be detected as a dependent resource")
-		require.Len(t, issues.PathParams, 2, "expected 2 path params so the negative guard is exercised")
-		assert.Equal(t, "none", issues.ReconcileMode, "2-path-param dependent must have ReconcileMode=none")
+		require.NotNil(t, issues)
+		assert.Equal(t, "none", issues.ReconcileMode)
+		require.Len(t, issues.PathParams, 2)
+		assert.NotEqual(t, issues.PathParams[0].Field, issues.PathParams[1].Field)
 	})
 
 	t.Run("negative_no_pk_yields_none", func(t *testing.T) {

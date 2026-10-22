@@ -2014,6 +2014,12 @@ Rules:
   the single-placeholder default would otherwise pick the wrong slot (or no
   slot at all). The generator warns and drops the walker when it's ambiguous
   and `key_param` is missing.
+- Auto-detected dependents (no walker) are dropped when two or more path
+  placeholders would be filled from the same parent field, because generated
+  sync cannot tell those values apart. Generate warns with the path. Distinct
+  fields stay, even when the parent response does not declare them. Declare
+  `x-pp-sync-walker` with `key_param` to sync a dropped child. Endpoint
+  template variables are not placeholders for this check.
 - Walker-emitted dependents flow through the same `syncDependentResource`
   machinery as auto-detected ones, so concurrency/retry/cursor/Upsert
   behavior is identical.

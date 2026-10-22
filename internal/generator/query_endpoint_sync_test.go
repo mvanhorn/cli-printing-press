@@ -149,8 +149,8 @@ func TestQueryEndpointSyncPagesAndUnwraps(t *testing.T) {
 
 // TestQueryEndpointSyncStopsOnRepeatedFullPage verifies that a query endpoint
 // which ignores STARTPOSITION cannot make sync append the same full page until
-// the page cap or process timeout. The repeated-page warning is emitted after
-// query-specific continuation has marked the full response as having more.
+// the page cap or process timeout. The repeated page is an incomplete walk, so
+// the command warns and exits non-zero instead of reporting sync_complete.
 func TestQueryEndpointSyncStopsOnRepeatedFullPage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs a generated binary; runs in the full generated-test CI lane")
@@ -184,7 +184,7 @@ func TestQueryEndpointSyncStopsOnRepeatedFullPage(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sync.db")
 	cmd := exec.Command(binaryPath, "--json", "sync", "--resources", "widgets", "--max-pages", "0", "--db", dbPath)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	require.Error(t, err, string(out))
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -192,5 +192,7 @@ func TestQueryEndpointSyncStopsOnRepeatedFullPage(t *testing.T) {
 	assert.Contains(t, seenQueries[0], "startposition 1 maxresults 2")
 	assert.Contains(t, seenQueries[1], "startposition 3 maxresults 2")
 	assert.Contains(t, string(out), `"reason":"stuck_pagination"`)
+	assert.Contains(t, string(out), `"reason":"stuck_page"`)
+	assert.NotContains(t, string(out), `"event":"sync_complete"`)
 	assert.Contains(t, string(out), `"total":2`)
 }

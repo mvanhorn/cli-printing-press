@@ -241,7 +241,8 @@ import (
 )
 
 type pagingClient struct {
-	got []map[string]string
+	got   []map[string]string
+	short bool
 }
 
 func (c *pagingClient) Get(_ context.Context, _ string, params map[string]string) (json.RawMessage, error) {
@@ -250,10 +251,10 @@ func (c *pagingClient) Get(_ context.Context, _ string, params map[string]string
 		copied[k] = v
 	}
 	c.got = append(c.got, copied)
-	if len(c.got) == 1 {
-		return json.RawMessage(` + "`" + `[{"id":"one"},{"id":"two"}]` + "`" + `), nil
+	if c.short || len(c.got) > 1 {
+		return json.RawMessage(` + "`" + `[{"id":"one"}]` + "`" + `), nil
 	}
-	return json.RawMessage(` + "`" + `[{"id":"three"}]` + "`" + `), nil
+	return json.RawMessage(` + "`" + `[{"id":"one"},{"id":"two"}]` + "`" + `), nil
 }
 
 func (*pagingClient) RateLimit() float64 { return 0 }
@@ -270,7 +271,18 @@ func openPagingStore(t *testing.T) *store.Store {
 
 func syncFlat(t *testing.T, resource string, maxPages int) *pagingClient {
 	t.Helper()
-	client := &pagingClient{}
+	return syncPaging(t, resource, maxPages, false)
+}
+
+func syncShort(t *testing.T, resource string) *pagingClient {
+	t.Helper()
+	// A one-item cursor page is a proven end. A full page with no next cursor is incomplete.
+	return syncPaging(t, resource, 1, true)
+}
+
+func syncPaging(t *testing.T, resource string, maxPages int, short bool) *pagingClient {
+	t.Helper()
+	client := &pagingClient{short: short}
 	res := syncResource(context.Background(), client, openPagingStore(t), resource, "", false, maxPages, false, false, nil, nil)
 	if res.Err != nil || res.Warn != nil {
 		t.Fatalf("sync %s: err=%v warn=%v calls=%v", resource, res.Err, res.Warn, client.got)
@@ -319,7 +331,7 @@ func TestSyncPositionsSendsOneBasedOffset(t *testing.T) {
 }
 
 func TestSyncTokensOmitsCursorOnFirstPage(t *testing.T) {
-	client := syncFlat(t, "tokens", 1)
+	client := syncShort(t, "tokens")
 	if len(client.got) != 1 {
 		t.Fatalf("calls=%d, want 1 (%v)", len(client.got), client.got)
 	}
@@ -329,7 +341,7 @@ func TestSyncTokensOmitsCursorOnFirstPage(t *testing.T) {
 }
 
 func TestSyncPageTokensOmitsCursorOnFirstPage(t *testing.T) {
-	client := syncFlat(t, "page_tokens", 1)
+	client := syncShort(t, "page_tokens")
 	if _, ok := client.got[0]["page_token"]; ok {
 		t.Fatalf("page_token=%q, want absent", client.got[0]["page_token"])
 	}
