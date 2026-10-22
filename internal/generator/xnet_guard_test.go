@@ -2,6 +2,7 @@ package generator
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,12 +296,53 @@ func moduleSandboxEnv(t *testing.T) []string {
 	)
 }
 
+func TestGovulncheckCleanHonorsLiveEnv(t *testing.T) {
+	t.Run("unset does not scan", func(t *testing.T) {
+		t.Setenv(govulncheck.LiveEnv, "")
+		require.False(t, govulncheck.LiveDBEnabled())
+		requireGovulncheckClean(t, t.TempDir())
+		called := false
+		err := govulncheckClean(t, t.TempDir(), false, func(string, time.Duration, []string, string, ...string) (string, error) {
+			called = true
+			return "", errors.New("scanned")
+		})
+		require.NoError(t, err)
+		assert.False(t, called)
+	})
+
+	t.Run("set returns the scan error", func(t *testing.T) {
+		t.Setenv(govulncheck.LiveEnv, "1")
+		require.True(t, govulncheck.LiveDBEnabled())
+		err := govulncheckClean(t, t.TempDir(), true, func(_ string, _ time.Duration, _ []string, name string, args ...string) (string, error) {
+			assert.Equal(t, "go", name)
+			assert.Equal(t, govulncheck.GoRunArgs("./..."), args)
+			return "db unavailable", errors.New("lookup failed")
+		})
+		require.ErrorContains(t, err, "lookup failed")
+		require.ErrorContains(t, err, "db unavailable")
+	})
+}
+
 func requireGovulncheckClean(t *testing.T, dir string) {
 	t.Helper()
-	env := append(moduleSandboxEnv(t), govulncheck.ToolchainEnv(dir)...)
-	out, err := runCommandWithEnv(dir, 8*time.Minute, env, "go", govulncheck.GoRunArgs("./...")...)
-	require.NoError(t, err, out)
+	require.NoError(t, govulncheckClean(t, dir, govulncheck.LiveDBEnabled(), runCommandWithEnv))
 }
+
+func govulncheckClean(t *testing.T, dir string, live bool, run commandWithEnv) error {
+	t.Helper()
+	if !live {
+		t.Logf("SKIP govulncheck ./... (set %s=1 to query the live vuln DB)", govulncheck.LiveEnv)
+		return nil
+	}
+	env := append(moduleSandboxEnv(t), govulncheck.ToolchainEnv(dir)...)
+	out, err := run(dir, 8*time.Minute, env, "go", govulncheck.GoRunArgs("./...")...)
+	if err != nil {
+		return fmt.Errorf("%w\n%s", err, out)
+	}
+	return nil
+}
+
+type commandWithEnv func(dir string, timeout time.Duration, extraEnv []string, name string, args ...string) (string, error)
 
 type fakeGo struct {
 	listOut string
