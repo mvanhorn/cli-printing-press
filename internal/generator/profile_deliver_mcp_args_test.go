@@ -495,7 +495,19 @@ func TestProfileDeliverContract(t *testing.T) {
 	})
 
 	t.Run("deliver stdout does not create a file", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "absent.txt")
+		dir := t.TempDir()
+		wd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := os.Chdir(wd); err != nil {
+				t.Errorf("restore working directory: %v", err)
+			}
+		}()
 		stdout, stderr, err := runCLI(t, "version", "--deliver", "stdout")
 		if err != nil {
 			t.Fatalf("deliver stdout: %v\n%s\n%s", err, stdout, stderr)
@@ -503,8 +515,16 @@ func TestProfileDeliverContract(t *testing.T) {
 		if !strings.Contains(stdout, "reprokit-pp-cli") || !strings.Contains(stdout, "0.0.0-dev") {
 			t.Fatalf("version stdout = %q", stdout)
 		}
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("deliver stdout created or stat-failed %s: %v", path, err)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			t.Fatalf("deliver stdout created %v in %s", names, dir)
 		}
 	})
 
