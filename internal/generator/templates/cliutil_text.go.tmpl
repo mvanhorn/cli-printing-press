@@ -12,6 +12,7 @@ import (
 {{- end}}
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // CleanText normalizes scraped text by trimming whitespace and decoding
@@ -39,6 +40,279 @@ func ScrubTerminal(s string) string {
 		}
 		return r
 	}, s)
+}
+
+const terminalHexDigits = "0123456789abcdef"
+
+// EscapeTerminalControls renders C0, DEL, C1, and line/paragraph separators
+// as visible ASCII. Invalid UTF-8 is escaped one byte at a time so an
+// overlong encoding of ESC cannot reach a terminal. Tab, CR, and LF are
+// included; stream layout that needs those bytes uses EscapeTerminalStream.
+func EscapeTerminalControls(s string) string {
+	return escapeTerminalBytes(s, true)
+}
+
+// EscapeTerminalStream is EscapeTerminalControls that leaves tab, LF, and CR
+// in place so progress lines and error newlines keep their shape.
+func EscapeTerminalStream(s string) string {
+	return escapeTerminalBytes(s, false)
+}
+
+func escapeTerminalBytes(s string, escapeLineBreaks bool) string {
+	if s == "" || !terminalBytesNeedEscape(s, escapeLineBreaks) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			appendTerminalByte(&b, s[i])
+			i++
+			continue
+		}
+		if terminalRuneEscaped(r, escapeLineBreaks) {
+			appendTerminalRune(&b, r)
+			i += size
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
+}
+
+func terminalBytesNeedEscape(s string, escapeLineBreaks bool) bool {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			return true
+		}
+		if terminalRuneEscaped(r, escapeLineBreaks) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+func terminalRuneEscaped(r rune, escapeLineBreaks bool) bool {
+	if r == '\t' || r == '\n' || r == '\r' {
+		return escapeLineBreaks
+	}
+	if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+		return true
+	}
+	return r == '\u2028' || r == '\u2029'
+}
+
+func appendTerminalByte(b *strings.Builder, c byte) {
+	b.WriteString(`\x`)
+	b.WriteByte(terminalHexDigits[c>>4])
+	b.WriteByte(terminalHexDigits[c&0x0F])
+}
+
+func appendTerminalRune(b *strings.Builder, r rune) {
+	if r < 0x100 {
+		appendTerminalByte(b, byte(r))
+		return
+	}
+	b.WriteString(`\u`)
+	b.WriteByte(terminalHexDigits[(r>>12)&0x0F])
+	b.WriteByte(terminalHexDigits[(r>>8)&0x0F])
+	b.WriteByte(terminalHexDigits[(r>>4)&0x0F])
+	b.WriteByte(terminalHexDigits[r&0x0F])
+}
+
+// EscapeJSONControls rewrites C0, DEL, C1, U+2028, and U+2029 inside JSON
+// strings as \uXXXX. encoding/json leaves C1 as raw UTF-8. Decoded strings
+// stay the same. Non-whitespace controls outside strings become spaces.
+func EscapeJSONControls(src []byte) []byte {
+	if len(src) == 0 || !jsonHasRawControl(src) {
+		return src
+	}
+	out := make([]byte, 0, len(src)+8)
+	inString := false
+	for i := 0; i < len(src); {
+		c := src[i]
+		if !inString {
+			if c == '"' {
+				inString = true
+				out = append(out, c)
+				i++
+				continue
+			}
+			if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7f {
+				out = append(out, ' ')
+				i++
+				continue
+			}
+			if c < 0x80 {
+				out = append(out, c)
+				i++
+				continue
+			}
+			r, size := utf8.DecodeRune(src[i:])
+			if size < 1 {
+				size = 1
+			}
+			if (r == utf8.RuneError && size == 1) || jsonControlRune(r) {
+				out = append(out, ' ')
+				i += size
+				continue
+			}
+			out = append(out, src[i:i+size]...)
+			i += size
+			continue
+		}
+		if c == '\\' {
+			if i+1 >= len(src) {
+				out = append(out, c)
+				i++
+				continue
+			}
+			if src[i+1] == 'u' && i+6 <= len(src) && jsonHex4(src[i+2:i+6]) {
+				out = append(out, src[i:i+6]...)
+				i += 6
+				continue
+			}
+			out = append(out, src[i], src[i+1])
+			i += 2
+			continue
+		}
+		if c == '"' {
+			inString = false
+			out = append(out, c)
+			i++
+			continue
+		}
+		if c < 0x80 {
+			if c < 0x20 || c == 0x7f {
+				out = append(out, jsonUBytes(rune(c))...)
+				i++
+				continue
+			}
+			out = append(out, c)
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(src[i:])
+		if size < 1 {
+			size = 1
+		}
+		if r == utf8.RuneError && size == 1 {
+			out = append(out, jsonUBytes(rune(c))...)
+			i++
+			continue
+		}
+		if jsonControlRune(r) {
+			out = append(out, jsonUBytes(r)...)
+			i += size
+			continue
+		}
+		out = append(out, src[i:i+size]...)
+		i += size
+	}
+	return out
+}
+
+func jsonHasRawControl(src []byte) bool {
+	inString := false
+	for i := 0; i < len(src); {
+		c := src[i]
+		if !inString {
+			if c == '"' {
+				inString = true
+				i++
+				continue
+			}
+			if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7f {
+				return true
+			}
+			if c < 0x80 {
+				i++
+				continue
+			}
+			r, size := utf8.DecodeRune(src[i:])
+			if size < 1 {
+				size = 1
+			}
+			if (r == utf8.RuneError && size == 1) || jsonControlRune(r) {
+				return true
+			}
+			i += size
+			continue
+		}
+		if c == '\\' {
+			if i+1 >= len(src) {
+				i++
+				continue
+			}
+			if src[i+1] == 'u' && i+6 <= len(src) && jsonHex4(src[i+2:i+6]) {
+				i += 6
+				continue
+			}
+			i += 2
+			continue
+		}
+		if c == '"' {
+			inString = false
+			i++
+			continue
+		}
+		if c < 0x80 {
+			if c < 0x20 || c == 0x7f {
+				return true
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(src[i:])
+		if size < 1 {
+			size = 1
+		}
+		if (r == utf8.RuneError && size == 1) || jsonControlRune(r) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+func jsonControlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == '\u2028' || r == '\u2029'
+}
+
+func jsonHex4(b []byte) bool {
+	if len(b) != 4 {
+		return false
+	}
+	for _, c := range b {
+		if !jsonHexDigit(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func jsonHexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func jsonUBytes(r rune) []byte {
+	if r > 0xFFFF {
+		r -= 0x10000
+		hi := rune(0xD800 + (r >> 10))
+		lo := rune(0xDC00 + (r & 0x3FF))
+		out := make([]byte, 0, 12)
+		out = append(out, jsonBMP(hi)...)
+		return append(out, jsonBMP(lo)...)
+	}
+	return jsonBMP(r)
+}
+
+func jsonBMP(r rune) []byte {
+	return []byte{'\\', 'u', terminalHexDigits[(r>>12)&0x0F], terminalHexDigits[(r>>8)&0x0F], terminalHexDigits[(r>>4)&0x0F], terminalHexDigits[r&0x0F]}
 }
 
 // EscapePathParam encodes a path-param value as one URL path segment.
