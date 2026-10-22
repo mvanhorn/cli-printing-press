@@ -1,10 +1,14 @@
 package generator
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -316,4 +320,99 @@ func oauth2RefreshRaceSpec(name string, auth spec.AuthConfig) *spec.APISpec {
 	}
 	apiSpec.Auth = auth
 	return apiSpec
+}
+
+// TestGeneratedMintTestsLeaveRelocatedCredentialsAlone runs the printed OAuth
+// mint tests with the CLI's own relocation variables pointed at a seeded
+// store. generate's quality gate runs these tests with the caller's
+// environment, so a store they can reach is that person's live credentials.
+func TestGeneratedMintTestsLeaveRelocatedCredentialsAlone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generated CLI race tests run in the full generated-test CI lane")
+	}
+	t.Parallel()
+
+	for _, fixture := range []string{"golden-api-oauth2-cc.yaml", "golden-api-oauth2-authcode.yaml"} {
+		apiSpec, outputDir := generateGoldenFixture(t, fixture)
+		for _, relocation := range []string{"_HOME", "_DATA_DIR"} {
+			output, rewritten, err := runGeneratedMintTestsAgainstDecoy(t, apiSpec, outputDir, relocation)
+			require.NoError(t, err, "%s %s: printed mint tests failed:\n%s", fixture, relocation, output)
+			require.False(t, rewritten, "%s %s: printed mint tests rewrote the relocated credentials store:\n%s", fixture, relocation, output)
+		}
+	}
+}
+
+// TestGeneratedMintTestsDecoyCatchesHandRolledIsolation proves the decoy run
+// above can fail: with the hand-rolled HOME redirect put back, the printed
+// mint test rewrites the relocated store.
+func TestGeneratedMintTestsDecoyCatchesHandRolledIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generated CLI race tests run in the full generated-test CI lane")
+	}
+	t.Parallel()
+
+	apiSpec, outputDir := generateGoldenFixture(t, "golden-api-oauth2-cc.yaml")
+	racePath := filepath.Join(outputDir, "internal", "client", "token_race_test.go")
+	src := readGeneratedFile(t, outputDir, "internal", "client", "token_race_test.go")
+	handRolled := strings.Replace(src,
+		"\trestore, err := cliutil.SetHomeOverride(\"\")\n\tif err != nil {\n\t\tt.Fatalf(\"reset home override: %v\", err)\n\t}\n\tt.Cleanup(restore)\n\thome := testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)\n",
+		"\thome := t.TempDir()\n\tt.Setenv(\"HOME\", home)\n\tt.Setenv(\"USERPROFILE\", home)\n\tt.Setenv(\"XDG_CACHE_HOME\", filepath.Join(home, \"cache\"))\n\tt.Setenv(\"XDG_CONFIG_HOME\", filepath.Join(home, \"config\"))\n\tt.Setenv(\"XDG_DATA_HOME\", filepath.Join(home, \"data\"))\n\tt.Setenv(\"XDG_STATE_HOME\", filepath.Join(home, \"state\"))\n",
+		1)
+	require.NotEqual(t, src, handRolled, "expected to put the hand-rolled HOME redirect back")
+	handRolled = dropGeneratedImportLines(handRolled, "/internal/cliutil")
+	require.NoError(t, os.WriteFile(racePath, []byte(handRolled), 0o644))
+
+	output, rewritten, err := runGeneratedMintTestsAgainstDecoy(t, apiSpec, outputDir, "_HOME")
+	require.NoError(t, err, "the hand-rolled mint test should still pass:\n%s", output)
+	require.True(t, rewritten, "the hand-rolled redirect must let the printed mint test rewrite the relocated store:\n%s", output)
+}
+
+func generateGoldenFixture(t *testing.T, fixture string) (*spec.APISpec, string) {
+	t.Helper()
+
+	apiSpec, err := openapi.ParseFile(filepath.Join("..", "..", "testdata", "golden", "fixtures", fixture))
+	require.NoError(t, err)
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	return apiSpec, outputDir
+}
+
+// runGeneratedMintTestsAgainstDecoy seeds <store>/data/credentials.toml, points
+// <PREFIX><relocation> at it with every other relocation variable empty, runs
+// the printed client tests, and reports whether the store changed.
+func runGeneratedMintTestsAgainstDecoy(t *testing.T, apiSpec *spec.APISpec, outputDir, relocation string) ([]byte, bool, error) {
+	t.Helper()
+
+	envPrefix := naming.EnvPrefix(apiSpec.Name)
+	store := t.TempDir()
+	credentialsPath := filepath.Join(store, "data", "credentials.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(credentialsPath), 0o700))
+	require.NoError(t, os.WriteFile(credentialsPath, []byte(generatedConfigPermsDecoy), 0o600))
+	target := store
+	if relocation == "_DATA_DIR" {
+		target = filepath.Dir(credentialsPath)
+	}
+	operatorHome := t.TempDir()
+
+	cmd := exec.Command("go", "test", "-mod=mod", "./internal/client", "-run", "^(TestConcurrent|TestLooseConfig)", "-count=1")
+	cmd.Dir = outputDir
+	var output []byte
+	err := withGoBuildCache(outputDir, func(cacheDir string) error {
+		cmd.Env = append(os.Environ(), "HOME="+operatorHome, "USERPROFILE="+operatorHome, "GOCACHE="+cacheDir)
+		for _, suffix := range []string{"_HOME", "_CONFIG", "_CONFIG_DIR", "_DATA_DIR", "_STATE_DIR", "_CACHE_DIR"} {
+			cmd.Env = append(cmd.Env, envPrefix+suffix+"=")
+		}
+		cmd.Env = append(cmd.Env, envPrefix+relocation+"="+target)
+		for _, name := range []string{"GOPATH", "GOMODCACHE"} {
+			if value := goEnvValue(t, name); value != "" {
+				cmd.Env = append(cmd.Env, name+"="+value)
+			}
+		}
+		var runErr error
+		output, runErr = cmd.CombinedOutput()
+		return runErr
+	})
+	after, readErr := os.ReadFile(credentialsPath)
+	require.NoError(t, readErr)
+	return output, string(after) != generatedConfigPermsDecoy, err
 }

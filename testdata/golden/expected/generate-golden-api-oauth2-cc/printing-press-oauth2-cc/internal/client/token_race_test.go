@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"printing-press-oauth2-pp-cli/internal/cliutil"
+	"printing-press-oauth2-pp-cli/internal/cliutil/testenv"
 	"printing-press-oauth2-pp-cli/internal/config"
 )
 
@@ -51,13 +53,12 @@ func TestConcurrentClientCredentialsMint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	restore, err := cliutil.SetHomeOverride("")
+	if err != nil {
+		t.Fatalf("reset home override: %v", err)
+	}
+	t.Cleanup(restore)
+	home := testenv.Isolate(t, cliutil.ConfigDir, cliutil.DataDir, cliutil.StateDir, cliutil.CacheDir)
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "localapp"))
 	t.Setenv("APPDATA", filepath.Join(home, "appdata"))
 
