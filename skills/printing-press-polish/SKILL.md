@@ -543,7 +543,7 @@ Skill(
 )
 ```
 
-Parse the returned `---OUTPUT-REVIEW-RESULT---` block. `status: WARN` findings flow into the diagnostic categories above so Phase 2 fixes address both rule-based and plausibility issues. `status: SKIP` is informational — record but don't block.
+Parse the returned `---OUTPUT-REVIEW-RESULT---` block. `status: WARN` findings flow into the diagnostic categories above so Phase 2 fixes address both rule-based and plausibility issues. `status: SKIP` means the review did not run: record it as skipped, do not count it as a pass, and do not block on it.
 
 Wave B gating applies: all findings are warnings, never blockers. Fix if obvious and cheap; document with a short comment if deferred.
 

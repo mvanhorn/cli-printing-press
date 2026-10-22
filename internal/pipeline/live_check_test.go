@@ -779,12 +779,15 @@ func TestLiveCheckMarshalJSON(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"pass_rate_pct":67`)
 	require.Contains(t, string(body), `"status":"available"`)
+	require.Contains(t, string(body), `"review_status":"pass"`)
 	require.Contains(t, string(body), `"evaluated":2`)
 	require.NotContains(t, string(body), "0.6666")
 
 	body, err = json.Marshal(&LiveCheckResult{Unable: true, Reason: "no research.json"})
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"status":"unavailable"`)
+	require.Contains(t, string(body), `"review_status":"skipped"`)
+	require.NotContains(t, string(body), `"review_status":"pass"`)
 }
 
 // smoke test that ties research, a stub binary, and the full RunLiveCheck

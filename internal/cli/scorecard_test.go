@@ -146,6 +146,88 @@ func TestScorecardJSONKeepsLiveCheckSeparateFromLiveVerification(t *testing.T) {
 	assert.Contains(t, got, `"live_api_verification":0`)
 }
 
+func TestRenderSampleOutputProbeSkippedIsNotAPass(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	renderSampleOutputProbe(&buf, &pipeline.LiveCheckResult{
+		Failed:  2,
+		Skipped: 1,
+		Features: []pipeline.LiveFeatureResult{{
+			Name:   "list",
+			Status: pipeline.StatusFail,
+			Reason: "exit 3: database disk image is malformed",
+		}},
+	})
+	got := buf.String()
+	assert.Contains(t, got, "Review: skipped")
+	assert.Contains(t, got, "list: exit 3: database disk image is malformed")
+	assert.NotContains(t, got, "Passed:")
+	assert.NotContains(t, got, "pass rate")
+	assert.NotContains(t, got, "Review: pass")
+}
+
+func TestRenderSampleOutputProbePassIsNotSkipped(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	renderSampleOutputProbe(&buf, &pipeline.LiveCheckResult{
+		Passed:   2,
+		PassRate: 1,
+	})
+	got := buf.String()
+	assert.Contains(t, got, "Review: pass")
+	assert.Contains(t, got, "Passed: 2/2")
+	assert.Contains(t, got, "pass rate")
+	assert.NotContains(t, got, "Review: skipped")
+}
+
+func TestRenderSampleOutputProbeFailIsNotAPass(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	renderSampleOutputProbe(&buf, &pipeline.LiveCheckResult{
+		Passed:   1,
+		Failed:   1,
+		PassRate: 0.5,
+		Features: []pipeline.LiveFeatureResult{{
+			Name:   "list",
+			Status: pipeline.StatusFail,
+			Reason: "empty output",
+		}},
+	})
+	got := buf.String()
+	assert.Contains(t, got, "Review: fail")
+	assert.Contains(t, got, "Passed: 1/2")
+	assert.Contains(t, got, "empty output")
+	assert.NotContains(t, got, "Review: pass\n")
+	assert.NotContains(t, got, "Review: skipped")
+}
+
+func TestRenderSampleOutputProbeUnavailableIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	renderSampleOutputProbe(&buf, nil)
+	assert.Empty(t, buf.String())
+
+	renderSampleOutputProbe(&buf, &pipeline.LiveCheckResult{
+		Unable: true,
+		Reason: "no research.json",
+		BinaryRefresh: &pipeline.LiveCheckBinaryRefresh{
+			Action: "no_stage",
+			Reason: "no staged binary found",
+		},
+	})
+	got := buf.String()
+	assert.Contains(t, got, "Binary refresh: no_stage")
+	assert.Contains(t, got, "Status: unavailable")
+	assert.Contains(t, got, "no research.json")
+	assert.Contains(t, got, "Review: skipped")
+	assert.NotContains(t, got, "Passed:")
+	assert.NotContains(t, got, "Review: pass")
+}
+
 func TestLiveCheckFatalReasonReportsFailedBinaryRefresh(t *testing.T) {
 	t.Parallel()
 

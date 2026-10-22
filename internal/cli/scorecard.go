@@ -92,44 +92,7 @@ func newScorecardCmd() *cobra.Command {
 			renderHumanScorecard(os.Stdout, sc)
 
 			if live != nil {
-				fmt.Printf("\nSample Output Probe (live command sample)\n")
-				if live.BinaryRefresh != nil {
-					fmt.Printf("  Binary refresh: %s", live.BinaryRefresh.Action)
-					if live.BinaryRefresh.Reason != "" {
-						fmt.Printf(" (%s)", live.BinaryRefresh.Reason)
-					}
-					fmt.Println()
-				}
-				if live.Unable {
-					fmt.Printf("  Status: unavailable\n")
-					fmt.Printf("  Unable to run: %s\n", live.Reason)
-				} else {
-					fmt.Printf("  Passed: %d/%d  (%d%% pass rate, %d skipped)\n", live.Passed, live.Evaluated(), int(live.PassRate*100+0.5), live.Skipped)
-					if live.Failed > 0 {
-						fmt.Println("  Failures:")
-						for _, f := range live.Features {
-							if f.Status == "fail" {
-								fmt.Printf("    - %s: %s\n", f.Name, f.Reason)
-							}
-						}
-					}
-					// Wave B output-quality warnings are surfaced here so a
-					// developer running scorecard without --json sees them.
-					// Wave A review flagged the "human sees less than agent"
-					// gap as an agent-native parity concern.
-					warnCount := 0
-					for _, f := range live.Features {
-						warnCount += len(f.Warnings)
-					}
-					if warnCount > 0 {
-						fmt.Printf("  Warnings (%d): not blocking in Wave B — flip to failures in Wave C after calibration\n", warnCount)
-						for _, f := range live.Features {
-							for _, w := range f.Warnings {
-								fmt.Printf("    - %s: %s\n", f.Name, w)
-							}
-						}
-					}
-				}
+				renderSampleOutputProbe(os.Stdout, live)
 			}
 
 			if len(sc.GapReport) > 0 {
@@ -157,6 +120,55 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow live-check to execute mutating generated and research-authored examples (default skips them)")
 
 	return cmd
+}
+
+func renderSampleOutputProbe(w io.Writer, live *pipeline.LiveCheckResult) {
+	if live == nil {
+		return
+	}
+	fmt.Fprintf(w, "\nSample Output Probe (live command sample)\n")
+	if live.BinaryRefresh != nil {
+		fmt.Fprintf(w, "  Binary refresh: %s", live.BinaryRefresh.Action)
+		if live.BinaryRefresh.Reason != "" {
+			fmt.Fprintf(w, " (%s)", live.BinaryRefresh.Reason)
+		}
+		fmt.Fprintln(w)
+	}
+	if live.Unable {
+		fmt.Fprintf(w, "  Status: unavailable\n")
+		fmt.Fprintf(w, "  Unable to run: %s\n", live.Reason)
+		fmt.Fprintf(w, "  Review: skipped\n")
+		return
+	}
+	if live.SampleReviewStatus() == pipeline.SampleReviewSkipped {
+		fmt.Fprintf(w, "  Review: skipped\n")
+		fmt.Fprintf(w, "  Samples: %d passed, %d failed, %d skipped\n", live.Passed, live.Failed, live.Skipped)
+	} else {
+		fmt.Fprintf(w, "  Review: %s\n", live.SampleReviewStatus())
+		fmt.Fprintf(w, "  Passed: %d/%d  (%d%% pass rate, %d skipped)\n", live.Passed, live.Evaluated(), int(live.PassRate*100+0.5), live.Skipped)
+	}
+	if live.Failed > 0 {
+		fmt.Fprintln(w, "  Failures:")
+		for _, f := range live.Features {
+			if f.Status == pipeline.StatusFail {
+				fmt.Fprintf(w, "    - %s: %s\n", f.Name, f.Reason)
+			}
+		}
+	}
+	// Surface Wave B warnings in the human scorecard. Without this, a
+	// developer running without --json sees a narrower report than an agent.
+	warnCount := 0
+	for _, f := range live.Features {
+		warnCount += len(f.Warnings)
+	}
+	if warnCount > 0 {
+		fmt.Fprintf(w, "  Warnings (%d): not blocking in Wave B — flip to failures in Wave C after calibration\n", warnCount)
+		for _, f := range live.Features {
+			for _, warning := range f.Warnings {
+				fmt.Fprintf(w, "    - %s: %s\n", f.Name, warning)
+			}
+		}
+	}
 }
 
 func liveCheckFatalReason(live *pipeline.LiveCheckResult) string {
