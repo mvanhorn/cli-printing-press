@@ -60,11 +60,12 @@ cli-printing-press scorecard --dir "$CLI_DIR" "${RESEARCH_ARGS[@]}" --live-check
 
 If the scorecard call fails or `/tmp/output-review-livecheck.json` is empty, return the SKIP result (Step 3) without dispatching the reviewer.
 
-Before dispatch, count entries in `live_check.features[]` whose `status` is
-`pass`. If there are zero, return `SKIP` with the reason `no eligible passing
-samples; plausibility not assessed`. Do not dispatch the reviewer, and never
-report a clean `PASS` merely because all sampled commands failed or were
-excluded from review.
+Before dispatch, read `live_check.review_status` when that field is present.
+If it is `skipped`, or `live_check.features[]` has zero entries whose `status`
+is `pass`, return `SKIP` with the reason `no eligible passing samples;
+plausibility not assessed`. Do not dispatch the reviewer. A skipped review is
+not a pass: never emit `status: PASS`, and never describe the outcome as a
+clean review, merely because every sampled command failed or was excluded.
 
 ### Step 2: Dispatch the reviewer agent
 
@@ -118,7 +119,7 @@ findings:
 ---END-OUTPUT-REVIEW-RESULT---
 ```
 
-**On reviewer failure or absence of assessable output (timeout, agent-budget exhaustion, missing live-check data, or zero eligible `status: pass` samples):**
+**On reviewer failure or absence of assessable output (timeout, agent-budget exhaustion, missing live-check data, `review_status: skipped`, or zero eligible `status: pass` samples):**
 
 ```
 ---OUTPUT-REVIEW-RESULT---
@@ -127,6 +128,8 @@ reason: <one-line description>
 findings: []
 ---END-OUTPUT-REVIEW-RESULT---
 ```
+
+`status: SKIP` is not a pass. Callers must report it as skipped and must not count it as a passing review.
 
 ## Wave B policy (current)
 

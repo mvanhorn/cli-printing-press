@@ -306,3 +306,29 @@ func TestRunScorecard_LiveVerifyLiftsTotal(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, strings.Contains(string(data), "live_api_verification"))
 }
+
+func TestSkippedSampleReviewIsNotCountedAsPass(t *testing.T) {
+	dir := t.TempDir()
+	pipelineDir := t.TempDir()
+	sc, err := RunScorecard(dir, pipelineDir, "", nil)
+	require.NoError(t, err)
+	before := sc.Steinberger
+
+	skipped := &LiveCheckResult{Skipped: 4}
+	require.Equal(t, SampleReviewSkipped, skipped.SampleReviewStatus())
+	body, err := json.Marshal(skipped)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"review_status":"skipped"`)
+	require.NotContains(t, string(body), `"review_status":"pass"`)
+	ApplyLiveCheckToScorecard(sc, skipped)
+	require.Equal(t, before, sc.Steinberger, "a skipped sample-output review must not change the score")
+
+	sc.Steinberger.Insight = 10
+	recomputeScorecardTotals(sc)
+	beforeTotal := sc.Steinberger.Total
+	broken := &LiveCheckResult{Failed: 5, PassRate: 0}
+	require.Equal(t, SampleReviewSkipped, broken.SampleReviewStatus())
+	ApplyLiveCheckToScorecard(sc, broken)
+	require.Equal(t, 4, sc.Steinberger.Insight)
+	require.Less(t, sc.Steinberger.Total, beforeTotal, "mechanical sample failures still cap Insight")
+}

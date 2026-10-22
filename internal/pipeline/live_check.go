@@ -35,6 +35,17 @@ const (
 	StatusPrerequisiteUnsynced LiveStatus = "prerequisite_unsynced"
 )
 
+// SampleReviewStatus is the plausibility-review outcome. Skipped means the
+// review had no passing sample to assess; that is a distinct result from a
+// review that ran and passed.
+type SampleReviewStatus string
+
+const (
+	SampleReviewPass    SampleReviewStatus = "pass"
+	SampleReviewFail    SampleReviewStatus = "fail"
+	SampleReviewSkipped SampleReviewStatus = "skipped"
+)
+
 // Default bounds for RunLiveCheck. Exported so callers can override via
 // LiveCheckOptions without hard-coding magic numbers.
 const (
@@ -88,6 +99,19 @@ func (r *LiveCheckResult) Evaluated() int {
 		return 0
 	}
 	return r.Passed + r.Failed
+}
+
+// SampleReviewStatus reports the sample-output review, not the mechanical
+// pass rate. With no passing sample the review did not run, so the result
+// is skipped rather than a pass.
+func (r *LiveCheckResult) SampleReviewStatus() SampleReviewStatus {
+	if r == nil || r.Unable || r.Passed == 0 {
+		return SampleReviewSkipped
+	}
+	if r.Failed > 0 {
+		return SampleReviewFail
+	}
+	return SampleReviewPass
 }
 
 // LiveFeatureResult is one feature's outcome.
@@ -1103,12 +1127,18 @@ func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeat
 		return result
 	}
 
+	sample, err := prepareLiveCheckSample(cliDir, args)
+	if err != nil {
+		return fail(err.Error())
+	}
+	defer sample.cleanup()
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	cmd.Dir = cliDir
-	applyDefaultSubprocessEnv(cmd)
+	cmd := exec.CommandContext(ctx, binaryPath, sample.args...)
+	cmd.Dir = sample.dir
+	cmd.Env = sample.env
 	// Capture stdout into a bounded buffer. An unbounded `cmd.Output()` call
 	// would let a misbehaving feature exhaust the scorecard's memory.
 	stdoutCap := &bytes.Buffer{}
@@ -1621,15 +1651,17 @@ func (r *LiveCheckResult) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(&struct {
 		*alias
-		Status      string `json:"status"`
-		Checked     int    `json:"checked"`
-		Evaluated   int    `json:"evaluated"`
-		PassRatePct int    `json:"pass_rate_pct"`
+		Status       string             `json:"status"`
+		ReviewStatus SampleReviewStatus `json:"review_status"`
+		Checked      int                `json:"checked"`
+		Evaluated    int                `json:"evaluated"`
+		PassRatePct  int                `json:"pass_rate_pct"`
 	}{
-		alias:       (*alias)(r),
-		Status:      status,
-		Checked:     r.Checked(),
-		Evaluated:   r.Evaluated(),
-		PassRatePct: int(r.PassRate*100 + 0.5),
+		alias:        (*alias)(r),
+		Status:       status,
+		ReviewStatus: r.SampleReviewStatus(),
+		Checked:      r.Checked(),
+		Evaluated:    r.Evaluated(),
+		PassRatePct:  int(r.PassRate*100 + 0.5),
 	})
 }
