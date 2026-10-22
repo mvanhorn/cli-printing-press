@@ -35,13 +35,15 @@ const (
 	StatusPrerequisiteUnsynced LiveStatus = "prerequisite_unsynced"
 )
 
-// Sample-output review outcomes. Skipped means the plausibility review had
-// no passing sample to assess; that is a distinct result from a review that
-// ran and passed.
+// SampleReviewStatus is the plausibility-review outcome. Skipped means the
+// review had no passing sample to assess; that is a distinct result from a
+// review that ran and passed.
+type SampleReviewStatus string
+
 const (
-	SampleReviewPass    = "pass"
-	SampleReviewFail    = "fail"
-	SampleReviewSkipped = "skipped"
+	SampleReviewPass    SampleReviewStatus = "pass"
+	SampleReviewFail    SampleReviewStatus = "fail"
+	SampleReviewSkipped SampleReviewStatus = "skipped"
 )
 
 // Default bounds for RunLiveCheck. Exported so callers can override via
@@ -102,7 +104,7 @@ func (r *LiveCheckResult) Evaluated() int {
 // SampleReviewStatus reports the sample-output review, not the mechanical
 // pass rate. With no passing sample the review did not run, so the result
 // is skipped rather than a pass.
-func (r *LiveCheckResult) SampleReviewStatus() string {
+func (r *LiveCheckResult) SampleReviewStatus() SampleReviewStatus {
 	if r == nil || r.Unable || r.Passed == 0 {
 		return SampleReviewSkipped
 	}
@@ -1649,11 +1651,11 @@ func (r *LiveCheckResult) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(&struct {
 		*alias
-		Status       string `json:"status"`
-		ReviewStatus string `json:"review_status"`
-		Checked      int    `json:"checked"`
-		Evaluated    int    `json:"evaluated"`
-		PassRatePct  int    `json:"pass_rate_pct"`
+		Status       string             `json:"status"`
+		ReviewStatus SampleReviewStatus `json:"review_status"`
+		Checked      int                `json:"checked"`
+		Evaluated    int                `json:"evaluated"`
+		PassRatePct  int                `json:"pass_rate_pct"`
 	}{
 		alias:        (*alias)(r),
 		Status:       status,

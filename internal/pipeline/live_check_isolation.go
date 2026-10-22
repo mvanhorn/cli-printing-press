@@ -1,11 +1,22 @@
 package pipeline
 
 import (
+	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	_ "modernc.org/sqlite" // registers the pure-Go driver used for VACUUM INTO snapshots
 )
+
+// liveCheckStoreCopyMaxBytes bounds bytes staged for one sample. Staging runs
+// before the command timeout, so an uncapped tree can fill the disk before
+// the probe's own limit applies.
+const liveCheckStoreCopyMaxBytes int64 = 256 << 20
+
+const sqliteDatabaseHeader = "SQLite format 3\x00"
 
 // liveCheckSample is one sample's private cwd and home. Writes stay here
 // and are never copied back, and samples do not share a database file.
@@ -16,7 +27,32 @@ type liveCheckSample struct {
 	cleanup func()
 }
 
+// liveCheckCopyBudget counts bytes that one sample is allowed to stage.
+// A nil budget is unlimited so unit tests can exercise staging without a cap.
+type liveCheckCopyBudget struct {
+	max  int64
+	used int64
+}
+
+func (b *liveCheckCopyBudget) consume(n int64) error {
+	if b == nil {
+		return nil
+	}
+	if n < 0 {
+		return fmt.Errorf("store copy size is negative")
+	}
+	if b.used > b.max || n > b.max-b.used {
+		return fmt.Errorf("store copy exceeds %d MiB", b.max>>20)
+	}
+	b.used += n
+	return nil
+}
+
 func prepareLiveCheckSample(cliDir string, args []string) (*liveCheckSample, error) {
+	return prepareLiveCheckSampleBudget(cliDir, args, liveCheckStoreCopyMaxBytes)
+}
+
+func prepareLiveCheckSampleBudget(cliDir string, args []string, maxBytes int64) (*liveCheckSample, error) {
 	root, err := os.MkdirTemp("", "printing-press-live-check-sample-")
 	if err != nil {
 		return nil, fmt.Errorf("isolating sample store: %w", err)
@@ -38,7 +74,14 @@ func prepareLiveCheckSample(cliDir string, args []string) (*liveCheckSample, err
 			return fail(fmt.Errorf("isolating sample store: %w", err))
 		}
 	}
-	rewritten, err := rewriteLiveCheckDBArgs(cliDir, sample.dir, args)
+	budget := &liveCheckCopyBudget{max: maxBytes}
+	// --home outranks the scratch data dir in the printed CLI, so both the
+	// database flag and the home flag have to point into this sample.
+	rewritten, err := rewriteLiveCheckDBArgs(cliDir, sample.dir, args, budget)
+	if err != nil {
+		return fail(err)
+	}
+	rewritten, err = rewriteLiveCheckHomeArgs(cliDir, sample.dir, rewritten, budget)
 	if err != nil {
 		return fail(err)
 	}
@@ -46,10 +89,10 @@ func prepareLiveCheckSample(cliDir string, args []string) (*liveCheckSample, err
 	if err := copyCLIDirFixtures(args, 0, cliDir, sample.dir); err != nil {
 		return fail(fmt.Errorf("isolating sample store: %w", err))
 	}
-	if err := copyLiveCheckCWDStores(cliDir, sample.dir); err != nil {
+	if err := copyLiveCheckCWDStores(cliDir, sample.dir, budget); err != nil {
 		return fail(err)
 	}
-	if err := seedLiveCheckDataDirs(cliDir, home); err != nil {
+	if err := seedLiveCheckDataDirs(cliDir, home, budget); err != nil {
 		return fail(err)
 	}
 	env := subprocessEnv()
@@ -63,14 +106,34 @@ func prepareLiveCheckSample(cliDir string, args []string) (*liveCheckSample, err
 	return sample, nil
 }
 
-func rewriteLiveCheckDBArgs(cliDir, scratch string, args []string) ([]string, error) {
+func rewriteLiveCheckDBArgs(cliDir, scratch string, args []string, budget *liveCheckCopyBudget) ([]string, error) {
+	return rewriteLiveCheckPathArgs(cliDir, args, "--db", func(src string, n int) (string, error) {
+		dst := filepath.Join(scratch, "isolated-db", fmt.Sprintf("%d-%s", n, filepath.Base(src)))
+		if err := stageSQLiteFile(src, dst, budget); err != nil {
+			return "", err
+		}
+		return dst, nil
+	})
+}
+
+func rewriteLiveCheckHomeArgs(cliDir, scratch string, args []string, budget *liveCheckCopyBudget) ([]string, error) {
+	return rewriteLiveCheckPathArgs(cliDir, args, "--home", func(src string, n int) (string, error) {
+		dst := filepath.Join(scratch, "isolated-home", fmt.Sprintf("%d", n))
+		if err := stageLiveCheckHome(src, dst, budget); err != nil {
+			return "", err
+		}
+		return dst, nil
+	})
+}
+
+func rewriteLiveCheckPathArgs(cliDir string, args []string, flag string, stage func(src string, n int) (string, error)) ([]string, error) {
 	out := append([]string(nil), args...)
 	n := 0
 	for i := 0; i < len(out); i++ {
 		if out[i] == "--" {
 			break
 		}
-		raw, inline, ok := liveCheckDBArg(out, i)
+		raw, inline, ok := liveCheckFlagArg(out, i, flag)
 		if !ok {
 			continue
 		}
@@ -83,13 +146,13 @@ func rewriteLiveCheckDBArgs(cliDir, scratch string, args []string) ([]string, er
 			src = filepath.Join(cliDir, src)
 		}
 		src = filepath.Clean(src)
-		dst := filepath.Join(scratch, "isolated-db", fmt.Sprintf("%d-%s", n, filepath.Base(src)))
-		n++
-		if err := stageSQLiteFile(src, dst); err != nil {
+		dst, err := stage(src, n)
+		if err != nil {
 			return nil, fmt.Errorf("isolating sample store: %w", err)
 		}
+		n++
 		if inline {
-			out[i] = "--db=" + dst
+			out[i] = flag + "=" + dst
 		} else {
 			out[i+1] = dst
 			i++
@@ -98,51 +161,55 @@ func rewriteLiveCheckDBArgs(cliDir, scratch string, args []string) ([]string, er
 	return out, nil
 }
 
-func liveCheckDBArg(args []string, i int) (value string, inline bool, ok bool) {
+func liveCheckFlagArg(args []string, i int, flag string) (value string, inline bool, ok bool) {
 	arg := args[i]
-	if arg == "--db" {
+	if arg == flag {
 		if i+1 >= len(args) {
 			return "", false, false
 		}
 		return args[i+1], false, true
 	}
-	value, found := strings.CutPrefix(arg, "--db=")
+	value, found := strings.CutPrefix(arg, flag+"=")
 	if !found || value == "" {
 		return "", false, false
 	}
 	return value, true, true
 }
 
-func copyLiveCheckCWDStores(cliDir, scratch string) error {
-	entries, err := os.ReadDir(cliDir)
+func stageLiveCheckHome(src, dst string, budget *liveCheckCopyBudget) error {
+	info, err := os.Stat(src)
 	if err != nil {
-		return fmt.Errorf("isolating sample store: %w", err)
+		if os.IsNotExist(err) {
+			// The sample still needs a data dir to write into. Do not create src.
+			return os.MkdirAll(filepath.Join(dst, "data"), 0o755)
+		}
+		return err
 	}
-	for _, entry := range entries {
-		if !isLiveCheckDefaultStoreName(entry.Name()) {
-			continue
-		}
-		src := filepath.Join(cliDir, entry.Name())
-		dst := filepath.Join(scratch, entry.Name())
-		if err := stageSQLiteFile(src, dst); err != nil {
-			return fmt.Errorf("isolating sample store: %w", err)
-		}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", src)
+	}
+	return copyLiveCheckSQLiteDir(filepath.Join(src, "data"), filepath.Join(dst, "data"), budget)
+}
+
+func copyLiveCheckCWDStores(cliDir, scratch string, budget *liveCheckCopyBudget) error {
+	if err := stageMatchingSQLiteEntries(cliDir, scratch, isLiveCheckDefaultStoreName, budget); err != nil {
+		return fmt.Errorf("isolating sample store: %w", err)
 	}
 	return nil
 }
 
-func seedLiveCheckDataDirs(cliDir, home string) error {
+func seedLiveCheckDataDirs(cliDir, home string, budget *liveCheckCopyBudget) error {
 	for _, name := range findCLINames(cliDir) {
 		dst := filepath.Join(home, ".local", "share", name)
 		src := liveDogfoodOperatorDataDir(name)
-		if err := copyLiveCheckSQLiteDir(src, dst); err != nil {
+		if err := copyLiveCheckSQLiteDir(src, dst, budget); err != nil {
 			return fmt.Errorf("isolating sample store: %w", err)
 		}
 	}
 	return nil
 }
 
-func copyLiveCheckSQLiteDir(src, dst string) error {
+func copyLiveCheckSQLiteDir(src, dst string, budget *liveCheckCopyBudget) error {
 	if strings.TrimSpace(src) == "" {
 		return os.MkdirAll(dst, 0o755)
 	}
@@ -159,22 +226,53 @@ func copyLiveCheckSQLiteDir(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
+	return stageMatchingSQLiteEntries(src, dst, isLiveCheckSQLiteName, budget)
+}
+
+func stageMatchingSQLiteEntries(src, dst string, match func(string) bool, budget *liveCheckCopyBudget) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		if !isLiveCheckSQLiteName(entry.Name()) {
+		name := entry.Name()
+		if !match(name) || liveCheckMainOwnsSidecar(src, name) {
 			continue
 		}
-		if err := stageSQLiteFile(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+		if err := stageSQLiteFile(filepath.Join(src, name), filepath.Join(dst, name), budget); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func stageSQLiteFile(src, dst string) error {
+// liveCheckMainOwnsSidecar reports whether name is a wal, shm, or journal
+// whose main database is a regular file. That main file's staging copies a
+// non-SQLite sidecar itself. A SQLite snapshot must not gain the live wal:
+// SQLite would apply a mismatched generation and report the copy malformed.
+func liveCheckMainOwnsSidecar(dir, name string) bool {
+	main, ok := liveCheckSidecarMain(name)
+	if !ok {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, main))
+	return err == nil && info.Mode().IsRegular()
+}
+
+func liveCheckSidecarMain(name string) (string, bool) {
+	switch {
+	case strings.HasSuffix(name, "-wal"):
+		return strings.TrimSuffix(name, "-wal"), true
+	case strings.HasSuffix(name, "-shm"):
+		return strings.TrimSuffix(name, "-shm"), true
+	case strings.HasSuffix(name, "-journal"):
+		return strings.TrimSuffix(name, "-journal"), true
+	default:
+		return "", false
+	}
+}
+
+func stageSQLiteFile(src, dst string, budget *liveCheckCopyBudget) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -185,9 +283,16 @@ func stageSQLiteFile(src, dst string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", src)
 	}
-	if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
-		return err
+	if hasSQLiteHeader(src) {
+		return snapshotSQLiteFile(src, dst, info, budget)
 	}
+	size := info.Size()
+	type sidecar struct {
+		src  string
+		dst  string
+		mode os.FileMode
+	}
+	var sidecars []sidecar
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
 		sideSrc := src + suffix
 		sideInfo, err := os.Stat(sideSrc)
@@ -200,22 +305,110 @@ func stageSQLiteFile(src, dst string) error {
 		if !sideInfo.Mode().IsRegular() {
 			return fmt.Errorf("%s is not a regular file", sideSrc)
 		}
-		if err := copyFile(sideSrc, dst+suffix, sideInfo.Mode().Perm()); err != nil {
+		size += sideInfo.Size()
+		sidecars = append(sidecars, sidecar{sideSrc, dst + suffix, sideInfo.Mode().Perm()})
+	}
+	if err := budget.consume(size); err != nil {
+		return err
+	}
+	if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
+		return err
+	}
+	for _, side := range sidecars {
+		if err := copyFile(side.src, side.dst, side.mode); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// snapshotSQLiteFile copies one committed generation. A byte copy of the
+// database and its wal can mix two generations when a writer checkpoints
+// between the two reads.
+func snapshotSQLiteFile(src, dst string, info os.FileInfo, budget *liveCheckCopyBudget) error {
+	size := info.Size()
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		sideInfo, err := os.Stat(src + suffix)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if !sideInfo.Mode().IsRegular() {
+			continue
+		}
+		size += sideInfo.Size()
+	}
+	if err := budget.consume(size); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := vacuumSQLiteInto(src, dst); err != nil {
+		removeSQLiteFamily(dst)
+		return err
+	}
+	return nil
+}
+
+func vacuumSQLiteInto(src, dst string) error {
+	// modernc honors mode and the pragmas only when the DSN has a file: prefix.
+	db, err := sql.Open("sqlite", sqliteSnapshotDSN(src))
+	if err != nil {
+		return fmt.Errorf("snapshot sqlite database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	query := "VACUUM INTO " + quoteSQLiteString(filepath.ToSlash(dst))
+	if _, err := db.Exec(query); err != nil {
+		return fmt.Errorf("snapshot sqlite database: %w", err)
+	}
+	return nil
+}
+
+// sqliteSnapshotDSN opens the source for VACUUM INTO. immutable=1 does not
+// create or rewrite the wal index, but it also ignores committed frames that
+// are still only in the wal, so the copy would disagree with the CLI. A
+// non-empty wal is read with mode=ro, which sees those frames. That read
+// updates the wal index (-shm); the database and wal bytes are not written.
+func sqliteSnapshotDSN(src string) string {
+	path := "file:" + filepath.ToSlash(src)
+	if info, err := os.Stat(src + "-wal"); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		return path + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)"
+	}
+	return path + "?mode=ro&immutable=1&_pragma=mmap_size(0)"
+}
+
+func quoteSQLiteString(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func removeSQLiteFamily(path string) {
+	_ = os.Remove(path)
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		_ = os.Remove(path + suffix)
+	}
+}
+
+func hasSQLiteHeader(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, len(sqliteDatabaseHeader))
+	n, err := io.ReadFull(f, buf)
+	if err != nil || n != len(sqliteDatabaseHeader) {
+		return false
+	}
+	return string(buf) == sqliteDatabaseHeader
+}
+
 func isLiveCheckDefaultStoreName(name string) bool {
 	stem := name
-	switch {
-	case strings.HasSuffix(name, "-wal"):
-		stem = strings.TrimSuffix(name, "-wal")
-	case strings.HasSuffix(name, "-shm"):
-		stem = strings.TrimSuffix(name, "-shm")
-	case strings.HasSuffix(name, "-journal"):
-		stem = strings.TrimSuffix(name, "-journal")
+	if main, ok := liveCheckSidecarMain(name); ok {
+		stem = main
 	}
 	if !strings.HasSuffix(stem, ".db") {
 		return false

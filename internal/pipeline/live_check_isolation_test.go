@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -74,22 +75,14 @@ func main() {
 }
 
 func storePath(args []string) (string, error) {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			break
+	if db, ok, err := flagValue(args, "--db"); ok || err != nil {
+		return db, err
+	}
+	if home, ok, err := flagValue(args, "--home"); ok || err != nil {
+		if err != nil {
+			return "", err
 		}
-		if args[i] == "--db" {
-			if i+1 >= len(args) {
-				return "", fmt.Errorf("missing --db value")
-			}
-			return args[i+1], nil
-		}
-		if value, ok := strings.CutPrefix(args[i], "--db="); ok {
-			if value == "" {
-				return "", fmt.Errorf("missing --db value")
-			}
-			return value, nil
-		}
+		return filepath.Join(home, "data", "data.db"), nil
 	}
 	if os.Getenv("STUB_STORE") == "xdg" {
 		cli := os.Getenv("STUB_CLI")
@@ -103,6 +96,27 @@ func storePath(args []string) (string, error) {
 		return filepath.Join(data, cli, "data.db"), nil
 	}
 	return "data.db", nil
+}
+
+func flagValue(args []string, name string) (string, bool, error) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			break
+		}
+		if args[i] == name {
+			if i+1 >= len(args) {
+				return "", false, fmt.Errorf("missing %s value", name)
+			}
+			return args[i+1], true, nil
+		}
+		if value, ok := strings.CutPrefix(args[i], name+"="); ok {
+			if value == "" {
+				return "", false, fmt.Errorf("missing %s value", name)
+			}
+			return value, true, nil
+		}
+	}
+	return "", false, nil
 }
 `
 
@@ -183,7 +197,7 @@ func TestSampleReviewStatus(t *testing.T) {
 	cases := []struct {
 		name string
 		live LiveCheckResult
-		want string
+		want SampleReviewStatus
 	}{
 		{name: "unable", live: LiveCheckResult{Unable: true, Passed: 3}, want: SampleReviewSkipped},
 		{name: "no samples", live: LiveCheckResult{}, want: SampleReviewSkipped},
@@ -214,7 +228,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		require.NoError(t, os.WriteFile(src+"-wal", []byte("wal"), 0o644))
 		scratch := t.TempDir()
 
-		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", src})
+		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", src}, nil)
 		require.NoError(t, err)
 		require.NotEqual(t, src, got[2])
 		body, err := os.ReadFile(got[2])
@@ -238,7 +252,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		require.NoError(t, os.WriteFile(src, []byte("seed"), 0o644))
 		scratch := t.TempDir()
 
-		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db=" + src})
+		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db=" + src}, nil)
 		require.NoError(t, err)
 		require.Len(t, got, 2)
 		require.NotContains(t, got[1], src)
@@ -260,7 +274,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		scratch := t.TempDir()
 		args := []string{"list", "--db", src, "--", "--db", later}
 
-		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, args)
+		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, args, nil)
 		require.NoError(t, err)
 		require.Equal(t, later, got[5])
 		require.NotEqual(t, src, got[2])
@@ -275,7 +289,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		missing := filepath.Join(cliDir, "missing.db")
 		scratch := t.TempDir()
 
-		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", missing})
+		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", missing}, nil)
 		require.NoError(t, err)
 		require.NotEqual(t, missing, got[2])
 		_, err = os.Stat(missing)
@@ -291,7 +305,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
 		scratch := t.TempDir()
 
-		_, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", dir})
+		_, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", dir}, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "not a regular file")
 		info, statErr := os.Stat(dir)
@@ -308,7 +322,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		require.NoError(t, os.WriteFile(outside, []byte("outside"), 0o644))
 		scratch := t.TempDir()
 
-		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", filepath.Join("..", "outside.db")})
+		got, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", filepath.Join("..", "outside.db")}, nil)
 		require.NoError(t, err)
 		require.NotEqual(t, outside, got[2])
 		body, err := os.ReadFile(got[2])
@@ -327,7 +341,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(src+"-wal", 0o755))
 		scratch := t.TempDir()
 
-		_, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", src})
+		_, err := rewriteLiveCheckDBArgs(cliDir, scratch, []string{"list", "--db", src}, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "not a regular file")
 		body, readErr := os.ReadFile(src)
@@ -338,7 +352,7 @@ func TestRewriteLiveCheckDBArgs(t *testing.T) {
 	t.Run("empty and dangling db flags stay unchanged", func(t *testing.T) {
 		t.Parallel()
 		args := []string{"list", "--db=", "--db"}
-		got, err := rewriteLiveCheckDBArgs(t.TempDir(), t.TempDir(), args)
+		got, err := rewriteLiveCheckDBArgs(t.TempDir(), t.TempDir(), args, nil)
 		require.NoError(t, err)
 		require.Equal(t, args, got)
 	})
@@ -361,7 +375,7 @@ func TestCopyLiveCheckSQLiteDir(t *testing.T) {
 	t.Run("blank source creates the destination directory", func(t *testing.T) {
 		t.Parallel()
 		dst := filepath.Join(t.TempDir(), "data")
-		require.NoError(t, copyLiveCheckSQLiteDir("  ", dst))
+		require.NoError(t, copyLiveCheckSQLiteDir("  ", dst, nil))
 		info, err := os.Stat(dst)
 		require.NoError(t, err)
 		require.True(t, info.IsDir())
@@ -370,7 +384,7 @@ func TestCopyLiveCheckSQLiteDir(t *testing.T) {
 	t.Run("missing source creates the destination directory", func(t *testing.T) {
 		t.Parallel()
 		dst := filepath.Join(t.TempDir(), "data")
-		require.NoError(t, copyLiveCheckSQLiteDir(filepath.Join(t.TempDir(), "absent"), dst))
+		require.NoError(t, copyLiveCheckSQLiteDir(filepath.Join(t.TempDir(), "absent"), dst, nil))
 		info, err := os.Stat(dst)
 		require.NoError(t, err)
 		require.True(t, info.IsDir())
@@ -380,7 +394,7 @@ func TestCopyLiveCheckSQLiteDir(t *testing.T) {
 		t.Parallel()
 		src := filepath.Join(t.TempDir(), "data")
 		require.NoError(t, os.WriteFile(src, []byte("keep"), 0o644))
-		err := copyLiveCheckSQLiteDir(src, filepath.Join(t.TempDir(), "dst"))
+		err := copyLiveCheckSQLiteDir(src, filepath.Join(t.TempDir(), "dst"), nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "not a directory")
 		body, readErr := os.ReadFile(src)
@@ -390,7 +404,7 @@ func TestCopyLiveCheckSQLiteDir(t *testing.T) {
 
 	t.Run("missing cli directory is an error", func(t *testing.T) {
 		t.Parallel()
-		err := copyLiveCheckCWDStores(filepath.Join(t.TempDir(), "missing"), t.TempDir())
+		err := copyLiveCheckCWDStores(filepath.Join(t.TempDir(), "missing"), t.TempDir(), nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "isolating sample store")
 	})
@@ -697,4 +711,502 @@ func TestLiveCheckSampleProbeDoesNotMutateStore(t *testing.T) {
 		_, err = os.Stat(marker)
 		require.ErrorIs(t, err, os.ErrNotExist)
 	})
+
+	t.Run("absolute --home stays byte-identical across two runs", func(t *testing.T) {
+		cliDir := t.TempDir()
+		installLiveCheckStub(t, cliDir, built)
+		home := filepath.Join(t.TempDir(), "operator-home")
+		db := filepath.Join(home, "data", "data.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+		require.NoError(t, os.WriteFile(db, []byte("seed-row\n"), 0o644))
+		writeLiveCheckListResearch(t, cliDir, "stub list --home "+quoteLiveCheckArg(home))
+		opts := LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout}
+
+		run := func() *LiveCheckResult {
+			t.Helper()
+			result := RunLiveCheck(opts)
+			require.False(t, result.Unable, result.Reason)
+			require.Equal(t, SampleReviewPass, result.SampleReviewStatus())
+			require.Equal(t, StatusPass, result.Features[0].Status, result.Features[0].Reason)
+			require.Contains(t, result.Features[0].OutputSample, "seed-row")
+			require.NotContains(t, result.Features[0].OutputSample, "mutated")
+			return result
+		}
+		first := run()
+		second := run()
+		require.Equal(t, first.Features[0].OutputSample, second.Features[0].OutputSample)
+		body, err := os.ReadFile(db)
+		require.NoError(t, err)
+		require.Equal(t, "seed-row\n", string(body))
+	})
+
+	t.Run("inline --home= stays byte-identical", func(t *testing.T) {
+		cliDir := t.TempDir()
+		installLiveCheckStub(t, cliDir, built)
+		home := filepath.Join(t.TempDir(), "operator-home")
+		db := filepath.Join(home, "data", "data.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+		require.NoError(t, os.WriteFile(db, []byte("seed-row\n"), 0o644))
+		writeLiveCheckListResearch(t, cliDir, "stub list --home="+quoteLiveCheckArg(home))
+		result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+		require.False(t, result.Unable, result.Reason)
+		require.Equal(t, StatusPass, result.Features[0].Status, result.Features[0].Reason)
+		require.Contains(t, result.Features[0].OutputSample, "seed-row")
+		body, err := os.ReadFile(db)
+		require.NoError(t, err)
+		require.Equal(t, "seed-row\n", string(body))
+	})
+
+	t.Run("relative --home stays byte-identical", func(t *testing.T) {
+		parent := t.TempDir()
+		cliDir := filepath.Join(parent, "cli")
+		require.NoError(t, os.MkdirAll(cliDir, 0o755))
+		installLiveCheckStub(t, cliDir, built)
+		home := filepath.Join(parent, "outside")
+		db := filepath.Join(home, "data", "data.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+		require.NoError(t, os.WriteFile(db, []byte("seed-row\n"), 0o644))
+		writeLiveCheckListResearch(t, cliDir, "stub list --home "+quoteLiveCheckArg(filepath.Join("..", "outside")))
+		result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+		require.False(t, result.Unable, result.Reason)
+		require.Equal(t, StatusPass, result.Features[0].Status, result.Features[0].Reason)
+		require.Contains(t, result.Features[0].OutputSample, "seed-row")
+		body, err := os.ReadFile(db)
+		require.NoError(t, err)
+		require.Equal(t, "seed-row\n", string(body))
+	})
+
+	t.Run("missing --home is not created", func(t *testing.T) {
+		cliDir := t.TempDir()
+		installLiveCheckStub(t, cliDir, built)
+		missing := filepath.Join(t.TempDir(), "missing-home")
+		writeLiveCheckListResearch(t, cliDir, "stub list --home "+quoteLiveCheckArg(missing))
+		result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+		require.False(t, result.Unable, result.Reason)
+		require.Equal(t, StatusPass, result.Features[0].Status, result.Features[0].Reason)
+		require.Contains(t, result.Features[0].OutputSample, "before:")
+		_, err := os.Stat(missing)
+		require.ErrorIs(t, err, os.ErrNotExist)
+	})
+
+	t.Run("home that is a file does not run the command", func(t *testing.T) {
+		cliDir := t.TempDir()
+		installLiveCheckStub(t, cliDir, built)
+		home := filepath.Join(t.TempDir(), "home-file")
+		require.NoError(t, os.WriteFile(home, []byte("keep"), 0o644))
+		marker := filepath.Join(t.TempDir(), "marker")
+		t.Setenv("STUB_MARKER", marker)
+		writeLiveCheckListResearch(t, cliDir, "stub list --home "+quoteLiveCheckArg(home))
+		result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: liveCheckIntegrationTimeout})
+		require.False(t, result.Unable, result.Reason)
+		require.Equal(t, StatusFail, result.Features[0].Status)
+		require.Contains(t, result.Features[0].Reason, "not a directory")
+		_, err := os.Stat(marker)
+		require.ErrorIs(t, err, os.ErrNotExist)
+		body, err := os.ReadFile(home)
+		require.NoError(t, err)
+		require.Equal(t, "keep", string(body))
+	})
+}
+
+func TestRewriteLiveCheckHomeArgs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("copies the data directory", func(t *testing.T) {
+		t.Parallel()
+		cliDir := t.TempDir()
+		home := filepath.Join(cliDir, "home")
+		db := filepath.Join(home, "data", "data.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+		require.NoError(t, os.WriteFile(db, []byte("seed"), 0o644))
+		scratch := t.TempDir()
+
+		got, err := rewriteLiveCheckHomeArgs(cliDir, scratch, []string{"list", "--home", home}, nil)
+		require.NoError(t, err)
+		require.NotEqual(t, home, got[2])
+		body, err := os.ReadFile(filepath.Join(got[2], "data", "data.db"))
+		require.NoError(t, err)
+		require.Equal(t, "seed", string(body))
+		unchanged, err := os.ReadFile(db)
+		require.NoError(t, err)
+		require.Equal(t, "seed", string(unchanged))
+	})
+
+	t.Run("inline flag", func(t *testing.T) {
+		t.Parallel()
+		cliDir := t.TempDir()
+		home := filepath.Join(cliDir, "home")
+		db := filepath.Join(home, "data", "data.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+		require.NoError(t, os.WriteFile(db, []byte("seed"), 0o644))
+		scratch := t.TempDir()
+
+		got, err := rewriteLiveCheckHomeArgs(cliDir, scratch, []string{"list", "--home=" + home}, nil)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		rewritten := strings.TrimPrefix(got[1], "--home=")
+		require.NotEqual(t, home, rewritten)
+		body, err := os.ReadFile(filepath.Join(rewritten, "data", "data.db"))
+		require.NoError(t, err)
+		require.Equal(t, "seed", string(body))
+	})
+
+	t.Run("stops at terminator", func(t *testing.T) {
+		t.Parallel()
+		cliDir := t.TempDir()
+		home := filepath.Join(cliDir, "home")
+		require.NoError(t, os.MkdirAll(filepath.Join(home, "data"), 0o755))
+		later := filepath.Join(cliDir, "later")
+		require.NoError(t, os.MkdirAll(filepath.Join(later, "data"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(later, "data", "data.db"), []byte("later"), 0o644))
+		scratch := t.TempDir()
+		args := []string{"list", "--home", home, "--", "--home", later}
+
+		got, err := rewriteLiveCheckHomeArgs(cliDir, scratch, args, nil)
+		require.NoError(t, err)
+		require.Equal(t, later, got[5])
+		require.NotEqual(t, home, got[2])
+		laterBody, err := os.ReadFile(filepath.Join(later, "data", "data.db"))
+		require.NoError(t, err)
+		require.Equal(t, "later", string(laterBody))
+	})
+
+	t.Run("missing home is redirected and not created", func(t *testing.T) {
+		t.Parallel()
+		cliDir := t.TempDir()
+		missing := filepath.Join(cliDir, "missing-home")
+		scratch := t.TempDir()
+
+		got, err := rewriteLiveCheckHomeArgs(cliDir, scratch, []string{"list", "--home", missing}, nil)
+		require.NoError(t, err)
+		require.NotEqual(t, missing, got[2])
+		_, err = os.Stat(missing)
+		require.ErrorIs(t, err, os.ErrNotExist)
+		info, err := os.Stat(filepath.Join(got[2], "data"))
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+	})
+
+	t.Run("file home is an error", func(t *testing.T) {
+		t.Parallel()
+		cliDir := t.TempDir()
+		home := filepath.Join(cliDir, "home")
+		require.NoError(t, os.WriteFile(home, []byte("keep"), 0o644))
+		scratch := t.TempDir()
+
+		_, err := rewriteLiveCheckHomeArgs(cliDir, scratch, []string{"list", "--home", home}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "not a directory")
+		require.Contains(t, err.Error(), "isolating sample store")
+		body, readErr := os.ReadFile(home)
+		require.NoError(t, readErr)
+		require.Equal(t, "keep", string(body))
+	})
+
+	t.Run("relative path outside the cli directory", func(t *testing.T) {
+		t.Parallel()
+		parent := t.TempDir()
+		cliDir := filepath.Join(parent, "cli")
+		require.NoError(t, os.MkdirAll(cliDir, 0o755))
+		home := filepath.Join(parent, "outside")
+		db := filepath.Join(home, "data", "data.db")
+		require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+		require.NoError(t, os.WriteFile(db, []byte("outside"), 0o644))
+		scratch := t.TempDir()
+
+		got, err := rewriteLiveCheckHomeArgs(cliDir, scratch, []string{"list", "--home", filepath.Join("..", "outside")}, nil)
+		require.NoError(t, err)
+		require.NotEqual(t, home, got[2])
+		body, err := os.ReadFile(filepath.Join(got[2], "data", "data.db"))
+		require.NoError(t, err)
+		require.Equal(t, "outside", string(body))
+		unchanged, err := os.ReadFile(db)
+		require.NoError(t, err)
+		require.Equal(t, "outside", string(unchanged))
+	})
+
+	t.Run("empty and dangling home flags stay unchanged", func(t *testing.T) {
+		t.Parallel()
+		args := []string{"list", "--home=", "--home"}
+		got, err := rewriteLiveCheckHomeArgs(t.TempDir(), t.TempDir(), args, nil)
+		require.NoError(t, err)
+		require.Equal(t, args, got)
+	})
+}
+
+func TestSQLiteSnapshotDSN(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no wal uses immutable", func(t *testing.T) {
+		t.Parallel()
+		src := filepath.Join(t.TempDir(), "data.db")
+		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
+		dsn := sqliteSnapshotDSN(src)
+		require.Contains(t, dsn, "immutable=1")
+		require.NotContains(t, dsn, "busy_timeout")
+	})
+
+	t.Run("empty wal uses immutable", func(t *testing.T) {
+		t.Parallel()
+		src := filepath.Join(t.TempDir(), "data.db")
+		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
+		require.NoError(t, os.WriteFile(src+"-wal", nil, 0o644))
+		dsn := sqliteSnapshotDSN(src)
+		require.Contains(t, dsn, "immutable=1")
+	})
+
+	t.Run("wal bytes use mode=ro", func(t *testing.T) {
+		t.Parallel()
+		src := filepath.Join(t.TempDir(), "data.db")
+		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
+		require.NoError(t, os.WriteFile(src+"-wal", []byte("frame"), 0o644))
+		dsn := sqliteSnapshotDSN(src)
+		require.Contains(t, dsn, "mode=ro")
+		require.Contains(t, dsn, "busy_timeout")
+		require.NotContains(t, dsn, "immutable=1")
+	})
+
+	t.Run("non-regular wal uses immutable", func(t *testing.T) {
+		t.Parallel()
+		src := filepath.Join(t.TempDir(), "data.db")
+		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
+		require.NoError(t, os.MkdirAll(src+"-wal", 0o755))
+		dsn := sqliteSnapshotDSN(src)
+		require.Contains(t, dsn, "immutable=1")
+	})
+
+	t.Run("quote in the destination path is escaped", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		seedLiveCheckSQLite(t, src, "seed")
+		dst := filepath.Join(t.TempDir(), "o'brien", "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
+		require.Equal(t, "'o''brien'", quoteSQLiteString("o'brien"))
+	})
+}
+
+func TestLiveCheckCopyBudget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil budget is unlimited", func(t *testing.T) {
+		t.Parallel()
+		var budget *liveCheckCopyBudget
+		require.NoError(t, budget.consume(1<<30))
+	})
+
+	t.Run("negative size is an error", func(t *testing.T) {
+		t.Parallel()
+		budget := &liveCheckCopyBudget{max: 4}
+		err := budget.consume(-1)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "negative")
+		require.Equal(t, int64(0), budget.used)
+	})
+
+	t.Run("exact fit is accepted and the next byte is refused", func(t *testing.T) {
+		t.Parallel()
+		budget := &liveCheckCopyBudget{max: 4}
+		require.NoError(t, budget.consume(4))
+		require.Equal(t, int64(4), budget.used)
+		err := budget.consume(1)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "store copy exceeds")
+		require.Equal(t, int64(4), budget.used)
+	})
+
+	t.Run("oversized file is not copied", func(t *testing.T) {
+		t.Parallel()
+		src := filepath.Join(t.TempDir(), "data.db")
+		require.NoError(t, os.WriteFile(src, []byte("0123456789"), 0o644))
+		dst := filepath.Join(t.TempDir(), "nested", "data.db")
+		err := stageSQLiteFile(src, dst, &liveCheckCopyBudget{max: 4})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "store copy exceeds")
+		unchanged, readErr := os.ReadFile(src)
+		require.NoError(t, readErr)
+		require.Equal(t, "0123456789", string(unchanged))
+		_, statErr := os.Stat(dst)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+		_, statErr = os.Stat(filepath.Dir(dst))
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("prepare refuses an oversized store before a partial sample exists", func(t *testing.T) {
+		t.Parallel()
+		cliDir := t.TempDir()
+		db := filepath.Join(cliDir, "data.db")
+		require.NoError(t, os.WriteFile(db, []byte("0123456789"), 0o644))
+		sample, err := prepareLiveCheckSampleBudget(cliDir, []string{"list"}, 4)
+		require.Error(t, err)
+		require.Nil(t, sample)
+		require.Contains(t, err.Error(), "isolating sample store")
+		require.Contains(t, err.Error(), "store copy exceeds")
+		body, readErr := os.ReadFile(db)
+		require.NoError(t, readErr)
+		require.Equal(t, "0123456789", string(body))
+	})
+}
+
+func TestStageSQLiteFileSnapshot(t *testing.T) {
+	t.Parallel()
+
+	t.Run("snapshot leaves the source byte-identical and drops the wal", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		seedLiveCheckSQLite(t, src, "seed")
+		before := snapshotDir(t, dir)
+
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, before, snapshotDir(t, dir))
+		require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
+		_, err := os.Stat(dst + "-wal")
+		require.ErrorIs(t, err, os.ErrNotExist)
+	})
+
+	t.Run("snapshot while a writer checkpoints sees the committed generation", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		db := openLiveCheckSQLite(t, src)
+		_, err := db.Exec(`CREATE TABLE sample_rows (v TEXT)`)
+		require.NoError(t, err)
+		_, err = db.Exec(`INSERT INTO sample_rows (v) VALUES ('seed')`)
+		require.NoError(t, err)
+		_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+		require.NoError(t, err)
+
+		tx, err := db.Begin()
+		require.NoError(t, err)
+		_, err = tx.Exec(`INSERT INTO sample_rows (v) VALUES ('later')`)
+		require.NoError(t, err)
+		uncommitted := filepath.Join(t.TempDir(), "uncommitted.db")
+		require.NoError(t, stageSQLiteFile(src, uncommitted, nil))
+		require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, uncommitted))
+		require.NoError(t, tx.Commit())
+
+		dbBefore := readLiveCheckFile(t, src)
+		walBefore := readLiveCheckFile(t, src+"-wal")
+		require.NotEmpty(t, walBefore)
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, []string{"later", "seed"}, liveCheckSQLiteValues(t, dst))
+		_, err = os.Stat(dst + "-wal")
+		require.ErrorIs(t, err, os.ErrNotExist)
+		require.Equal(t, dbBefore, readLiveCheckFile(t, src))
+		require.Equal(t, walBefore, readLiveCheckFile(t, src+"-wal"))
+		require.Equal(t, []string{"later", "seed"}, liveCheckSQLiteValuesFollowingWAL(t, src))
+	})
+
+	t.Run("header that is not a database is not left behind", func(t *testing.T) {
+		t.Parallel()
+		src := filepath.Join(t.TempDir(), "data.db")
+		body := []byte(sqliteDatabaseHeader + "not a database page")
+		require.NoError(t, os.WriteFile(src, body, 0o644))
+		dst := filepath.Join(t.TempDir(), "nested", "copy.db")
+		err := stageSQLiteFile(src, dst, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "snapshot sqlite database")
+		unchanged, readErr := os.ReadFile(src)
+		require.NoError(t, readErr)
+		require.Equal(t, body, unchanged)
+		_, statErr := os.Stat(dst)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+		_, statErr = os.Stat(dst + "-wal")
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("non-regular sidecar of a real database is left in place", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		seedLiveCheckSQLite(t, src, "seed")
+		require.NoError(t, os.RemoveAll(src+"-wal"))
+		require.NoError(t, os.MkdirAll(src+"-wal", 0o755))
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		require.NoError(t, stageSQLiteFile(src, dst, nil))
+		require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
+		info, err := os.Stat(src + "-wal")
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+		_, err = os.Stat(dst + "-wal")
+		require.ErrorIs(t, err, os.ErrNotExist)
+	})
+
+	t.Run("sqlite snapshot is refused when the budget is too small", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		seedLiveCheckSQLite(t, src, "seed")
+		before := snapshotDir(t, dir)
+		dst := filepath.Join(t.TempDir(), "nested", "copy.db")
+		err := stageSQLiteFile(src, dst, &liveCheckCopyBudget{max: 4})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "store copy exceeds")
+		require.Equal(t, before, snapshotDir(t, dir))
+		_, statErr := os.Stat(dst)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+}
+
+func seedLiveCheckSQLite(t *testing.T, path, value string) {
+	t.Helper()
+	db := openLiveCheckSQLite(t, path)
+	_, err := db.Exec(`CREATE TABLE sample_rows (v TEXT)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO sample_rows (v) VALUES (?)`, value)
+	require.NoError(t, err)
+	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+}
+
+func openLiveCheckSQLite(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func readLiveCheckFile(t *testing.T, path string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return body
+}
+
+func liveCheckSQLiteValues(t *testing.T, path string) []string {
+	t.Helper()
+	// immutable keeps this helper from creating a wal index beside the snapshot.
+	return queryLiveCheckSQLite(t, "file:"+filepath.ToSlash(path)+"?mode=ro&immutable=1&_pragma=mmap_size(0)")
+}
+
+func liveCheckSQLiteValuesFollowingWAL(t *testing.T, path string) []string {
+	t.Helper()
+	return queryLiveCheckSQLite(t, "file:"+filepath.ToSlash(path)+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)")
+}
+
+func queryLiveCheckSQLite(t *testing.T, dsn string) []string {
+	t.Helper()
+	db, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var integrity string
+	require.NoError(t, db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity))
+	require.Equal(t, "ok", integrity)
+	rows, err := db.Query(`SELECT v FROM sample_rows ORDER BY v`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var value string
+		require.NoError(t, rows.Scan(&value))
+		out = append(out, value)
+	}
+	require.NoError(t, rows.Err())
+	return out
 }
