@@ -182,6 +182,36 @@ func isTerminal(w io.Writer) bool {
 	return false
 }
 
+// mirrorWriter duplicates command output for --deliver and still reports the
+// primary writer's terminal mode. io.MultiWriter hides that mode, so a TTY
+// looked like a pipe and skipped control escaping.
+type mirrorWriter struct {
+	primary io.Writer
+	copy    io.Writer
+}
+
+func (m *mirrorWriter) Write(p []byte) (int, error) {
+	n, err := m.primary.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if n != len(p) {
+		return n, io.ErrShortWrite
+	}
+	n, err = m.copy.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if n != len(p) {
+		return n, io.ErrShortWrite
+	}
+	return len(p), nil
+}
+
+func (m *mirrorWriter) TerminalOverride() bool {
+	return isTerminal(m.primary)
+}
+
 func terminalText(w io.Writer, s string) string {
 	if isTerminal(w) {
 		return cliutil.EscapeTerminalControls(s)

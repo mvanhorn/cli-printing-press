@@ -174,7 +174,7 @@ func Execute() (retErr error) {
 	}
 	envelopeWriter := io.Writer(os.Stdout)
 	if flags.deliverBuf != nil {
-		envelopeWriter = io.MultiWriter(os.Stdout, flags.deliverBuf)
+		envelopeWriter = &mirrorWriter{primary: os.Stdout, copy: flags.deliverBuf}
 	}
 	envelopeWritten := writeCredentialSaveErrorEnvelope(envelopeWriter, &flags, err)
 	if envelopeWritten && flags.deliverBuf != nil {
@@ -356,7 +356,7 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 			flags.deliverSink = sink
 			if sink.Scheme != "stdout" && sink.Scheme != "" {
 				flags.deliverBuf = &bytes.Buffer{}
-				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
+				cmd.SetOut(&mirrorWriter{primary: os.Stdout, copy: flags.deliverBuf})
 			}
 		}
 		if flags.runProfileName != "" {

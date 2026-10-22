@@ -359,7 +359,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 			flags.deliverSink = sink
 			if sink.Scheme != "stdout" && sink.Scheme != "" {
 				flags.deliverBuf = &bytes.Buffer{}
-				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
+				cmd.SetOut(&mirrorWriter{primary: os.Stdout, copy: flags.deliverBuf})
 			}
 		}
 		if flags.runProfileName != "" {

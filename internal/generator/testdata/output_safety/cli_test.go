@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -305,6 +306,120 @@ func TestOutputSafetyTableDeletesNestedControls(t *testing.T) {
 type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+type shortWriter struct{ n int }
+
+func (s shortWriter) Write(p []byte) (int, error) {
+	if s.n < len(p) {
+		return s.n, nil
+	}
+	return len(p), nil
+}
+
+func TestOutputSafetyDeliverMirrorPreservesTerminal(t *testing.T) {
+	payload := dangerousRowPayload(t)
+
+	tty := &ttyBuf{tty: true}
+	var sink bytes.Buffer
+	out := &mirrorWriter{primary: tty, copy: &sink}
+	if !isTerminal(out) {
+		t.Fatal("deliver mirror of a TTY must stay a terminal")
+	}
+	if err := renderSafety("csv", out, payload); err != nil {
+		t.Fatal(err)
+	}
+	if tty.String() != sink.String() {
+		t.Fatal("deliver sink diverged from the terminal")
+	}
+	if hasRawTerminalControl(sink.String()) || !strings.Contains(sink.String(), `\x1b`) || !strings.Contains(sink.String(), "café") {
+		t.Fatalf("tty deliver mirror leaked or skipped escape: %q", sink.String())
+	}
+
+	pipe := &ttyBuf{}
+	sink.Reset()
+	out = &mirrorWriter{primary: pipe, copy: &sink}
+	if isTerminal(out) {
+		t.Fatal("deliver mirror of a pipe must stay a pipe")
+	}
+	if err := renderSafety("csv", out, payload); err != nil {
+		t.Fatal(err)
+	}
+	if pipe.String() != sink.String() || !strings.Contains(pipe.String(), "\x1b]52;") {
+		t.Fatalf("piped deliver mirror changed csv: %q", pipe.String())
+	}
+
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { devNull.Close() })
+	sink.Reset()
+	out = &mirrorWriter{primary: devNull, copy: &sink}
+	if !isTerminal(out) {
+		t.Fatal("char device behind a deliver mirror must stay a terminal")
+	}
+	if err := renderSafety("plain", out, payload); err != nil {
+		t.Fatal(err)
+	}
+	if hasRawTerminalControl(sink.String()) || !strings.Contains(sink.String(), `\x1b`) {
+		t.Fatalf("char-device deliver sink leaked or skipped escape: %q", sink.String())
+	}
+
+	regular, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { regular.Close() })
+	sink.Reset()
+	out = &mirrorWriter{primary: regular, copy: &sink}
+	if isTerminal(out) {
+		t.Fatal("regular file behind a deliver mirror must not be a terminal")
+	}
+	if err := renderSafety("plain", out, payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.String(), "\x1b]52;") {
+		t.Fatalf("regular-file deliver mirror escaped plain output: %q", sink.String())
+	}
+
+	closed, err := os.CreateTemp(t.TempDir(), "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	if !isTerminal(&mirrorWriter{primary: closed, copy: &bytes.Buffer{}}) {
+		t.Fatal("mirror of an unstatable file must stay a terminal")
+	}
+}
+
+func TestOutputSafetyDeliverMirrorWriteErrors(t *testing.T) {
+	payload := []byte("abcdef")
+	out := &mirrorWriter{primary: errWriter{}, copy: &bytes.Buffer{}}
+	if _, err := out.Write(payload); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("primary error: %v", err)
+	}
+
+	out = &mirrorWriter{primary: shortWriter{n: 2}, copy: &bytes.Buffer{}}
+	n, err := out.Write(payload)
+	if n != 2 || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("primary short write: n=%d err=%v", n, err)
+	}
+
+	var sink bytes.Buffer
+	out = &mirrorWriter{primary: &sink, copy: errWriter{}}
+	if _, err := out.Write(payload); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("copy error: %v", err)
+	}
+	if sink.String() != "abcdef" {
+		t.Fatalf("primary was not written before copy failed: %q", sink.String())
+	}
+
+	out = &mirrorWriter{primary: &bytes.Buffer{}, copy: shortWriter{n: 1}}
+	n, err = out.Write(payload)
+	if n != 1 || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("copy short write: n=%d err=%v", n, err)
+	}
+}
 
 func dangerousRowPayload(t *testing.T) json.RawMessage {
 	t.Helper()

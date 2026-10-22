@@ -22,6 +22,7 @@ func TestGeneratedOutputSafetyContracts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "output_safety_test.go"), cliTest, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "credential_echo_test.go"), clientTest, 0o644))
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli/", "./internal/client/", "-count=1",
 		"-run", "TestOutputSafety|TestCredentialEcho")
 }
