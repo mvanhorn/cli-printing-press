@@ -138,6 +138,12 @@ type codeOrchEndpoint struct {
 	// params object; a strict-mapping API rejects an object at the body
 	// root with HTTP 422 "Invalid json".
 	BodyIsArray bool
+{{- if hasMultipartRequest .APISpec}}
+	// Multipart marks a multipart/form-data body. FileParams name the body
+	// params sent as file parts; the agent passes a local path for each.
+	Multipart  bool
+	FileParams []string
+{{- end}}
 	// NeedsConfirm is the read-command classifier's write signal, plus every
 	// DELETE. It stays separate from Mutating: Mutating selects the GET
 	// transport that bypasses the response cache, including GETs the
@@ -188,6 +194,10 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
+{{- if endpointUsesMultipart $endpoint}}
+		Multipart: true,
+		FileParams: []string{ {{- range $endpoint.Body}}{{if eq (lower .Format) "binary"}}{{printf "%q" .BodyWireName}},{{end}}{{end}} },
+{{- end}}
 		NeedsConfirm: {{if codeOrchNeedsConfirm $endpoint $eName}}true{{else}}false{{end}},
 		Mutating: {{if and (eq (upper $endpoint.Method) "GET") (not $isReadOnly)}}true{{else}}false{{end}},
 {{- if $endpoint.UsesRawRequestBody}}
@@ -225,6 +235,10 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		HeaderParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "header"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .Default}}, Default: {{printf "%q" .Default}}{{end}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
+{{- end}}
+{{- if endpointUsesMultipart $endpoint}}
+		Multipart: true,
+		FileParams: []string{ {{- range $endpoint.Body}}{{if eq (lower .Format) "binary"}}{{printf "%q" .BodyWireName}},{{end}}{{end}} },
 {{- end}}
 		NeedsConfirm: {{if codeOrchNeedsConfirm $endpoint $eName}}true{{else}}false{{end}},
 		Mutating: {{if and (eq (upper $endpoint.Method) "GET") (not $isReadOnly)}}true{{else}}false{{end}},
@@ -301,6 +315,14 @@ func codeOrchEndpointMetadata(ep *codeOrchEndpoint) map[string]any {
 			"required":               ep.BodyRequired,
 			"default_content_type":   ep.RequestContentType,
 			"content_type_parameter": "content_type",
+		}
+	}
+{{- end}}
+{{- if hasMultipartRequest .APISpec}}
+	if ep.Multipart {
+		out["multipart"] = map[string]any{
+			"file_params": ep.FileParams,
+			"file_value":  "local file path",
 		}
 	}
 {{- end}}
@@ -678,6 +700,13 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			break
 		}
 {{- end}}
+{{- if hasMultipartRequest .APISpec}}
+		if ep.Multipart {
+			fields, files := codeOrchMultipartParts(ep, params)
+			data, _, err = c.PostMultipartWithHeaders(ctx, path, fields, files, hdrs)
+			break
+		}
+{{- end}}
 		body := writeBody()
 		if len(hdrs) > 0 {
 			data, _, err = c.PostWithHeaders(ctx, path, body, hdrs)
@@ -695,6 +724,13 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			break
 		}
 {{- end}}
+{{- if hasMultipartRequest .APISpec}}
+		if ep.Multipart {
+			fields, files := codeOrchMultipartParts(ep, params)
+			data, _, err = c.PutMultipartWithHeaders(ctx, path, fields, files, hdrs)
+			break
+		}
+{{- end}}
 		body := writeBody()
 		if len(hdrs) > 0 {
 			data, _, err = c.PutWithHeaders(ctx, path, body, hdrs)
@@ -709,6 +745,13 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			} else {
 				data, _, err = c.SendRaw(ctx, method, path, query, rawBody, rawContentType, hdrs)
 			}
+			break
+		}
+{{- end}}
+{{- if hasMultipartRequest .APISpec}}
+		if ep.Multipart {
+			fields, files := codeOrchMultipartParts(ep, params)
+			data, _, err = c.PatchMultipartWithHeaders(ctx, path, fields, files, hdrs)
 			break
 		}
 {{- end}}
@@ -731,6 +774,29 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 	return mcplib.NewToolResultText(text), nil
 }
 
+{{- if hasMultipartRequest .APISpec}}
+// codeOrchMultipartParts splits params into form fields and file parts. A file
+// param carries a local path that the client reads and uploads as that part.
+func codeOrchMultipartParts(ep *codeOrchEndpoint, params map[string]any) (map[string]string, map[string]string) {
+	fields, files := map[string]string{}, map[string]string{}
+	for k, v := range params {
+		isFile := false
+		for _, name := range ep.FileParams {
+			if name == k {
+				isFile = true
+				break
+			}
+		}
+		if isFile {
+			files[k] = fmt.Sprintf("%v", v)
+		} else {
+			fields[k] = mcpMultipartFieldValue(v)
+		}
+	}
+	return fields, files
+}
+
+{{- end}}
 // codeOrchWriteBody returns the value handed to the client layer as the
 // request body for write methods (POST/PUT/PATCH). It MUST be the structured
 // params map, never pre-marshaled bytes.
