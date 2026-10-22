@@ -3,12 +3,17 @@ package pipeline
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/require"
@@ -937,42 +942,26 @@ func TestRewriteLiveCheckHomeArgs(t *testing.T) {
 func TestSQLiteSnapshotDSN(t *testing.T) {
 	t.Parallel()
 
-	t.Run("no wal uses immutable", func(t *testing.T) {
+	t.Run("locking read does not depend on the wal file", func(t *testing.T) {
 		t.Parallel()
-		src := filepath.Join(t.TempDir(), "data.db")
-		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
-		dsn := sqliteSnapshotDSN(src)
-		require.Contains(t, dsn, "immutable=1")
-		require.NotContains(t, dsn, "busy_timeout")
-	})
-
-	t.Run("empty wal uses immutable", func(t *testing.T) {
-		t.Parallel()
-		src := filepath.Join(t.TempDir(), "data.db")
-		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
-		require.NoError(t, os.WriteFile(src+"-wal", nil, 0o644))
-		dsn := sqliteSnapshotDSN(src)
-		require.Contains(t, dsn, "immutable=1")
-	})
-
-	t.Run("wal bytes use mode=ro", func(t *testing.T) {
-		t.Parallel()
-		src := filepath.Join(t.TempDir(), "data.db")
-		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
-		require.NoError(t, os.WriteFile(src+"-wal", []byte("frame"), 0o644))
-		dsn := sqliteSnapshotDSN(src)
-		require.Contains(t, dsn, "mode=ro")
-		require.Contains(t, dsn, "busy_timeout")
-		require.NotContains(t, dsn, "immutable=1")
-	})
-
-	t.Run("non-regular wal uses immutable", func(t *testing.T) {
-		t.Parallel()
-		src := filepath.Join(t.TempDir(), "data.db")
-		require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
-		require.NoError(t, os.MkdirAll(src+"-wal", 0o755))
-		dsn := sqliteSnapshotDSN(src)
-		require.Contains(t, dsn, "immutable=1")
+		dir := t.TempDir()
+		for _, name := range []string{"absent.db", "empty.db", "frames.db"} {
+			src := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(src, []byte("x"), 0o644))
+			switch name {
+			case "empty.db":
+				require.NoError(t, os.WriteFile(src+"-wal", nil, 0o644))
+			case "frames.db":
+				require.NoError(t, os.WriteFile(src+"-wal", []byte("frame"), 0o644))
+			}
+			dsn := sqliteSnapshotDSN(src)
+			require.Contains(t, dsn, "mode=ro")
+			require.Contains(t, dsn, "busy_timeout(5000)")
+			require.NotContains(t, dsn, "immutable=1")
+		}
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "dir.db-wal"), 0o755))
+		dirDSN := sqliteSnapshotDSN(filepath.Join(dir, "dir.db"))
+		require.NotContains(t, dirDSN, "immutable=1")
 	})
 
 	t.Run("ordinary path is not percent-encoded", func(t *testing.T) {
@@ -994,7 +983,8 @@ func TestSQLiteSnapshotDSN(t *testing.T) {
 		require.Contains(t, filePart, "data%252E.db")
 		require.NotContains(t, filePart, "#")
 		require.True(t, strings.HasPrefix(query, "mode=ro"))
-		require.Contains(t, query, "immutable=1")
+		require.Contains(t, query, "busy_timeout(5000)")
+		require.NotContains(t, query, "immutable=1")
 
 		// ? is illegal in a Windows filename, so this stays a string.
 		question := filepath.Join("work", "client?1", "data.db")
@@ -1093,7 +1083,7 @@ func TestStageSQLiteFileSnapshot(t *testing.T) {
 
 		dst := filepath.Join(t.TempDir(), "copy.db")
 		require.NoError(t, stageSQLiteFile(src, dst, nil))
-		require.Equal(t, before, snapshotDir(t, dir))
+		requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, dir))
 		require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
 		_, err := os.Stat(dst + "-wal")
 		require.ErrorIs(t, err, os.ErrNotExist)
@@ -1182,7 +1172,7 @@ func TestStageSQLiteFileSnapshot(t *testing.T) {
 		dst := filepath.Join(t.TempDir(), "copy.db")
 		require.NoError(t, stageSQLiteFile(src, dst, nil))
 		require.Equal(t, []string{"hash-name"}, liveCheckSQLiteValues(t, dst))
-		require.Equal(t, before, snapshotDir(t, root))
+		requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, root))
 	})
 
 	t.Run("percent-encoded filename is not decoded to a different file", func(t *testing.T) {
@@ -1197,7 +1187,7 @@ func TestStageSQLiteFileSnapshot(t *testing.T) {
 		dst := filepath.Join(t.TempDir(), "copy.db")
 		require.NoError(t, stageSQLiteFile(src, dst, nil))
 		require.Equal(t, []string{"encoded-name"}, liveCheckSQLiteValues(t, dst))
-		require.Equal(t, before, snapshotDir(t, dir))
+		requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, dir))
 	})
 
 	t.Run("space and apostrophe in the path copy that file", func(t *testing.T) {
@@ -1212,7 +1202,7 @@ func TestStageSQLiteFileSnapshot(t *testing.T) {
 		dst := filepath.Join(t.TempDir(), "copy.db")
 		require.NoError(t, stageSQLiteFile(src, dst, nil))
 		require.Equal(t, []string{"literal"}, liveCheckSQLiteValues(t, dst))
-		require.Equal(t, before, snapshotDir(t, root))
+		requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, root))
 	})
 
 	t.Run("sqlite snapshot is refused when the budget is too small", func(t *testing.T) {
@@ -1229,6 +1219,405 @@ func TestStageSQLiteFileSnapshot(t *testing.T) {
 		_, statErr := os.Stat(dst)
 		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
+}
+
+func TestStageSQLiteSnapshotConsistency(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"delete", "truncate"} {
+		t.Run("rollback "+mode+" waits for the committing writer", func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			src := filepath.Join(dir, "data.db")
+			db := openLiveCheckJournal(t, src, mode)
+			mustExecLiveCheck(t, db, `CREATE TABLE sample_rows (v TEXT)`)
+			mustExecLiveCheck(t, db, `INSERT INTO sample_rows (v) VALUES ('old')`)
+			mustExecLiveCheck(t, db, `BEGIN EXCLUSIVE`)
+			mustExecLiveCheck(t, db, `UPDATE sample_rows SET v = 'new'`)
+			mustExecLiveCheck(t, db, `INSERT INTO sample_rows (v) VALUES ('newer')`)
+
+			dst := filepath.Join(t.TempDir(), "copy.db")
+			done := make(chan error, 1)
+			go func() {
+				done <- stageSQLiteFile(src, dst, nil)
+			}()
+			select {
+			case err := <-done:
+				t.Fatalf("snapshot finished while the writer held the database: %v", err)
+			case <-time.After(200 * time.Millisecond):
+			}
+			mustExecLiveCheck(t, db, `COMMIT`)
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("snapshot did not finish after the writer committed")
+			}
+			require.Equal(t, []string{"new", "newer"}, liveCheckSQLiteValues(t, dst))
+		})
+	}
+
+	for _, state := range []string{"absent", "empty", "frames"} {
+		t.Run("wal "+state+" stays one generation while a writer checkpoints", func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			src := filepath.Join(dir, "data.db")
+			db := seedLiveCheckJournal(t, src, "wal", "seed")
+			prepareLiveCheckWALState(t, src, db, state)
+			if state == "frames" {
+				mustExecLiveCheck(t, db, `INSERT INTO sample_rows (v) VALUES ('frame')`)
+				info, err := os.Stat(src + "-wal")
+				require.NoError(t, err)
+				require.Greater(t, info.Size(), int64(0))
+			} else {
+				db = openLiveCheckJournal(t, src, "wal")
+				mustExecLiveCheck(t, db, `PRAGMA wal_autocheckpoint = 0`)
+			}
+
+			var committed atomic.Int64
+			stop := make(chan struct{})
+			var stopOnce sync.Once
+			stopWriter := func() { stopOnce.Do(func() { close(stop) }) }
+			writerErr := make(chan error, 1)
+			finished := make(chan struct{})
+			go func() {
+				writerErr <- writeLiveCheckSnapshotRows(db, stop, &committed)
+				close(finished)
+			}()
+			defer func() {
+				stopWriter()
+				<-finished
+			}()
+			waitForLiveCheckCommits(t, &committed, 1)
+
+			dst := filepath.Join(t.TempDir(), "copy.db")
+			require.NoError(t, stageSQLiteFile(src, dst, nil))
+			stopWriter()
+			require.NoError(t, <-writerErr)
+
+			got := liveCheckSQLiteValues(t, dst)
+			require.Contains(t, got, "seed")
+			if state == "frames" {
+				require.Contains(t, got, "frame")
+			}
+			requireCommittedPrefix(t, got, int(committed.Load()))
+			require.GreaterOrEqual(t, committed.Load(), int64(1))
+		})
+	}
+
+	t.Run("quiescent snapshot does not rewrite database or wal bytes", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("rollback", func(t *testing.T) {
+			t.Parallel()
+			for _, mode := range []string{"delete", "truncate"} {
+				dir := t.TempDir()
+				src := filepath.Join(dir, "data.db")
+				db := seedLiveCheckJournal(t, src, mode, "seed")
+				require.NoError(t, db.Close())
+				before := snapshotDir(t, dir)
+				dst := filepath.Join(t.TempDir(), "copy.db")
+				require.NoError(t, stageSQLiteFile(src, dst, nil))
+				require.Equal(t, before, snapshotDir(t, dir))
+				require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
+			}
+		})
+
+		t.Run("wal", func(t *testing.T) {
+			t.Parallel()
+			for _, state := range []string{"absent", "empty", "frames"} {
+				dir := t.TempDir()
+				src := filepath.Join(dir, "data.db")
+				db := seedLiveCheckJournal(t, src, "wal", "seed")
+				prepareLiveCheckWALState(t, src, db, state)
+				if state == "frames" {
+					mustExecLiveCheck(t, db, `INSERT INTO sample_rows (v) VALUES ('frame')`)
+				}
+				before := snapshotDir(t, dir)
+				dst := filepath.Join(t.TempDir(), "copy.db")
+				require.NoError(t, stageSQLiteFile(src, dst, nil))
+				requireSQLiteFamilyUnchanged(t, before, snapshotDir(t, dir))
+				got := liveCheckSQLiteValues(t, dst)
+				require.Contains(t, got, "seed")
+				if state == "frames" {
+					require.Equal(t, []string{"frame", "seed"}, got)
+				}
+			}
+		})
+	})
+
+	t.Run("read-only directory still snapshots", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("rollback", func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			src := filepath.Join(dir, "data.db")
+			db := seedLiveCheckJournal(t, src, "delete", "seed")
+			require.NoError(t, db.Close())
+			before := snapshotDir(t, dir)
+			lockLiveCheckDirReadOnly(t, dir)
+			dst := filepath.Join(t.TempDir(), "copy.db")
+			require.NoError(t, stageSQLiteFile(src, dst, nil))
+			require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
+			restoreLiveCheckDir(t, dir)
+			require.Equal(t, before, snapshotDir(t, dir))
+		})
+
+		t.Run("settled wal", func(t *testing.T) {
+			t.Parallel()
+			for _, state := range []string{"absent", "empty"} {
+				dir := t.TempDir()
+				src := filepath.Join(dir, "data.db")
+				db := seedLiveCheckJournal(t, src, "wal", "seed")
+				prepareLiveCheckWALState(t, src, db, state)
+				before := snapshotDir(t, dir)
+				lockLiveCheckDirReadOnly(t, dir)
+				raw, err := sql.Open("sqlite", sqliteSnapshotDSN(src))
+				require.NoError(t, err)
+				pingErr := raw.Ping()
+				_ = raw.Close()
+				require.Error(t, pingErr)
+				require.True(t, snapshotOpenNeedsImmutableFallback(pingErr), pingErr)
+				dst := filepath.Join(t.TempDir(), "copy.db")
+				require.NoError(t, stageSQLiteFile(src, dst, nil))
+				require.Equal(t, []string{"seed"}, liveCheckSQLiteValues(t, dst))
+				restoreLiveCheckDir(t, dir)
+				require.Equal(t, before, snapshotDir(t, dir))
+			}
+		})
+	})
+
+	t.Run("wal frames are not snapshotted when the index cannot be created", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		db := seedLiveCheckJournal(t, src, "wal", "seed")
+		mustExecLiveCheck(t, db, `PRAGMA wal_autocheckpoint = 0`)
+		mustExecLiveCheck(t, db, `INSERT INTO sample_rows (v) VALUES ('frame')`)
+		dbBytes := readLiveCheckFile(t, src)
+		walBytes := readLiveCheckFile(t, src+"-wal")
+		require.NotEmpty(t, walBytes)
+		require.NoError(t, db.Close())
+		// Closing the last connection checkpoints the wal away. Put the
+		// pre-close bytes back so the frames exist with no process holding -shm.
+		require.NoError(t, os.WriteFile(src, dbBytes, 0o644))
+		require.NoError(t, os.WriteFile(src+"-wal", walBytes, 0o644))
+		require.NoError(t, os.RemoveAll(src+"-shm"))
+		lockLiveCheckDirReadOnly(t, dir)
+
+		dst := filepath.Join(t.TempDir(), "nested", "copy.db")
+		err := stageSQLiteFile(src, dst, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "snapshot sqlite database")
+		_, statErr := os.Stat(dst)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+		restoreLiveCheckDir(t, dir)
+		require.Equal(t, dbBytes, readLiveCheckFile(t, src))
+		require.Equal(t, walBytes, readLiveCheckFile(t, src+"-wal"))
+	})
+
+	t.Run("immutable fallback does not hide a corrupt read", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		db := seedLiveCheckJournal(t, src, "wal", "seed")
+		prepareLiveCheckWALState(t, src, db, "absent")
+		require.NoError(t, db.Close())
+		body := readLiveCheckFile(t, src)
+		require.Greater(t, len(body), 100)
+		for i := 100; i < len(body); i++ {
+			body[i] = 0
+		}
+		require.NoError(t, os.WriteFile(src, body, 0o644))
+		lockLiveCheckDirReadOnly(t, dir)
+
+		dst := filepath.Join(t.TempDir(), "copy.db")
+		err := stageSQLiteFile(src, dst, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "snapshot sqlite database")
+		msg := strings.ToLower(err.Error())
+		require.True(t, strings.Contains(msg, "malformed") || strings.Contains(msg, "not a database"), err)
+		_, statErr := os.Stat(dst)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+		restoreLiveCheckDir(t, dir)
+		require.Equal(t, body, readLiveCheckFile(t, src))
+	})
+
+	t.Run("busy error is not an immutable fallback", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, snapshotOpenNeedsImmutableFallback(nil))
+		require.False(t, snapshotOpenNeedsImmutableFallback(errors.New("database is locked (5) (SQLITE_BUSY)")))
+		require.False(t, snapshotOpenNeedsImmutableFallback(errors.New("file is not a database")))
+		require.False(t, snapshotOpenNeedsImmutableFallback(errors.New("database disk image is malformed")))
+		require.True(t, snapshotOpenNeedsImmutableFallback(errors.New("unable to open database file (14)")))
+		require.True(t, snapshotOpenNeedsImmutableFallback(errors.New("attempt to write a readonly database (1544)")))
+		require.False(t, snapshotWALHasNoFrames(filepath.Join(t.TempDir(), "missing.db")))
+
+		dir := t.TempDir()
+		src := filepath.Join(dir, "data.db")
+		db := openLiveCheckJournal(t, src, "delete")
+		mustExecLiveCheck(t, db, `CREATE TABLE sample_rows (v TEXT)`)
+		mustExecLiveCheck(t, db, `INSERT INTO sample_rows (v) VALUES ('old')`)
+		mustExecLiveCheck(t, db, `BEGIN EXCLUSIVE`)
+		t.Cleanup(func() { _, _ = db.Exec(`ROLLBACK`) })
+
+		ro, err := sql.Open("sqlite", sqliteFileURI(src)+"?mode=ro&_pragma=busy_timeout(50)&_pragma=mmap_size(0)")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ro.Close() })
+		pingErr := ro.Ping()
+		require.Error(t, pingErr)
+		require.True(t, snapshotErrorIsBusy(pingErr), pingErr)
+		require.False(t, snapshotOpenNeedsImmutableFallback(pingErr), pingErr)
+
+		wal := seedLiveCheckJournal(t, filepath.Join(dir, "frames.db"), "wal", "seed")
+		mustExecLiveCheck(t, wal, `INSERT INTO sample_rows (v) VALUES ('frame')`)
+		require.False(t, snapshotWALHasNoFrames(filepath.Join(dir, "frames.db")))
+		prepareLiveCheckWALState(t, filepath.Join(dir, "empty.db"), seedLiveCheckJournal(t, filepath.Join(dir, "empty.db"), "wal", "seed"), "empty")
+		require.True(t, snapshotWALHasNoFrames(filepath.Join(dir, "empty.db")))
+		require.False(t, snapshotWALHasNoFrames(src))
+	})
+}
+
+func openLiveCheckJournal(t *testing.T, path, mode string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(1000)&_pragma=journal_mode("+mode+")")
+	require.NoError(t, err)
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, db.Ping())
+	return db
+}
+
+func seedLiveCheckJournal(t *testing.T, path, mode, value string) *sql.DB {
+	t.Helper()
+	db := openLiveCheckJournal(t, path, mode)
+	mustExecLiveCheck(t, db, `CREATE TABLE sample_rows (v TEXT)`)
+	_, err := db.Exec(`INSERT INTO sample_rows (v) VALUES (?)`, value)
+	require.NoError(t, err)
+	if mode == "wal" {
+		mustExecLiveCheck(t, db, `PRAGMA wal_checkpoint(TRUNCATE)`)
+		mustExecLiveCheck(t, db, `PRAGMA wal_autocheckpoint = 0`)
+	}
+	return db
+}
+
+func mustExecLiveCheck(t *testing.T, db *sql.DB, query string) {
+	t.Helper()
+	_, err := db.Exec(query)
+	require.NoError(t, err)
+}
+
+// prepareLiveCheckWALState leaves a checkpointed database whose wal matches
+// state. The connection stays open for "frames" so the next insert is not
+// checkpointed on close; "absent" and "empty" close it first.
+func prepareLiveCheckWALState(t *testing.T, src string, db *sql.DB, state string) {
+	t.Helper()
+	switch state {
+	case "absent":
+		require.NoError(t, db.Close())
+		require.NoError(t, os.RemoveAll(src+"-wal"))
+		require.NoError(t, os.RemoveAll(src+"-shm"))
+	case "empty":
+		require.NoError(t, db.Close())
+		require.NoError(t, os.RemoveAll(src+"-shm"))
+		require.NoError(t, os.WriteFile(src+"-wal", nil, 0o644))
+	case "frames":
+	default:
+		t.Fatalf("unknown wal state %q", state)
+	}
+}
+
+func writeLiveCheckSnapshotRows(db *sql.DB, stop <-chan struct{}, committed *atomic.Int64) error {
+	for {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		n := int(committed.Load()) + 1
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO sample_rows (v) VALUES (?)`, "new-"+strconv.Itoa(n)); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`); err != nil && !snapshotErrorIsBusy(err) {
+			return err
+		}
+		if n%4 == 0 {
+			if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil && !snapshotErrorIsBusy(err) {
+				return err
+			}
+		}
+		committed.Store(int64(n))
+	}
+}
+
+func waitForLiveCheckCommits(t *testing.T, committed *atomic.Int64, n int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for committed.Load() < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	require.GreaterOrEqual(t, committed.Load(), n)
+}
+
+func requireCommittedPrefix(t *testing.T, values []string, committed int) {
+	t.Helper()
+	var got []int
+	for _, value := range values {
+		id, ok := strings.CutPrefix(value, "new-")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(id)
+		require.NoError(t, err)
+		got = append(got, n)
+	}
+	slices.Sort(got)
+	for i, n := range got {
+		require.Equal(t, i+1, n)
+		require.LessOrEqual(t, n, committed)
+	}
+}
+
+func lockLiveCheckDirReadOnly(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	require.NoError(t, os.Chmod(dir, 0o555))
+}
+
+func restoreLiveCheckDir(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.Chmod(dir, 0o755))
+}
+
+func requireSQLiteFamilyUnchanged(t *testing.T, before, after map[string]string) {
+	t.Helper()
+	for name, body := range before {
+		if strings.HasSuffix(name, "-shm") {
+			continue
+		}
+		got, ok := after[name]
+		require.True(t, ok, "staging removed %s", name)
+		require.Equal(t, body, got, name)
+	}
+	for name, body := range after {
+		if _, ok := before[name]; ok || strings.HasSuffix(name, "-shm") {
+			continue
+		}
+		if strings.HasSuffix(name, "-wal") {
+			require.Empty(t, body, "staging created a non-empty wal %s", name)
+			continue
+		}
+		t.Fatalf("staging created %s", name)
+	}
 }
 
 func seedLiveCheckSQLite(t *testing.T, path, value string) {

@@ -355,7 +355,7 @@ func snapshotSQLiteFile(src, dst string, info os.FileInfo, budget *liveCheckCopy
 
 func vacuumSQLiteInto(src, dst string) error {
 	// modernc honors mode and the pragmas only when the DSN has a file: prefix.
-	db, err := sql.Open("sqlite", sqliteSnapshotDSN(src))
+	db, err := openLiveCheckSnapshot(src)
 	if err != nil {
 		return fmt.Errorf("snapshot sqlite database: %w", err)
 	}
@@ -367,17 +367,85 @@ func vacuumSQLiteInto(src, dst string) error {
 	return nil
 }
 
-// sqliteSnapshotDSN opens the source for VACUUM INTO. immutable=1 does not
-// create or rewrite the wal index, but it also ignores committed frames that
-// are still only in the wal, so the copy would disagree with the CLI. A
-// non-empty wal is read with mode=ro, which sees those frames. That read
-// updates the wal index (-shm); the database and wal bytes are not written.
+// mode=ro takes the shared lock or WAL read mark that VACUUM INTO holds for
+// its read transaction. immutable=1 skips that lock, so a commit or checkpoint
+// can rewrite pages under the copy when the wal is absent or empty.
 func sqliteSnapshotDSN(src string) string {
-	path := sqliteFileURI(src)
-	if info, err := os.Stat(src + "-wal"); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-		return path + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)"
+	return sqliteFileURI(src) + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)"
+}
+
+// immutable=1 is only for a WAL database whose wal has no frames when the
+// directory cannot create the wal index. Rollback journals stay on the locking
+// open: skipping the shared lock mixes pages. A wal that still has frames
+// stays there too: an immutable read would drop commits the CLI can see.
+func openLiveCheckSnapshot(src string) (*sql.DB, error) {
+	dsn := sqliteSnapshotDSN(src)
+	db, err := openLiveCheckSnapshotDSN(dsn)
+	if err == nil || !snapshotOpenNeedsImmutableFallback(err) || !snapshotWALHasNoFrames(src) {
+		return db, err
 	}
-	return path + "?mode=ro&immutable=1&_pragma=mmap_size(0)"
+	return openLiveCheckSnapshotDSN(dsn + "&immutable=1")
+}
+
+func openLiveCheckSnapshotDSN(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// VACUUM INTO has to run on the connection that applied the DSN pragmas.
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func snapshotOpenNeedsImmutableFallback(err error) bool {
+	if err == nil || snapshotErrorIsBusy(err) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "malformed") || strings.Contains(msg, "sqlite_corrupt") || strings.Contains(msg, "not a database") {
+		return false
+	}
+	return strings.Contains(msg, "sqlite_cantopen") ||
+		strings.Contains(msg, "unable to open") ||
+		strings.Contains(msg, "sqlite_readonly") ||
+		strings.Contains(msg, "readonly") ||
+		strings.Contains(msg, "read-only")
+}
+
+func snapshotErrorIsBusy(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked")
+}
+
+// snapshotWALHasNoFrames reports whether an immutable read would still see
+// every committed row. Bytes 18 and 19 are the SQLite write and read versions;
+// both are 2 only while the file is in WAL mode.
+func snapshotWALHasNoFrames(src string) bool {
+	if !sqliteHeaderIsWAL(src) {
+		return false
+	}
+	info, err := os.Stat(src + "-wal")
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	return !info.Mode().IsRegular() || info.Size() == 0
+}
+
+func sqliteHeaderIsWAL(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return false
+	}
+	return string(hdr[:len(sqliteDatabaseHeader)]) == sqliteDatabaseHeader && hdr[18] == 2 && hdr[19] == 2
 }
 
 // SQLite ends a file: filename at a raw # or ? and decodes %HH, so a path
