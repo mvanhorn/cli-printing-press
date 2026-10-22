@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -38,6 +39,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
@@ -2437,10 +2440,13 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	if body != nil {
 		var pretty json.RawMessage
 		if json.Unmarshal(body, &pretty) == nil {
-			enc := json.NewEncoder(os.Stderr)
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
 			enc.SetIndent("  ", "  ")
 			fmt.Fprintf(os.Stderr, "  Body:\n")
-			enc.Encode(pretty)
+			if err := enc.Encode(pretty); err == nil {
+				_, _ = os.Stderr.Write(cliutil.EscapeJSONControls(buf.Bytes()))
+			}
 		}
 	}
 	if authHeader != "" {
@@ -3161,6 +3167,7 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		replacement string
 	}
 	var masks []credentialMask
+	var secrets []string
 	seen := map[string]struct{}{}
 	addValue := func(value string) {
 		value = strings.TrimSpace(value)
@@ -3184,6 +3191,10 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		}
 		if escaped := url.PathEscape(value); escaped != value {
 			addMask(escaped)
+		}
+		if len(value) >= minEncodedSecretLen {
+			secrets = append(secrets, value)
+			addEncodedCredentialMasks(value, addMask)
 		}
 	}
 	addCredential := func(value string) {
@@ -3213,7 +3224,1047 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 	for _, mask := range masks {
 		masked = strings.ReplaceAll(masked, mask.needle, mask.replacement)
 	}
-	return masked
+	return finishCredentialMask(masked, secrets)
+}
+
+// Encodings of shorter values collide with ordinary words and hex fragments.
+const minEncodedSecretLen = 8
+
+func addEncodedCredentialMasks(value string, addMask func(string)) {
+	add := func(needle string) {
+		if len(needle) < minEncodedSecretLen || needle == value {
+			return
+		}
+		addMask(needle)
+	}
+	if credentialASCII(value) {
+		add(strings.ToLower(value))
+		add(strings.ToUpper(value))
+	}
+	if strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, `"`) {
+		add(credentialJSONSlash(value))
+	}
+	add(credentialJSONUnicode(value, "0123456789abcdef"))
+	add(credentialJSONUnicode(value, "0123456789ABCDEF"))
+	add(credentialHTMLSpecial(value, func(r rune) string {
+		return "&#" + strconv.Itoa(int(r)) + ";"
+	}))
+	add(credentialHTMLSpecial(value, func(r rune) string {
+		return fmt.Sprintf("&#x%02X;", r)
+	}))
+	add(credentialHTMLSpecial(value, func(r rune) string {
+		return fmt.Sprintf("&#x%02x;", r)
+	}))
+	add(credentialHTMLSpecial(value, func(r rune) string {
+		return fmt.Sprintf("&#%04d;", r)
+	}))
+	full := credentialHTMLAll(value)
+	add(full)
+	add(strings.ReplaceAll(full, "&", "&amp;"))
+	q := url.QueryEscape(value)
+	p := url.PathEscape(value)
+	add(url.QueryEscape(q))
+	add(url.PathEscape(p))
+	add(url.QueryEscape(p))
+	add(url.PathEscape(q))
+	add(credentialLowerPercent(q))
+	add(credentialLowerPercent(p))
+	add(credentialLowerPercent(url.QueryEscape(q)))
+	for _, encoded := range []string{value, q, p, credentialLowerPercent(q), credentialJSONSlash(value)} {
+		for _, form := range credentialBase64s(encoded) {
+			add(form)
+		}
+	}
+	hexLower := hex.EncodeToString([]byte(value))
+	add(hexLower)
+	add(strings.ToUpper(hexLower))
+	add(credentialMixedHex(hexLower))
+	for _, wide := range [][]byte{credentialUTF16BE(value), credentialUTF16LE(value)} {
+		wideHex := hex.EncodeToString(wide)
+		add(wideHex)
+		add(strings.ToUpper(wideHex))
+		add(credentialMixedHex(wideHex))
+		for _, form := range credentialBase64s(string(wide)) {
+			add(form)
+		}
+	}
+	add(credentialSlashX(value, "0123456789abcdef"))
+	add(credentialSlashX(value, "0123456789ABCDEF"))
+	add(credentialPercentAll(value, "0123456789ABCDEF"))
+	add(credentialPercentAll(value, "0123456789abcdef"))
+	hexAll := credentialHTMLHexAll(value, "0123456789ABCDEF")
+	add(hexAll)
+	add(strings.ReplaceAll(hexAll, "&#x", "&#X"))
+	add(credentialHTMLHexAll(value, "0123456789abcdef"))
+	add(base32.StdEncoding.EncodeToString([]byte(value)))
+	add(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(value)))
+	add(base32.HexEncoding.EncodeToString([]byte(value)))
+	add(base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(value)))
+	add(credentialRot13(value))
+	add(credentialFullwidth(value))
+	upperU := credentialPercentU(value)
+	add(upperU)
+	add(strings.ToLower(upperU))
+	add(credentialQuotedPrintable(value))
+	add(strings.ReplaceAll(value, "+", "+-"))
+}
+
+func finishCredentialMask(text string, secrets []string) string {
+	secrets = longCredentialSecrets(secrets)
+	if text == "" || len(secrets) == 0 {
+		return text
+	}
+	current := text
+	for i := 0; i < 4; i++ {
+		next, changed := replaceCredentialSpans(current, secrets)
+		current = next
+		if !changed {
+			break
+		}
+	}
+	if credentialTextReveals(current, secrets) {
+		return withholdCredentialText(current, secrets)
+	}
+	return current
+}
+
+func longCredentialSecrets(secrets []string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, secret := range secrets {
+		if len(secret) < minEncodedSecretLen {
+			continue
+		}
+		if _, ok := seen[secret]; ok {
+			continue
+		}
+		seen[secret] = struct{}{}
+		out = append(out, secret)
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+func replaceCredentialSpans(text string, secrets []string) (string, bool) {
+	spans := credentialRevealSpans(text, secrets)
+	if len(spans) == 0 {
+		return text, false
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i][0] == spans[j][0] {
+			return spans[i][1] > spans[j][1]
+		}
+		return spans[i][0] < spans[j][0]
+	})
+	var b strings.Builder
+	pos := 0
+	changed := false
+	for _, sp := range spans {
+		if sp[0] < pos || sp[1] > len(text) {
+			continue
+		}
+		b.WriteString(text[pos:sp[0]])
+		b.WriteString(maskToken("x"))
+		pos = sp[1]
+		changed = true
+	}
+	if !changed {
+		return text, false
+	}
+	b.WriteString(text[pos:])
+	return b.String(), true
+}
+
+func credentialRevealSpans(text string, secrets []string) [][2]int {
+	var spans [][2]int
+	consider := func(start, end int) {
+		if start < 0 || end <= start || end > len(text) {
+			return
+		}
+		if credentialTextReveals(text[start:end], secrets) {
+			spans = append(spans, [2]int{start, end})
+		}
+	}
+	for _, sp := range credentialRuns(text, credentialIsB64, false) {
+		if sp[1]-sp[0] >= minEncodedSecretLen {
+			consider(sp[0], sp[1])
+		}
+	}
+	for _, sp := range credentialMIMESpans(text) {
+		consider(sp[0], sp[1])
+	}
+	for _, sp := range credentialRuns(text, credentialIsHex, false) {
+		if sp[1]-sp[0] >= 16 && (sp[1]-sp[0])%2 == 0 {
+			consider(sp[0], sp[1])
+		}
+	}
+	return spans
+}
+
+func credentialMIMESpans(text string) [][2]int {
+	var spans [][2]int
+	lineStart := 0
+	groupStart := -1
+	groupEnd := -1
+	flush := func() {
+		if groupStart >= 0 && groupEnd > groupStart {
+			spans = append(spans, [2]int{groupStart, groupEnd})
+		}
+		groupStart = -1
+		groupEnd = -1
+	}
+	for i := 0; i <= len(text); i++ {
+		if i != len(text) && text[i] != '\n' {
+			continue
+		}
+		line := strings.TrimSpace(text[lineStart:i])
+		if line != "" && credentialPure(line, credentialIsB64) {
+			if groupStart < 0 {
+				groupStart = lineStart
+			}
+			groupEnd = i
+		} else {
+			flush()
+		}
+		lineStart = i + 1
+	}
+	flush()
+	return spans
+}
+
+func withholdCredentialText(text string, secrets []string) string {
+	if line, ok := credentialStatusLine(text); ok && !credentialTextReveals(line, secrets) {
+		return line
+	}
+	trimmed := strings.TrimSpace(text)
+	if strings.Contains(text, "://") || strings.HasPrefix(trimmed, "/") {
+		return "[redacted]"
+	}
+	return ""
+}
+
+func credentialStatusLine(text string) (string, bool) {
+	const marker = " returned HTTP "
+	i := strings.Index(text, marker)
+	if i < 0 {
+		return "", false
+	}
+	j := i + len(marker)
+	if j >= len(text) || text[j] < '0' || text[j] > '9' {
+		return "", false
+	}
+	for j < len(text) && text[j] >= '0' && text[j] <= '9' {
+		j++
+	}
+	return text[:j], true
+}
+
+func credentialTextReveals(text string, secrets []string) bool {
+	if text == "" || len(secrets) == 0 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	var walk func(string, int) bool
+	walk = func(s string, depth int) bool {
+		if credentialContains(s, secrets) {
+			return true
+		}
+		if depth >= 5 || len(seen) > 256 || len(s) > 65536 {
+			return false
+		}
+		if _, ok := seen[s]; ok {
+			return false
+		}
+		seen[s] = struct{}{}
+		for _, next := range credentialDecodeVariants(s) {
+			if walk(next, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(text, 0)
+}
+
+func credentialContains(text string, secrets []string) bool {
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		if strings.Contains(text, secret) {
+			return true
+		}
+		if credentialASCII(secret) && strings.Contains(strings.ToLower(text), strings.ToLower(secret)) {
+			return true
+		}
+	}
+	return false
+}
+
+func credentialDecodeVariants(s string) []string {
+	var out []string
+	add := func(v string) {
+		if v != "" && v != s && len(v) <= 65536 {
+			out = append(out, v)
+		}
+	}
+	add(html.UnescapeString(s))
+	if v, ok := credentialPercentDecode(s, true); ok {
+		add(v)
+	}
+	if v, ok := credentialPercentDecode(s, false); ok {
+		add(v)
+	}
+	if v, ok := credentialJSONUnescape(s); ok {
+		add(v)
+	}
+	if v, ok := credentialQPDecode(s); ok {
+		add(v)
+	}
+	if v, ok := credentialFoldFullwidth(s); ok {
+		add(v)
+	}
+	if v, ok := credentialStripMarks(s); ok {
+		add(v)
+	}
+	if v, ok := credentialStripSpaces(s); ok {
+		add(v)
+	}
+	if folded := credentialRot13(s); folded != s {
+		add(folded)
+	}
+	if v, ok := credentialDecodePercentU(s); ok {
+		add(v)
+	}
+	if v, ok := credentialDecodeSlashX(s); ok {
+		add(v)
+	}
+	if v, ok := credentialDecodeOverlong(s); ok {
+		add(v)
+	}
+	for _, v := range credentialUTF16Views(s) {
+		add(v)
+	}
+	for _, tok := range credentialDecodedTokens(s) {
+		add(tok)
+	}
+	return out
+}
+
+func credentialDecodedTokens(s string) []string {
+	var out []string
+	addBytes := func(b []byte) {
+		if len(b) > 0 {
+			out = append(out, string(b))
+		}
+	}
+	decodeB64 := func(tok string) {
+		if len(tok) < minEncodedSecretLen {
+			return
+		}
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+			if b, err := enc.DecodeString(tok); err == nil {
+				addBytes(b)
+			}
+		}
+		padded := strings.ToUpper(strings.TrimRight(tok, "="))
+		if b, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(padded); err == nil {
+			addBytes(b)
+		}
+		if b, err := base32.HexEncoding.WithPadding(base32.NoPadding).DecodeString(padded); err == nil {
+			addBytes(b)
+		}
+	}
+	decodeLabeled := func(tok string) {
+		decodeB64(tok)
+		atoms := credentialB64Atoms(tok)
+		if len(atoms) < 2 {
+			return
+		}
+		for _, atom := range atoms {
+			decodeB64(atom)
+		}
+	}
+	for _, sp := range credentialRuns(s, credentialIsB64, false) {
+		decodeLabeled(s[sp[0]:sp[1]])
+	}
+	for _, sp := range credentialMIMESpans(s) {
+		joined := strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+				return -1
+			}
+			return r
+		}, s[sp[0]:sp[1]])
+		decodeLabeled(joined)
+	}
+	for _, sp := range credentialRuns(s, credentialIsHex, false) {
+		tok := s[sp[0]:sp[1]]
+		if len(tok) < 16 || len(tok)%2 != 0 {
+			continue
+		}
+		b, err := hex.DecodeString(tok)
+		if err != nil {
+			continue
+		}
+		addBytes(b)
+		if len(b)%2 == 0 {
+			addBytes(credentialUTF16ToUTF8(b, true))
+			addBytes(credentialUTF16ToUTF8(b, false))
+		}
+	}
+	return out
+}
+
+// An internal '=' is a label separator (echo=<value>). Trailing '=' stays
+// with the value as base64 padding.
+func credentialB64Atoms(tok string) []string {
+	var atoms []string
+	start := 0
+	for i := 0; i < len(tok); i++ {
+		if tok[i] != '=' {
+			continue
+		}
+		j := i
+		for j < len(tok) && tok[j] == '=' {
+			j++
+		}
+		if j >= len(tok) {
+			break
+		}
+		if i > start {
+			atoms = append(atoms, tok[start:i])
+		}
+		start = j
+		i = j - 1
+	}
+	if start < len(tok) {
+		atoms = append(atoms, tok[start:])
+	}
+	return atoms
+}
+
+func credentialRuns(s string, ok func(byte) bool, allowWS bool) [][2]int {
+	var runs [][2]int
+	start := -1
+	for i := 0; i <= len(s); i++ {
+		good := i < len(s) && (ok(s[i]) || (allowWS && (s[i] == ' ' || s[i] == '\n' || s[i] == '\r' || s[i] == '\t')))
+		if good {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			runs = append(runs, [2]int{start, i})
+			start = -1
+		}
+	}
+	return runs
+}
+
+func credentialPure(s string, ok func(byte) bool) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !ok(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func credentialIsB64(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' || c == '-' || c == '_'
+}
+
+func credentialIsHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func credentialPercentDecode(s string, plusIsSpace bool) (string, bool) {
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && credentialIsHex(s[i+1]) && credentialIsHex(s[i+2]) {
+			b.WriteByte(credentialUnhex(s[i+1])<<4 | credentialUnhex(s[i+2]))
+			i += 2
+			changed = true
+			continue
+		}
+		if plusIsSpace && s[i] == '+' {
+			b.WriteByte(' ')
+			changed = true
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialJSONUnescape(s string) (string, bool) {
+	if !strings.Contains(s, `\`) {
+		return s, false
+	}
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		switch s[i+1] {
+		case 'u':
+			if i+6 <= len(s) && credentialHex4(s[i+2:i+6]) {
+				r := credentialHexRune(s[i+2 : i+6])
+				if utf16.IsSurrogate(r) && i+12 <= len(s) && s[i+6] == '\\' && s[i+7] == 'u' && credentialHex4(s[i+8:i+12]) {
+					lo := credentialHexRune(s[i+8 : i+12])
+					if dec := utf16.DecodeRune(r, lo); dec != utf8.RuneError {
+						b.WriteRune(dec)
+						i += 12
+						changed = true
+						continue
+					}
+				}
+				b.WriteRune(r)
+				i += 6
+				changed = true
+				continue
+			}
+		case '\\', '/', '"':
+			b.WriteByte(s[i+1])
+			i += 2
+			changed = true
+			continue
+		case 'n':
+			b.WriteByte('\n')
+			i += 2
+			changed = true
+			continue
+		case 'r':
+			b.WriteByte('\r')
+			i += 2
+			changed = true
+			continue
+		case 't':
+			b.WriteByte('\t')
+			i += 2
+			changed = true
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialHex4(s string) bool {
+	if len(s) != 4 {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		if !credentialIsHex(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func credentialHexRune(s string) rune {
+	return rune(credentialUnhex(s[0]))<<12 | rune(credentialUnhex(s[1]))<<8 | rune(credentialUnhex(s[2]))<<4 | rune(credentialUnhex(s[3]))
+}
+
+func credentialUnhex(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
+}
+
+func credentialQPDecode(s string) (string, bool) {
+	if !strings.Contains(s, "=") {
+		return s, false
+	}
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '=' && i+1 < len(s) && (s[i+1] == '\n' || (s[i+1] == '\r' && i+2 < len(s) && s[i+2] == '\n')) {
+			if s[i+1] == '\r' {
+				i += 2
+			} else {
+				i++
+			}
+			changed = true
+			continue
+		}
+		if s[i] == '=' && i+2 < len(s) && credentialIsHex(s[i+1]) && credentialIsHex(s[i+2]) {
+			b.WriteByte(credentialUnhex(s[i+1])<<4 | credentialUnhex(s[i+2]))
+			i += 2
+			changed = true
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialFoldFullwidth(s string) (string, bool) {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		switch {
+		case r >= 0xFF01 && r <= 0xFF5E:
+			b.WriteRune(r - 0xFEE0)
+			changed = true
+		case r == 0x3000:
+			b.WriteByte(' ')
+			changed = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialStripMarks(s string) (string, bool) {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		switch r {
+		case '\u200b', '\u200c', '\u200d', '\ufeff', '\u2060', '\u180e':
+			changed = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialStripSpaces(s string) (string, bool) {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\u00a0' || (r >= 0x2000 && r <= 0x200a) || r == 0x202f || r == 0x205f || r == 0x3000 {
+			changed = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialDecodePercentU(s string) (string, bool) {
+	if !strings.Contains(strings.ToLower(s), "%u") {
+		return s, false
+	}
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); {
+		if i+6 <= len(s) && s[i] == '%' && (s[i+1] == 'u' || s[i+1] == 'U') && credentialHex4(s[i+2:i+6]) {
+			b.WriteRune(credentialHexRune(s[i+2 : i+6]))
+			i += 6
+			changed = true
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialASCII(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func credentialJSONSlash(s string) string {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		switch r {
+		case '\\', '"':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+			changed = true
+		case '/':
+			b.WriteString(`\/`)
+			changed = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
+}
+
+func credentialJSONUnicode(s, digits string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r > 0xFFFF {
+			r -= 0x10000
+			writeCredentialU(&b, digits, rune(0xD800+(r>>10)))
+			writeCredentialU(&b, digits, rune(0xDC00+(r&0x3FF)))
+			continue
+		}
+		writeCredentialU(&b, digits, r)
+	}
+	return b.String()
+}
+
+func writeCredentialU(b *strings.Builder, digits string, r rune) {
+	b.WriteString(`\u`)
+	b.WriteByte(digits[(r>>12)&0xF])
+	b.WriteByte(digits[(r>>8)&0xF])
+	b.WriteByte(digits[(r>>4)&0xF])
+	b.WriteByte(digits[r&0xF])
+}
+
+func credentialHTMLSpecial(s string, format func(rune) string) string {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		switch r {
+		case '+', '/', '=', '&', '<', '>', '"', '\'':
+			b.WriteString(format(r))
+			changed = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
+}
+
+func credentialHTMLAll(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteString("&#")
+		b.WriteString(strconv.Itoa(int(r)))
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+func credentialBase64s(s string) []string {
+	return []string{
+		base64.StdEncoding.EncodeToString([]byte(s)),
+		base64.RawStdEncoding.EncodeToString([]byte(s)),
+		base64.URLEncoding.EncodeToString([]byte(s)),
+		base64.RawURLEncoding.EncodeToString([]byte(s)),
+	}
+}
+
+func credentialLowerPercent(s string) string {
+	b := []byte(s)
+	changed := false
+	for i := 0; i+2 < len(b); i++ {
+		if b[i] != '%' || !credentialIsHex(b[i+1]) || !credentialIsHex(b[i+2]) {
+			continue
+		}
+		if b[i+1] >= 'A' && b[i+1] <= 'F' {
+			b[i+1] += 'a' - 'A'
+			changed = true
+		}
+		if b[i+2] >= 'A' && b[i+2] <= 'F' {
+			b[i+2] += 'a' - 'A'
+			changed = true
+		}
+		i += 2
+	}
+	if !changed {
+		return s
+	}
+	return string(b)
+}
+
+func credentialMixedHex(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if i%2 == 0 && b[i] >= 'a' && b[i] <= 'f' {
+			b[i] -= 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+func credentialUTF16BE(s string) []byte {
+	return credentialUTF16(s, true)
+}
+
+func credentialUTF16LE(s string) []byte {
+	return credentialUTF16(s, false)
+}
+
+func credentialUTF16(s string, be bool) []byte {
+	var b []byte
+	for _, r := range s {
+		var units []uint16
+		if r > 0xFFFF {
+			r -= 0x10000
+			units = []uint16{uint16(0xD800 + (r >> 10)), uint16(0xDC00 + (r & 0x3FF))}
+		} else {
+			units = []uint16{uint16(r)}
+		}
+		for _, u := range units {
+			if be {
+				b = append(b, byte(u>>8), byte(u))
+			} else {
+				b = append(b, byte(u), byte(u>>8))
+			}
+		}
+	}
+	return b
+}
+
+func credentialUTF16ToUTF8(b []byte, be bool) []byte {
+	if len(b) == 0 || len(b)%2 != 0 {
+		return nil
+	}
+	units := make([]uint16, len(b)/2)
+	for i := 0; i < len(b); i += 2 {
+		if be {
+			units[i/2] = uint16(b[i])<<8 | uint16(b[i+1])
+		} else {
+			units[i/2] = uint16(b[i+1])<<8 | uint16(b[i])
+		}
+	}
+	return []byte(string(utf16.Decode(units)))
+}
+
+func credentialUTF16Views(s string) []string {
+	if len(s) < 4 || len(s)%2 != 0 || !strings.Contains(s, "\x00") {
+		return nil
+	}
+	var out []string
+	for _, be := range []bool{true, false} {
+		if decoded := string(credentialUTF16ToUTF8([]byte(s), be)); decoded != "" && decoded != s {
+			out = append(out, decoded)
+		}
+	}
+	return out
+}
+
+func credentialSlashX(s, digits string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		b.WriteString(`\x`)
+		b.WriteByte(digits[s[i]>>4])
+		b.WriteByte(digits[s[i]&0x0F])
+	}
+	return b.String()
+}
+
+func credentialDecodeOverlong(s string) (string, bool) {
+	b := []byte(s)
+	var out strings.Builder
+	changed := false
+	for i := 0; i < len(b); {
+		r, size, over := credentialOverlongRune(b[i:])
+		if size < 1 {
+			size = 1
+		}
+		if over {
+			changed = true
+			out.WriteRune(r)
+		} else if r == utf8.RuneError && size == 1 {
+			out.WriteByte(b[i])
+		} else {
+			out.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	if !changed {
+		return s, false
+	}
+	return out.String(), true
+}
+
+func credentialOverlongRune(b []byte) (rune, int, bool) {
+	if len(b) == 0 {
+		return 0, 0, false
+	}
+	r, size := utf8.DecodeRune(b)
+	if r != utf8.RuneError || size != 1 {
+		return r, size, false
+	}
+	c := b[0]
+	if c&0xE0 == 0xC0 && len(b) >= 2 && b[1]&0xC0 == 0x80 {
+		return rune(c&0x1F)<<6 | rune(b[1]&0x3F), 2, true
+	}
+	if c&0xF0 == 0xE0 && len(b) >= 3 && b[1]&0xC0 == 0x80 && b[2]&0xC0 == 0x80 {
+		return rune(c&0x0F)<<12 | rune(b[1]&0x3F)<<6 | rune(b[2]&0x3F), 3, true
+	}
+	if c&0xF8 == 0xF0 && len(b) >= 4 && b[1]&0xC0 == 0x80 && b[2]&0xC0 == 0x80 && b[3]&0xC0 == 0x80 {
+		cp := rune(c&0x07)<<18 | rune(b[1]&0x3F)<<12 | rune(b[2]&0x3F)<<6 | rune(b[3]&0x3F)
+		if cp > utf8.MaxRune {
+			return utf8.RuneError, 1, false
+		}
+		return cp, 4, true
+	}
+	return utf8.RuneError, 1, false
+}
+
+func credentialDecodeSlashX(s string) (string, bool) {
+	if !strings.Contains(strings.ToLower(s), `\x`) {
+		return s, false
+	}
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); {
+		if i+4 <= len(s) && s[i] == '\\' && (s[i+1] == 'x' || s[i+1] == 'X') && credentialIsHex(s[i+2]) && credentialIsHex(s[i+3]) {
+			b.WriteByte(credentialUnhex(s[i+2])<<4 | credentialUnhex(s[i+3]))
+			i += 4
+			changed = true
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	if !changed {
+		return s, false
+	}
+	return b.String(), true
+}
+
+func credentialPercentAll(s, digits string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		b.WriteByte('%')
+		b.WriteByte(digits[s[i]>>4])
+		b.WriteByte(digits[s[i]&0x0F])
+	}
+	return b.String()
+}
+
+func credentialHTMLHexAll(s, digits string) string {
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteString("&#x")
+		var tmp [8]byte
+		n := 0
+		v := uint32(r)
+		for {
+			tmp[n] = digits[v&0xF]
+			n++
+			v >>= 4
+			if v == 0 && n >= 2 {
+				break
+			}
+		}
+		for n > 0 {
+			n--
+			b.WriteByte(tmp[n])
+		}
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+func credentialRot13(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune('a' + (r-'a'+13)%26)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune('A' + (r-'A'+13)%26)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func credentialFullwidth(s string) string {
+	var b strings.Builder
+	changed := false
+	for _, r := range s {
+		switch {
+		case r >= 0x21 && r <= 0x7E:
+			b.WriteRune(r + 0xFEE0)
+			changed = true
+		case r == ' ':
+			b.WriteRune(0x3000)
+			changed = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
+}
+
+func credentialPercentU(s string) string {
+	const digits = "0123456789ABCDEF"
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteString("%u")
+		b.WriteByte(digits[(r>>12)&0xF])
+		b.WriteByte(digits[(r>>8)&0xF])
+		b.WriteByte(digits[(r>>4)&0xF])
+		b.WriteByte(digits[r&0xF])
+	}
+	return b.String()
+}
+
+func credentialQuotedPrintable(s string) string {
+	const digits = "0123456789ABCDEF"
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 33 && c <= 126 && c != '=' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('=')
+		b.WriteByte(digits[c>>4])
+		b.WriteByte(digits[c&0xF])
+		changed = true
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
 }
 
 func truncateBody(b []byte) string {

@@ -378,7 +378,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 			flags.deliverSink = sink
 			if sink.Scheme != "stdout" && sink.Scheme != "" {
 				flags.deliverBuf = &bytes.Buffer{}
-				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
+				cmd.SetOut(&mirrorWriter{primary: os.Stdout, copy: flags.deliverBuf})
 			}
 		}
 		// An incompatible --data-source has to fail before the platform
@@ -482,6 +482,10 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 	// promoted, and novel API-owned `whoami` commands all win the name.
 	if registeredPlatformSource != nil {
 		attachPlatformWhoamiCommand(rootCmd, flags)
+	}
+
+	if isTerminal(os.Stderr) {
+		rootCmd.SetErr(&terminalStreamFilter{w: rootCmd.ErrOrStderr()})
 	}
 
 	return rootCmd
@@ -805,13 +809,14 @@ func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]stri
 	if f.asJSON {
 		return fmt.Errorf("use printJSON for JSON output")
 	}
-	tw := tabwriter.NewWriter(w.OutOrStdout(), 2, 4, 2, ' ', 0)
+	out := w.OutOrStdout()
+	tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
 	header := ""
 	for i, h := range headers {
 		if i > 0 {
 			header += "\t"
 		}
-		header += h
+		header += terminalText(out, h)
 	}
 	fmt.Fprintln(tw, header)
 	for _, row := range rows {
@@ -820,7 +825,7 @@ func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]stri
 			if i > 0 {
 				line += "\t"
 			}
-			line += cell
+			line += terminalText(out, cell)
 		}
 		fmt.Fprintln(tw, line)
 	}

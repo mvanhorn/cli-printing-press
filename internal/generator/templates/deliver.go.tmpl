@@ -67,7 +67,7 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 
 // Deliver routes a captured output buffer to the configured sink. stdout
 // is a no-op because the buffer has already been streamed to stdout via
-// the MultiWriter set up in root.go. Binary-response commands unwrap the
+// the mirror writer set up in root.go. Binary-response commands unwrap the
 // envelope before calling Deliver so ordinary JSON is never decoded here.
 func Deliver(sink DeliverSink, body []byte, compact bool) error {
 	switch sink.Scheme {
