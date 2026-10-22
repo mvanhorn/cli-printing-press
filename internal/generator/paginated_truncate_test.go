@@ -551,6 +551,15 @@ func TestSyncResourceDoesNotAdvancePastNullItems(t *testing.T) {
 	}
 }
 
+func TestSyncResourceIncompleteReason(t *testing.T) {
+	if syncIncompleteReason("") != "incomplete" {
+		t.Fatalf("empty reason = %%q", syncIncompleteReason(""))
+	}
+	if syncIncompleteReason("cursor_unavailable") != "cursor_unavailable" || syncIncompleteReason("max_pages_cap") != "max_pages_cap" {
+		t.Fatalf("named reason changed: %%q %%q", syncIncompleteReason("cursor_unavailable"), syncIncompleteReason("max_pages_cap"))
+	}
+}
+
 func TestSyncResourceStopsOnRepeatedEmptyCursorPage(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -564,7 +573,7 @@ func TestSyncResourceStopsOnRepeatedEmptyCursorPage(t *testing.T) {
 	}}
 	var events strings.Builder
 	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, &events)
-	if result.Err != nil || result.Warn != nil {
+	if result.Err != nil || result.Warn == nil || !strings.Contains(result.Warn.Error(), "stuck_page") {
 		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
 	}
 	if result.Count != 0 || len(client.params) != 2 {
@@ -604,7 +613,7 @@ func TestSyncResourceStopsOnRepeatedOffsetPage(t *testing.T) {
 	client := &shortPageSyncClient{responses: []json.RawMessage{page, page}}
 	var events strings.Builder
 	result := syncResource(context.Background(), client, db, "repeated", "", true, 0, false, false, &syncUserParams{}, &events)
-	if result.Err != nil || result.Warn != nil {
+	if result.Err != nil || result.Warn == nil || !strings.Contains(result.Warn.Error(), "stuck_page") {
 		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
 	}
 	if result.Count != 2 || len(client.params) != 2 {
