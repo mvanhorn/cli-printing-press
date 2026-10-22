@@ -572,7 +572,9 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if resourceSupportsPagination(resource) {
-			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			if pageSize.limitParam != "" {
+				params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			}
 			cursor = seedSyncPageCursor(params, pageSize, cursor)
 		}
 
@@ -1116,14 +1118,32 @@ func syncResource(ctx context.Context, c interface {
 		return syncResult{Resource: resource, Count: cachedCount, Err: fmt.Errorf("saving sync state for %s: %w", resource, stateErr), Duration: time.Since(started)}
 	}
 
-	if !humanFriendly && reconcileErr == nil {
-		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, cachedCount, time.Since(started).Milliseconds())
-	}
-
 	if reconcileErr != nil {
 		return syncResult{Resource: resource, Count: cachedCount, Warn: reconcileErr, Duration: time.Since(started)}
 	}
+	// An operator cap (--max-pages, --latest-only) is a finished walk.
+	// cursor_unavailable and stuck_page are not: the store is missing rows.
+	if !outcome.complete && outcome.reason != "max_pages_cap" {
+		reason := syncIncompleteReason(outcome.reason)
+		if !humanFriendly {
+			fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"%s","total":%d}`+"\n", resource, reason, cachedCount)
+		}
+		return syncResult{Resource: resource, Count: cachedCount, Warn: fmt.Errorf("%s sync incomplete (%s); %d rows stored", resource, reason, cachedCount), Duration: time.Since(started)}
+	}
+	if !humanFriendly {
+		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, cachedCount, time.Since(started).Milliseconds())
+	}
+
 	return syncResult{Resource: resource, Count: cachedCount, Duration: time.Since(started)}
+}
+
+// syncIncompleteReason names an unfinished walk. A break that left the reason
+// blank still has to warn; every current break sets a reason.
+func syncIncompleteReason(reason string) string {
+	if reason == "" {
+		return "incomplete"
+	}
+	return reason
 }
 
 // paginationDefaults holds the resolved pagination parameter names and page size.
