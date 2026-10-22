@@ -22,8 +22,10 @@ func TestGeneratedRootSuppressesLegacyClaimAfterProfile(t *testing.T) {
 
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	profileIdx := strings.Index(rootSrc, "ApplyProfileToFlags(cmd, profile)")
+	deliverIdx := strings.Index(rootSrc, "ParseDeliverSink")
 	suppressIdx := strings.Index(rootSrc, "setLegacyDBClaimSuppressed(flags.dryRun)")
 	require.GreaterOrEqual(t, profileIdx, 0)
+	require.Greater(t, deliverIdx, profileIdx, "deliver wiring must follow profile overlay so a saved --deliver is visible")
 	require.Greater(t, suppressIdx, profileIdx, "legacy claim suppression must follow profile overlay so a saved dry-run is in effect")
 	if refreshIdx := strings.Index(rootSrc, "autoRefreshIfStale("); refreshIdx >= 0 {
 		require.Less(t, suppressIdx, refreshIdx, "suppression must be set before auto-refresh opens the store")

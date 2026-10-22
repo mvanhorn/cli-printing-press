@@ -185,22 +185,9 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 		if !ok {
 			return false
 		}
-		var prepend []dst.Stmt
-		if !opts.skip("deliver") && !nodeReferences(fn, "deliverSpec") {
-			prepend = append(prepend, parseStmt(`if flags.deliverSpec != "" {
-				sink, err := ParseDeliverSink(flags.deliverSpec)
-				if err != nil {
-					return err
-				}
-				flags.deliverSink = sink
-				if sink.Scheme != "stdout" && sink.Scheme != "" {
-					flags.deliverBuf = &bytes.Buffer{}
-					cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
-				}
-			}`))
-		}
+		var profileStmt, deliverStmt dst.Stmt
 		if !opts.skip("profile") && !nodeReferences(fn, "profileName") {
-			prepend = append(prepend, parseStmt(`if flags.profileName != "" {
+			profileStmt = parseStmt(`if flags.profileName != "" {
 				profile, err := GetProfile(flags.profileName)
 				if err != nil {
 					return err
@@ -211,16 +198,54 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 				if err := ApplyProfileToFlags(cmd, profile); err != nil {
 					return err
 				}
-			}`))
+			}`)
 		}
-		if len(prepend) == 0 {
+		if !opts.skip("deliver") && !nodeReferences(fn, "deliverSpec") {
+			// Inline the profile-save skip. Older profile.go drop-ins do not
+			// define profileSaveSkipsDeliver.
+			deliverStmt = parseStmt(`if flags.deliverSpec != "" && !(cmd.Name() == "save" && cmd.Parent() != nil && cmd.Parent().Name() == "profile") {
+				sink, err := ParseDeliverSink(flags.deliverSpec)
+				if err != nil {
+					return err
+				}
+				flags.deliverSink = sink
+				if sink.Scheme != "stdout" && sink.Scheme != "" {
+					flags.deliverBuf = &bytes.Buffer{}
+					cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
+				}
+			}`)
+		}
+		if profileStmt == nil && deliverStmt == nil {
 			return false
 		}
-		fn.Body.List = append(prepend, fn.Body.List...)
+		body := fn.Body.List
+		switch {
+		case profileStmt != nil && deliverStmt != nil:
+			fn.Body.List = append([]dst.Stmt{profileStmt, deliverStmt}, body...)
+		case profileStmt != nil:
+			fn.Body.List = append([]dst.Stmt{profileStmt}, body...)
+		default:
+			fn.Body.List = insertDeliverAfterProfile(body, deliverStmt)
+		}
 		changed = true
 		return false
 	})
 	return changed
+}
+
+// insertDeliverAfterProfile places a newly injected deliver block after an
+// existing profile lookup. Fresh injections prepend profile and deliver
+// together; this path is the upgrade where only deliver was missing.
+func insertDeliverAfterProfile(body []dst.Stmt, deliver dst.Stmt) []dst.Stmt {
+	for i, stmt := range body {
+		if nodeReferences(stmt, "ApplyProfileToFlags") || nodeReferences(stmt, "GetProfile") {
+			out := make([]dst.Stmt, 0, len(body)+1)
+			out = append(out, body[:i+1]...)
+			out = append(out, deliver)
+			return append(out, body[i+1:]...)
+		}
+	}
+	return append([]dst.Stmt{deliver}, body...)
 }
 
 // addCommands appends newProfileCmd and newFeedbackCmd AddCommand calls after

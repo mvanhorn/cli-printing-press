@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,7 @@ func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("items_list",
 			mcplib.WithDescription("List items. Returns array of Item."),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -245,16 +247,8 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 		}
 
-		for k, v := range args {
-			if pathParams[k] || knownArgs[k] {
-				continue
-			}
-			switch method {
-			case "POST", "PUT", "PATCH":
-				bodyArgs[k] = v
-			default:
-				params[k] = formatMCPParamValue(v)
-			}
+		if err := rejectUndeclaredMCPArgs(args, knownArgs, pathParams); err != nil {
+			return mcpToolError(err.Error()), nil
 		}
 
 		// The public cursor argument is either an opaque MCP cursor or, on a
@@ -430,6 +424,163 @@ func mcpToolResultTextWithPlatform(method string, data json.RawMessage, readOnly
 // text-result budget just like successful endpoint results.
 func mcpToolError(message string) *mcplib.CallToolResult {
 	return mcplib.NewToolResultError(bound.Text(message))
+}
+
+// Reserved transport arguments are accepted on every endpoint tool. They are
+// not request fields, so an unused one is ignored instead of copied onto the
+// wire. Declared bindings with these names still flow through knownArgs.
+func mcpReservedArg(name string) bool {
+	switch name {
+	case "cursor", "body_json", "body_base64", "content_type":
+		return true
+	default:
+		return false
+	}
+}
+
+func rejectUndeclaredMCPArgs(args map[string]any, knownArgs, pathParams map[string]bool) error {
+	var unknown []string
+	for name := range args {
+		if pathParams[name] || knownArgs[name] || mcpReservedArg(name) {
+			continue
+		}
+		unknown = append(unknown, name)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	candidates := mcpArgCandidates(knownArgs, pathParams)
+	parts := make([]string, len(unknown))
+	for i, name := range unknown {
+		parts[i] = formatUnknownMCPArg(name, suggestMCPArg(name, candidates))
+	}
+	return fmt.Errorf("%s", strings.Join(parts, "; "))
+}
+
+func mcpArgCandidates(knownArgs, pathParams map[string]bool) []string {
+	names := make([]string, 0, len(knownArgs)+len(pathParams))
+	seen := make(map[string]struct{}, len(knownArgs)+len(pathParams))
+	for name := range knownArgs {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for name := range pathParams {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func formatUnknownMCPArg(name, suggestion string) string {
+	if suggestion == "" {
+		return fmt.Sprintf("unknown argument %q", name)
+	}
+	return fmt.Sprintf("unknown argument %q (did you mean %q?)", name, suggestion)
+}
+
+func suggestMCPArg(name string, candidates []string) string {
+	folded := mcpArgFold(name)
+	stripped := mcpArgStrip(folded)
+	best := ""
+	bestDist := 0
+	ambiguous := false
+	consider := func(cand string, dist int) {
+		if best == "" || dist < bestDist {
+			best = cand
+			bestDist = dist
+			ambiguous = false
+			return
+		}
+		if dist == bestDist && cand != best {
+			ambiguous = true
+		}
+	}
+	for _, cand := range candidates {
+		if cand == "" || cand == name {
+			continue
+		}
+		cf := mcpArgFold(cand)
+		if cf == folded {
+			consider(cand, 0)
+			continue
+		}
+		if stripped != "" && mcpArgStrip(cf) == stripped {
+			consider(cand, 0)
+			continue
+		}
+		dist := runeLevenshtein(folded, cf)
+		if mcpArgDistanceOK(folded, cf, dist) {
+			consider(cand, dist)
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return best
+}
+
+func mcpArgFold(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
+}
+
+func mcpArgStrip(folded string) string {
+	return strings.ReplaceAll(folded, "_", "")
+}
+
+func mcpArgDistanceOK(a, b string, dist int) bool {
+	if dist <= 0 {
+		return false
+	}
+	la, lb := len([]rune(a)), len([]rune(b))
+	if la < 3 || lb < 3 {
+		return false
+	}
+	if la >= 5 && lb >= 5 {
+		return dist <= 2
+	}
+	return dist <= 1
+}
+
+func runeLevenshtein(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	if len(ar) == 0 {
+		return len(br)
+	}
+	if len(br) == 0 {
+		return len(ar)
+	}
+	prev := make([]int, len(br)+1)
+	cur := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			del, ins, sub := prev[j]+1, cur[j-1]+1, prev[j-1]+cost
+			cur[j] = del
+			if ins < cur[j] {
+				cur[j] = ins
+			}
+			if sub < cur[j] {
+				cur[j] = sub
+			}
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(br)]
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
