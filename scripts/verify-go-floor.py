@@ -1,14 +1,40 @@
 #!/usr/bin/env python3
-"""Verify Go floor text and fixtures match the root go.mod directive."""
+"""Verify Go floor text and fixtures match the root go.mod directive.
+
+librarySafeGoDirective is what printed CLIs declare. It must be <= the root
+go.mod go directive. It must also be <= printing-press-library's .go-version.
+That library comparison warns unless GO_FLOOR_ENFORCE_LIBRARY=1 (release.yml).
+A network or parse failure warns the same way, and fails only when enforced.
+"""
 
 from __future__ import annotations
 
+import os
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from go_release import parse_go_release, version_le
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+LIBRARY_GO_VERSION_URL = (
+    "https://raw.githubusercontent.com/mvanhorn/printing-press-library/main/.go-version"
+)
+ENFORCE_LIBRARY_ENV = "GO_FLOOR_ENFORCE_LIBRARY"
+DIRECTIVE_FILE = Path("internal/generator/go_version.go")
+DIRECTIVE_RE = re.compile(
+    r'^const\s+librarySafeGoDirective\s*=\s*"(?P<version>\d+\.\d+\.\d+)"\s*$',
+    re.MULTILINE,
+)
 
 
 PATTERNS = [
@@ -68,6 +94,67 @@ def repo_go_floor() -> str:
     return match.group(1)
 
 
+def library_safe_directive() -> str:
+    content = (REPO_ROOT / DIRECTIVE_FILE).read_text()
+    matches = list(DIRECTIVE_RE.finditer(content))
+    if len(matches) != 1:
+        raise SystemExit(
+            f"expected one librarySafeGoDirective string in {DIRECTIVE_FILE}, found {len(matches)}"
+        )
+    return matches[0].group("version")
+
+
+def directive_floor_failure(directive: str, floor: str) -> str | None:
+    if version_le(directive, floor):
+        return None
+    return f"librarySafeGoDirective {directive} exceeds go.mod go {floor}"
+
+
+def fetch_library_body(url: str = LIBRARY_GO_VERSION_URL, attempts: int = 3, timeout: float = 15.0) -> str:
+    last_error = "unknown error"
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "cli-printing-press-go-floor"})
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read(4096).decode("utf-8", errors="replace")
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = str(exc)
+            if attempt + 1 < attempts:
+                time.sleep(1)
+    raise OSError(last_error)
+
+
+def library_floor_status(directive: str, enforce: bool, fetch) -> tuple[list[str], list[str]]:
+    """Return (failures, notes) for the printing-press-library .go-version check."""
+    try:
+        body = fetch(LIBRARY_GO_VERSION_URL)
+    except OSError as exc:
+        message = f"could not read printing-press-library .go-version ({LIBRARY_GO_VERSION_URL}): {exc}"
+        if enforce:
+            return [message], []
+        return [], [f"warning: {message}"]
+
+    version = parse_go_release(body)
+    if version is None:
+        message = f"could not parse printing-press-library .go-version from {body!r}"
+        if enforce:
+            return [message], []
+        return [], [f"warning: {message}"]
+
+    if not version_le(directive, version):
+        message = (
+            f"librarySafeGoDirective {directive} exceeds printing-press-library "
+            f".go-version {version} ({LIBRARY_GO_VERSION_URL})"
+        )
+        if enforce:
+            return [message], []
+        return [], [f"warning: {message}"]
+
+    return [], [
+        f"printing-press-library .go-version {version} >= librarySafeGoDirective {directive}."
+    ]
+
+
 def iter_files() -> list[Path]:
     files = [REPO_ROOT / path for path in PATHS]
     files.extend((REPO_ROOT / "testdata/golden/expected").glob("**/go.mod"))
@@ -91,10 +178,8 @@ def is_allowed_old_fixture(rel: Path, text: str) -> bool:
     return any(rel_text == path and needle in text for path, needle in ALLOWED_OLD_FIXTURES)
 
 
-def main() -> int:
-    floor = repo_go_floor()
+def surface_failures(floor: str) -> list[str]:
     failures: list[str] = []
-
     for path in iter_files():
         if not path.exists():
             failures.append(f"{path.relative_to(REPO_ROOT)}: missing expected Go-floor surface")
@@ -114,15 +199,47 @@ def main() -> int:
                     failures.append(
                         f"{rel}:{line_number(content, match.start())}: expected {floor}, found {version}"
                     )
+    return failures
 
+
+def emit_note(note: str) -> None:
+    print(note)
+    if note.startswith("warning:") and os.environ.get("GITHUB_ACTIONS") == "true":
+        flat = " ".join(note.split())
+        print(f"::warning::{flat}")
+
+
+def enforced() -> bool:
+    return os.environ.get(ENFORCE_LIBRARY_ENV) == "1"
+
+
+def main() -> int:
+    floor = repo_go_floor()
+    directive = library_safe_directive()
+    failures = surface_failures(floor)
+    mismatch = directive_floor_failure(directive, floor)
+    if mismatch:
+        failures.append(mismatch)
+
+    library_failures, notes = library_floor_status(directive, enforced(), fetch_library_body)
+    failures.extend(library_failures)
+
+    summary = f"go.mod go {floor}; librarySafeGoDirective {directive}."
     if failures:
         print("Go floor drift detected:")
         for failure in failures:
             print(f"  {failure}")
+        print()
+        print(summary)
+        for note in notes:
+            emit_note(note)
         print("\nUpdate go.mod once, then update the reported surfaces to the same version.")
+        print("librarySafeGoDirective must be <= go.mod go, and <= printing-press-library .go-version.")
         return 1
 
-    print(f"Go floor check passed: all tracked surfaces match {floor}.")
+    print(f"Go floor check passed: tracked surfaces match {floor}. {summary}")
+    for note in notes:
+        emit_note(note)
     return 0
 
 

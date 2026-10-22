@@ -15,7 +15,24 @@ permissions:
   pull-requests: write
 
 jobs:
+  go-floor:
+    name: go-floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Enforce Go floor against printing-press-library
+        env:
+          GO_FLOOR_ENFORCE_LIBRARY: "1"
+        run: python3 scripts/verify-go-floor.py
+
   release-please:
+    needs: go-floor
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

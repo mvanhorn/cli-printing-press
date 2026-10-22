@@ -1,0 +1,171 @@
+name: Govulncheck watch
+
+on:
+  schedule:
+    - cron: '17 13 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Scan and report reachable stdlib findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # One pin: internal/govulncheck.ToolVersion. Do not add a second literal.
+          tool="$(awk -F'"' '/^[[:space:]]*ToolVersion[[:space:]]*=/ { print $2; exit }' internal/govulncheck/govulncheck.go)"
+          if [[ ! "$tool" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "could not read govulncheck ToolVersion from internal/govulncheck/govulncheck.go" >&2
+            exit 1
+          fi
+
+          # Match internal/govulncheck.ToolchainEnv: toolchain line, else a patch go directive.
+          toolchain_for() {
+            local gomod="$1/go.mod"
+            local line ver
+            line="$(awk '/^toolchain / { print $2; exit }' "$gomod")"
+            if [[ -n "$line" ]]; then
+              printf '%s\n' "$line"
+              return 0
+            fi
+            ver="$(awk '/^go / { print $2; exit }' "$gomod")"
+            if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              printf 'go%s\n' "$ver"
+              return 0
+            fi
+            echo "could not derive a Go toolchain from ${gomod}" >&2
+            return 1
+          }
+
+          run_govulncheck() {
+            local dir="$1"
+            local out="$2"
+            local toolchain
+            toolchain="$(toolchain_for "$dir")"
+            echo "govulncheck ${tool} in ${dir} with GOTOOLCHAIN=${toolchain}"
+            if ! (
+              cd "$dir"
+              GOTOOLCHAIN="$toolchain" go run "golang.org/x/vuln/cmd/govulncheck@${tool}" -json ./... >"$out"
+            ); then
+              echo "govulncheck failed in ${dir}" >&2
+              return 1
+            fi
+            if [[ ! -s "$out" ]]; then
+              echo "govulncheck produced no output in ${dir}" >&2
+              return 1
+            fi
+          }
+
+          work="${RUNNER_TEMP}/govulncheck-watch"
+          mkdir -p "$work"
+          press_log="$work/press.json"
+          golden_log="$work/golden.json"
+          golden="${RUNNER_TEMP}/golden-cli"
+
+          run_govulncheck "$GITHUB_WORKSPACE" "$press_log"
+
+          go build -o ./cli-printing-press ./cmd/cli-printing-press
+          ./cli-printing-press generate \
+            --spec testdata/golden/fixtures/golden-api.yaml \
+            --output "$golden" \
+            --force \
+            --spec-url file://testdata/golden/fixtures/golden-api.yaml \
+            --validate=false
+          (cd "$golden" && go mod tidy)
+          run_govulncheck "$golden" "$golden_log"
+
+          payload="$work/report.json"
+          body="$work/issue.md"
+          python3 scripts/govulncheck_stdlib.py \
+            --scan "press=${press_log}" \
+            --scan "golden=${golden_log}" \
+            --json-out "$payload" \
+            --body-out "$body"
+
+          actionable="$(jq -r '.actionable' "$payload")"
+          title="$(jq -r '.title' "$payload")"
+          issue_raw="$(gh issue list --state open --limit 50 \
+            --search 'in:title "Go floor: bump to"' \
+            --json number,title \
+            --jq '[.[] | select(.title | startswith("Go floor: bump to "))] | sort_by(.number) | .[].number')"
+          issues=()
+          if [[ -n "$issue_raw" ]]; then
+            mapfile -t issues <<<"$issue_raw"
+          fi
+
+          {
+            echo "### Govulncheck watch"
+            echo
+            echo "- tool: \`${tool}\`"
+            if [[ "$actionable" == "true" ]]; then
+              echo "- reachable stdlib findings: ${title}"
+            else
+              echo "- no reachable stdlib findings"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$actionable" != "true" ]]; then
+            if [[ ${#issues[@]} -eq 0 ]]; then
+              echo "No reachable stdlib findings."
+              exit 0
+            fi
+            for number in "${issues[@]}"; do
+              gh issue comment "$number" --body "The latest govulncheck watch found no reachable standard-library vulnerabilities. Closing."
+              gh issue close "$number" --reason completed
+            done
+            echo "Closed ${#issues[@]} open Go floor issue(s); the latest scan was clean."
+            exit 0
+          fi
+
+          if [[ -z "$title" || "$title" == "null" || ! -s "$body" ]]; then
+            echo "actionable govulncheck report is missing a title or body" >&2
+            exit 1
+          fi
+
+          # Reachable stdlib findings make the printed CLI unsafe. The bump
+          # is librarySafeGoDirective in internal/generator.
+          floor_labels=("bug" "priority:P1" "comp:generator")
+          create_label_args=()
+          edit_label_args=()
+          for label in "${floor_labels[@]}"; do
+            create_label_args+=(--label "$label")
+            edit_label_args+=(--add-label "$label")
+          done
+
+          if [[ ${#issues[@]} -eq 0 ]]; then
+            created="$(gh issue create --title "$title" --body-file "$body" "${create_label_args[@]}")"
+            echo "Opened ${created}"
+          else
+            primary="${issues[0]}"
+            gh issue edit "$primary" --title "$title" --body-file "$body" "${edit_label_args[@]}"
+            echo "Updated #${primary}"
+            if [[ ${#issues[@]} -gt 1 ]]; then
+              for extra in "${issues[@]:1}"; do
+                gh issue close "$extra" --duplicate-of "$primary" --comment "Duplicate of #${primary}."
+              done
+            fi
+          fi
+
+          echo "::error::reachable stdlib vulnerability: ${title}"
+          exit 1

@@ -26,6 +26,8 @@ type validationGate struct {
 
 const qualityGateTimeout = 5 * time.Minute
 
+const govulncheckGateName = "govulncheck ./..."
+
 // Isolated GOCACHE is shared across generated modules so parallel tests
 // reuse the stdlib compile. Go's own trim is age-based (days), so unique
 // generated packages accumulate until the disk fills. Bound it by size.
@@ -94,7 +96,7 @@ func (g *Generator) Validate() error {
 			},
 		},
 		{
-			name: "govulncheck ./...",
+			name: govulncheckGateName,
 			run: func() error {
 				env := govulncheck.ToolchainEnv(g.OutputDir)
 				_, err := runCommandWithEnv(g.OutputDir, qualityGateTimeout, env, "go", govulncheck.GoRunArgs("./...")...)
@@ -143,6 +145,10 @@ func (g *Generator) Validate() error {
 	}
 
 	for _, gate := range gates {
+		if gate.name == govulncheckGateName && !govulncheck.LiveDBEnabled() {
+			fmt.Fprintf(os.Stderr, "SKIP %s (set %s=1 to query the live vuln DB)\n", gate.name, govulncheck.LiveEnv)
+			continue
+		}
 		if err := gate.run(); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL %s\n", gate.name)
 			return fmt.Errorf("gate %q failed: %w", gate.name, err)

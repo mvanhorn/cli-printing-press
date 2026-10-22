@@ -248,6 +248,7 @@ exit 0
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
 	t.Setenv("GOTOOLCHAIN", "auto")
+	t.Setenv(govulncheck.LiveEnv, "1")
 
 	err := gen.Validate()
 	require.Error(t, err)
@@ -260,6 +261,44 @@ exit 0
 	assert.Contains(t, string(calls), "toolchain="+currentGoToolchainVersion()+"\n")
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
+}
+
+func TestValidateSkipsGovulncheckWithoutLiveEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	outputDir := filepath.Join(t.TempDir(), "validate-pp-cli")
+	gen := New(minimalSpec("validate"), outputDir)
+	require.NoError(t, gen.Generate())
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+if [ "$1" = "run" ]; then
+  echo "live govulncheck should not run" >&2
+  exit 42
+fi
+if [ "$1" = "vet" ]; then
+  echo "vet reached" >&2
+  exit 7
+fi
+exit 0
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+	t.Setenv(govulncheck.LiveEnv, "")
+
+	err := gen.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `gate "go vet ./..." failed`)
+	assert.NotContains(t, err.Error(), "govulncheck")
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(calls), "test -count=1 ./...\n")
+	assert.NotContains(t, string(calls), govulncheck.ToolModule)
 }
 
 func TestValidateRunsGeneratedUnitTests(t *testing.T) {

@@ -276,7 +276,16 @@ Run `go test ./...` before considering your work done.
 ## Quality Gates
 Generated CLIs must pass 9 gates: `go mod tidy`, generated `go test ./...`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
 Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; blocking CI scans only added or changed CLI modules, leaving whole-library sweeps to scheduled/reporting workflows.
+Under `go test`, that govulncheck gate skips the live vulnerability database unless `PP_LIVE_GOVULNCHECK=1`. See Go security floor.
 - For CLIs with `auth.type` of `cookie` or `composed`, `press-auth` (`cmd/press-auth/`) is the canonical cookie capture path. The generated `auth login --chrome` prefers it; the legacy extraction chain (pycookiecheat / browser-use / etc.) is the fallback when press-auth isn't installed. See [`skills/printing-press/references/auth-companion.md`](skills/printing-press/references/auth-companion.md).
+
+## Go security floor
+
+The root `go.mod` `go` directive is the source of truth. `librarySafeGoDirective` in `internal/generator/go_version.go` is the `go` and `toolchain` version printed CLIs declare, and it must be <= the root `go` directive. Before raising `librarySafeGoDirective`, confirm `mvanhorn/printing-press-library` `.go-version` (https://raw.githubusercontent.com/mvanhorn/printing-press-library/main/.go-version) is already >= the new value. The library bumps first.
+
+Run `python3 scripts/verify-go-floor.py` and update every surface it reports (generator text, templates, install docs, fixtures, and goldens). Renovate opens the grouped patch PR that bumps the root `go` directive, a root `toolchain` line when one is present, and `librarySafeGoDirective` together. Finish those reported surfaces on that PR. Do not automerge it. On pull requests and main CI the library comparison warns and does not fail the job, including when `.go-version` cannot be fetched. `release.yml` sets `GO_FLOOR_ENFORCE_LIBRARY=1` and refuses to publish when `librarySafeGoDirective` is newer than the library `.go-version`, or when that file cannot be read.
+
+Generated-CLI quality gates skip live `govulncheck` under `go test` unless `PP_LIVE_GOVULNCHECK=1`. The daily `govulncheck-watch` workflow scans the press module and one freshly generated golden CLI with the live database. On a reachable standard-library finding it opens or updates one issue titled `Go floor: bump to <fixed version>`, labeled `bug`, `priority:P1`, and `comp:generator`.
 
 ## Supply-chain hardening
 
