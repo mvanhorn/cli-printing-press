@@ -45,14 +45,14 @@ func TestGeneratedClientStreamingTimeoutCarveOut(t *testing.T) {
 
 	assert.Contains(t, root, `rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")`,
 		"root --timeout default must stay 60s for JSON calls")
-	assert.Contains(t, root, "func timeoutExplicitFrom(cmd *cobra.Command, profile *Profile) bool",
-		"root must treat Flag.Changed and profile-supplied timeout as explicit")
-	assert.Contains(t, root, `if _, ok := profile.Values["timeout"]; ok {`,
-		"profile-supplied timeout must keep whole-call enforcement on binary transfers")
-	assert.Contains(t, root, "flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)",
-		"PreRun must honor profile timeout even though ApplyProfileToFlags leaves Flag.Changed false")
-	assert.Contains(t, root, "appliedProfile = profile",
-		"the applied run profile must stay in scope for timeout explicitness")
+	assert.Contains(t, root, "func timeoutExplicitFrom(cmd *cobra.Command) bool",
+		"root must treat Flag.Changed timeout as explicit, including a profile value applied via FlagSet.Set")
+	assert.NotContains(t, root, `profile.Values["timeout"]`,
+		"profile timeout is Changed after FlagSet.Set, so the explicit check must not re-read the profile map")
+	assert.Contains(t, root, "flags.timeoutExplicit = timeoutExplicitFrom(cmd)",
+		"PreRun must honor a Changed timeout, including one applied from a profile")
+	assert.NotContains(t, root, "appliedProfile",
+		"timeout explicitness must not keep a separate profile pointer")
 	assert.Contains(t, root, "c.SetTimeoutExplicit(true)",
 		"newClient must mark an explicit --timeout so binary transfers still honor it")
 	assert.NotContains(t, client, "timeoutExplicit is true when the operator set --timeout",
@@ -224,7 +224,7 @@ func TestTimeoutExplicitFromDefaultIsNotExplicit(t *testing.T) {
 	if err := cmd.ParseFlags(nil); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	if timeoutExplicitFrom(cmd, nil) {
+	if timeoutExplicitFrom(cmd) {
 		t.Fatal("default timeout must not count as explicit")
 	}
 }
@@ -236,10 +236,16 @@ func TestTimeoutExplicitFromHonorsProfileTimeout(t *testing.T) {
 	if err := cmd.ParseFlags(nil); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	if cmd.Flags().Changed("timeout") {
-		t.Fatal("sanity: profile overlay must be tested without Flag.Changed")
+	if err := ApplyProfileToFlags(cmd, &Profile{Values: map[string]string{"timeout": "5s"}}); err != nil {
+		t.Fatalf("ApplyProfileToFlags: %v", err)
 	}
-	if !timeoutExplicitFrom(cmd, &Profile{Values: map[string]string{"timeout": "5s"}}) {
+	if !cmd.Flags().Changed("timeout") {
+		t.Fatal("profile timeout must mark the flag changed")
+	}
+	if timeout != 5*time.Second {
+		t.Fatalf("timeout = %s, want 5s", timeout)
+	}
+	if !timeoutExplicitFrom(cmd) {
 		t.Fatal("profile-supplied timeout must keep whole-call enforcement")
 	}
 }
@@ -251,7 +257,7 @@ func TestTimeoutExplicitFromHonorsChangedFlag(t *testing.T) {
 	if err := cmd.ParseFlags([]string{"--timeout", "5s"}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	if !timeoutExplicitFrom(cmd, nil) {
+	if !timeoutExplicitFrom(cmd) {
 		t.Fatal("Flag.Changed --timeout must keep whole-call enforcement")
 	}
 }

@@ -104,13 +104,32 @@ func GetProfile(name string) (*Profile, error) {
 	return nil, nil
 }
 
+// profileAppliedFlagNames records flags the latest ApplyProfileToFlags call
+// set. profile save skips them so an overlay is not stored again as if the
+// user had typed it. Reset on every apply and at the start of
+// PersistentPreRunE so a later command in the same process starts clean.
+var profileAppliedFlagNames = map[string]struct{}{}
+
+func resetProfileAppliedFlags() {
+	profileAppliedFlagNames = map[string]struct{}{}
+}
+
+// profileSaveSkipsDeliver reports profile save. That command records
+// --deliver and prints a confirmation; wiring the sink would also write the
+// confirmation to the saved destination.
+func profileSaveSkipsDeliver(cmd *cobra.Command) bool {
+	return cmd != nil && cmd.Name() == "save" && cmd.Parent() != nil && cmd.Parent().Name() == "profile"
+}
+
 // ApplyProfileToFlags overlays profile values onto flags that the user has
 // not set explicitly on the command line. Used from root.go's
 // PersistentPreRunE so profile values feed the whole command tree.
 func ApplyProfileToFlags(cmd *cobra.Command, profile *Profile) error {
-	if profile == nil || len(profile.Values) == 0 {
+	resetProfileAppliedFlags()
+	if profile == nil || len(profile.Values) == 0 || cmd == nil {
 		return nil
 	}
+	typedOutput := typedOutputMode(cmd)
 	// Reserved flags that never come from a profile - they control profile
 	// resolution itself or are dangerous to overlay. profile save's skip
 	// map must remain a superset of this set so saved profiles never carry
@@ -122,21 +141,54 @@ func ApplyProfileToFlags(cmd *cobra.Command, profile *Profile) error {
 		if reserved[name] || credentialLikeRunProfileFlag(name) {
 			continue
 		}
+		if profileFlagBlockedByTypedOutput(name, typedOutput) {
+			continue
+		}
 		flag := cmd.Flags().Lookup(name)
+		owner := cmd.Flags()
 		if flag == nil {
 			flag = cmd.InheritedFlags().Lookup(name)
+			owner = cmd.InheritedFlags()
 		}
-		if flag == nil {
+		if flag == nil || flag.Changed {
 			continue
 		}
-		if flag.Changed {
-			continue
-		}
-		if err := flag.Value.Set(value); err != nil {
+		// FlagSet.Set marks Changed. Value.Set does not, so optional body
+		// fields and output flags would ignore a saved value.
+		if err := owner.Set(name, value); err != nil {
 			return fmt.Errorf("applying profile value %s=%q: %w", name, value, err)
 		}
+		profileAppliedFlagNames[name] = struct{}{}
 	}
 	return nil
+}
+
+// profileOutputFlagNames are output modes. Typing any one blocks every saved
+// member, including --agent, which the root pre-run turns into JSON.
+var profileOutputFlagNames = []string{"json", "csv", "plain", "quiet", "compact", "agent"}
+
+func typedOutputMode(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	for _, name := range profileOutputFlagNames {
+		if cmd.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func profileFlagBlockedByTypedOutput(name string, typedOutput bool) bool {
+	if !typedOutput {
+		return false
+	}
+	for _, outputName := range profileOutputFlagNames {
+		if name == outputName {
+			return true
+		}
+	}
+	return false
 }
 
 func credentialLikeRunProfileFlag(name string) bool {
@@ -223,6 +275,9 @@ captured: they control profile/config resolution and would never apply).`,
 					return
 				}
 				if fl.Changed && !skip[fl.Name] {
+					if _, applied := profileAppliedFlagNames[fl.Name]; applied {
+						return
+					}
 					values[fl.Name] = fl.Value.String()
 				}
 			}

@@ -361,7 +361,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		var appliedProfile *Profile
+		resetProfileAppliedFlags()
 		if err := enforceMCPBoundProfile(cmd, flags); err != nil {
 			return err
 		}
@@ -369,17 +369,6 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			return err
 		}
 		configureDefaultDBScope(flags.configPath)
-		if flags.deliverSpec != "" {
-			sink, err := ParseDeliverSink(flags.deliverSpec)
-			if err != nil {
-				return err
-			}
-			flags.deliverSink = sink
-			if sink.Scheme != "stdout" && sink.Scheme != "" {
-				flags.deliverBuf = &bytes.Buffer{}
-				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
-			}
-		}
 		if flags.runProfileName != "" {
 			profile, err := GetProfile(flags.runProfileName)
 			if err != nil {
@@ -395,7 +384,20 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			if err := ApplyProfileToFlags(cmd, profile); err != nil {
 				return err
 			}
-			appliedProfile = profile
+		}
+		// A saved --deliver has to be applied before the sink is chosen.
+		// profile save records the flag and prints a confirmation; wiring
+		// the sink would also write that confirmation to the destination.
+		if flags.deliverSpec != "" && !profileSaveSkipsDeliver(cmd) {
+			sink, err := ParseDeliverSink(flags.deliverSpec)
+			if err != nil {
+				return err
+			}
+			flags.deliverSink = sink
+			if sink.Scheme != "stdout" && sink.Scheme != "" {
+				flags.deliverBuf = &bytes.Buffer{}
+				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
+			}
 		}
 		// A saved profile can set dry-run after flag parse. Suppression has to
 		// see that value before any store path is resolved.
@@ -458,7 +460,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
-		flags.timeoutExplicit = timeoutExplicitFrom(cmd, appliedProfile)
+		flags.timeoutExplicit = timeoutExplicitFrom(cmd)
 		flags.agentSource = declaredAgentSource(cmd, flags)
 		return nil
 	}
@@ -764,19 +766,10 @@ func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
 	return false
 }
 
-// ApplyProfileToFlags overlays values without setting Flag.Changed, so a
-// profile-supplied timeout must count here or binary transfers would drop
-// the whole-call bound.
-func timeoutExplicitFrom(cmd *cobra.Command, profile *Profile) bool {
-	if cmd != nil && cmd.Flags().Changed("timeout") {
-		return true
-	}
-	if profile != nil {
-		if _, ok := profile.Values["timeout"]; ok {
-			return true
-		}
-	}
-	return false
+// ApplyProfileToFlags uses FlagSet.Set, so a saved timeout is Changed and
+// keeps the whole-call bound on binary transfers.
+func timeoutExplicitFrom(cmd *cobra.Command) bool {
+	return cmd != nil && cmd.Flags().Changed("timeout")
 }
 
 func ExitCode(err error) int {

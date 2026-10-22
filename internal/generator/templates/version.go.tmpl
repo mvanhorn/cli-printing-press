@@ -20,7 +20,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s %s\n", cmd.Root().Name(), version)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cmd.Root().Name(), version)
 		},
 	}
 }

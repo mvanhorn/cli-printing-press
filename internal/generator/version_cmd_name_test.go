@@ -29,8 +29,8 @@ func TestVersionCommandUsesRootNameInGeneratedRoot(t *testing.T) {
 	fn := re.FindString(src)
 	require.NotEmpty(t, fn, "expected generated version.go to contain newVersionCmd")
 
-	require.Contains(t, fn, `fmt.Printf("%s %s\n", cmd.Root().Name(), version)`,
-		"newVersionCmd must print the root command name at runtime")
+	require.Contains(t, fn, `fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cmd.Root().Name(), version)`,
+		"newVersionCmd must print the root command name through the command writer so --deliver can capture it")
 	require.NotContains(t, fn, `fmt.Printf("version-cmd-name-pp-cli %s\n", version)`,
 		"newVersionCmd must not hardcode the generated binary literal")
 }
