@@ -3966,6 +3966,61 @@ func TestProfilePagination_ODataWireNamesIgnoreBooleanCount(t *testing.T) {
 	assert.Equal(t, "limit", byName["string_limits"].PaginationLimitParam)
 }
 
+func TestProfilePagination_CustomWireNameKeepsOffsetAndPageClass(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "wireclass",
+		Resources: map[string]spec.Resource{
+			"starts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/starts",
+						Params:   []spec.Param{{Name: "offset", Type: "int", URLName: "start"}, {Name: "limit", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"indexes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/indexes",
+						Params:   []spec.Param{{Name: "page", Type: "int", URLName: "pageIndex"}, {Name: "per_page", Type: "int", URLName: "pageSize"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"tokens": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tokens",
+						Params:   []spec.Param{{Name: "offset", Type: "int", URLName: "after"}, {Name: "limit", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "starts")
+	assert.Equal(t, "start", byName["starts"].PaginationCursorParam)
+	assert.Equal(t, "offset", byName["starts"].PaginationCursorType)
+	assert.Equal(t, "limit", byName["starts"].PaginationLimitParam)
+	require.Contains(t, byName, "indexes")
+	assert.Equal(t, "pageIndex", byName["indexes"].PaginationCursorParam)
+	assert.Equal(t, "page", byName["indexes"].PaginationCursorType)
+	assert.Equal(t, "pageSize", byName["indexes"].PaginationLimitParam)
+	require.Contains(t, byName, "tokens")
+	assert.Equal(t, "after", byName["tokens"].PaginationCursorParam)
+	assert.Equal(t, "cursor", byName["tokens"].PaginationCursorType)
+}
+
 func TestAutoDependentDropsUnbindableTwoPlaceholderPath(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "scripts",

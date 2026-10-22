@@ -276,6 +276,98 @@ func TestGeneratedSyncSkipsUnbindableTwoPlaceholderChild(t *testing.T) {
 	assert.NotContains(t, joined, "executions", joined)
 }
 
+func TestGeneratedSyncCustomWireNameKeepsOffsetAndPageClass(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		queries = append(queries, q)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		n := 2
+		switch r.URL.Path {
+		case "/starts":
+			if q.Get("start") != "" {
+				n = 1
+			}
+		case "/indexes":
+			if q.Get("pageIndex") != "" {
+				n = 1
+			}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(jsonIDPage(strings.TrimPrefix(r.URL.Path, "/"), 0, n))
+	}))
+	t.Cleanup(srv.Close)
+
+	api := minimalSpec("wireclass")
+	api.Auth = spec.AuthConfig{Type: "none"}
+	api.BaseURL = srv.URL
+	api.Resources = map[string]spec.Resource{
+		"starts": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/starts",
+					Response: spec.ResponseDef{Type: "array"},
+					Params: []spec.Param{
+						{Name: "offset", In: "query", Type: "integer", URLName: "start"},
+						{Name: "limit", In: "query", Type: "integer", Default: 2},
+					},
+				},
+			},
+		},
+		"indexes": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/indexes",
+					Response: spec.ResponseDef{Type: "array"},
+					Params: []spec.Param{
+						{Name: "page", In: "query", Type: "integer", URLName: "pageIndex"},
+						{Name: "per_page", In: "query", Type: "integer", URLName: "pageSize", Default: 2},
+					},
+				},
+			},
+		},
+	}
+
+	_, binary := buildGeneratedCLI(t, api)
+	env := syncBugCLIEnv(t, api.Name, srv.URL)
+	db := filepath.Join(t.TempDir(), "sync.db")
+	out, code := runSync(t, binary, env, "--db", db)
+	require.Equal(t, 0, code, out)
+	warned, success, completes := syncSummary(t, out)
+	assert.Equal(t, 0, warned, out)
+	assert.Equal(t, 2, success, out)
+	assert.Len(t, completes, 2, out)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawStart, sawPage bool
+	for _, q := range queries {
+		if _, ok := q["offset"]; ok {
+			t.Errorf("request used the flag name offset: %v", q)
+		}
+		if _, ok := q["page"]; ok {
+			t.Errorf("request used the flag name page: %v", q)
+		}
+		if q.Get("start") == "2" {
+			sawStart = true
+		}
+		if q.Get("pageIndex") == "2" {
+			sawPage = true
+		}
+	}
+	assert.True(t, sawStart, "offset walk did not send start=2: %v", queries)
+	assert.True(t, sawPage, "page walk did not send pageIndex=2: %v", queries)
+}
+
 func mustParseOpenAPI(t *testing.T, doc string) *spec.APISpec {
 	t.Helper()
 	api, err := openapi.Parse([]byte(doc))

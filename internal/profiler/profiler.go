@@ -3712,7 +3712,10 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 		}
 	}
 	if cursorType == "" {
-		cursorType = inferPaginationType(cursorParam)
+		// The request uses the wire name. A custom wire name (start, pageIndex)
+		// is not itself an offset or page token, so the class comes from the
+		// flag name that matched the candidate list.
+		cursorType = inferPaginationTypeForCursor(endpoint, cursorParam)
 	}
 	// Canonical page and offset parameter names are stronger evidence than an
 	// inconsistent explicit type. Letting a page-named cursor reach offset
@@ -3896,6 +3899,34 @@ func inferPaginationType(cursorParam string) string {
 	default:
 		return "cursor"
 	}
+}
+
+func inferPaginationTypeForCursor(endpoint spec.Endpoint, cursorParam string) string {
+	param, ok := syncPaginationCursorParam(endpoint, cursorParam)
+	if !ok {
+		return inferPaginationType(cursorParam)
+	}
+	wireType := inferPaginationType(param.WireName())
+	if paginationTypeIsClass(wireType) {
+		return wireType
+	}
+	// A recognized token on the wire (after, cursor) stays a cursor. An
+	// unrecognized wire name takes the class of the flag (offset → start).
+	if cursorParamCandidates[paginationParamKey(param.WireName())] {
+		return wireType
+	}
+	nameType := inferPaginationType(param.Name)
+	if paginationTypeIsClass(nameType) {
+		return nameType
+	}
+	if nameType != "" {
+		return nameType
+	}
+	return wireType
+}
+
+func paginationTypeIsClass(typ string) bool {
+	return typ == "page" || typ == "offset" || typ == "page_token"
 }
 
 // detectEndpointSyncSort finds a spec-declared ordering that makes an
