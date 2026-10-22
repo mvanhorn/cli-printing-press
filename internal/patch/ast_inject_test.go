@@ -77,13 +77,51 @@ func TestInjectRootAST_MutatesAllSixTargets(t *testing.T) {
 
 	assert.Contains(t, src, "flags.deliverSpec != \"\"", "PersistentPreRunE should have deliver-setup block")
 	assert.Contains(t, src, "ParseDeliverSink", "PersistentPreRunE should call ParseDeliverSink")
+	assert.Contains(t, src, `cmd.Name() == "save"`, "profile save must not deliver its own confirmation")
 	assert.Contains(t, src, "flags.profileName != \"\"", "PersistentPreRunE should have profile-lookup block")
 	assert.Contains(t, src, "GetProfile", "PersistentPreRunE should call GetProfile")
+	assert.Less(t, strings.Index(src, "GetProfile"), strings.Index(src, "ParseDeliverSink"), "profile overlay must run before deliver wiring")
 
 	assert.Contains(t, src, "newProfileCmd(&flags)", "Execute should register newProfileCmd")
 	assert.Contains(t, src, "newFeedbackCmd(&flags)", "Execute should register newFeedbackCmd")
 
 	assert.Contains(t, src, "Deliver(flags.deliverSink", "Execute should flush deliverBuf after rootCmd.Execute")
+}
+
+func TestInjectRootAST_DeliverFollowsExistingProfile(t *testing.T) {
+	src := strings.Replace(baseRootGo,
+		"rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {\n\t\tif flags.asJSON {",
+		`rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if flags.profileName != "" {
+			_, err := GetProfile(flags.profileName)
+			if err != nil {
+				return err
+			}
+		}
+		if flags.asJSON {`, 1)
+	require.NotEqual(t, baseRootGo, src)
+	out, changed, err := injectRootAST([]byte(src), injectOptions{})
+	require.NoError(t, err)
+	require.True(t, changed)
+	got := string(out)
+	getIdx := strings.Index(got, "GetProfile")
+	deliverIdx := strings.Index(got, "ParseDeliverSink")
+	bodyIdx := strings.Index(got, "flags.compact = true")
+	require.GreaterOrEqual(t, getIdx, 0)
+	require.Greater(t, deliverIdx, getIdx, "deliver wiring must follow an existing profile lookup")
+	require.Greater(t, bodyIdx, deliverIdx, "deliver wiring must stay ahead of the original pre-run body")
+}
+
+func TestInjectRootAST_DeliverWithoutProfilePrepends(t *testing.T) {
+	out, changed, err := injectRootAST([]byte(baseRootGo), injectOptions{Skip: map[string]bool{"profile": true}})
+	require.NoError(t, err)
+	require.True(t, changed)
+	got := string(out)
+	assert.NotContains(t, got, "GetProfile")
+	deliverIdx := strings.Index(got, "ParseDeliverSink")
+	bodyIdx := strings.Index(got, "flags.compact = true")
+	require.GreaterOrEqual(t, deliverIdx, 0)
+	require.Greater(t, bodyIdx, deliverIdx, "deliver wiring must run before the original pre-run body")
 }
 
 func TestInjectRootAST_PreservesNovelCommands(t *testing.T) {

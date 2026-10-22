@@ -6,7 +6,6 @@ package cli
 
 import (
 	"encoding/json"
-	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -107,7 +106,7 @@ agents can introspect this CLI at runtime without parsing --help or
 reading source. Schema is versioned via schema_version.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := buildAgentContext(rootCmd)
-			enc := json.NewEncoder(os.Stdout)
+			enc := json.NewEncoder(cmd.OutOrStdout())
 			if pretty {
 				enc.SetIndent("", "  ")
 			}

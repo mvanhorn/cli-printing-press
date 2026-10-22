@@ -668,12 +668,13 @@ func Profile(s *spec.APISpec) *APIProfile {
 					if !isSyncQueryParam(param) {
 						continue
 					}
-					lower := strings.ToLower(param.Name)
-					if cursorParamCandidates[lower] && !param.HasDateFormat() {
-						cursorParams[param.Name]++
+					nameKey := paginationParamKey(param.Name)
+					wireKey := paginationParamKey(param.WireName())
+					if (cursorParamCandidates[nameKey] || cursorParamCandidates[wireKey]) && !param.HasDateFormat() {
+						cursorParams[param.WireName()]++
 					}
-					if pageSizeParamCandidates[lower] {
-						pageSizeParams[param.Name]++
+					if isSyncPageSizeParam(param) {
+						pageSizeParams[param.WireName()]++
 					}
 				}
 			}
@@ -773,6 +774,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	uniquifyDependentResourceNames(p.DependentSyncResources, syncable)
 	sortDependentResources(p.DependentSyncResources, nil)
+	// Two placeholders that resolve to the same parent field would send that
+	// value twice. Drop those children; explicit walkers stay.
+	p.DependentSyncResources = dropUnbindableMultiPlaceholderDependents(s, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
 	warnUndeterminablePagination(p.SyncableResources, p.DependentSyncResources)
 	classifyFlatReconcileModes(p.SyncableResources, specHasTenantScopeColumn(s))
@@ -783,7 +787,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 		if len(dep.PathParams) == 1 && dep.IDField != "" {
 			dep.ReconcileMode = ReconcileModePerParent
 			dep.ParentScopeColumn = dep.ParentResource + "_id"
-			dep.GenericScopeJSONPath = "$." + singularParentField(dep.ParentResource)
+			dep.GenericScopeJSONPath = genericScopeJSONPath(s, *dep)
 		} else {
 			dep.ReconcileMode = ReconcileModeNone
 		}
@@ -1147,13 +1151,42 @@ var (
 	pageSizeParamCandidates = map[string]bool{
 		"limit": true, "per_page": true, "page_size": true, "pagesize": true,
 		"perpage": true, "first": true, "count": true, "take": true, "max_results": true,
-		"maxrecords": true, "max_records": true, "page[size]": true,
+		"maxrecords": true, "max_records": true, "page[size]": true, "top": true,
 	}
 	cursorParamCandidates = map[string]bool{
 		"after": true, "cursor": true, "page_token": true, "page_key": true, "offset": true, "skip": true,
 		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
 	}
 )
+
+// paginationParamKey compares flag names and OData wire names ($top) against
+// the same candidate set.
+func paginationParamKey(name string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "$")
+}
+
+func countTypeIsPageSize(typ string) bool {
+	typ = strings.TrimSpace(typ)
+	if typ == "" || strings.EqualFold(typ, "long") {
+		return true
+	}
+	return isNumericParamType(typ)
+}
+
+// isSyncPageSizeParam reports whether param is a page-size query. OData
+// $count is a boolean include-count switch, not a page length; an integer
+// count still is.
+func isSyncPageSizeParam(param spec.Param) bool {
+	nameKey := paginationParamKey(param.Name)
+	wireKey := paginationParamKey(param.WireName())
+	if !pageSizeParamCandidates[nameKey] && !pageSizeParamCandidates[wireKey] {
+		return false
+	}
+	if nameKey == "count" || wireKey == "count" {
+		return countTypeIsPageSize(param.Type)
+	}
+	return true
+}
 
 // pathTemplatePlaceholderRE matches {placeholder} tokens in a path. Identifier
 // shape mirrors templateVarPattern in the emitted url.go.tmpl so client-side
@@ -1225,8 +1258,9 @@ func hasRequiredScopeParamsForSyncExcluding(endpoint spec.Endpoint, allowEnumExp
 			if param.GlobalScope && strings.EqualFold(param.Type, "string") {
 				continue
 			}
-			lower := strings.ToLower(param.Name)
-			if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || temporalOrFormatParams[lower] {
+			nameKey := paginationParamKey(param.Name)
+			wireKey := paginationParamKey(param.WireName())
+			if isSyncPageSizeParam(param) || cursorParamCandidates[nameKey] || cursorParamCandidates[wireKey] || temporalOrFormatParams[nameKey] {
 				continue
 			}
 			// Only the entity-type enum findEntityTypeEnum would expand is
@@ -1252,8 +1286,9 @@ func requiredQueryParentKeyCandidates(endpoint spec.Endpoint) []string {
 		if !param.Required || param.Positional || param.PathParam || param.GlobalScope {
 			continue
 		}
-		lower := strings.ToLower(param.Name)
-		if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] {
+		nameKey := paginationParamKey(param.Name)
+		wireKey := paginationParamKey(param.WireName())
+		if isSyncPageSizeParam(param) || cursorParamCandidates[nameKey] || cursorParamCandidates[wireKey] {
 			continue
 		}
 		if !looksLikeParentKeyParam(param.Name) {
@@ -2443,6 +2478,149 @@ func singularParentField(parentResource string) string {
 	return strings.TrimSuffix(parentResource, "s")
 }
 
+// genericScopeJSONPath is the child JSON path per-parent reconcile filters on.
+// Sync always stamps parent_id. The singular parent name is only a real column
+// when the child item schema declares that field as a scalar.
+func genericScopeJSONPath(s *spec.APISpec, dep DependentResource) string {
+	if name := declaredScalarScopeField(s, dep); name != "" {
+		return "$." + name
+	}
+	return "$.parent_id"
+}
+
+func declaredScalarScopeField(s *spec.APISpec, dep DependentResource) string {
+	singular := singularParentField(dep.ParentResource)
+	if s == nil || singular == "" {
+		return ""
+	}
+	item := responseItemForPath(s, dep.Path, dep.Method)
+	typ, ok := s.Types[item]
+	if !ok {
+		return ""
+	}
+	for _, field := range typ.Fields {
+		if strings.EqualFold(field.Name, singular) && scalarSchemaType(field.Type) {
+			return field.Name
+		}
+	}
+	return ""
+}
+
+func scalarSchemaType(typ string) bool {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "", "string", "int", "integer", "number", "float", "float32", "float64", "double", "bool", "boolean", "int32", "int64", "long":
+		return true
+	default:
+		return false
+	}
+}
+
+func responseItemForPath(s *spec.APISpec, path, method string) string {
+	ep, ok := endpointByPathMethod(s, path, method)
+	if !ok {
+		return ""
+	}
+	return ep.Response.Item
+}
+
+func endpointByPathMethod(s *spec.APISpec, path, method string) (spec.Endpoint, bool) {
+	if s == nil || path == "" {
+		return spec.Endpoint{}, false
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	var found spec.Endpoint
+	var ok bool
+	var walk func(spec.Resource)
+	walk = func(r spec.Resource) {
+		names := make([]string, 0, len(r.Endpoints))
+		for name := range r.Endpoints {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			ep := r.Endpoints[name]
+			if ep.Path != path {
+				continue
+			}
+			if method != "" && ep.Method != "" && strings.ToUpper(ep.Method) != method {
+				continue
+			}
+			if !ok {
+				found = ep
+				ok = true
+			}
+		}
+		subNames := make([]string, 0, len(r.SubResources))
+		for name := range r.SubResources {
+			subNames = append(subNames, name)
+		}
+		sort.Strings(subNames)
+		for _, name := range subNames {
+			walk(r.SubResources[name])
+		}
+	}
+	resourceNames := make([]string, 0, len(s.Resources))
+	for name := range s.Resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+	for _, name := range resourceNames {
+		walk(s.Resources[name])
+	}
+	return found, ok
+}
+
+// dropUnbindableMultiPlaceholderDependents removes auto-detected children
+// whose path placeholders collapse onto one parent field. Distinct fields
+// stay, including fields the parent response does not declare. Explicit
+// walkers stay.
+func dropUnbindableMultiPlaceholderDependents(s *spec.APISpec, deps []DependentResource) []DependentResource {
+	kept := make([]DependentResource, 0, len(deps))
+	for _, dep := range deps {
+		placeholders := pathPlaceholdersForBinding(s, dep.Path)
+		bound := distinctPathFields(dep, placeholders)
+		if dep.parentPathLock || len(placeholders) < 2 || bound >= len(placeholders) {
+			kept = append(kept, dep)
+			continue
+		}
+		writeProfilerWarning(
+			"warning: dependent sync on %s: path %q has %d placeholders and %d can be bound from parent %q; declare x-pp-sync-walker with key_param\n",
+			dep.Name, dep.Path, len(placeholders), bound, dep.ParentResource)
+	}
+	return kept
+}
+
+func pathPlaceholdersForBinding(s *spec.APISpec, path string) []string {
+	names := orderedPathPlaceholders(path)
+	if s == nil || len(s.EndpointTemplateVars) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if s.IsEndpointTemplateVar(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func distinctPathFields(dep DependentResource, placeholders []string) int {
+	fieldByParam := make(map[string]string, len(dep.PathParams))
+	for _, pathParam := range dep.PathParams {
+		fieldByParam[pathParam.Param] = pathParam.Field
+	}
+	seen := map[string]struct{}{}
+	for _, name := range placeholders {
+		field := fieldByParam[name]
+		if field == "" {
+			continue
+		}
+		seen[field] = struct{}{}
+	}
+	return len(seen)
+}
+
 func dependentPathParamFields(path, parentResource string) map[string]string {
 	fields := map[string]string{}
 	segments := pathSegments(path)
@@ -3159,19 +3337,30 @@ func requiredSyncQueryParamsFromEndpoint(endpoint spec.Endpoint, syncOwned syncO
 		if wireName == "" {
 			continue
 		}
-		key := strings.ToLower(wireName)
+		key := paginationParamKey(wireName)
+		lowerWire := strings.ToLower(wireName)
+		nameKey := paginationParamKey(param.Name)
 		if _, owned := reserved[key]; owned {
+			continue
+		}
+		if _, owned := reserved[lowerWire]; owned {
+			continue
+		}
+		if _, owned := reserved[nameKey]; owned {
 			continue
 		}
 		if _, owned := reserved[strings.ToLower(param.Name)]; owned {
 			continue
 		}
-		lower := strings.ToLower(param.Name)
-		if (pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || pageSizeParamCandidates[key] || cursorParamCandidates[key]) &&
-			!syncOwned.isFirstPageCursorParam(param) {
-			continue
+		if isSyncPageSizeParam(param) || cursorParamCandidates[key] || cursorParamCandidates[nameKey] {
+			if !syncOwned.isFirstPageCursorParam(param) {
+				continue
+			}
 		}
 		if _, ok := satisfied[key]; ok {
+			continue
+		}
+		if _, ok := satisfied[lowerWire]; ok {
 			continue
 		}
 		if _, dup := seen[key]; dup {
@@ -3427,14 +3616,21 @@ func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
 	return filterParam, resolvedLimitParam, pageSize
 }
 
+func paginationParamMatches(param spec.Param, want string) bool {
+	key := paginationParamKey(want)
+	if key == "" {
+		return false
+	}
+	return paginationParamKey(param.Name) == key || paginationParamKey(param.WireName()) == key
+}
+
 func paginationLimitDefault(endpoint spec.Endpoint, limitParam string) (int, bool) {
 	if strings.TrimSpace(limitParam) == "" {
 		return 0, false
 	}
-	limitName := strings.ToLower(limitParam)
 	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
 	for _, param := range params {
-		if strings.ToLower(param.Name) != limitName {
+		if !paginationParamMatches(param, limitParam) {
 			continue
 		}
 		value, ok := syncBodyDefault(param)
@@ -3469,10 +3665,9 @@ func paginationLimitMaximum(endpoint spec.Endpoint, limitParam string) (int, boo
 	if strings.TrimSpace(limitParam) == "" {
 		return 0, false
 	}
-	limitName := strings.ToLower(limitParam)
 	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
 	for _, param := range params {
-		if strings.ToLower(param.Name) != limitName {
+		if !paginationParamMatches(param, limitParam) {
 			continue
 		}
 		// A param may declare both an inclusive `maximum` and an exclusive bound
@@ -3517,7 +3712,10 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 		}
 	}
 	if cursorType == "" {
-		cursorType = inferPaginationType(cursorParam)
+		// The request uses the wire name. A custom wire name (start, pageIndex)
+		// is not itself an offset or page token, so the class comes from the
+		// flag name that matched the candidate list.
+		cursorType = inferPaginationTypeForCursor(endpoint, cursorParam)
 	}
 	// Canonical page and offset parameter names are stronger evidence than an
 	// inconsistent explicit type. Letting a page-named cursor reach offset
@@ -3532,7 +3730,7 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 	// limit was seen before the cursor parameter was known. Otherwise the
 	// first request sends that token as a number (starting_after=0). A
 	// custom cursor name with an explicit offset type stays offset.
-	if cursorParamCandidates[strings.ToLower(strings.TrimSpace(cursorParam))] &&
+	if cursorParamCandidates[paginationParamKey(cursorParam)] &&
 		inferredType != "page" && inferredType != "offset" &&
 		(cursorType == "page" || cursorType == "offset") {
 		cursorType = inferredType
@@ -3657,24 +3855,39 @@ func warnLimitWithoutCursor(resourceName, cursorParam, limitParam string) {
 func inferPaginationParamsFromEndpoint(endpoint spec.Endpoint) (string, string) {
 	var cursorParam string
 	var limitParam string
+	var countLimit string
 	for _, param := range endpoint.Params {
 		if !isSyncQueryParam(param) {
 			continue
 		}
-		lower := strings.ToLower(param.Name)
+		nameKey := paginationParamKey(param.Name)
+		wireKey := paginationParamKey(param.WireName())
 		// A calendar value cannot carry a page token.
-		if cursorParam == "" && cursorParamCandidates[lower] && !param.HasDateFormat() {
-			cursorParam = param.Name
+		if cursorParam == "" && (cursorParamCandidates[nameKey] || cursorParamCandidates[wireKey]) && !param.HasDateFormat() {
+			cursorParam = param.WireName()
 		}
-		if limitParam == "" && pageSizeParamCandidates[lower] {
-			limitParam = param.Name
+		if !isSyncPageSizeParam(param) {
+			continue
 		}
+		wire := param.WireName()
+		if nameKey == "count" || wireKey == "count" {
+			if countLimit == "" {
+				countLimit = wire
+			}
+			continue
+		}
+		if limitParam == "" {
+			limitParam = wire
+		}
+	}
+	if limitParam == "" {
+		limitParam = countLimit
 	}
 	return cursorParam, limitParam
 }
 
 func inferPaginationType(cursorParam string) string {
-	switch strings.ToLower(strings.TrimSpace(cursorParam)) {
+	switch paginationParamKey(cursorParam) {
 	case "":
 		return ""
 	case "page", "page_number", "pagenumber", "page[number]":
@@ -3686,6 +3899,34 @@ func inferPaginationType(cursorParam string) string {
 	default:
 		return "cursor"
 	}
+}
+
+func inferPaginationTypeForCursor(endpoint spec.Endpoint, cursorParam string) string {
+	param, ok := syncPaginationCursorParam(endpoint, cursorParam)
+	if !ok {
+		return inferPaginationType(cursorParam)
+	}
+	wireType := inferPaginationType(param.WireName())
+	if paginationTypeIsClass(wireType) {
+		return wireType
+	}
+	// A recognized token on the wire (after, cursor) stays a cursor. An
+	// unrecognized wire name takes the class of the flag (offset → start).
+	if cursorParamCandidates[paginationParamKey(param.WireName())] {
+		return wireType
+	}
+	nameType := inferPaginationType(param.Name)
+	if paginationTypeIsClass(nameType) {
+		return nameType
+	}
+	if nameType != "" {
+		return nameType
+	}
+	return wireType
+}
+
+func paginationTypeIsClass(typ string) bool {
+	return typ == "page" || typ == "offset" || typ == "page_token"
 }
 
 // detectEndpointSyncSort finds a spec-declared ordering that makes an
@@ -3929,7 +4170,7 @@ func endpointSupportsPagination(endpoint spec.Endpoint) bool {
 		if param.PathParam || param.Positional {
 			continue
 		}
-		if pageSizeParamCandidates[strings.ToLower(param.Name)] {
+		if isSyncPageSizeParam(param) {
 			return true
 		}
 	}

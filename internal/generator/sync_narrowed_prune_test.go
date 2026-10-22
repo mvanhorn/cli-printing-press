@@ -798,9 +798,10 @@ func TestTemplateScopeIsolatesCursor(t *testing.T) {
 func seedModules(t *testing.T, db *store.Store) {
 	t.Helper()
 	seedRows(t, db, "projects", map[string]any{"id": "p1", "name": "P"})
+	// Module does not declare a project field, so per-parent reconcile matches the parent_id sync stamps.
 	seedRows(t, db, "modules",
-		map[string]any{"id": "mod-keep", "name": "keep", "project": "p1"},
-		map[string]any{"id": "mod-other", "name": "other", "project": "p1"},
+		map[string]any{"id": "mod-keep", "name": "keep", "parent_id": "p1"},
+		map[string]any{"id": "mod-other", "name": "other", "parent_id": "p1"},
 	)
 }
 

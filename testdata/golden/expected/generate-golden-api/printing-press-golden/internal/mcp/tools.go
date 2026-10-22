@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("currencies_list",
 			mcplib.WithDescription("List supported currencies. Required: X-Api-Version (default: 2026-04-01). Returns array of Currency."),
 			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -59,6 +61,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Name")),
 			mcplib.WithString("owner_email", mcplib.Description("Owner email")),
 			mcplib.WithString("visibility", mcplib.Required(), mcplib.Description("Visibility")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
@@ -69,6 +72,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("Get project. Required: X-Api-Version (default: 2026-04-01), projectId."),
 			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -82,6 +86,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("status", mcplib.Description("Status")),
 			mcplib.WithNumber("limit", mcplib.Description("Limit (default: 25)")),
 			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -96,6 +101,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithBoolean("overwrite", mcplib.Description("Overwrite")),
 			mcplib.WithString("caption", mcplib.Description("Caption")),
 			mcplib.WithString("file", mcplib.Description("File")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", RequestContentType: "multipart/form-data", Default: "2026-04-01"}, {PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
@@ -108,6 +114,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithNumber("limit", mcplib.Description("Limit (default: 50)")),
 			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -124,6 +131,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithBoolean("completed", mcplib.Description("Completed")),
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithString("title", mcplib.Description("Title")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "X-Api-Version", WireName: "X-Api-Version", Location: "header", Default: "2026-04-01"}, {PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
@@ -131,6 +139,7 @@ func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
 			mcplib.WithDescription("Get public service status. (public)"),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -142,6 +151,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("Download the annual report as a binary file. Required: X-Api-Version (default: 2026-04-01), year."),
 			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithNumber("year", mcplib.Required(), mcplib.Description("Year")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -153,6 +163,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("Get a report summary for a year. Required: X-Api-Version (default: 2026-04-01), year."),
 			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithNumber("year", mcplib.Required(), mcplib.Description("Year")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -165,6 +176,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("X-Api-Version", mcplib.Required(), mcplib.Description("Required API version header.")),
 			mcplib.WithNumber("MaxRecords", mcplib.Description("Max records (default: 500)")),
 			mcplib.WithArray("filter", mcplib.Required(), mcplib.Description("Filter")),
+			mcplib.WithSchemaAdditionalProperties(false),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -395,19 +407,8 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 		}
 
-		for k, v := range args {
-			if pathParams[k] || knownArgs[k] {
-				continue
-			}
-			switch method {
-			case "POST", "PUT", "PATCH":
-				bodyArgs[k] = v
-				if multipart {
-					multipartFields[k] = mcpMultipartFieldValue(v)
-				}
-			default:
-				params[k] = formatMCPParamValue(v)
-			}
+		if err := rejectUndeclaredMCPArgs(args, knownArgs, pathParams); err != nil {
+			return mcpToolError(err.Error()), nil
 		}
 
 		// The public cursor argument is either an opaque MCP cursor or, on a
@@ -636,6 +637,163 @@ func mcpToolResultTextWithPlatform(method string, data json.RawMessage, readOnly
 // text-result budget just like successful endpoint results.
 func mcpToolError(message string) *mcplib.CallToolResult {
 	return mcplib.NewToolResultError(bound.Text(message))
+}
+
+// Reserved transport arguments are accepted on every endpoint tool. They are
+// not request fields, so an unused one is ignored instead of copied onto the
+// wire. Declared bindings with these names still flow through knownArgs.
+func mcpReservedArg(name string) bool {
+	switch name {
+	case "cursor", "body_json", "body_base64", "content_type":
+		return true
+	default:
+		return false
+	}
+}
+
+func rejectUndeclaredMCPArgs(args map[string]any, knownArgs, pathParams map[string]bool) error {
+	var unknown []string
+	for name := range args {
+		if pathParams[name] || knownArgs[name] || mcpReservedArg(name) {
+			continue
+		}
+		unknown = append(unknown, name)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	candidates := mcpArgCandidates(knownArgs, pathParams)
+	parts := make([]string, len(unknown))
+	for i, name := range unknown {
+		parts[i] = formatUnknownMCPArg(name, suggestMCPArg(name, candidates))
+	}
+	return fmt.Errorf("%s", strings.Join(parts, "; "))
+}
+
+func mcpArgCandidates(knownArgs, pathParams map[string]bool) []string {
+	names := make([]string, 0, len(knownArgs)+len(pathParams))
+	seen := make(map[string]struct{}, len(knownArgs)+len(pathParams))
+	for name := range knownArgs {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for name := range pathParams {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func formatUnknownMCPArg(name, suggestion string) string {
+	if suggestion == "" {
+		return fmt.Sprintf("unknown argument %q", name)
+	}
+	return fmt.Sprintf("unknown argument %q (did you mean %q?)", name, suggestion)
+}
+
+func suggestMCPArg(name string, candidates []string) string {
+	folded := mcpArgFold(name)
+	stripped := mcpArgStrip(folded)
+	best := ""
+	bestDist := 0
+	ambiguous := false
+	consider := func(cand string, dist int) {
+		if best == "" || dist < bestDist {
+			best = cand
+			bestDist = dist
+			ambiguous = false
+			return
+		}
+		if dist == bestDist && cand != best {
+			ambiguous = true
+		}
+	}
+	for _, cand := range candidates {
+		if cand == "" || cand == name {
+			continue
+		}
+		cf := mcpArgFold(cand)
+		if cf == folded {
+			consider(cand, 0)
+			continue
+		}
+		if stripped != "" && mcpArgStrip(cf) == stripped {
+			consider(cand, 0)
+			continue
+		}
+		dist := runeLevenshtein(folded, cf)
+		if mcpArgDistanceOK(folded, cf, dist) {
+			consider(cand, dist)
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return best
+}
+
+func mcpArgFold(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
+}
+
+func mcpArgStrip(folded string) string {
+	return strings.ReplaceAll(folded, "_", "")
+}
+
+func mcpArgDistanceOK(a, b string, dist int) bool {
+	if dist <= 0 {
+		return false
+	}
+	la, lb := len([]rune(a)), len([]rune(b))
+	if la < 3 || lb < 3 {
+		return false
+	}
+	if la >= 5 && lb >= 5 {
+		return dist <= 2
+	}
+	return dist <= 1
+}
+
+func runeLevenshtein(a, b string) int {
+	ar, br := []rune(a), []rune(b)
+	if len(ar) == 0 {
+		return len(br)
+	}
+	if len(br) == 0 {
+		return len(ar)
+	}
+	prev := make([]int, len(br)+1)
+	cur := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			del, ins, sub := prev[j]+1, cur[j-1]+1, prev[j-1]+cost
+			cur[j] = del
+			if ins < cur[j] {
+				cur[j] = ins
+			}
+			if sub < cur[j] {
+				cur[j] = sub
+			}
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(br)]
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
