@@ -409,6 +409,9 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 		// A saved profile can set dry-run after flag parse. Suppression has to
 		// see that value before any store path is resolved.
 		setLegacyDBClaimSuppressed(flags.dryRun)
+		if err := applyLocalDataEnv(cmd, flags); err != nil {
+			return err
+		}
 		// An incompatible --data-source has to fail before the platform
 		// identity probe. A failed probe would otherwise hide this error.
 		switch flags.dataSource {
@@ -804,6 +807,56 @@ func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
 		}
 	}
 	return false
+}
+
+// noLocalDataEnvVar is the operator switch for running without a local copy
+// of API responses. It is an env var because MCP hosts cannot pass CLI flags;
+// every child CLI the MCP server spawns inherits it.
+const noLocalDataEnvVar = "PRINTING_PRESS_GOLDEN_NO_LOCAL_DATA"
+
+// dataSourceEnvVar supplies the --data-source default for hosts that cannot
+// pass CLI flags. An explicit flag or run profile still wins.
+const dataSourceEnvVar = "PRINTING_PRESS_GOLDEN_DATA_SOURCE"
+
+func localDataDisabled() bool {
+	return strings.TrimSpace(os.Getenv(noLocalDataEnvVar)) == "1"
+}
+
+// localDataWriterCommands are the generated commands whose job is to copy API
+// data into the local store, keyed by command path below the root.
+var localDataWriterCommands = map[string]bool{"sync": true, "workflow archive": true}
+
+// applyLocalDataEnv folds the local-data env switches into the parsed flags.
+// The disable switch outranks every flag so an agent-supplied argument cannot
+// undo the operator's choice. Reading a store that already exists saves
+// nothing new, so local reads stay available.
+func applyLocalDataEnv(cmd *cobra.Command, flags *rootFlags) error {
+	if localDataDisabled() {
+		flags.noCache = true
+		switch {
+		case cmd.Flags().Changed("data-source") && flags.dataSource == "auto":
+			return fmt.Errorf("--data-source auto conflicts with %s=1: auto saves live reads to the local store; use live or local", noLocalDataEnvVar)
+		case cmd.Flags().Changed("data-source"):
+		case commandDataSourceAnnotation(cmd) == "local":
+			flags.dataSource = "local"
+		default:
+			flags.dataSource = "live"
+		}
+		path := strings.Join(strings.Fields(cmd.CommandPath())[1:], " ")
+		if localDataWriterCommands[path] && !flags.dryRun {
+			return fmt.Errorf("%s is disabled while %s=1: it would save API data to the local store", path, noLocalDataEnvVar)
+		}
+		return nil
+	}
+	if value := strings.TrimSpace(os.Getenv(dataSourceEnvVar)); value != "" && !cmd.Flags().Changed("data-source") {
+		switch value {
+		case "auto", "live", "local":
+			flags.dataSource = value
+		default:
+			return fmt.Errorf("invalid %s value %q: must be auto, live, or local", dataSourceEnvVar, value)
+		}
+	}
+	return nil
 }
 
 // ApplyProfileToFlags uses FlagSet.Set, so a saved timeout is Changed and

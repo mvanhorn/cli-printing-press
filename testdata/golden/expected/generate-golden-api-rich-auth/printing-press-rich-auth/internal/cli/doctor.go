@@ -243,6 +243,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			if warning := pathsWarning(pathsReport); warning != "" {
 				report["paths_warning"] = warning
 			}
+			if localDataDisabled() {
+				report["local_data"] = "INFO off (" + noLocalDataEnvVar + "=1): live reads only; no response cache or store writes"
+			} else {
+				report["local_data"] = "on: API responses are saved locally (unencrypted); set " + noLocalDataEnvVar + "=1 to stop"
+			}
 
 			// Check config
 			cfg, err := config.Load(flags.configPath)
@@ -500,6 +505,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{"env_vars", "Env Vars"},
 				{"verify_mode", "Verify Mode"},
 				{"paths_warning", "Paths"},
+				{"local_data", "Local Data"},
 				{"credentials_location_warning", "Credentials Storage"},
 				{"api", "API"},
 				{"credentials", "Credentials"},
