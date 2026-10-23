@@ -97,6 +97,9 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString({{printf "%q" (printf "%s_filename" (mcpInputName .))}}, mcplib.Description("Optional filename for this upload (for example photo.png); servers may sniff the format from the extension. Sanitized to a base name; path separators and control characters are rejected. Defaults to the parameter name.")),
 {{- end}}
 {{- end}}
+{{- if endpointHasMCPUpload $endpoint}}
+			mcplib.WithBoolean({{printf "%q" (mcpUploadConfirmArg $endpoint (mcpGlobalTemplateInputParams $endpoint (effectiveEndpointPath $resource $endpoint) $.GlobalPathTemplateVars))}}, mcplib.Description("Set to boolean true to perform the upload. Any other value, including the string \"true\", returns a preview (endpoint, file field, filename, byte size) and does not contact the API.")),
+{{- end}}
 {{- if mcpExposeOpaqueCursor $mcpPageResource $eName $endpoint}}
 			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
 {{- end}}
@@ -142,6 +145,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- if and (endpointUsesMultipart $endpoint) (isBinaryParam .)}}
 			mcplib.WithString({{printf "%q" (printf "%s_filename" (mcpInputName .))}}, mcplib.Description("Optional filename for this upload (for example photo.png); servers may sniff the format from the extension. Sanitized to a base name; path separators and control characters are rejected. Defaults to the parameter name.")),
 {{- end}}
+{{- end}}
+{{- if endpointHasMCPUpload $endpoint}}
+			mcplib.WithBoolean({{printf "%q" (mcpUploadConfirmArg $endpoint (mcpGlobalTemplateInputParams $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint) $.GlobalPathTemplateVars))}}, mcplib.Description("Set to boolean true to perform the upload. Any other value, including the string \"true\", returns a preview (endpoint, file field, filename, byte size) and does not contact the API.")),
 {{- end}}
 {{- if mcpExposeOpaqueCursor $mcpPageResource $eName $endpoint}}
 			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
@@ -577,6 +583,55 @@ func writeMCPUploadTemp(name string, data []byte) (string, func(), error) {
 	return path, cleanup, nil
 }
 
+// mcpUploadConfirmName names a typed upload tool's confirm argument the same
+// way the generator's mcpUploadConfirmArg does: "confirm", or "confirm_upload"
+// (and so on) when another tool input already uses that name.
+func mcpUploadConfirmName(bindings []mcpParamBinding) string {
+	taken := make(map[string]bool, len(bindings))
+	for _, b := range bindings {
+		taken[b.PublicName] = true
+	}
+	name := "confirm"
+	for taken[name] {
+		name += "_upload"
+	}
+	return name
+}
+
+// mcpUploadPreview describes a pending multipart upload without running it:
+// the endpoint plus each file field's staged filename and byte size. It never
+// includes file content.
+func mcpUploadPreview(method, path string, files map[string]string) (*mcplib.CallToolResult, error) {
+	fields := make([]string, 0, len(files))
+	for field := range files {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	uploads := make([]map[string]any, 0, len(fields))
+	for _, field := range fields {
+		info, err := os.Stat(files[field])
+		if err != nil {
+			return mcpToolError(fmt.Sprintf("stat staged upload %q: %v", field, err)), nil
+		}
+		uploads = append(uploads, map[string]any{
+			"field":    field,
+			"filename": filepath.Base(files[field]),
+			"bytes":    info.Size(),
+		})
+	}
+	text, err := bound.JSON(map[string]any{
+		"preview":               true,
+		"confirmation_required": true,
+		"method":                method,
+		"path":                  path,
+		"uploads":               uploads,
+	})
+	if err != nil {
+		return mcpToolError(fmt.Sprintf("encoding upload preview: %v", err)), nil
+	}
+	return mcplib.NewToolResultText(text), nil
+}
+
 // mcpUploadFileName picks a safe multipart filename: the sanitized caller hint
 // when usable, otherwise the sanitized parameter name, otherwise "upload".
 func mcpUploadFileName(field, hint string) string {
@@ -773,6 +828,9 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 {{- else}}
 func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, {{if .HasRequiredRoles}}requiredRole cli.Persona, {{end}}pageConfig mcpPageConfig, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 {{- end}}
+{{- if $hasMultipartRequest}}
+	uploadConfirmArg := mcpUploadConfirmName(bindings)
+{{- end}}
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 {{- if .HasRequiredRoles}}
 		cfg, err := newMCPConfig()
@@ -917,9 +975,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				multipart = true
 			}
 			if strings.EqualFold(binding.Format, "binary") {
-				// The optional companion filename arg is declared in the tool
-				// schema; register it so rejectUndeclaredMCPArgs accepts it.
+				// The optional companion filename arg and the upload confirm
+				// arg are declared in the tool schema; register them so
+				// rejectUndeclaredMCPArgs accepts them.
 				knownArgs[binding.PublicName+"_filename"] = true
+				knownArgs[uploadConfirmArg] = true
 			}
 {{- end}}
 {{- if $hasFormRequest}}
@@ -1137,6 +1197,16 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				requestCursor = s
 			}
 		}
+{{- if $hasMultipartRequest}}
+		// A file upload sends caller-supplied bytes to the API, so, like the
+		// confirm step on <api>_execute, it returns a preview until the confirm
+		// argument is boolean true. The string "true" stays a preview.
+		if multipart && len(multipartFileFields) > 0 {
+			if confirmed, ok := args[uploadConfirmArg].(bool); !ok || !confirmed {
+				return mcpUploadPreview(method, path, multipartFileFields)
+			}
+		}
+{{- end}}
 
 		var data json.RawMessage
 		switch method {

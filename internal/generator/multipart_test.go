@@ -675,3 +675,229 @@ func TestResolveMCPMultipartFile_RootModeConfines(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestResolveMCPMultipartFile_", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }
+
+// TestMCPMultipartUploadPreviewsUntilConfirm locks the confirm step on typed
+// upload tools: a call that carries a file returns a preview (endpoint, field,
+// filename, byte size, never the content) and contacts the API only when
+// confirm is boolean true, and the read-only switch still drops the tools.
+func TestMCPMultipartUploadPreviewsUntilConfirm(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("uploadconfirm")
+	apiSpec.Resources = map[string]spec.Resource{
+		"assets": {
+			Description: "Manage assets",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/assets", Description: "List assets"},
+				"upload": {
+					Method:             "POST",
+					Path:               "/assets",
+					Description:        "Upload an asset",
+					RequestContentType: "multipart/form-data",
+					Body: []spec.Param{
+						{Name: "file", Type: "string", Format: "binary", Required: true, Description: "Asset file"},
+						{Name: "label", Type: "string", Description: "Label"},
+					},
+				},
+			},
+			SubResources: map[string]spec.Resource{
+				"imports": {
+					Description: "Asset imports",
+					Endpoints: map[string]spec.Endpoint{
+						"upload": {
+							Method:             "POST",
+							Path:               "/assets/imports",
+							Description:        "Import an asset file",
+							RequestContentType: "multipart/form-data",
+							Body: []spec.Param{
+								{Name: "file", Type: "string", Format: "binary", Required: true, Description: "Import file"},
+								{Name: "confirm", Type: "boolean", Description: "API flag that confirms overwrites"},
+							},
+						},
+					},
+				},
+				"versions": {
+					Description: "Asset versions",
+					Endpoints: map[string]spec.Endpoint{
+						"upload": {
+							Method:             "POST",
+							Path:               "/assets/{asset_id}/versions",
+							Description:        "Upload a new version",
+							RequestContentType: "multipart/form-data",
+							Params:             []spec.Param{{Name: "asset_id", Type: "string", Required: true, Positional: true, Description: "Asset ID"}},
+							Body:               []spec.Param{{Name: "content", Type: "string", Format: "binary", Required: true, Description: "Version file"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Equal(t, 3, strings.Count(mcpSrc, "Set to boolean true to perform the upload"), "each typed upload tool declares one confirm argument")
+	assert.Equal(t, 1, strings.Count(mcpSrc, `mcplib.WithBoolean("confirm_upload"`), "an API input named confirm moves the gate to confirm_upload")
+	assert.Contains(t, mcpSrc, `knownArgs[uploadConfirmArg] = true`)
+	assert.Contains(t, mcpSrc, `return mcpUploadPreview(method, path, multipartFileFields)`)
+
+	runtimeTest := strings.ReplaceAll(`package mcp
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func TestTypedUploadPreviewsUntilConfirm(t *testing.T) {
+	var hits atomic.Int32
+	bodies := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		b, _ := io.ReadAll(r.Body)
+		bodies <- string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`+"`"+`{"ok":true}`+"`"+`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("@PREFIX@_BASE_URL", srv.URL)
+	t.Setenv("MYAPI_TOKEN", "test-token")
+	t.Setenv("HOME", t.TempDir())
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterTools(s)
+	for name, arg := range map[string]string{"assets_upload": "confirm", "assets_versions_upload": "confirm", "assets_imports_upload": "confirm_upload"} {
+		tool := s.ListTools()[name]
+		if tool == nil {
+			t.Fatalf("%s not registered", name)
+		}
+		if _, ok := tool.Tool.InputSchema.Properties[arg]; !ok {
+			t.Fatalf("%s schema does not declare %s", name, arg)
+		}
+	}
+	if _, ok := s.ListTools()["assets_list"].Tool.InputSchema.Properties["confirm"]; ok {
+		t.Fatal("a tool without an upload declares confirm")
+	}
+
+	content := "UPLOAD-CANARY-CONTENT"
+	encoded := base64.StdEncoding.EncodeToString([]byte(content))
+	call := func(name string, args map[string]any) string {
+		t.Helper()
+		res, err := s.ListTools()[name].Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Name: name, Arguments: args}})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		text := res.Content[0].(mcplib.TextContent).Text
+		if res.IsError {
+			t.Fatalf("%s returned an error: %s", name, text)
+		}
+		return text
+	}
+
+	for _, confirm := range []any{nil, false, "true"} {
+		args := map[string]any{"file": encoded, "file_filename": "notes.txt", "label": "x"}
+		if confirm != nil {
+			args["confirm"] = confirm
+		}
+		out := call("assets_upload", args)
+		for _, want := range []string{
+			`+"`"+`"confirmation_required": true`+"`"+`,
+			`+"`"+`"method": "POST"`+"`"+`,
+			`+"`"+`"path": "/assets"`+"`"+`,
+			`+"`"+`"field": "file"`+"`"+`,
+			`+"`"+`"filename": "notes.txt"`+"`"+`,
+			fmt.Sprintf(`+"`"+`"bytes": %d`+"`"+`, len(content)),
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("confirm=%#v preview missing %s:\n%s", confirm, want, out)
+			}
+		}
+		if strings.Contains(out, content) || strings.Contains(out, encoded) {
+			t.Fatalf("preview includes the file content:\n%s", out)
+		}
+		if n := hits.Load(); n != 0 {
+			t.Fatalf("confirm=%#v contacted the API %d time(s)", confirm, n)
+		}
+	}
+	out := call("assets_versions_upload", map[string]any{"asset_id": "a1", "content": encoded})
+	if !strings.Contains(out, `+"`"+`"path": "/assets/a1/versions"`+"`"+`) || hits.Load() != 0 {
+		t.Fatalf("sub-resource upload did not preview (hits=%d):\n%s", hits.Load(), out)
+	}
+
+	call("assets_upload", map[string]any{"file": encoded, "file_filename": "notes.txt", "confirm": true})
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("confirmed upload made %d request(s), want 1", n)
+	}
+	if body := <-bodies; !strings.Contains(body, content) || !strings.Contains(body, "notes.txt") {
+		t.Fatalf("confirmed upload body missing the file:\n%s", body)
+	}
+
+	// An API input named confirm keeps its meaning: it is sent to the API and
+	// does not unlock the upload; confirm_upload does.
+	out = call("assets_imports_upload", map[string]any{"file": encoded, "confirm": true})
+	if !strings.Contains(out, `+"`"+`"confirmation_required": true`+"`"+`) || hits.Load() != 1 {
+		t.Fatalf("API confirm param unlocked the upload (hits=%d):\n%s", hits.Load(), out)
+	}
+	call("assets_imports_upload", map[string]any{"file": encoded, "confirm": false, "confirm_upload": true})
+	if n := hits.Load(); n != 2 {
+		t.Fatalf("confirm_upload made %d total request(s), want 2", n)
+	}
+	if body := <-bodies; !strings.Contains(body, content) || !strings.Contains(body, `+"`"+`name="confirm"`+"`"+`) || !strings.Contains(body, "false") {
+		t.Fatalf("import body missing the file or the API confirm=false field:\n%s", body)
+	}
+}
+
+func TestTypedUploadDroppedUnderReadOnly(t *testing.T) {
+	t.Setenv("@PREFIX@_MCP_READ_ONLY", "1")
+	t.Setenv("HOME", t.TempDir())
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterTools(s)
+	for _, name := range []string{"assets_upload", "assets_versions_upload", "assets_imports_upload"} {
+		if s.ListTools()[name] != nil {
+			t.Fatalf("%s is registered under the read-only switch", name)
+		}
+	}
+	if s.ListTools()["assets_list"] == nil {
+		t.Fatal("read-only switch dropped the read tool")
+	}
+}
+`, "@PREFIX@", naming.EnvPrefix(apiSpec.Name))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "upload_confirm_runtime_test.go"), []byte(runtimeTest), 0o600))
+	runGoCommand(t, outputDir, "mod", "tidy")
+	out, err := runGoCommandOutput(t, outputDir, "test", "-v", "./internal/mcp", "-run", "^TestTypedUpload", "-count=1")
+	require.NoError(t, err, out)
+	require.Contains(t, out, "--- PASS: TestTypedUploadPreviewsUntilConfirm")
+	require.Contains(t, out, "--- PASS: TestTypedUploadDroppedUnderReadOnly")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+// TestMCPUploadConfirmArgAvoidsEveryToolInput pins the confirm argument name
+// rule the schema and the generated handler share: global path template
+// inputs count as taken names, not only the endpoint's own params.
+func TestMCPUploadConfirmArgAvoidsEveryToolInput(t *testing.T) {
+	t.Parallel()
+
+	upload := spec.Endpoint{
+		Method:             "POST",
+		Path:               "/{confirm}/assets",
+		RequestContentType: "multipart/form-data",
+		Body:               []spec.Param{{Name: "file", Type: "string", Format: "binary"}},
+	}
+	assert.Equal(t, "confirm", mcpUploadConfirmArg(upload, nil))
+	global := mcpGlobalTemplateInputParams(upload, upload.Path, []string{"confirm"})
+	require.Len(t, global, 1)
+	assert.Equal(t, "confirm_upload", mcpUploadConfirmArg(upload, global))
+
+	upload.Body = append(upload.Body, spec.Param{Name: "confirm_upload", Type: "boolean"})
+	assert.Equal(t, "confirm_upload_upload", mcpUploadConfirmArg(upload, global))
+}
