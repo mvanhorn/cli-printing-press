@@ -261,8 +261,10 @@ var confirmationBypassRootFlags = map[string]bool{
 // caller swap auth credentials, redirect the API base URL, select a different
 // per-client filesystem, relocate the config/data/state/cache roots, load a
 // malicious config file, change receipt destinations, change the delivery
-// target, redirect TLS trust, or skip a command's own confirmation prompt, all
-// of which sit outside the per-command surface the agent is supposed to be calling.
+// target, redirect TLS trust, skip a command's own confirmation prompt, turn
+// off the request pacing that keeps the operator's API key under the vendor's
+// rate limits, or stretch the operator's request timeout, all of which sit
+// outside the per-command surface the agent is supposed to be calling.
 var blockedRootFlags = map[string]bool{
 	"audit-dir":               true,
 	"base-url":                true,
@@ -274,7 +276,10 @@ var blockedRootFlags = map[string]bool{
 	"home":                    true,
 	"insecure":                true,
 	"profile":                 true,
+	"rate-limit":              true,
 	"receipt-file":            true,
+	"throttle-mode":           true,
+	"timeout":                 true,
 	"tls-server-name":         true,
 	"token":                   true,
 }
