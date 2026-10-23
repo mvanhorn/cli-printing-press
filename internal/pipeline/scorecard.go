@@ -1912,8 +1912,9 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 
 // novelHookReachableConstructors returns constructors passed to AddCommand or
 // addNovelCommandIfAbsent from registerNovelCommand hook files. A hook file is
-// a root even when the callback is a named function in another file: init
-// registers it, and that other file may itself define no constructor.
+// a root even when the callback is a named function, or a package-level
+// variable holding a function literal, in another file: init registers it,
+// and that other file may itself define no constructor.
 func novelHookReachableConstructors(fileContent map[string]string) map[string]bool {
 	type hookIndex struct {
 		calls   bool
@@ -1960,13 +1961,7 @@ func indexNovelHookFile(content string) (calls bool, callees []string, funcs []s
 	if err != nil {
 		return false, nil, nil
 	}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Name == nil || fn.Name.Name == "" {
-			continue
-		}
-		funcs = append(funcs, fn.Name.Name)
-	}
+	funcs = novelHookFuncNames(file)
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -1983,6 +1978,91 @@ func indexNovelHookFile(content string) (calls bool, callees []string, funcs []s
 		return true
 	})
 	return calls, callees, funcs
+}
+
+// novelHookFuncNames lists names another file can pass to registerNovelCommand:
+// package-level funcs, and package-level variables holding a hook literal.
+// Locals are omitted because indexing one would root its file when a real
+// hook reused the name.
+func novelHookFuncNames(file *ast.File) []string {
+	seen := map[string]bool{}
+	var funcs []string
+	add := func(name string) {
+		if name == "" || name == "_" || seen[name] {
+			return
+		}
+		seen[name] = true
+		funcs = append(funcs, name)
+	}
+	pkgVars := map[string]bool{}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Recv != nil || d.Name == nil {
+				continue
+			}
+			add(d.Name.Name)
+		case *ast.GenDecl:
+			if d.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if name == nil || name.Name == "" || name.Name == "_" {
+						continue
+					}
+					pkgVars[name.Name] = true
+					if i < len(vs.Values) && isNovelHookFuncLit(vs.Values[i]) {
+						add(name.Name)
+					}
+				}
+			}
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.ASSIGN {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || !pkgVars[ident.Name] || i >= len(assign.Rhs) {
+				continue
+			}
+			if isNovelHookFuncLit(assign.Rhs[i]) {
+				add(ident.Name)
+			}
+		}
+		return true
+	})
+	return funcs
+}
+
+// registerNovelCommand runs func(root *cobra.Command, ...). Other function
+// values are not that callback.
+func isNovelHookFuncLit(expr ast.Expr) bool {
+	lit, ok := expr.(*ast.FuncLit)
+	if !ok || lit.Type == nil || lit.Type.Params == nil || len(lit.Type.Params.List) == 0 {
+		return false
+	}
+	return isStarCobraCommand(lit.Type.Params.List[0].Type)
+}
+
+func isStarCobraCommand(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "Command" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "cobra"
 }
 
 func addCommandConstructorCalls(content string) map[string]bool {

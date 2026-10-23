@@ -180,6 +180,21 @@ NAMED_HOOK_FUNC_RE = re.compile(
     r'^func\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s+\*cobra\.Command\b[^)]*\)\s*\{',
     re.MULTILINE,
 )
+# `var name = func`, `name := func`, and `var name func(...) = func`.
+# The optional type sits between the name and `=` so a typed variable still
+# resolves to the literal that is actually registered.
+VAR_HOOK_FUNC_RE = re.compile(
+    r'(?:(?<!\w)var\s+)?'
+    r'([A-Za-z_]\w*)'
+    r'(?:\s+func\b[^={}]*)?'
+    r'\s*(?::=|=)\s*func\s*\(\s*([A-Za-z_]\w*)\s+\*cobra\.Command\b[^)]*\)\s*\{'
+)
+ADDCMD_CALL_RE = re.compile(
+    r'\b([A-Za-z_]\w*)\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\('
+)
+SCAFFOLD_ANN_RE = re.compile(
+    r'"pp:novel-scaffold"\s*\]?\s*(?::|=)\s*"true"'
+)
 FIND_SLICE_RE = re.compile(
     r'\b([A-Za-z_]\w*)\s*,\s*_\s*,\s*(?:err|_)\s*(?::=|=)\s*'
     r'([A-Za-z_]\w*)\.Find\(\s*\[\]string\{([^}]*)\}'
@@ -255,6 +270,7 @@ class CommandConstructor:
     use: str
     args_info: tuple | None
     children: list[str] = field(default_factory=list)
+    scaffold: bool = False
 
 
 def _mask_go_comments(text: str) -> str:
@@ -483,17 +499,77 @@ def _funclit_hooks(string_masked: str, comment_masked: str) -> list[tuple[str, s
     return hooks
 
 
-def _named_hook_funcs(string_masked: str, comment_masked: str) -> dict[str, tuple[str, str]]:
-    found: dict[str, tuple[str, str]] = {}
+def _code_brace_depths(text: str) -> list[int]:
+    depths = [0] * len(text)
+    depth = 0
+    for i, char in enumerate(text):
+        depths[i] = depth
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depths
+
+
+def _keep_hook(
+    found: dict[str, tuple[str, str, int]],
+    name: str,
+    root_param: str,
+    body: str,
+    depth: int,
+) -> None:
+    """Keep a package-level callback when a local reuses its name.
+
+    Other files can pass only a package-level function or variable to
+    registerNovelCommand. A later local with the same name must not hide it.
+    """
+    prev = found.get(name)
+    if prev is None or (prev[2] > 0 and depth == 0):
+        found[name] = (root_param, body, depth)
+
+
+def _constructor_is_scaffold(body: str) -> bool:
+    """body is comment-masked. A copy of the annotation inside a string is
+    not the command's own pp:novel-scaffold marker.
+    """
+    masked = _mask_go_strings(body)
+    for match in SCAFFOLD_ANN_RE.finditer(body):
+        if masked[match.start()] == body[match.start()]:
+            return True
+    return False
+
+
+def _named_hook_funcs(string_masked: str, comment_masked: str) -> dict[str, tuple[str, str, int]]:
+    found: dict[str, tuple[str, str, int]] = {}
     for match in NAMED_HOOK_FUNC_RE.finditer(string_masked):
-        name = match.group(1)
-        if name in found:
-            continue
         body = _extract_function_body(comment_masked, match.end())
         if body is None:
             continue
-        found[name] = (match.group(2), body)
+        _keep_hook(found, match.group(1), match.group(2), body, 0)
+    depths = _code_brace_depths(string_masked)
+    for match in VAR_HOOK_FUNC_RE.finditer(string_masked):
+        body = _extract_function_body(comment_masked, match.end())
+        if body is None:
+            continue
+        depth = depths[match.start()] if match.start() < len(depths) else 0
+        _keep_hook(found, match.group(1), match.group(2), body, depth)
     return found
+
+
+def _record_hook_child(
+    parent: str,
+    ctor: str,
+    root_param: str,
+    bindings: dict[str, list[str]],
+    root_children: dict[str, None],
+    deferred: list[tuple[list[str], str]],
+) -> None:
+    if parent == root_param or parent == "rootCmd":
+        root_children.setdefault(ctor, None)
+        return
+    path = bindings.get(parent)
+    if path:
+        deferred.append((path, ctor))
 
 
 def _consume_hook_body(
@@ -505,15 +581,34 @@ def _consume_hook_body(
     scan = _mask_go_strings(body)
     bindings = _find_bindings(body, {root_param, "rootCmd"})
     for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
-        if parent == root_param or parent == "rootCmd":
-            root_children.setdefault(ctor, None)
-        elif parent in bindings:
-            deferred.append((bindings[parent], ctor))
-    for ctor in re.findall(
-        rf"\b{re.escape(root_param)}\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(",
-        scan,
-    ):
-        root_children.setdefault(ctor, None)
+        _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
+    for parent, ctor in ADDCMD_CALL_RE.findall(scan):
+        _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
+
+
+def _command_at_token(
+    constructors: dict[str, CommandConstructor],
+    names: list[str],
+    token: str,
+) -> CommandConstructor | None:
+    """A pp:novel-scaffold command is removed when a real command with the
+    same name is registered. The scaffold is often the earlier registration,
+    so the first Use match is the command the running CLI has already dropped.
+    """
+    matches: list[CommandConstructor] = []
+    for fn_name in names:
+        info = constructors.get(fn_name)
+        if info is None:
+            continue
+        leaf, _, _, _ = parse_use(info.use)
+        if leaf == token:
+            matches.append(info)
+    for info in matches:
+        if not info.scaffold:
+            return info
+    if matches:
+        return matches[0]
+    return None
 
 
 def _constructor_at_path(
@@ -523,31 +618,56 @@ def _constructor_at_path(
 ) -> CommandConstructor | None:
     if not cmd_path:
         return None
-    current = None
-    for fn_name in root_children:
-        info = constructors.get(fn_name)
-        if info is None:
-            continue
-        leaf, _, _, _ = parse_use(info.use)
-        if leaf == cmd_path[0]:
-            current = info
-            break
+    current = _command_at_token(constructors, root_children, cmd_path[0])
     if current is None:
         return None
     for token in cmd_path[1:]:
-        next_info = None
-        for child_fn in current.children:
-            child = constructors.get(child_fn)
-            if child is None:
-                continue
-            leaf, _, _, _ = parse_use(child.use)
-            if leaf == token:
-                next_info = child
-                break
-        if next_info is None:
+        current = _command_at_token(constructors, current.children, token)
+        if current is None:
             return None
-        current = next_info
     return current
+
+
+def _drop_replaced_scaffolds(
+    names: list[str],
+    constructors: dict[str, CommandConstructor],
+) -> list[str]:
+    by_leaf: dict[str, list[CommandConstructor]] = {}
+    for name in names:
+        info = constructors.get(name)
+        if info is None:
+            continue
+        leaf, _, _, _ = parse_use(info.use)
+        by_leaf.setdefault(leaf, []).append(info)
+    replaced: set[str] = set()
+    for group in by_leaf.values():
+        if any(not info.scaffold for info in group):
+            for info in group:
+                if info.scaffold:
+                    replaced.add(info.name)
+    if not replaced:
+        return names
+    return [name for name in names if name not in replaced]
+
+
+def _apply_scaffold_replacement(
+    constructors: dict[str, CommandConstructor],
+    root_children: list[str],
+) -> list[str]:
+    root_children = _drop_replaced_scaffolds(root_children, constructors)
+    pending = list(root_children)
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        info = constructors.get(name)
+        if info is None:
+            continue
+        info.children = _drop_replaced_scaffolds(info.children, constructors)
+        pending.extend(info.children)
+    return root_children
 
 
 def _attach_deferred(
@@ -595,11 +715,13 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
     addNovelCommandIfAbsent(parent, newXxxCmd) is the same edge as
     parent.AddCommand(newXxxCmd). registerNovelCommand hooks are roots
     because init runs them from a file that often defines no constructor.
+    A pp:novel-scaffold command is dropped when a real command with the
+    same name is registered on that parent, matching the running CLI.
     """
     constructors: dict[str, CommandConstructor] = {}
     root_children: dict[str, None] = {}
     deferred: list[tuple[list[str], str]] = []
-    named: dict[str, tuple[str, str]] = {}
+    named: dict[str, tuple[str, str, int]] = {}
     sources = _read_cli_go_files(cli_dir)
 
     parsed: list[tuple[Path, str, str]] = []
@@ -607,7 +729,8 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
         comment_masked = _mask_go_comments(text)
         string_masked = _mask_go_strings(comment_masked)
         parsed.append((go_file, comment_masked, string_masked))
-        named.update(_named_hook_funcs(string_masked, comment_masked))
+        for hook_name, hook in _named_hook_funcs(string_masked, comment_masked).items():
+            _keep_hook(named, hook_name, hook[0], hook[1], hook[2])
 
     for go_file, comment_masked, string_masked in parsed:
         for match in CONSTRUCTOR_RE.finditer(comment_masked):
@@ -638,6 +761,7 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
                 use=use_match.group(1),
                 args_info=args_info,
                 children=children,
+                scaffold=_constructor_is_scaffold(body),
             )
 
         for match in ROOT_ADDCMD_RE.finditer(string_masked):
@@ -655,6 +779,7 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
 
     root_list = list(root_children)
     _attach_deferred(constructors, root_list, deferred)
+    root_list = _apply_scaffold_replacement(constructors, root_list)
     return constructors, tuple(root_list)
 
 

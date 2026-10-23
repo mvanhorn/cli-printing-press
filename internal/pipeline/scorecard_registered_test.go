@@ -1451,3 +1451,129 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestIndexNovelHookFile_IncludesFunctionLiteralVars(t *testing.T) {
+	calls, callees, funcs := indexNovelHookFile(`package cli
+func registerSync(root *cobra.Command, flags *rootFlags) {}
+func (s *svc) method(root *cobra.Command, flags *rootFlags) {}
+var syncHook = func(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newSyncCmd(flags))
+}
+func init() { registerNovelCommand(syncHook) }
+var (
+	plain = 1
+	blockHook = func(root *cobra.Command, flags *rootFlags) {}
+)
+var typed func(root *cobra.Command, flags *rootFlags) = func(root *cobra.Command, flags *rootFlags) {}
+var assigned func(root *cobra.Command, flags *rootFlags)
+func init() {
+	assigned = func(root *cobra.Command, flags *rootFlags) {}
+	local := func(root *cobra.Command, flags *rootFlags) {}
+	_ = local
+}
+var wrong = func(flags *rootFlags) {}
+var notAHook = func() {}
+`)
+	if !calls {
+		t.Fatal("expected registerNovelCommand to count as a hook call")
+	}
+	if len(callees) != 1 || callees[0] != "syncHook" {
+		t.Fatalf("callees = %v", callees)
+	}
+	got := map[string]bool{}
+	for _, name := range funcs {
+		got[name] = true
+	}
+	for _, name := range []string{"registerSync", "syncHook", "blockHook", "typed", "assigned", "init"} {
+		if !got[name] {
+			t.Errorf("expected %s in %v", name, funcs)
+		}
+	}
+	for _, name := range []string{"method", "plain", "local", "wrong", "notAHook"} {
+		if got[name] {
+			t.Errorf("expected %s to stay out of %v", name, funcs)
+		}
+	}
+}
+
+func TestRegisteredCommandFiles_FollowsHookVarInOtherFile(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newLiveCmd(nil))
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "live.go"), `package cli
+func newLiveCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+func init() {
+	registerNovelCommand(syncHook)
+	registerNovelCommand(assignedHook)
+	registerNovelCommand(wrongHook)
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync_wire.go"), `package cli
+import "github.com/spf13/cobra"
+var (
+	syncHook = func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newSyncCmd(flags))
+	}
+)
+`)
+	writeFile(t, filepath.Join(cliDir, "assigned_wire.go"), `package cli
+import "github.com/spf13/cobra"
+var assignedHook func(root *cobra.Command, flags *rootFlags)
+func init() {
+	assignedHook = func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newAssignedCmd(flags))
+	}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "wrong_wire.go"), `package cli
+var wrongHook = func(flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newWrongCmd(flags))
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "zz_decoy.go"), `package cli
+import "github.com/spf13/cobra"
+func init() {
+	syncHook := func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newDecoyCmd(flags))
+	}
+	_ = syncHook
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+func newSyncCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "assigned.go"), `package cli
+func newAssignedCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "wrong.go"), `package cli
+func newWrongCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "decoy.go"), `package cli
+func newDecoyCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost.go"), `package cli
+func newGhostCmd(flags *rootFlags) {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	for _, name := range []string{"live.go", "sync.go", "assigned.go"} {
+		if !registered[name] {
+			t.Errorf("expected %s to be reachable, got %v", name, registered)
+		}
+	}
+	for _, name := range []string{"wrong.go", "decoy.go", "ghost.go", "sync_wire.go", "assigned_wire.go", "wrong_wire.go", "zz_decoy.go", "fixture_register.go", "root.go"} {
+		if registered[name] {
+			t.Errorf("expected %s to stay unreachable, got %v", name, registered)
+		}
+	}
+}
