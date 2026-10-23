@@ -125,6 +125,60 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "GET PascalCase action path with generic list op is write",
+			opName:   "list",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/RemoveStandard"},
+			want:     true,
+		},
+		{
+			name:     "GET Exec-prefixed action path is write",
+			opName:   "list",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/ExecSendOrgMessage"},
+			want:     true,
+		},
+		{
+			name:     "GET PascalCase List path stays read",
+			opName:   "list",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/ListUsers"},
+			want:     false,
+		},
+		{
+			name:     "GET bare action segment after a path param is write",
+			opName:   "get",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/devices/{id}/reboot"},
+			want:     true,
+		},
+		{
+			name:     "GET multi-word kebab resource segment stays read",
+			opName:   "list",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/scan-results"},
+			want:     false,
+		},
+		{
+			name:     "GET lowerCamel resource segment stays read",
+			opName:   "list",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/gmail/v1/users/{userId}/settings/sendAs"},
+			want:     false,
+		},
+		{
+			name:     "GET lowerCamel collection starting with a verb token stays read",
+			opName:   "list",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/api/v1/restorePoints"},
+			want:     false,
+		},
+		{
+			name:     "GET verb-named resource followed by an id stays read",
+			opName:   "get",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/scan/{id}"},
+			want:     false,
+		},
+		{
+			name:     "GET with an explicit read operation keeps it over a verb-named path",
+			opName:   "listArchive",
+			endpoint: spec.Endpoint{Method: "GET", Path: "/records/archive"},
+			want:     false,
+		},
+		{
 			name:     "HEAD endpoint is read",
 			opName:   "headStatus",
 			endpoint: spec.Endpoint{Method: "HEAD", Path: "/status"},
@@ -343,6 +397,36 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			assert.Equal(t, tc.want, got, "endpointIsWriteCommand(%q) returned wrong classification", tc.opName)
 		})
 	}
+}
+
+// Action-named GET paths must not reach MCP as read-only tools, even when
+// the operation id is a generic "list".
+func TestGenerateGETActionPathEndpointsFailClosedMCPReadOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("get-action-path")
+	apiSpec.Resources = map[string]spec.Resource{
+		"standards": {Description: "Standards", Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/RemoveStandard", Description: "Remove a standard"},
+		}},
+		"messages": {Description: "Messages", Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/ExecSendOrgMessage", Description: "Send an org message"},
+		}},
+		"users": {Description: "Users", Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/ListUsers", Description: "List users"},
+		}},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	assertGeneratedEndpointReadOnly(t, outputDir, "standards.list", false)
+	assertGeneratedEndpointReadOnly(t, outputDir, "messages.list", false)
+	assertGeneratedEndpointReadOnly(t, outputDir, "users.list", true)
+	toolsSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assertMCPToolReadOnlyHint(t, toolsSrc, "standards_list", false)
+	assertMCPToolReadOnlyHint(t, toolsSrc, "messages_list", false)
+	assertMCPToolReadOnlyHint(t, toolsSrc, "users_list", true)
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestSharedGETRPCPathFailsClosedWithoutQuerySelector(t *testing.T) {

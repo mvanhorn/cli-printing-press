@@ -2543,29 +2543,37 @@ var readOperationIDPrefixes = map[string]bool{
 	"fetch":    true,
 }
 
-// Conservative action tokens for GET-based endpoints. A leading token
-// here opts a GET into the write path even on an ordinary REST path.
-// RPC-over-GET without a read signal fails closed independently of
-// these tokens.
+// Conservative action tokens for GET-based endpoints. A leading token of
+// the operation id, or of an action-shaped last path segment, opts a GET
+// into the write path even on an ordinary REST path. RPC-over-GET without
+// a read signal fails closed independently of these tokens.
 var mutationOperationIDPrefixes = map[string]bool{
 	"activate":   true,
 	"add":        true,
 	"approve":    true,
 	"archive":    true,
+	"assign":     true,
 	"cancel":     true,
+	"clear":      true,
 	"create":     true,
 	"deactivate": true,
 	"delete":     true,
 	"deploy":     true,
 	"disable":    true,
 	"enable":     true,
+	"exec":       true,
 	"execute":    true,
 	"insert":     true,
+	"invoke":     true,
+	"isolate":    true,
 	"pause":      true,
 	"publish":    true,
+	"purge":      true,
 	"put":        true,
+	"reboot":     true,
 	"reject":     true,
 	"remove":     true,
+	"reset":      true,
 	"restart":    true,
 	"restore":    true,
 	"resume":     true,
@@ -2573,6 +2581,7 @@ var mutationOperationIDPrefixes = map[string]bool{
 	"rotate":     true,
 	"run":        true,
 	"save":       true,
+	"scan":       true,
 	"send":       true,
 	"set":        true,
 	"start":      true,
@@ -2582,6 +2591,7 @@ var mutationOperationIDPrefixes = map[string]bool{
 	"unpublish":  true,
 	"update":     true,
 	"upsert":     true,
+	"wipe":       true,
 }
 
 // writeOperationIDFragments name mutations. When a read-shaped leading token
@@ -2654,6 +2664,11 @@ func endpointIsWriteCommandShared(endpoint spec.Endpoint, opName string, sharedG
 		if mutationOperationIDPrefixes[leading] {
 			return true
 		}
+		// A one-word operation name ("list", "get") says nothing about the
+		// action, so an action-shaped path decides.
+		if len(tokens) <= 1 && mutationOperationIDPrefixes[actionPathLeadingToken(endpoint.Path)] {
+			return true
+		}
 		if readOperationIDPrefixes[leading] {
 			return leadingTokenHasWriteFragment(tokens)
 		}
@@ -2663,6 +2678,33 @@ func endpointIsWriteCommandShared(endpoint spec.Endpoint, opName string, sharedG
 		return leadingTokenHasWriteFragment(tokens)
 	}
 	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+// actionPathLeadingToken returns the lowercased leading token of the last
+// path segment when that segment is shaped like an action name: one bare word
+// ("reboot") or a PascalCase run ("RemoveStandard"). RPC-style APIs name the
+// action in the path while the operation id stays generic ("list"). A trailing
+// path parameter, a lowerCamel run ("sendAs", "restorePoints"), or a multi-word
+// kebab or snake segment ("scan-results") usually names a resource, so those
+// return "".
+func actionPathLeadingToken(path string) string {
+	segments := strings.Split(strings.TrimRight(canonicalRPCPath(path), "/"), "/")
+	segment := strings.TrimSpace(segments[len(segments)-1])
+	if segment == "" || strings.HasPrefix(segment, "{") {
+		return ""
+	}
+	tokens := camelCaseTokens(segment)
+	switch {
+	case len(tokens) == 1:
+		return strings.ToLower(tokens[0])
+	case len(tokens) > 1 && strings.IndexFunc(segment, isPathWordSeparator) < 0 && unicode.IsUpper([]rune(segment)[0]):
+		return strings.ToLower(tokens[0])
+	}
+	return ""
+}
+
+func isPathWordSeparator(r rune) bool {
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 }
 
 func leadingTokenHasWriteFragment(tokens []string) bool {
