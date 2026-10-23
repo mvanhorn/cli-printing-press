@@ -169,6 +169,25 @@ CONSTRUCTOR_RE = re.compile(
 )
 ADDCMD_CHILD_RE = re.compile(r'\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(')
 ROOT_ADDCMD_RE = re.compile(r'rootCmd\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(')
+# Parent is one identifier (cmd, root, rootCmd, accountCmd). The candidate
+# constructor is the second argument, same role as AddCommand's argument.
+NOVEL_ATTACH_RE = re.compile(
+    r'\baddNovelCommandIfAbsent\s*\(\s*([A-Za-z_]\w*)\s*,\s*(new[A-Z]\w*Cmd)\s*\('
+)
+# A selector (pkg.registerNovelCommand) is not the package-level hook.
+HOOK_NAMED_RE = re.compile(r'(?<![\w.])registerNovelCommand\s*\(\s*([A-Za-z_]\w*)\s*\)')
+NAMED_HOOK_FUNC_RE = re.compile(
+    r'^func\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s+\*cobra\.Command\b[^)]*\)\s*\{',
+    re.MULTILINE,
+)
+FIND_SLICE_RE = re.compile(
+    r'\b([A-Za-z_]\w*)\s*,\s*_\s*,\s*(?:err|_)\s*(?::=|=)\s*'
+    r'([A-Za-z_]\w*)\.Find\(\s*\[\]string\{([^}]*)\}'
+)
+FIND_FIELDS_RE = re.compile(
+    r'\b([A-Za-z_]\w*)\s*,\s*_\s*,\s*(?:err|_)\s*(?::=|=)\s*'
+    r'([A-Za-z_]\w*)\.Find\(\s*strings\.Fields\(\s*"([^"]*)"\s*\)'
+)
 
 
 def _extract_function_body(text: str, start_offset: int) -> str | None:
@@ -238,12 +257,413 @@ class CommandConstructor:
     children: list[str] = field(default_factory=list)
 
 
+def _mask_go_comments(text: str) -> str:
+    """Blank // and /* */ comments without changing offsets or newlines.
+
+    Generated roots document registerNovelCommand inside a comment. A raw
+    search would treat that example as a live hook. Strings are left intact
+    so a later string mask, and Use:/Find literals, still see them.
+    """
+    if not text:
+        return text
+    chars = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if c == "/" and nxt == "/":
+            j = i
+            while j < n and text[j] != "\n":
+                chars[j] = " "
+                j += 1
+            i = j
+            continue
+        if c == "/" and nxt == "*":
+            end = text.find("*/", i + 2)
+            stop = n if end < 0 else end + 2
+            for j in range(i, stop):
+                if chars[j] != "\n":
+                    chars[j] = " "
+            i = stop
+            continue
+        if c == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                if text[i] == "\n":
+                    break
+                i += 1
+            continue
+        if c == "`":
+            end = text.find("`", i + 1)
+            i = n if end < 0 else end + 1
+            continue
+        if c == "'":
+            i += 1
+            if i < n and text[i] == "\\":
+                i += 2
+            elif i < n:
+                i += 1
+            if i < n and text[i] == "'":
+                i += 1
+            continue
+        i += 1
+    return "".join(chars)
+
+
+def _mask_go_strings(text: str) -> str:
+    """Blank string and rune contents without changing offsets or newlines."""
+    if not text:
+        return text
+    chars = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    for k in range(i + 1, j):
+                        if chars[k] != "\n":
+                            chars[k] = " "
+                    i = j + 1
+                    break
+                if text[j] == "\n":
+                    i = j
+                    break
+                j += 1
+            else:
+                i = n
+            continue
+        if c == "`":
+            end = text.find("`", i + 1)
+            if end < 0:
+                for k in range(i + 1, n):
+                    if chars[k] != "\n":
+                        chars[k] = " "
+                i = n
+                continue
+            for k in range(i + 1, end):
+                if chars[k] != "\n":
+                    chars[k] = " "
+            i = end + 1
+            continue
+        if c == "'":
+            j = i + 1
+            if j < n and text[j] == "\\":
+                j += 2
+            elif j < n:
+                j += 1
+            if j < n and text[j] == "'":
+                for k in range(i + 1, j):
+                    if chars[k] != "\n":
+                        chars[k] = " "
+                i = j + 1
+            else:
+                i += 1
+            continue
+        i += 1
+    return "".join(chars)
+
+
+def _read_balanced(text: str, open_index: int) -> tuple[str | None, int]:
+    """text[open_index] is '('. Return (inner, index_after_close)."""
+    if open_index >= len(text) or text[open_index] != "(":
+        return None, open_index
+    depth = 0
+    i = open_index
+    n = len(text)
+    in_string: str | None = None
+    while i < n:
+        c = text[i]
+        if in_string is not None:
+            if c == "\\" and in_string != "`" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_string:
+                in_string = None
+            i += 1
+            continue
+        if c in ('"', "`", "'"):
+            in_string = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1:i], i + 1
+        i += 1
+    return None, n
+
+
+def _first_param_if_cobra_command(params: str) -> str | None:
+    """Return the first parameter name when its type is *cobra.Command."""
+    depth = 0
+    buf: list[str] = []
+    for c in params:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif c == "," and depth == 0:
+            break
+        else:
+            buf.append(c)
+    field = "".join(buf).strip()
+    match = re.match(r"([A-Za-z_]\w*)\b", field)
+    if not match or "*cobra.Command" not in field:
+        return None
+    return match.group(1)
+
+
+def _append_unique(children: list[str], ctor: str) -> None:
+    if ctor not in children:
+        children.append(ctor)
+
+
+def _find_bindings(body: str, root_names: set[str]) -> dict[str, list[str]]:
+    """Map a variable assigned from root.Find to its command path segments."""
+    bindings: dict[str, list[str]] = {}
+
+    def take(var: str, recv: str, parts: list[str]) -> None:
+        if recv not in root_names or not var or var == "_":
+            return
+        cleaned = [part for part in parts if part]
+        if cleaned:
+            bindings[var] = cleaned
+
+    for match in FIND_SLICE_RE.finditer(body):
+        take(match.group(1), match.group(2), re.findall(r'"([^"]*)"', match.group(3)))
+    for match in FIND_FIELDS_RE.finditer(body):
+        take(match.group(1), match.group(2), match.group(3).split())
+    return bindings
+
+
+def _funclit_hooks(string_masked: str, comment_masked: str) -> list[tuple[str, str]]:
+    """Return (root param, body) for registerNovelCommand(func(...) { ... }) hooks.
+
+    The header is scanned on string-masked text so an example inside a string
+    literal is not a hook. The body is taken from comment-masked text so
+    Find path literals survive.
+    """
+    hooks: list[tuple[str, str]] = []
+    for match in re.finditer(r"(?<![\w.])registerNovelCommand\s*\(\s*func\b", string_masked):
+        i = match.end()
+        while i < len(string_masked) and string_masked[i].isspace():
+            i += 1
+        if i >= len(string_masked) or string_masked[i] != "(":
+            continue
+        params, after = _read_balanced(string_masked, i)
+        if params is None:
+            continue
+        i = after
+        while i < len(string_masked) and string_masked[i].isspace():
+            i += 1
+        if i >= len(string_masked) or string_masked[i] != "{":
+            continue
+        root_param = _first_param_if_cobra_command(params)
+        if not root_param:
+            continue
+        body = _extract_function_body(comment_masked, i + 1)
+        if body is None:
+            continue
+        hooks.append((root_param, body))
+    return hooks
+
+
+def _named_hook_funcs(string_masked: str, comment_masked: str) -> dict[str, tuple[str, str]]:
+    found: dict[str, tuple[str, str]] = {}
+    for match in NAMED_HOOK_FUNC_RE.finditer(string_masked):
+        name = match.group(1)
+        if name in found:
+            continue
+        body = _extract_function_body(comment_masked, match.end())
+        if body is None:
+            continue
+        found[name] = (match.group(2), body)
+    return found
+
+
+def _consume_hook_body(
+    body: str,
+    root_param: str,
+    root_children: dict[str, None],
+    deferred: list[tuple[list[str], str]],
+) -> None:
+    scan = _mask_go_strings(body)
+    bindings = _find_bindings(body, {root_param, "rootCmd"})
+    for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
+        if parent == root_param or parent == "rootCmd":
+            root_children.setdefault(ctor, None)
+        elif parent in bindings:
+            deferred.append((bindings[parent], ctor))
+    for ctor in re.findall(
+        rf"\b{re.escape(root_param)}\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(",
+        scan,
+    ):
+        root_children.setdefault(ctor, None)
+
+
+def _constructor_at_path(
+    constructors: dict[str, CommandConstructor],
+    root_children: list[str],
+    cmd_path: list[str],
+) -> CommandConstructor | None:
+    if not cmd_path:
+        return None
+    current = None
+    for fn_name in root_children:
+        info = constructors.get(fn_name)
+        if info is None:
+            continue
+        leaf, _, _, _ = parse_use(info.use)
+        if leaf == cmd_path[0]:
+            current = info
+            break
+    if current is None:
+        return None
+    for token in cmd_path[1:]:
+        next_info = None
+        for child_fn in current.children:
+            child = constructors.get(child_fn)
+            if child is None:
+                continue
+            leaf, _, _, _ = parse_use(child.use)
+            if leaf == token:
+                next_info = child
+                break
+        if next_info is None:
+            return None
+        current = next_info
+    return current
+
+
+def _attach_deferred(
+    constructors: dict[str, CommandConstructor],
+    root_children: list[str],
+    deferred: list[tuple[list[str], str]],
+) -> None:
+    pending = list(deferred)
+    for _ in range(len(pending)):
+        next_pending: list[tuple[list[str], str]] = []
+        progressed = False
+        for path, ctor in pending:
+            parent = _constructor_at_path(constructors, root_children, path)
+            if parent is None or parent.name == ctor:
+                if parent is None:
+                    next_pending.append((path, ctor))
+                continue
+            if ctor not in parent.children:
+                parent.children.append(ctor)
+                progressed = True
+        pending = next_pending
+        if not progressed:
+            break
+
+
+def _read_cli_go_files(cli_dir: Path) -> list[tuple[Path, str]]:
+    src = cli_dir / "internal/cli"
+    if not src.exists():
+        return []
+    files: list[tuple[Path, str]] = []
+    for go_file in sorted(src.glob("*.go")):
+        if go_file.name.endswith("_test.go"):
+            continue
+        try:
+            files.append((go_file, read_utf8(go_file)))
+        except Exception:
+            continue
+    return files
+
+
+@lru_cache(maxsize=None)
+def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[str, ...]]:
+    """Build constructors and root children, including novel-command hooks.
+
+    addNovelCommandIfAbsent(parent, newXxxCmd) is the same edge as
+    parent.AddCommand(newXxxCmd). registerNovelCommand hooks are roots
+    because init runs them from a file that often defines no constructor.
+    """
+    constructors: dict[str, CommandConstructor] = {}
+    root_children: dict[str, None] = {}
+    deferred: list[tuple[list[str], str]] = []
+    named: dict[str, tuple[str, str]] = {}
+    sources = _read_cli_go_files(cli_dir)
+
+    parsed: list[tuple[Path, str, str]] = []
+    for go_file, text in sources:
+        comment_masked = _mask_go_comments(text)
+        string_masked = _mask_go_strings(comment_masked)
+        parsed.append((go_file, comment_masked, string_masked))
+        named.update(_named_hook_funcs(string_masked, comment_masked))
+
+    for go_file, comment_masked, string_masked in parsed:
+        for match in CONSTRUCTOR_RE.finditer(comment_masked):
+            fn_name = match.group(1)
+            body = _extract_function_body(comment_masked, match.end())
+            if body is None:
+                continue
+            use_match = USE_RE.search(body)
+            if not use_match:
+                continue
+            args_match = ARGS_RE.search(body)
+            args_info = (args_match.group(1), args_match.group(2)) if args_match else None
+            scan = _mask_go_strings(body)
+            children: list[str] = []
+            for child in ADDCMD_CHILD_RE.finditer(scan):
+                _append_unique(children, child.group(1))
+            bindings = _find_bindings(body, {"root", "rootCmd"})
+            for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
+                if parent == "rootCmd":
+                    continue
+                if parent in bindings:
+                    deferred.append((bindings[parent], ctor))
+                else:
+                    _append_unique(children, ctor)
+            constructors[fn_name] = CommandConstructor(
+                name=fn_name,
+                file=go_file,
+                use=use_match.group(1),
+                args_info=args_info,
+                children=children,
+            )
+
+        for match in ROOT_ADDCMD_RE.finditer(string_masked):
+            root_children.setdefault(match.group(1), None)
+        for parent, ctor in NOVEL_ATTACH_RE.findall(string_masked):
+            if parent == "rootCmd":
+                root_children.setdefault(ctor, None)
+        for root_param, body in _funclit_hooks(string_masked, comment_masked):
+            _consume_hook_body(body, root_param, root_children, deferred)
+        for match in HOOK_NAMED_RE.finditer(string_masked):
+            hook = named.get(match.group(1))
+            if hook is None:
+                continue
+            _consume_hook_body(hook[1], hook[0], root_children, deferred)
+
+    root_list = list(root_children)
+    _attach_deferred(constructors, root_list, deferred)
+    return constructors, tuple(root_list)
+
+
 @lru_cache(maxsize=None)
 def collect_command_constructors(cli_dir: Path) -> dict[str, CommandConstructor]:
     """Scan internal/cli/*.go for `func newXxxCmd(...) *cobra.Command`
     declarations. For each, capture the Use string, the cobra.Args
-    validator, and the list of child constructor names called via
-    `<var>.AddCommand(newYyyCmd(...))` within the function body.
+    validator, and child constructors registered with AddCommand or
+    addNovelCommandIfAbsent in the function body.
 
     Result maps constructor name → CommandConstructor.
 
@@ -253,62 +673,23 @@ def collect_command_constructors(cli_dir: Path) -> dict[str, CommandConstructor]
     file-system scan only needs to happen once. Callers must not
     mutate the returned dict (it's the cache's storage).
     """
-    src = cli_dir / "internal/cli"
-    if not src.exists():
-        return {}
-    constructors: dict[str, CommandConstructor] = {}
-    for go_file in src.glob("*.go"):
-        if go_file.name.endswith("_test.go"):
-            continue
-        try:
-            text = read_utf8(go_file)
-        except Exception:
-            continue
-        for m in CONSTRUCTOR_RE.finditer(text):
-            fn_name = m.group(1)
-            body = _extract_function_body(text, m.end())
-            if body is None:
-                continue
-            use_match = USE_RE.search(body)
-            if not use_match:
-                continue
-            args_match = ARGS_RE.search(body)
-            args_info = (args_match.group(1), args_match.group(2)) if args_match else None
-            children = list(dict.fromkeys(
-                child.group(1) for child in ADDCMD_CHILD_RE.finditer(body)
-            ))
-            constructors[fn_name] = CommandConstructor(
-                name=fn_name,
-                file=go_file,
-                use=use_match.group(1),
-                args_info=args_info,
-                children=children,
-            )
+    constructors, _ = _command_tree(cli_dir)
     return constructors
 
 
 @lru_cache(maxsize=None)
 def find_root_children(cli_dir: Path) -> list[str]:
-    """Return the constructor names called from `rootCmd.AddCommand(...)`
-    anywhere in internal/cli/*.go. The ordering follows source order, but
-    the result is deduplicated.
+    """Return constructors registered on the root command.
+
+    That is rootCmd.AddCommand, addNovelCommandIfAbsent(rootCmd, ...),
+    and registerNovelCommand hooks that attach to the hook's root
+    parameter (addNovelCommandIfAbsent(root, ...) or root.AddCommand).
+    Ordering follows source order across sorted filenames. Deduplicated.
 
     Cached per cli_dir; callers must not mutate the returned list.
     See collect_command_constructors for rationale."""
-    src = cli_dir / "internal/cli"
-    if not src.exists():
-        return []
-    seen: dict[str, None] = {}
-    for go_file in src.glob("*.go"):
-        if go_file.name.endswith("_test.go"):
-            continue
-        try:
-            text = read_utf8(go_file)
-        except Exception:
-            continue
-        for m in ROOT_ADDCMD_RE.finditer(text):
-            seen.setdefault(m.group(1), None)
-    return list(seen)
+    _, root_children = _command_tree(cli_dir)
+    return list(root_children)
 
 
 def resolve_command_path(
@@ -335,32 +716,9 @@ def resolve_command_path(
     if not constructors or not root_children:
         return None, None, None
 
-    current = None
-    for fn_name in root_children:
-        info = constructors.get(fn_name)
-        if info is None:
-            continue
-        leaf, _, _, _ = parse_use(info.use)
-        if leaf == cmd_path[0]:
-            current = info
-            break
+    current = _constructor_at_path(constructors, root_children, cmd_path)
     if current is None:
         return None, None, None
-
-    for token in cmd_path[1:]:
-        next_info = None
-        for child_fn in current.children:
-            child = constructors.get(child_fn)
-            if child is None:
-                continue
-            leaf, _, _, _ = parse_use(child.use)
-            if leaf == token:
-                next_info = child
-                break
-        if next_info is None:
-            return None, None, None
-        current = next_info
-
     return current.file, current.use, current.args_info
 
 
@@ -373,12 +731,14 @@ def find_command_source(cli_dir: Path, cmd_path: list[str]):
 
     Resolution strategy:
 
-      1. Walk the rootCmd.AddCommand graph (the durable approach added in
-         retro #301 F1). When the CLI follows the standard `func newXxxCmd`
-         + `<parent>.AddCommand(newXxxCmd(...))` convention, this returns
-         exactly one file per command path with no false positives, even
-         when two different commands share a leaf name (e.g.,
-         `recipe-goat-pp-cli save` vs `recipe-goat-pp-cli profile save`).
+      1. Walk the command graph (the durable approach added in
+         retro #301 F1). Edges are `<parent>.AddCommand(newXxxCmd(...))`
+         and `addNovelCommandIfAbsent(<parent>, newXxxCmd(...))`, including
+         commands registered from a `registerNovelCommand` hook. When the
+         CLI follows that convention, this returns exactly one file per
+         command path with no false positives, even when two different
+         commands share a leaf name (e.g., `checkpoint save` vs
+         `profile save`).
 
       2. If the graph walk fails (unconventional CLI, missing rootCmd,
          constructor functions not named `newXxxCmd`), fall back to a

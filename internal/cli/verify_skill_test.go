@@ -129,6 +129,135 @@ func newProfileSaveCmd() *cobra.Command {
 		"shared-leaf disambiguation should resolve via rootCmd.AddCommand graph, not specificity heuristic")
 }
 
+// TestVerifySkill_NovelHookRegistrations verifies commands registered through
+// registerNovelCommand and addNovelCommandIfAbsent are the commands whose
+// flags and Use strings are checked.
+func TestVerifySkill_NovelHookRegistrations(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\n" +
+		"fixture-pp-cli account estimate --posts recent\n" +
+		"fixture-pp-cli account budget --limit 5\n" +
+		"fixture-pp-cli checkpoint save\n" +
+		"fixture-pp-cli watchlist show\n" +
+		"fixture-pp-cli profile save alice\n" +
+		"fixture-pp-cli profile show bob\n" +
+		"```\n"
+	writeVerifySkillFixture(t, dir, novelHookVerifyFiles(), skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "flag-commands", "--only", "positional-args").CombinedOutput()
+	require.NoError(t, err, "hook and grouped novels must not false-fail: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+
+	negDir := t.TempDir()
+	negSkill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\n" +
+		"fixture-pp-cli account estimate --label x\n" +
+		"fixture-pp-cli checkpoint save extra\n" +
+		"```\n"
+	writeVerifySkillFixture(t, negDir, novelHookVerifyFiles(), negSkill)
+	out, err = exec.Command(bin, "verify-skill", "--dir", negDir, "--only", "flag-commands", "--only", "positional-args").CombinedOutput()
+	require.Error(t, err, "a flag on the wrong novel command must still fail: %s", string(out))
+	require.Contains(t, string(out), "--label is declared elsewhere but not on account estimate")
+	require.Contains(t, string(out), "checkpoint save")
+	require.Contains(t, string(out), "got 1 positional args")
+	require.NotContains(t, string(out), "not on account\n")
+}
+
+func novelHookVerifyFiles() map[string]string {
+	return map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newAccountCmd(flags))
+	rootCmd.AddCommand(newProfileCmd(flags))
+	return rootCmd
+}
+`,
+		"account.go": `package cli
+import "github.com/spf13/cobra"
+func newAccountCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{Use: "account"}
+	addNovelCommandIfAbsent(cmd, newNovelAccountEstimateCmd(flags))
+	return cmd
+}
+`,
+		"estimate.go": `package cli
+import "github.com/spf13/cobra"
+func newNovelAccountEstimateCmd(flags *rootFlags) *cobra.Command {
+	var posts string
+	cmd := &cobra.Command{Use: "estimate"}
+	cmd.Flags().StringVar(&posts, "posts", "", "Post filter")
+	return cmd
+}
+`,
+		"budget.go": `package cli
+import "github.com/spf13/cobra"
+func newNovelAccountBudgetCmd(flags *rootFlags) *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{Use: "budget"}
+	cmd.Flags().IntVar(&limit, "limit", 10, "Row limit")
+	return cmd
+}
+`,
+		"profile.go": `package cli
+import "github.com/spf13/cobra"
+func newProfileCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{Use: "profile"}
+	cmd.AddCommand(newProfileSaveCmd(flags))
+	cmd.AddCommand(newProfileShowCmd(flags))
+	return cmd
+}
+func newProfileSaveCmd(flags *rootFlags) *cobra.Command {
+	var label string
+	cmd := &cobra.Command{Use: "save <name>"}
+	cmd.Flags().StringVar(&label, "label", "", "Profile label")
+	return cmd
+}
+func newProfileShowCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "show <name>"}
+}
+`,
+		"checkpoint.go": `package cli
+import "github.com/spf13/cobra"
+func newCheckpointCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{Use: "checkpoint"}
+	addNovelCommandIfAbsent(cmd, newCheckpointSaveCmd(flags))
+	return cmd
+}
+func newCheckpointSaveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "save"}
+}
+`,
+		"watchlist.go": `package cli
+import "github.com/spf13/cobra"
+func newWatchlistCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{Use: "watchlist"}
+	cmd.AddCommand(newWatchlistShowCmd(flags))
+	return cmd
+}
+func newWatchlistShowCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "show"}
+}
+`,
+		"fixture_register.go": `package cli
+import "github.com/spf13/cobra"
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newCheckpointCmd(flags))
+		addNovelCommandIfAbsent(root, newWatchlistCmd(flags))
+		accountCmd, _, err := root.Find([]string{"account"})
+		if err == nil {
+			addNovelCommandIfAbsent(accountCmd, newNovelAccountBudgetCmd(flags))
+		}
+	})
+}
+`,
+	}
+}
+
 // TestVerifySkill_PassesWhenSkillMatches confirms the verifier doesn't
 // false-positive on a well-formed CLI.
 func TestVerifySkill_PassesWhenSkillMatches(t *testing.T) {
