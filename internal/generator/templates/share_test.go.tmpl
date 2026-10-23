@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"{{modulePath}}/internal/store"
@@ -457,5 +458,53 @@ func TestShare_AcceptsValidBranch(t *testing.T) {
 	repoDir := filepath.Join(t.TempDir(), "repo")
 	if err := EnsureRepo(ctx, Options{RepoPath: repoDir, Branch: "feature/new-thing"}); err != nil {
 		t.Fatalf("valid branch rejected: %v", err)
+	}
+}
+
+// TestShare_RefusesCheckoutWithUnpinnedOrigin locks the remote pin: an existing
+// checkout whose origin is not the configured remote is refused before any
+// fetch or push, so pointing --repo at another clone cannot redirect a publish
+// away from the pinned remote.
+func TestShare_RefusesCheckoutWithUnpinnedOrigin(t *testing.T) {
+	skipIfNoGit(t)
+	ctx := context.Background()
+	repoDir := filepath.Join(t.TempDir(), "share-repo")
+	if err := EnsureRepo(ctx, Options{RepoPath: repoDir}); err != nil {
+		t.Fatalf("ensure repo: %v", err)
+	}
+	pinned := Options{RepoPath: repoDir, Remote: "https://example.invalid/pinned.git"}
+	for _, origin := range []string{"", "https://example.invalid/other.git"} {
+		if origin != "" {
+			if err := runGit(ctx, repoDir, "remote", "add", "origin", origin); err != nil {
+				t.Fatalf("add origin: %v", err)
+			}
+		}
+		for name, call := range map[string]func() error{
+			"EnsureRepo": func() error { return EnsureRepo(ctx, pinned) },
+			"Pull":       func() error { return Pull(ctx, pinned) },
+			"Push":       func() error { return Push(ctx, pinned) },
+		} {
+			if err := call(); err == nil || !strings.Contains(err.Error(), "not the pinned remote") {
+				t.Fatalf("%s with origin %q: got %v, want a pinned-remote refusal", name, origin, err)
+			}
+		}
+	}
+	if err := runGit(ctx, repoDir, "remote", "set-url", "origin", pinned.Remote); err != nil {
+		t.Fatalf("set origin: %v", err)
+	}
+	if err := EnsureRepo(ctx, pinned); err != nil {
+		t.Fatalf("checkout whose origin is the pinned remote was refused: %v", err)
+	}
+	// A matching fetch URL with a different push URL is refused too.
+	if err := runGit(ctx, repoDir, "config", "--add", "remote.origin.pushurl", "https://example.invalid/other.git"); err != nil {
+		t.Fatalf("add pushurl: %v", err)
+	}
+	for name, call := range map[string]func() error{
+		"EnsureRepo": func() error { return EnsureRepo(ctx, pinned) },
+		"Push":       func() error { return Push(ctx, pinned) },
+	} {
+		if err := call(); err == nil || !strings.Contains(err.Error(), "not the pinned remote") {
+			t.Fatalf("%s with a foreign pushurl: got %v, want a pinned-remote refusal", name, err)
+		}
 	}
 }

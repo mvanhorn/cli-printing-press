@@ -62,6 +62,12 @@ var SnapshotTables = []string{
 {{- end}}
 }
 
+// DefaultRemote is the spec's share.default_repo, fixed at generation time.
+// The share commands always use it and take no remote from the caller, so the
+// cache can only be published to (or subscribed from) the remote this CLI was
+// generated for. Empty means local-only: publish commits without pushing.
+const DefaultRemote = {{printf "%q" .Share.DefaultRepo}}
+
 // Options configures a share operation.
 type Options struct {
 	// RepoPath is the local checkout of the share repo.
@@ -108,7 +114,7 @@ func EnsureRepo(ctx context.Context, opts Options) error {
 		return fmt.Errorf("share repo path is empty")
 	}
 	if _, err := os.Stat(filepath.Join(opts.RepoPath, ".git")); err == nil {
-		return nil
+		return checkOrigin(ctx, opts)
 	}
 	if strings.TrimSpace(opts.Remote) != "" {
 		if err := os.MkdirAll(filepath.Dir(opts.RepoPath), 0o700); err != nil {
@@ -196,6 +202,9 @@ func Commit(ctx context.Context, opts Options, message string) (bool, error) {
 // policy for serialised team publishes.
 func Push(ctx context.Context, opts Options) error {
 	if err := opts.validate(); err != nil {
+		return err
+	}
+	if err := checkOrigin(ctx, opts); err != nil {
 		return err
 	}
 	branch := opts.Branch
@@ -816,6 +825,39 @@ func (o Options) validate() error {
 	}
 	if err := validateGitBranchName(o.Branch); err != nil {
 		return err
+	}
+	return nil
+}
+
+// checkOrigin refuses an existing checkout whose origin fetch or push URLs are
+// not opts.Remote, so a --repo pointing at some other clone cannot redirect a
+// publish or subscribe away from the pinned remote. Every remote.origin.url and
+// remote.origin.pushurl value must match, compared as written (not after
+// insteadOf rewriting). Local-only options (empty Remote) never fetch or push
+// and are not checked.
+func checkOrigin(ctx context.Context, opts Options) error {
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		return nil
+	}
+	for _, key := range []string{"remote.origin.url", "remote.origin.pushurl"} {
+		out, err := gitOutput(ctx, opts.RepoPath, "config", "--get-all", key)
+		var exitErr *exec.ExitError
+		if err != nil && !(errors.As(err, &exitErr) && exitErr.ExitCode() == 1) {
+			return fmt.Errorf("read %s in share repo %s: %w", key, opts.RepoPath, err)
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			if key == "remote.origin.url" {
+				return fmt.Errorf("share repo %s has no origin, not the pinned remote %q; remove it or pass a different --repo", opts.RepoPath, remote)
+			}
+			continue
+		}
+		for _, v := range strings.Split(out, "\n") {
+			if strings.TrimSpace(v) != remote {
+				return fmt.Errorf("share repo %s has %s %q, not the pinned remote %q; remove it or pass a different --repo", opts.RepoPath, key, strings.TrimSpace(v), remote)
+			}
+		}
 	}
 	return nil
 }
