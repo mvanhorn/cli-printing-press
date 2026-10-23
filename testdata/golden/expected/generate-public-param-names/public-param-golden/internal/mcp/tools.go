@@ -49,7 +49,6 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithBoolean("dry_run", mcplib.Description("Preview without writing")),
 			mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code")),
 			mcplib.WithSchemaAdditionalProperties(false),
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("POST", "/stores", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "dry_run", WireName: "$dry_run", Location: "query"}, {PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
@@ -107,8 +106,8 @@ func RegisterTools(s *server.MCPServer) {
 	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
 
 	// The read-only switch covers every tool, so this runs after all
-	// registrations: typed endpoint tools and intents never consult it, and
-	// the mirror keeps local-store writers that hosts may auto-approve.
+	// registrations. Tools without readOnlyHint, including local-store
+	// writers, are removed.
 	if cliutil.IsMCPReadOnlyEnv() {
 		dropNonReadOnlyTools(s)
 	}

@@ -162,4 +162,53 @@ func TestIntentIsReadOnlyRequiresEveryStep(t *testing.T) {
 	assert.False(t, intentIsDestructive(api, spec.Intent{
 		Steps: []spec.IntentStep{{Endpoint: "items.list"}, {Endpoint: "items.create"}},
 	}))
+
+	unset := intentDestructiveHint(api, spec.Intent{
+		Steps: []spec.IntentStep{{Endpoint: "items.create"}},
+	})
+	assert.False(t, unset.Set, "unmarked POST intent must leave destructiveHint unset")
+
+	additive := new(false)
+	items := api.Resources["items"]
+	items.Endpoints["create"] = spec.Endpoint{Method: "POST", Path: "/items", Destructive: additive}
+	api.Resources["items"] = items
+	marked := intentDestructiveHint(api, spec.Intent{
+		Steps: []spec.IntentStep{{Endpoint: "items.create"}},
+	})
+	assert.True(t, marked.Set)
+	assert.False(t, marked.Value)
+
+	mixed := intentDestructiveHint(api, spec.Intent{
+		Steps: []spec.IntentStep{{Endpoint: "items.create"}, {Endpoint: "items.delete"}},
+	})
+	assert.True(t, mixed.Set)
+	assert.True(t, mixed.Value, "a DELETE step wins over an additive POST")
+
+	missing := intentDestructiveHint(api, spec.Intent{
+		Steps: []spec.IntentStep{{Endpoint: "items.missing"}},
+	})
+	assert.False(t, missing.Set, "an unresolved step must not advertise additive")
+}
+
+func TestMCPWriteDestructiveHint(t *testing.T) {
+	t.Parallel()
+
+	unset := mcpWriteDestructiveHint(spec.Endpoint{Method: "POST", Path: "/devices/{id}/retire"})
+	assert.False(t, unset.Set)
+	assert.False(t, mcpWriteDestructiveHint(spec.Endpoint{Method: "PUT"}).Set)
+	assert.False(t, mcpWriteDestructiveHint(spec.Endpoint{Method: " patch "}).Set)
+
+	deleted := mcpWriteDestructiveHint(spec.Endpoint{Method: " delete "})
+	assert.True(t, deleted.Set)
+	assert.True(t, deleted.Value)
+
+	additive := new(false)
+	marked := mcpWriteDestructiveHint(spec.Endpoint{Method: "POST", Destructive: additive})
+	assert.True(t, marked.Set)
+	assert.False(t, marked.Value)
+
+	forced := new(true)
+	explicit := mcpWriteDestructiveHint(spec.Endpoint{Method: "POST", Destructive: forced})
+	assert.True(t, explicit.Set)
+	assert.True(t, explicit.Value)
 }

@@ -45,6 +45,63 @@ func intentIsDestructive(api *spec.APISpec, intent spec.Intent) bool {
 	return false
 }
 
+// mcpHint is the destructiveHint an MCP tool should advertise.
+// Set is false when the hint must stay unset so hosts treat the tool
+// as possibly destructive. Value is meaningful only when Set is true.
+type mcpHint struct {
+	Set   bool
+	Value bool
+}
+
+// mcpWriteDestructiveHint is the destructiveHint for a non-read endpoint.
+// Reads are decided by the caller; a read keeps readOnlyHint and
+// destructiveHint false even when Destructive is set.
+func mcpWriteDestructiveHint(endpoint spec.Endpoint) mcpHint {
+	if endpoint.Destructive != nil {
+		return mcpHint{Set: true, Value: *endpoint.Destructive}
+	}
+	if strings.EqualFold(strings.TrimSpace(endpoint.Method), "DELETE") {
+		return mcpHint{Set: true, Value: true}
+	}
+	return mcpHint{}
+}
+
+// intentDestructiveHint is the write hint for an intent that is not
+// read-only. One destructive step wins. Every write step must be
+// explicitly additive before the intent advertises destructiveHint false.
+// An unresolved step is not additive.
+func intentDestructiveHint(api *spec.APISpec, intent spec.Intent) mcpHint {
+	if api == nil {
+		return mcpHint{}
+	}
+	shared := sharedGETRPCPaths(api.Resources)
+	sawWrite := false
+	allExplicitAdditive := true
+	for _, step := range intent.Steps {
+		ep, ok := lookupEndpointForTemplate(api, step.Endpoint)
+		if !ok {
+			sawWrite = true
+			allExplicitAdditive = false
+			continue
+		}
+		if endpointIsReadCommandShared(ep.Endpoint, intentStepOpName(step.Endpoint), shared) {
+			continue
+		}
+		sawWrite = true
+		hint := mcpWriteDestructiveHint(ep.Endpoint)
+		if hint.Set && hint.Value {
+			return mcpHint{Set: true, Value: true}
+		}
+		if !hint.Set || hint.Value {
+			allExplicitAdditive = false
+		}
+	}
+	if sawWrite && allExplicitAdditive {
+		return mcpHint{Set: true, Value: false}
+	}
+	return mcpHint{}
+}
+
 func composeIntentToolDescription(api *spec.APISpec, intent spec.Intent) string {
 	summary := honestIntentSummary(intent)
 	var steps []string

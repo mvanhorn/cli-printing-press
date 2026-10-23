@@ -117,7 +117,7 @@ func TestNarrowedSyncPruneAndCheckpoints(t *testing.T) {
 		require.Contains(t, string(syncSrc), needle, needle)
 	}
 	require.Contains(t, string(storeSrc), "scope_key TEXT NOT NULL DEFAULT ''")
-	require.Contains(t, string(storeSrc), "const StoreSchemaVersion = 13")
+	require.Contains(t, string(storeSrc), "const StoreSchemaVersion = 14")
 	require.Contains(t, string(helperSrc), "func syncCheckpointScope(")
 	require.Contains(t, string(clientSrc), "func (c *Client) CurrentTemplateVars()")
 

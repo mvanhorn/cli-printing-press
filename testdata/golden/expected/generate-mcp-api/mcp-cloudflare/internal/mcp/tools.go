@@ -86,8 +86,8 @@ func RegisterTools(s *server.MCPServer) {
 	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
 
 	// The read-only switch covers every tool, so this runs after all
-	// registrations: typed endpoint tools and intents never consult it, and
-	// the mirror keeps local-store writers that hosts may auto-approve.
+	// registrations. Tools without readOnlyHint, including local-store
+	// writers, are removed.
 	if cliutil.IsMCPReadOnlyEnv() {
 		dropNonReadOnlyTools(s)
 	}

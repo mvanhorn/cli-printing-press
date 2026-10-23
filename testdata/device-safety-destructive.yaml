@@ -1,0 +1,116 @@
+openapi: 3.0.3
+info:
+  title: Device Safety
+  version: "1.0.0"
+servers:
+  - url: https://devices.example.com
+paths:
+  /devices/{id}/retire:
+    post:
+      operationId: retireDevice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Retired}
+  /devices/{id}/sessions/{sessionId}/revoke:
+    post:
+      operationId: revokeSession
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: sessionId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Revoked}
+  /widgets/{id}/tag:
+    post:
+      operationId: tagWidget
+      x-pp-destructive: false
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Tagged}
+  /widgets/{id}/cancel:
+    post:
+      operationId: cancelWidget
+      x-pp-destructive: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Cancelled}
+  /widgets/{id}/label:
+    post:
+      operationId: labelWidget
+      x-pp-destructive: "false"
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Labeled}
+  /widgets/{id}/nudge:
+    post:
+      operationId: nudgeWidget
+      x-pp-destructive: 0
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Nudged}
+  /widgets/{id}:
+    get:
+      operationId: getWidget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: Widget}
+    put:
+      operationId: replaceWidget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: Replaced}
+    delete:
+      operationId: deleteWidget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Deleted}
+  /widgets/search:
+    post:
+      operationId: searchWidgets
+      x-pp-mutation: false
+      responses:
+        "200": {description: Matches}
+  /reports/query:
+    post:
+      operationId: queryReports
+      x-pp-mutation: false
+      x-pp-destructive: true
+      responses:
+        "200": {description: Rows}

@@ -13,7 +13,7 @@ func TestGenerateStoreTrigramFTS_EmitsTokenizerAndVersionPin(t *testing.T) {
 	enabled, enabledDir := generateLearnStore(t, "fts-trigram-enabled", true)
 	require.Contains(t, enabled, "tokenize='trigram'")
 	require.NotContains(t, enabled, "tokenize='porter unicode61'")
-	require.Contains(t, enabled, "const StoreSchemaVersion = 13")
+	require.Contains(t, enabled, "const StoreSchemaVersion = 14")
 	require.Contains(t, enabled, "const resourcesFTSTokenizerSchemaVersion = 11")
 	require.Contains(t, enabled, "ftsNeedsLikeFallback")
 	require.Contains(t, enabled, "current < resourcesFTSTokenizerSchemaVersion")

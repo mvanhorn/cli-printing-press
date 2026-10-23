@@ -415,7 +415,7 @@ func (s *Store) ConfirmCandidateWithPlaybook(id int64, in UpsertPlaybookInput) (
 	return confirmed, playbookID, inserted, nil
 }
 
-func (s *Store) ConfirmCandidateWithPlaybookNote(id int64, family, marker string) (CandidateRow, int64, bool, error) {
+func (s *Store) ConfirmCandidateWithPlaybookNote(id int64, family, marker, ingressSurface string) (CandidateRow, int64, bool, error) {
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
 
@@ -434,7 +434,7 @@ func (s *Store) ConfirmCandidateWithPlaybookNote(id int64, family, marker string
 	}
 
 	now := time.Now().UTC()
-	playbookID, inserted, err := appendPlaybookNotesTx(tx, family, marker, now)
+	playbookID, inserted, err := appendPlaybookNotesTx(tx, family, marker, canonicalPlaybookIngress(ingressSurface), now)
 	if err != nil {
 		return CandidateRow{}, 0, false, fmt.Errorf("confirm candidate: %w", err)
 	}

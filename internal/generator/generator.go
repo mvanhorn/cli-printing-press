@@ -432,6 +432,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"intentIsReadOnly":                    intentIsReadOnly,
 		"intentIsDestructive":                 intentIsDestructive,
+		"mcpWriteDestructiveHint":             mcpWriteDestructiveHint,
+		"intentDestructiveHint":               intentDestructiveHint,
 		"composeIntentToolDescription":        composeIntentToolDescription,
 		"intentParamsForEmit":                 intentParamsForEmit,
 		"intentParamDefaultGo":                intentParamDefaultGo,

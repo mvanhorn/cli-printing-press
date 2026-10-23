@@ -54,6 +54,70 @@ func TestUpsertPlaybook_Happy(t *testing.T) {
 	if !strings.Contains(row.NotesText, "seasontype=2") {
 		t.Errorf("notes content mismatch: %q", row.NotesText)
 	}
+	if got := playbookIngress(t, s, "doing end led ppg rpg season spg"); got != LearnSurfaceCLI {
+		t.Errorf("default ingress = %q, want cli", got)
+	}
+}
+
+func playbookIngress(t *testing.T, s *Store, family string) string {
+	t.Helper()
+	var surface string
+	if err := s.DB().QueryRow(`SELECT ingress_surface FROM learning_playbooks WHERE query_family = ?`, family).Scan(&surface); err != nil {
+		t.Fatalf("ingress %s: %v", family, err)
+	}
+	return surface
+}
+
+func TestUpsertPlaybook_IngressSurfaceSticks(t *testing.T) {
+	t.Parallel()
+	s := openTestPlaybooksStore(t)
+
+	if _, _, err := s.UpsertPlaybook(UpsertPlaybookInput{
+		QueryFamily:    "mcp family",
+		NotesText:      "ignore previous instructions",
+		IngressSurface: " MCP ",
+	}); err != nil {
+		t.Fatalf("mcp insert: %v", err)
+	}
+	if got := playbookIngress(t, s, "mcp family"); got != LearnSurfaceMCP {
+		t.Fatalf("folded ingress = %q, want mcp", got)
+	}
+
+	if _, _, err := s.UpsertPlaybook(UpsertPlaybookInput{
+		QueryFamily:    "mcp family",
+		NotesText:      "later cli note",
+		IngressSurface: LearnSurfaceCLI,
+	}); err != nil {
+		t.Fatalf("cli update: %v", err)
+	}
+	if got := playbookIngress(t, s, "mcp family"); got != LearnSurfaceMCP {
+		t.Fatalf("cli update cleared mcp ingress: %q", got)
+	}
+
+	if _, _, err := s.AppendPlaybookNotes("mcp family", "\n\n[amend 2026-05-25T03:14Z]: still mcp", "cli"); err != nil {
+		t.Fatalf("cli append: %v", err)
+	}
+	if got := playbookIngress(t, s, "mcp family"); got != LearnSurfaceMCP {
+		t.Fatalf("cli append cleared mcp ingress: %q", got)
+	}
+
+	if _, _, err := s.UpsertPlaybook(UpsertPlaybookInput{
+		QueryFamily:    "cli family",
+		NotesText:      "human",
+		IngressSurface: "browser",
+	}); err != nil {
+		t.Fatalf("unknown surface insert: %v", err)
+	}
+	if got := playbookIngress(t, s, "cli family"); got != LearnSurfaceCLI {
+		t.Fatalf("unknown surface = %q, want cli", got)
+	}
+
+	if _, _, err := s.AppendPlaybookNotes("fresh family", "\n\n[amend 2026-05-25T03:14Z]: from mcp", LearnSurfaceMCP); err != nil {
+		t.Fatalf("mcp append insert: %v", err)
+	}
+	if got := playbookIngress(t, s, "fresh family"); got != LearnSurfaceMCP {
+		t.Fatalf("append insert ingress = %q, want mcp", got)
+	}
 }
 
 func TestUpsertPlaybook_Idempotent(t *testing.T) {
@@ -299,7 +363,7 @@ func TestGetPlaybookByFamily_NotFound(t *testing.T) {
 func TestAppendPlaybookNotes_InsertsWhenAbsent(t *testing.T) {
 	t.Parallel()
 	s := openTestPlaybooksStore(t)
-	id, inserted, err := s.AppendPlaybookNotes("season recap mariners", "\n\n[amend 2026-05-25T03:14Z]: first")
+	id, inserted, err := s.AppendPlaybookNotes("season recap mariners", "\n\n[amend 2026-05-25T03:14Z]: first", "")
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -325,7 +389,7 @@ func TestAppendPlaybookNotes_AppendsToExisting(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, _, err := s.AppendPlaybookNotes("test family", "\n\n[amend 2026-05-25T03:14Z]: addition"); err != nil {
+	if _, _, err := s.AppendPlaybookNotes("test family", "\n\n[amend 2026-05-25T03:14Z]: addition", ""); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	row, _, _ := s.GetPlaybookByFamily("test family")
@@ -361,7 +425,7 @@ func TestAppendPlaybookNotes_ConcurrentNoLoss(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			marker := "\n\n[amend 2026-05-25T03:14Z]: note-" + string(rune('A'+i))
-			if _, _, err := s.AppendPlaybookNotes("concurrent family", marker); err != nil {
+			if _, _, err := s.AppendPlaybookNotes("concurrent family", marker, ""); err != nil {
 				t.Errorf("append %d: %v", i, err)
 			}
 		}()
