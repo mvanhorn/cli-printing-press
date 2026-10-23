@@ -290,8 +290,8 @@ func TestIsMCPExecutionReadOnly(t *testing.T) {
 		return err
 	}
 	mainSrc := strings.Replace(string(mainData),
-		"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))",
-		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
+		"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuthWithOrigins(token, allowedOrigins, inner))",
+		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuthWithOrigins(token, allowedOrigins, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
 		1)
 	if mainSrc == string(mainData) {
 		return errPlant("main.go HTTP timeouts")
@@ -568,7 +568,7 @@ func TestSyncPreservesAssignedHTTPTimeout(t *testing.T) {
 	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
 	mainData, err := os.ReadFile(mainPath)
 	require.NoError(t, err)
-	const anchor = "httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))"
+	const anchor = "httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuthWithOrigins(token, allowedOrigins, inner))"
 	const assignment = anchor + "\n\thttpSrv.ReadTimeout = 30 * time.Second"
 	planted := strings.Replace(string(mainData), anchor, assignment, 1)
 	require.NotEqual(t, string(mainData), planted)
@@ -635,3 +635,313 @@ func TestSyncUpgradesOldStoreSearchForMCP(t *testing.T) {
 	output, err := build.CombinedOutput()
 	require.NoError(t, err, "synced MCP package must compile against the upgraded store: %s", output)
 }
+
+func TestMCPEntrypointSupportsHTTPAuthTests(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "pre-origin four-parameter limits",
+			src: `package main
+func requireBearerAuthWithLimits(expected string, next http.Handler, maxBytes int64, readTimeout time.Duration) {}
+`,
+			want: false,
+		},
+		{
+			name: "origin helpers",
+			src: `package main
+func requireBearerAuthWithOrigins(expected string, allowed map[string]struct{}, next http.Handler) {}
+func requireBearerAuthWithLimits(expected string, allowed map[string]struct{}, next http.Handler, maxBytes int64, readTimeout time.Duration) {}
+`,
+			want: true,
+		},
+		{
+			name: "unparsed",
+			src:  "package main\nfunc",
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, mcpEntrypointSupportsHTTPAuthTests([]byte(tc.src)))
+		})
+	}
+}
+
+func TestPreserveHTTPAuthTestsRestoresPreOriginFile(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(mainPath), 0o755))
+	oldMain := []byte(preOriginMainFixture)
+	oldTest := []byte("package main\n\nfunc TestPreOriginAuth(t *testing.T) {}\n")
+	require.NoError(t, os.WriteFile(mainPath, oldMain, 0o644))
+	testPath := filepath.Join(filepath.Dir(mainPath), "http_auth_test.go")
+	require.NoError(t, os.WriteFile(testPath, oldTest, 0o644))
+
+	snap, err := snapshotMCPRuntime(cliDir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n"), 0o644))
+	require.NoError(t, os.WriteFile(testPath, []byte("package main\n\nfunc TestParseHTTPOriginBypasses(t *testing.T) {}\n"), 0o644))
+
+	require.NoError(t, restoreMCPRuntime(cliDir, snap))
+
+	gotMain, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(oldMain), string(gotMain))
+	gotTest, err := os.ReadFile(testPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(oldTest), string(gotTest))
+}
+
+func TestPreserveHTTPAuthTestsKeepsRegeneratedOriginTests(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(mainPath), 0o755))
+	currentMain := []byte(originMainFixture)
+	require.NoError(t, os.WriteFile(mainPath, currentMain, 0o644))
+	testPath := filepath.Join(filepath.Dir(mainPath), "http_auth_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte("package main\n\nfunc TestStale(t *testing.T) {}\n"), 0o644))
+
+	snap, err := snapshotMCPRuntime(cliDir)
+	require.NoError(t, err)
+	regenerated := []byte("package main\n\nfunc TestParseHTTPOriginBypasses(t *testing.T) {}\n")
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n"), 0o644))
+	require.NoError(t, os.WriteFile(testPath, regenerated, 0o644))
+
+	require.NoError(t, restoreMCPRuntime(cliDir, snap))
+
+	gotMain, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(currentMain), string(gotMain))
+	gotTest, err := os.ReadFile(testPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(regenerated), string(gotTest))
+}
+
+func TestPreserveHTTPAuthTestsDropsIncompatibleRegen(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(mainPath), 0o755))
+	oldMain := []byte(preOriginMainFixture)
+	require.NoError(t, os.WriteFile(mainPath, oldMain, 0o644))
+
+	snap, err := snapshotMCPRuntime(cliDir)
+	require.NoError(t, err)
+	testPath := filepath.Join(filepath.Dir(mainPath), "http_auth_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte("package main\n\nfunc TestParseHTTPOriginBypasses(t *testing.T) {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n"), 0o644))
+
+	require.NoError(t, restoreMCPRuntime(cliDir, snap))
+
+	gotMain, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(oldMain), string(gotMain))
+	_, err = os.Stat(testPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// TestSyncPreservesPreOriginCustomizedHTTPEntrypoint starts from an HTTP
+// entrypoint shaped like a print from before origin checks: the
+// four-parameter requireBearerAuthWithLimits, no origin helpers, the
+// pre-change http_auth_test.go, and a hand-set ReadTimeout. mcp-sync
+// regenerates the tests, then restores that entrypoint. The pair must
+// still compile and pass.
+func TestSyncPreservesPreOriginCustomizedHTTPEntrypoint(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := handAuthoredMCPSpec()
+	cliDir := filepath.Join(t.TempDir(), "handmcp")
+	gen := generator.New(apiSpec, cliDir)
+	gen.VisionSet = generator.VisionTemplateSet{MCP: true, Store: true}
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	require.NoError(t, plantPreOriginCustomizedHTTPEntrypoint(cliDir))
+
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	testPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "http_auth_test.go")
+	mainBefore, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	testBefore, err := os.ReadFile(testPath)
+	require.NoError(t, err)
+	require.False(t, mcpEntrypointSupportsHTTPAuthTests(mainBefore))
+	require.Contains(t, string(mainBefore), "httpSrv.ReadTimeout = 45 * time.Second")
+	require.NotContains(t, string(testBefore), "requireBearerAuthWithOrigins")
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	mainAfter, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	testAfter, err := os.ReadFile(testPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(mainBefore), string(mainAfter), "customized pre-origin entrypoint must be restored verbatim")
+	assert.Equal(t, string(testBefore), string(testAfter), "HTTP tests must match the restored entrypoint")
+	assert.NotContains(t, string(testAfter), "func TestParseHTTPOriginBypasses")
+	assert.NotContains(t, string(mainAfter), "requireBearerAuthWithOrigins")
+	assert.NotContains(t, string(mainAfter), "mcpHTTPTokenMinLength")
+
+	cmd := exec.Command("go", "test", "-mod=mod", "-count=1", "-timeout", "180s", "./cmd/handmcp-pp-mcp")
+	cmd.Dir = cliDir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "synced pre-origin HTTP entrypoint must compile and pass its preserved tests:\n%s", output)
+}
+
+func plantPreOriginCustomizedHTTPEntrypoint(cliDir string) error {
+	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
+	mainData, err := os.ReadFile(mainPath)
+	if err != nil {
+		return err
+	}
+	src := string(mainData)
+	replacements := []struct{ old, new, what string }{
+		{"\t\"net/netip\"\n", "", "net/netip import"},
+		{"\t\"net/url\"\n", "", "net/url import"},
+		{"\tmcpHTTPTokenMinLength   = 32\n", "", "token minimum const"},
+		{
+			"\t\tallowedOrigins, err := loadAllowedHTTPOrigins()\n\t\tif err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"MCP server error: %v\\n\", err)\n\t\t\tos.Exit(1)\n\t\t}\n",
+			"",
+			"allowed-origin load",
+		},
+		{
+			"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuthWithOrigins(token, allowedOrigins, inner))",
+			"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))\n\t\thttpSrv.ReadTimeout = 45 * time.Second",
+			"HTTP server call",
+		},
+		{
+			"\tif len(token) < mcpHTTPTokenMinLength {\n\t\treturn \"\", fmt.Errorf(\"%s must be set to a bearer token of at least %d characters before starting --transport http\", httpTokenEnvVar, mcpHTTPTokenMinLength)\n\t}",
+			"\tif token == \"\" {\n\t\treturn \"\", fmt.Errorf(\"%s must be set to a non-empty bearer token before starting --transport http\", httpTokenEnvVar)\n\t}",
+			"token length check",
+		},
+		{preOriginAuthOld, preOriginAuthNew, "bearer auth helpers"},
+	}
+	for _, repl := range replacements {
+		if !strings.Contains(src, repl.old) {
+			return errPlant("main.go " + repl.what)
+		}
+		src = strings.Replace(src, repl.old, repl.new, 1)
+	}
+	src, err = dropLineContaining(src, "const httpAllowedOriginsEnvVar = ")
+	if err != nil {
+		return err
+	}
+	const originMark = "\n// parseHTTPOrigin accepts"
+	at := strings.Index(src, originMark)
+	if at < 0 {
+		return errPlant("main.go origin helpers")
+	}
+	src = strings.TrimRight(src[:at], "\n") + "\n"
+	if strings.Contains(src, "requireBearerAuthWithOrigins") || strings.Contains(src, "net/netip") || strings.Contains(src, "mcpHTTPTokenMinLength") {
+		return errPlant("main.go leftover origin surface")
+	}
+	if err := os.WriteFile(mainPath, []byte(src), 0o644); err != nil {
+		return err
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "preorigin_http_auth_test.go.txt"))
+	if err != nil {
+		return err
+	}
+	if strings.Contains(string(fixture), "requireBearerAuthWithOrigins") {
+		return errPlant("pre-origin HTTP auth fixture")
+	}
+	return os.WriteFile(filepath.Join(filepath.Dir(mainPath), "http_auth_test.go"), fixture, 0o644)
+}
+
+func dropLineContaining(src, fragment string) (string, error) {
+	lines := strings.Split(src, "\n")
+	kept := make([]string, 0, len(lines))
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, fragment) {
+			found = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !found {
+		return "", errPlant("main.go " + fragment)
+	}
+	return strings.Join(kept, "\n"), nil
+}
+
+const preOriginMainFixture = `package main
+
+import (
+	"net/http"
+	"time"
+)
+
+func handTunedServer() *http.Server {
+	srv := &http.Server{}
+	srv.ReadTimeout = 45 * time.Second
+	return srv
+}
+
+func requireBearerAuthWithLimits(expected string, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {
+	return next
+}
+`
+
+const originMainFixture = `package main
+
+import (
+	"net/http"
+	"time"
+)
+
+func handTunedServer() *http.Server {
+	srv := &http.Server{}
+	srv.ReadTimeout = 45 * time.Second
+	return srv
+}
+
+func requireBearerAuthWithOrigins(expected string, allowed map[string]struct{}, next http.Handler) http.Handler {
+	return next
+}
+
+func requireBearerAuthWithLimits(expected string, allowed map[string]struct{}, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {
+	return next
+}
+`
+
+const preOriginAuthOld = "func requireBearerAuth(expected string, next http.Handler) http.Handler {\n" +
+	"\treturn requireBearerAuthWithOrigins(expected, nil, next)\n" +
+	"}\n" +
+	"\n" +
+	"func requireBearerAuthWithOrigins(expected string, allowed map[string]struct{}, next http.Handler) http.Handler {\n" +
+	"\treturn requireBearerAuthWithLimits(expected, allowed, next, mcpHTTPMaxBodyBytes, mcpHTTPBodyReadDeadline)\n" +
+	"}\n" +
+	"\n" +
+	"func requireBearerAuthWithLimits(expected string, allowed map[string]struct{}, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {\n" +
+	"\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n" +
+	"\t\tif !requestOriginPermitted(r, allowed) {\n" +
+	"\t\t\thttp.Error(w, \"forbidden origin\", http.StatusForbidden)\n" +
+	"\t\t\treturn\n" +
+	"\t\t}\n" +
+	"\t\tif !bearerTokenMatches(r.Header.Get(\"Authorization\"), expected) {"
+
+const preOriginAuthNew = "func requireBearerAuth(expected string, next http.Handler) http.Handler {\n" +
+	"\treturn requireBearerAuthWithLimits(expected, next, mcpHTTPMaxBodyBytes, mcpHTTPBodyReadDeadline)\n" +
+	"}\n" +
+	"\n" +
+	"func requireBearerAuthWithLimits(expected string, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {\n" +
+	"\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n" +
+	"\t\tif !bearerTokenMatches(r.Header.Get(\"Authorization\"), expected) {"

@@ -14,6 +14,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -30,10 +32,13 @@ import (
 // guidance that production agents need a remote option.
 //
 // HTTP is never an unauthenticated open door: --transport http refuses to
-// start without PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN, rejects callers that omit
-// a matching Authorization: Bearer header, and requires --tls-cert/--tls-key
-// for any non-loopback bind. An empty host from :PORT binds every interface
-// and does not qualify as loopback. Named hosts (including localhost) are
+// start without a PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN of at least 32 characters,
+// rejects callers that omit a matching Authorization: Bearer header, refuses
+// a non-loopback Origin unless it is listed in
+// PRINTING_PRESS_GOLDEN_MCP_HTTP_ALLOWED_ORIGINS, and requires
+// --tls-cert/--tls-key for any non-loopback bind. Requests with no Origin
+// header are accepted. An empty host from :PORT binds every interface and
+// does not qualify as loopback. Named hosts (including localhost) are
 // loopback only when every resolved address is loopback, and the listener
 // is then pinned to that IP so a later lookup cannot leave loopback.
 
@@ -41,9 +46,12 @@ const (
 	defaultHTTPAddr = "127.0.0.1:7777"
 	httpTokenEnvVar = "PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN"
 
+	mcpHTTPTokenMinLength   = 32
 	mcpHTTPMaxBodyBytes     = 4 << 20
 	mcpHTTPBodyReadDeadline = 30 * time.Second
 )
+
+const httpAllowedOriginsEnvVar = "PRINTING_PRESS_GOLDEN_MCP_HTTP_ALLOWED_ORIGINS"
 
 // version is the printed MCP server's version, overridable at build time via ldflags.
 var version = "0.0.0-dev"
@@ -82,6 +90,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 			os.Exit(1)
 		}
+		allowedOrigins, err := loadAllowedHTTPOrigins()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
 		bindAddr, loopback := classifyHTTPBind(*addr)
 		if err := requireTLSForNonLoopback(*addr, loopback, *tlsCert, *tlsKey); err != nil {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
@@ -92,7 +105,7 @@ func main() {
 			os.Exit(1)
 		}
 		inner := server.NewStreamableHTTPServer(s)
-		httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))
+		httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuthWithOrigins(token, allowedOrigins, inner))
 		fmt.Fprintf(os.Stderr, "printing-press-golden-pp-mcp serving MCP over streamable HTTP at %s (Authorization: Bearer $%s)\n", bindAddr, httpTokenEnvVar)
 		if *tlsCert != "" {
 			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
@@ -122,8 +135,8 @@ func defaultTransport() string {
 
 func requireHTTPCallerToken() (string, error) {
 	token := strings.TrimSpace(os.Getenv(httpTokenEnvVar))
-	if token == "" {
-		return "", fmt.Errorf("%s must be set to a non-empty bearer token before starting --transport http", httpTokenEnvVar)
+	if len(token) < mcpHTTPTokenMinLength {
+		return "", fmt.Errorf("%s must be set to a bearer token of at least %d characters before starting --transport http", httpTokenEnvVar, mcpHTTPTokenMinLength)
 	}
 	return token, nil
 }
@@ -183,11 +196,19 @@ func newMCPHTTPServer(addr string, handler http.Handler) *http.Server {
 }
 
 func requireBearerAuth(expected string, next http.Handler) http.Handler {
-	return requireBearerAuthWithLimits(expected, next, mcpHTTPMaxBodyBytes, mcpHTTPBodyReadDeadline)
+	return requireBearerAuthWithOrigins(expected, nil, next)
 }
 
-func requireBearerAuthWithLimits(expected string, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {
+func requireBearerAuthWithOrigins(expected string, allowed map[string]struct{}, next http.Handler) http.Handler {
+	return requireBearerAuthWithLimits(expected, allowed, next, mcpHTTPMaxBodyBytes, mcpHTTPBodyReadDeadline)
+}
+
+func requireBearerAuthWithLimits(expected string, allowed map[string]struct{}, next http.Handler, maxBytes int64, readTimeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !requestOriginPermitted(r, allowed) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
 		if !bearerTokenMatches(r.Header.Get("Authorization"), expected) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -274,4 +295,225 @@ func bearerTokenMatches(header, expected string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
+}
+
+// parseHTTPOrigin accepts only an http(s) scheme://host[:port] value.
+// Matching is exact: a prefix or suffix of localhost is not loopback,
+// userinfo and percent-encoding are rejected, and the null origin is
+// refused. url.Parse has to agree so a second parser cannot widen the host.
+func parseHTTPOrigin(raw string) (httpOrigin, bool) {
+	if !originBytesAllowed(raw) {
+		return httpOrigin{}, false
+	}
+	scheme, rest, ok := splitOriginScheme(raw)
+	if !ok || strings.ContainsAny(rest, "/@%?#,\\") {
+		return httpOrigin{}, false
+	}
+	host, port, bracketed, ok := splitOriginHostPort(rest)
+	if !ok {
+		return httpOrigin{}, false
+	}
+	canonHost, loopback, ok := canonicalOriginHost(host, bracketed)
+	if !ok || !originURLAgrees(raw, scheme, rest) {
+		return httpOrigin{}, false
+	}
+	return httpOrigin{key: originKey(scheme, canonHost, port), loopback: loopback}, true
+}
+
+type httpOrigin struct {
+	key      string
+	loopback bool
+}
+
+func originBytesAllowed(raw string) bool {
+	if raw == "" || strings.EqualFold(raw, "null") {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x21 || raw[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func splitOriginScheme(raw string) (scheme, rest string, ok bool) {
+	i := strings.Index(raw, "://")
+	if i <= 0 {
+		return "", "", false
+	}
+	scheme = strings.ToLower(raw[:i])
+	if scheme != "http" && scheme != "https" {
+		return "", "", false
+	}
+	rest = raw[i+len("://"):]
+	if rest == "" {
+		return "", "", false
+	}
+	return scheme, rest, true
+}
+
+func splitOriginHostPort(rest string) (host, port string, bracketed, ok bool) {
+	if rest[0] == '[' {
+		end := strings.IndexByte(rest, ']')
+		if end < 2 || strings.IndexByte(rest[1:end], '[') >= 0 {
+			return "", "", true, false
+		}
+		host = rest[1:end]
+		tail := rest[end+1:]
+		if tail == "" {
+			return host, "", true, true
+		}
+		if len(tail) < 2 || tail[0] != ':' || !validOriginPort(tail[1:]) {
+			return "", "", true, false
+		}
+		return host, tail[1:], true, true
+	}
+	host, port, found := strings.Cut(rest, ":")
+	if !found {
+		if host == "" {
+			return "", "", false, false
+		}
+		return host, "", false, true
+	}
+	if host == "" || strings.Contains(port, ":") || !validOriginPort(port) {
+		return "", "", false, false
+	}
+	return host, port, false, true
+}
+
+func validOriginPort(port string) bool {
+	if port == "" || len(port) > 5 || port[0] == '0' {
+		return false
+	}
+	n := 0
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
+func canonicalOriginHost(host string, bracketed bool) (string, bool, bool) {
+	if host == "" || strings.ContainsAny(host, " @%/?#\\") {
+		return "", false, false
+	}
+	if bracketed {
+		return canonicalOriginIP(host)
+	}
+	trimmed := host
+	if strings.HasSuffix(trimmed, ".") {
+		trimmed = strings.TrimSuffix(trimmed, ".")
+		if trimmed == "" || strings.HasSuffix(trimmed, ".") {
+			return "", false, false
+		}
+	}
+	if strings.EqualFold(trimmed, "localhost") {
+		return "localhost", true, true
+	}
+	if addr, err := netip.ParseAddr(trimmed); err == nil {
+		return canonicalOriginIP(addr.String())
+	}
+	lowered := strings.ToLower(trimmed)
+	if !validOriginDNSHost(lowered) {
+		return "", false, false
+	}
+	return lowered, false, true
+}
+
+func canonicalOriginIP(host string) (string, bool, bool) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil || addr.Zone() != "" {
+		return "", false, false
+	}
+	// IPv4-mapped IPv6 is the same address as the embedded IPv4, so the
+	// allowlist cannot be bypassed by writing the other form.
+	addr = addr.Unmap()
+	return addr.String(), addr.IsLoopback(), true
+}
+
+func validOriginDNSHost(host string) bool {
+	if host == "" || len(host) > 253 || strings.Contains(host, "..") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func originURLAgrees(raw, scheme, hostport string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, scheme) {
+		return false
+	}
+	return strings.EqualFold(u.Host, hostport)
+}
+
+func originKey(scheme, host, port string) string {
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port == "" {
+		return scheme + "://" + host
+	}
+	return scheme + "://" + host + ":" + port
+}
+
+func loadAllowedHTTPOrigins() (map[string]struct{}, error) {
+	return parseAllowedOriginList(os.Getenv(httpAllowedOriginsEnvVar))
+}
+
+func parseAllowedOriginList(raw string) (map[string]struct{}, error) {
+	allowed := make(map[string]struct{})
+	if strings.TrimSpace(raw) == "" {
+		return allowed, nil
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		origin, ok := parseHTTPOrigin(entry)
+		if !ok {
+			return nil, fmt.Errorf("%s entry %q is not a valid http or https origin (scheme://host[:port], no path, query, userinfo, or trailing slash)", httpAllowedOriginsEnvVar, entry)
+		}
+		allowed[origin.key] = struct{}{}
+	}
+	return allowed, nil
+}
+
+func requestOriginPermitted(r *http.Request, allowed map[string]struct{}) bool {
+	values := r.Header.Values("Origin")
+	switch len(values) {
+	case 0:
+		return true
+	case 1:
+		origin, ok := parseHTTPOrigin(values[0])
+		if !ok {
+			return false
+		}
+		if origin.loopback {
+			return true
+		}
+		_, ok = allowed[origin.key]
+		return ok
+	default:
+		return false
+	}
 }

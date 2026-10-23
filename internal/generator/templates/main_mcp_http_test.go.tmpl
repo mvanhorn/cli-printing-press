@@ -93,21 +93,232 @@ func TestRequireTLSForNonLoopback(t *testing.T) {
 
 func TestRequireHTTPCallerToken(t *testing.T) {
 	t.Setenv(httpTokenEnvVar, "")
-	if _, err := requireHTTPCallerToken(); err == nil {
-		t.Fatal("empty token env must fail")
+	if _, err := requireHTTPCallerToken(); err == nil || !tokenLengthError(err) {
+		t.Fatalf("empty token env must name the minimum: %v", err)
 	}
 	t.Setenv(httpTokenEnvVar, "   ")
-	if _, err := requireHTTPCallerToken(); err == nil {
-		t.Fatal("whitespace token env must fail")
+	if _, err := requireHTTPCallerToken(); err == nil || !tokenLengthError(err) {
+		t.Fatalf("whitespace token env must name the minimum: %v", err)
 	}
-	t.Setenv(httpTokenEnvVar, "shared-secret")
+	t.Setenv(httpTokenEnvVar, strings.Repeat("a", mcpHTTPTokenMinLength-1))
+	if _, err := requireHTTPCallerToken(); err == nil || !tokenLengthError(err) {
+		t.Fatalf("short token env must name the minimum: %v", err)
+	}
+	want := strings.Repeat("b", mcpHTTPTokenMinLength)
+	t.Setenv(httpTokenEnvVar, "  "+want+"  ")
 	got, err := requireHTTPCallerToken()
 	if err != nil {
 		t.Fatalf("set token env: %v", err)
 	}
-	if got != "shared-secret" {
-		t.Fatalf("requireHTTPCallerToken() = %q, want shared-secret", got)
+	if got != want {
+		t.Fatalf("requireHTTPCallerToken() = %q, want %q", got, want)
 	}
+}
+
+func tokenLengthError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), httpTokenEnvVar) && strings.Contains(err.Error(), "32")
+}
+
+func TestParseHTTPOriginBypasses(t *testing.T) {
+	t.Parallel()
+
+	allowed, err := parseAllowedOriginList("https://example.com, HTTPS://API.Example:8443, http://8.8.8.8, https://[2001:db8::1]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := []string{
+		"http://localhost",
+		"http://localhost:8080",
+		"https://localhost",
+		"HTTP://LOCALHOST:9",
+		"http://localhost.",
+		"https://LocalHost.",
+		"http://127.0.0.1",
+		"http://127.0.0.1:1",
+		"http://127.0.0.1:65535",
+		"https://127.0.0.1:443",
+		"http://127.0.0.2",
+		"http://127.255.255.255",
+		"http://[::1]",
+		"http://[::1]:8080",
+		"https://[::1]:443",
+		"http://[0:0:0:0:0:0:0:1]",
+		"http://[::ffff:127.0.0.1]",
+		"http://[::ffff:127.0.0.1]:8080",
+		"http://[::FFFF:127.0.0.1]",
+		"http://[::ffff:7f00:1]",
+		"HTTP://[::1]",
+		"https://example.com",
+		"HTTPS://Example.COM",
+		"https://example.com:443",
+		"https://example.com.",
+		"https://api.example:8443",
+		"HTTPS://API.Example:8443",
+		"http://8.8.8.8",
+		"http://8.8.8.8:80",
+		"http://[::ffff:8.8.8.8]",
+		"https://[2001:db8::1]",
+		"https://[2001:db8:0:0:0:0:0:1]",
+		"https://[2001:db8::1]:443",
+		"http://127.0.0.1.",
+	}
+	deny := []string{
+		"",
+		"null",
+		"NULL",
+		"Null",
+		" null",
+		"null ",
+		"http://null",
+		"https://example.com/",
+		"https://example.com/path",
+		"https://example.com?x=1",
+		"https://example.com#x",
+		"https://example.com:443/",
+		"https://example.com.evil.com",
+		"https://example.com.evil.com.",
+		"https://notexample.com",
+		"http://example.com",
+		"http://example.com:443",
+		"https://example.com:80",
+		"https://example.com:444",
+		"https://example.com:0443",
+		"https://api.example",
+		"https://api.example:443",
+		"https://api.example.com",
+		"http://localhost.evil.com",
+		"http://LOCALHOST.EVIL.COM",
+		"http://localhost.evil.com:80",
+		"http://localhost.evil.com.",
+		"http://evil.localhost",
+		"http://evil.localhost:80",
+		"http://localhost.localhost",
+		"http://127.0.0.1.evil.com",
+		"http://127.0.0.1.evil.com:80",
+		"http://user:pass@127.0.0.1",
+		"http://127.0.0.1@evil.com",
+		"http://evil.com@127.0.0.1",
+		"https://user:pass@example.com",
+		"http://127.0.0.1/",
+		"http://127.0.0.1:7777/",
+		"http://[::1]/",
+		"http://[::1]:8080/",
+		"http://127.0.0.1#@evil.com",
+		"http://127.0.0.1?@evil.com",
+		"http://2130706433",
+		"http://0x7f000001",
+		"http://0177.0.0.1",
+		"http://127.1",
+		"http://127.0.1",
+		"http://127.000.000.001",
+		"http://[::1].evil.com",
+		"http://localhost%2eevil.com",
+		"http://127.0.0.1%00.evil.com",
+		"http://127.0.0.1%2e%2e%2e",
+		"http://127.0.0.1%5c.evil.com",
+		"http://127.0.0.1\\.evil.com",
+		"http://127.0.0.1:99999",
+		"http://127.0.0.1:65536",
+		"http://127.0.0.1:0",
+		"http://127.0.0.1:080",
+		"http://127.0.0.1:",
+		"http://127.0.0.1:80:80",
+		"http://[::1]:80:80",
+		"http://::1",
+		"http://[::1",
+		"http://[localhost]",
+		"http://[127.0.0.1]",
+		"file://localhost",
+		"ws://localhost",
+		"javascript://localhost",
+		"http://[::1%25eth0]",
+		"http://0.0.0.0",
+		"http://[::]",
+		"http://localhost..",
+		"http://.localhost",
+		"http://127.0.0.1 ",
+		"https://example.com ",
+		"http://127.0.0.1,https://evil.com",
+		"http://example.com.",
+		"https://[2001:db8::2]",
+		"http://8.8.8.80",
+		"http://[::ffff:9.9.9.9]",
+		"http://[v1.localhost]",
+		"https://example.com%2e.evil.com",
+		"http://127",
+	}
+	for _, raw := range allow {
+		if !originPermitted(raw, allowed) {
+			parsed, ok := parseHTTPOrigin(raw)
+			t.Errorf("allowed origin rejected: %q ok=%v parsed=%+v", raw, ok, parsed)
+		}
+	}
+	for _, raw := range deny {
+		if originPermitted(raw, allowed) {
+			parsed, ok := parseHTTPOrigin(raw)
+			t.Errorf("rejected origin allowed: %q ok=%v parsed=%+v", raw, ok, parsed)
+		}
+	}
+
+	// The mapped form is the same address as the allowlisted IPv4, not a different host.
+	mapped := "http://[::ffff:8.8.8.8]"
+	if !originPermitted(mapped, allowed) {
+		t.Fatalf("allowlisted IPv4 must match its IPv4-mapped form %q", mapped)
+	}
+	if originPermitted(mapped, nil) {
+		t.Fatal("IPv4-mapped public address must not be loopback")
+	}
+}
+
+func TestParseAllowedOriginList(t *testing.T) {
+	t.Parallel()
+
+	allowed, err := parseAllowedOriginList(" HTTPS://Example.COM:443 , http://api.example:8443, ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := allowed["https://example.com"]; !ok {
+		t.Fatalf("default port not stripped: %#v", allowed)
+	}
+	if _, ok := allowed["http://api.example:8443"]; !ok {
+		t.Fatalf("non-default port dropped: %#v", allowed)
+	}
+	empty, err := parseAllowedOriginList(" , ")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty list = %#v err=%v", empty, err)
+	}
+	for _, bad := range []string{"*", "https://example.com/path", "https://example.com/", "null", "https://example.com:0443"} {
+		if _, err := parseAllowedOriginList(bad); err == nil || !strings.Contains(err.Error(), httpAllowedOriginsEnvVar) || !strings.Contains(err.Error(), bad) {
+			t.Fatalf("entry %q err = %v", bad, err)
+		}
+	}
+}
+
+func TestLoadAllowedHTTPOriginsReadsEnv(t *testing.T) {
+	t.Setenv(httpAllowedOriginsEnvVar, "https://example.com")
+	allowed, err := loadAllowedHTTPOrigins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := allowed["https://example.com"]; !ok {
+		t.Fatalf("env allowlist = %#v", allowed)
+	}
+	t.Setenv(httpAllowedOriginsEnvVar, "https://example.com/nope")
+	if _, err := loadAllowedHTTPOrigins(); err == nil || !strings.Contains(err.Error(), httpAllowedOriginsEnvVar) {
+		t.Fatalf("malformed env err = %v", err)
+	}
+}
+
+func originPermitted(raw string, allowed map[string]struct{}) bool {
+	origin, ok := parseHTTPOrigin(raw)
+	if !ok {
+		return false
+	}
+	if origin.loopback {
+		return true
+	}
+	_, ok = allowed[origin.key]
+	return ok
 }
 
 func TestRequireBearerAuthRejectsMissingAndWrongTokens(t *testing.T) {
@@ -161,6 +372,74 @@ func TestRequireBearerAuthRejectsMissingAndWrongTokens(t *testing.T) {
 	}
 }
 
+func TestMCPHTTPOriginGuard(t *testing.T) {
+	t.Parallel()
+
+	allowed, err := parseAllowedOriginList("https://example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		origin     string
+		setOrigin  bool
+		second     string
+		auth       bool
+		want       int
+		wantCalled bool
+	}{
+		{name: "absent", auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "absent no auth", want: http.StatusUnauthorized, wantCalled: false},
+		{name: "loopback", origin: "http://127.0.0.1:7777", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "localhost case", origin: "HTTP://LOCALHOST:9", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "ipv6", origin: "http://[::1]:8080", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "expanded ipv6", origin: "http://[0:0:0:0:0:0:0:1]", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "foreign", origin: "https://evil.example", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "foreign no auth", origin: "https://evil.example", setOrigin: true, auth: false, want: http.StatusForbidden, wantCalled: false},
+		{name: "allowlisted", origin: "https://example.com", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "allowlisted case", origin: "HTTPS://Example.COM", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "allowlisted default port", origin: "https://example.com:443", setOrigin: true, auth: true, want: http.StatusNoContent, wantCalled: true},
+		{name: "suffix attack", origin: "https://example.com.evil.com", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "trailing slash", origin: "https://example.com/", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "null", origin: "null", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "localhost.evil", origin: "http://localhost.evil.com", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "userinfo", origin: "http://evil.com@127.0.0.1", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "empty value", origin: "", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+		{name: "second origin", origin: "http://127.0.0.1", second: "https://evil.example", setOrigin: true, auth: true, want: http.StatusForbidden, wantCalled: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var called atomic.Bool
+			handler := requireBearerAuthWithOrigins("secret", allowed, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called.Store(true)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("ping"))
+			if tc.auth {
+				req.Header.Set("Authorization", "Bearer secret")
+			}
+			if tc.setOrigin {
+				req.Header["Origin"] = []string{tc.origin}
+			}
+			if tc.second != "" {
+				req.Header["Origin"] = append(req.Header["Origin"], tc.second)
+			}
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body %s", rr.Code, tc.want, rr.Body.String())
+			}
+			if called.Load() != tc.wantCalled {
+				t.Fatalf("handler called = %v, want %v", called.Load(), tc.wantCalled)
+			}
+			if tc.want == http.StatusForbidden && tc.origin != "" && strings.Contains(rr.Body.String(), tc.origin) {
+				t.Fatalf("403 body reflected origin %q: %s", tc.origin, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestMCPHTTPServerLimits(t *testing.T) {
 	t.Parallel()
 
@@ -209,7 +488,7 @@ func TestMCPHTTPChunkedOversizeBodyIsRefused(t *testing.T) {
 	t.Parallel()
 
 	var called atomic.Bool
-	handler := requireBearerAuthWithLimits("secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := requireBearerAuthWithLimits("secret", nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called.Store(true)
 		w.WriteHeader(http.StatusOK)
 	}), 32, 5*time.Second)
@@ -243,7 +522,7 @@ func TestMCPHTTPTrickledBodyTimesOut(t *testing.T) {
 	t.Parallel()
 
 	var called atomic.Bool
-	handler := requireBearerAuthWithLimits("secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := requireBearerAuthWithLimits("secret", nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called.Store(true)
 		w.WriteHeader(http.StatusOK)
 	}), 1<<20, 200*time.Millisecond)
@@ -312,7 +591,7 @@ func TestMCPHTTPSmallPostReachesHandler(t *testing.T) {
 	t.Parallel()
 
 	var got []byte
-	handler := requireBearerAuthWithLimits("secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := requireBearerAuthWithLimits("secret", nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	}), 128, 200*time.Millisecond)
@@ -415,12 +694,69 @@ func TestMCPHTTPInitializeIsNotLimited(t *testing.T) {
 	}
 }
 
+func TestMCPHTTPInitializeRejectsForeignOrigin(t *testing.T) {
+	t.Parallel()
+
+	inner := server.NewStreamableHTTPServer(server.NewMCPServer("origin-proof", "0.0.0-dev"))
+	handler := requireBearerAuth("secret", inner)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, payload := postMCPInitialize(t, srv.URL, "https://example.com")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("initialize status = %d, want 403; body %s", resp.StatusCode, payload)
+	}
+	if strings.Contains(string(payload), "example.com") {
+		t.Fatalf("403 body reflected origin: %s", payload)
+	}
+}
+
+func TestMCPHTTPInitializeAllowsLoopbackAndMissingOrigin(t *testing.T) {
+	t.Parallel()
+
+	inner := server.NewStreamableHTTPServer(server.NewMCPServer("origin-proof", "0.0.0-dev"))
+	handler := requireBearerAuthWithOrigins("secret", nil, inner)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	for _, origin := range []string{"", "http://127.0.0.1:7777", "http://localhost:8080", "http://[::1]:9090"} {
+		resp, payload := postMCPInitialize(t, srv.URL, origin)
+		resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestEntityTooLarge, http.StatusRequestTimeout:
+			t.Fatalf("origin %q status = %d; body %s", origin, resp.StatusCode, payload)
+		}
+	}
+}
+
+func postMCPInitialize(t *testing.T, serverURL, origin string) (*http.Response, []byte) {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := io.ReadAll(resp.Body)
+	return resp, payload
+}
+
 func assertMCPHTTPStreamSurvivesDeadline(t *testing.T, http2 bool, method string) {
 	t.Helper()
 
 	readTimeout := 200 * time.Millisecond
 	var sawBody string
-	handler := requireBearerAuthWithLimits("secret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := requireBearerAuthWithLimits("secret", nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if method == http.MethodPost {
 			buf, err := io.ReadAll(r.Body)
 			if err != nil {

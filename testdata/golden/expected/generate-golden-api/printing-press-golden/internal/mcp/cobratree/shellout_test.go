@@ -2293,6 +2293,31 @@ func TestRunCLICommandSetsMCPChildEnv(t *testing.T) {
 	}
 }
 
+func TestRunCLICommandOmitsMCPHTTPToken(t *testing.T) {
+	const token = "mcp-http-token-should-not-leak-0123456789abcdef"
+	t.Setenv("PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN", token)
+	t.Setenv(strings.ToLower("PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN"), token+"-lower")
+	t.Setenv("PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN_EXTRA", "keep-me")
+	bin := writeShelloutHelper(t, "print-env")
+	result, err := RunCLICommand(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("RunCLICommand: %v", err)
+	}
+	out := strings.ToLower(result.Stdout)
+	if strings.Contains(out, strings.ToLower(token)) {
+		t.Fatal("child inherited MCP HTTP token")
+	}
+	if strings.Contains(out, strings.ToLower("PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN=")) {
+		t.Fatal("child inherited MCP HTTP token variable")
+	}
+	if !strings.Contains(out, strings.ToLower("PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN_EXTRA=keep-me")) {
+		t.Fatal("child dropped an unrelated environment variable")
+	}
+	if !strings.Contains(result.Stdout, cliutil.MCPChildEnvVar+"=1") {
+		t.Fatal("child missing MCP child marker")
+	}
+}
+
 func TestRunCLICommandBoundsFailureOutput(t *testing.T) {
 	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
 		t.Run(mode, func(t *testing.T) {

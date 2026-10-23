@@ -66,6 +66,9 @@ func TestGeneratedMCPServerHardening(t *testing.T) {
 		require.Contains(t, shellout, strconvQuote(name)+":", "blockedInputFlags missing %q", name)
 	}
 	require.Contains(t, shellout, "func mcpChildEnviron()")
+	require.Contains(t, shellout, "func mcpChildEnvDropped(")
+	require.Contains(t, shellout, "strings.EqualFold(key, mcpHTTPTokenEnvVar)")
+	require.Contains(t, shellout, prefix+"_MCP_HTTP_TOKEN")
 	require.Contains(t, shellout, "cliutil.MCPChildEnvVar")
 	verifyenv := readGeneratedFile(t, outputDir, "internal", "cliutil", "verifyenv.go")
 	require.Contains(t, verifyenv, prefix+"_MCP_CHILD")
@@ -115,15 +118,19 @@ func TestGeneratedMCPServerHardening(t *testing.T) {
 	requireGoTestPassed(t, outputDir, []string{"./internal/mcp", "-run", "^TestMCP(TailChildPollsOnce|SearchLimitIsCapped)", "-count=1"},
 		"--- PASS: TestMCPTailChildPollsOnce",
 		"--- PASS: TestMCPSearchLimitIsCappedAndCancellable")
-	requireGoTestPassed(t, outputDir, []string{"./internal/mcp/cobratree", "-run", "^Test(Input|RunCLICommandSetsMCPChild)", "-count=1"},
+	requireGoTestPassed(t, outputDir, []string{"./internal/mcp/cobratree", "-run", "^Test(Input|RunCLICommandSetsMCPChild|RunCLICommandOmitsMCPHTTPToken)", "-count=1"},
 		"--- PASS: TestInputPathFlagsStayOutOfMCPSchemaAndArgv",
 		"--- PASS: TestInputFlagBlockedCoversGlobalNames",
-		"--- PASS: TestRunCLICommandSetsMCPChildEnv")
+		"--- PASS: TestRunCLICommandSetsMCPChildEnv",
+		"--- PASS: TestRunCLICommandOmitsMCPHTTPToken")
 	requireGoTestPassed(t, outputDir, []string{"./cmd/" + naming.MCP(apiSpec.Name), "-count=1"},
 		"--- PASS: TestMCPHTTPDeclaredOversizeBodyIsRefused",
 		"--- PASS: TestMCPHTTPTrickledBodyTimesOut",
 		"--- PASS: TestMCPHTTPIdleKeepAliveIsReaped",
-		"--- PASS: TestMCPHTTPUnauthenticatedSkipsBodyRead")
+		"--- PASS: TestMCPHTTPUnauthenticatedSkipsBodyRead",
+		"--- PASS: TestParseHTTPOriginBypasses",
+		"--- PASS: TestMCPHTTPOriginGuard",
+		"--- PASS: TestMCPHTTPInitializeRejectsForeignOrigin")
 }
 
 func requireGoTestPassed(t *testing.T, dir string, args []string, want ...string) {
