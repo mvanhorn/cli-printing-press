@@ -92,7 +92,7 @@ func intentDestructiveHint(api *spec.APISpec, intent spec.Intent) mcpHint {
 		if hint.Set && hint.Value {
 			return mcpHint{Set: true, Value: true}
 		}
-		if !(hint.Set && !hint.Value) {
+		if !hint.Set || hint.Value {
 			allExplicitAdditive = false
 		}
 	}

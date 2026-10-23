@@ -63,15 +63,15 @@ func TestGenerateMCPPostDestructiveHints(t *testing.T) {
 	}{
 		{method: "POST", path: "/devices/{id}/retire", destructive: nil},
 		{method: "POST", path: "/devices/{id}/sessions/{sessionId}/revoke", destructive: nil},
-		{method: "POST", path: "/widgets/{id}/tag", destructive: boolPtr(false)},
-		{method: "POST", path: "/widgets/{id}/cancel", destructive: boolPtr(true)},
+		{method: "POST", path: "/widgets/{id}/tag", destructive: new(false)},
+		{method: "POST", path: "/widgets/{id}/cancel", destructive: new(true)},
 		{method: "POST", path: "/widgets/{id}/label", destructive: nil},
 		{method: "POST", path: "/widgets/{id}/nudge", destructive: nil},
-		{method: "GET", path: "/widgets/{id}", readOnly: true, destructive: boolPtr(false)},
+		{method: "GET", path: "/widgets/{id}", readOnly: true, destructive: new(false)},
 		{method: "PUT", path: "/widgets/{id}", destructive: nil},
-		{method: "DELETE", path: "/widgets/{id}", destructive: boolPtr(true)},
-		{method: "POST", path: "/widgets/search", readOnly: true, destructive: boolPtr(false)},
-		{method: "POST", path: "/reports/query", readOnly: true, destructive: boolPtr(false)},
+		{method: "DELETE", path: "/widgets/{id}", destructive: new(true)},
+		{method: "POST", path: "/widgets/search", readOnly: true, destructive: new(false)},
+		{method: "POST", path: "/reports/query", readOnly: true, destructive: new(false)},
 	}
 
 	var runtime []hintCase
@@ -79,7 +79,7 @@ func TestGenerateMCPPostDestructiveHints(t *testing.T) {
 		name, block := toolBlockForPath(t, toolsSrc, tc.method, tc.path)
 		assertHintBlock(t, name, block, tc.readOnly, tc.destructive, true)
 		runtime = append(runtime, hintCase{
-			name: name, readOnly: tc.readOnly, destructive: tc.destructive, openWorld: boolPtr(true),
+			name: name, readOnly: tc.readOnly, destructive: tc.destructive, openWorld: new(true),
 		})
 	}
 	require.NotContains(t, toolBlockForPathMust(t, toolsSrc, "POST", "/devices/{id}/retire"), "WithDestructiveHintAnnotation(false)")
@@ -93,30 +93,30 @@ func TestGenerateMCPPostDestructiveHints(t *testing.T) {
 		{name: "label_widget"},
 		{name: "retire_then_tag"},
 		{name: "missing_step"},
-		{name: "tag_widget", destructive: boolPtr(false)},
-		{name: "cancel_widget", destructive: boolPtr(true)},
-		{name: "delete_widget", destructive: boolPtr(true)},
-		{name: "tag_then_delete", destructive: boolPtr(true)},
-		{name: "query_reports", readOnly: true, destructive: boolPtr(false)},
+		{name: "tag_widget", destructive: new(false)},
+		{name: "cancel_widget", destructive: new(true)},
+		{name: "delete_widget", destructive: new(true)},
+		{name: "tag_then_delete", destructive: new(true)},
+		{name: "query_reports", readOnly: true, destructive: new(false)},
 	}
 	for _, tc := range intentCases {
 		block := intentToolBlock(t, intentsSrc, tc.name)
 		assertHintBlock(t, tc.name, block, tc.readOnly, tc.destructive, true)
 		runtime = append(runtime, hintCase{
-			name: tc.name, readOnly: tc.readOnly, destructive: tc.destructive, openWorld: boolPtr(true),
+			name: tc.name, readOnly: tc.readOnly, destructive: tc.destructive, openWorld: new(true),
 		})
 	}
 
 	contextBlock := builtInToolBlock(t, toolsSrc, "context")
-	assertHintBlock(t, "context", contextBlock, true, boolPtr(false), false)
-	runtime = append(runtime, hintCase{name: "context", readOnly: true, destructive: boolPtr(false)})
+	assertHintBlock(t, "context", contextBlock, true, new(false), false)
+	runtime = append(runtime, hintCase{name: "context", readOnly: true, destructive: new(false)})
 	if strings.Contains(toolsSrc, `NewTool("sql"`) {
-		assertHintBlock(t, "sql", builtInToolBlock(t, toolsSrc, "sql"), true, boolPtr(false), false)
-		runtime = append(runtime, hintCase{name: "sql", readOnly: true, destructive: boolPtr(false)})
+		assertHintBlock(t, "sql", builtInToolBlock(t, toolsSrc, "sql"), true, new(false), false)
+		runtime = append(runtime, hintCase{name: "sql", readOnly: true, destructive: new(false)})
 	}
 	if strings.Contains(toolsSrc, `NewTool("search"`) {
-		assertHintBlock(t, "search", builtInToolBlock(t, toolsSrc, "search"), true, boolPtr(false), false)
-		runtime = append(runtime, hintCase{name: "search", readOnly: true, destructive: boolPtr(false)})
+		assertHintBlock(t, "search", builtInToolBlock(t, toolsSrc, "search"), true, new(false), false)
+		runtime = append(runtime, hintCase{name: "search", readOnly: true, destructive: new(false)})
 	}
 
 	teachSrc := readGeneratedFile(t, outputDir, "internal", "cli", "teach.go")
@@ -149,8 +149,6 @@ type hintCase struct {
 	destructive *bool
 	openWorld   *bool
 }
-
-func boolPtr(v bool) *bool { return &v }
 
 func intentNamed(name, description string, endpoints ...string) spec.Intent {
 	steps := make([]spec.IntentStep, len(endpoints))
@@ -211,10 +209,7 @@ func toolBlockForPath(t *testing.T, src, method, path string) (string, string) {
 			break
 		}
 		pathIdx := searchFrom + rel
-		windowStart := pathIdx - 120
-		if windowStart < 0 {
-			windowStart = 0
-		}
+		windowStart := max(pathIdx-120, 0)
 		window := src[windowStart:pathIdx]
 		if strings.Contains(window, "makeAPIHandler("+strconv.Quote(method)+",") {
 			start := strings.LastIndex(src[:pathIdx], "mcplib.NewTool(")
