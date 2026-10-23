@@ -104,6 +104,7 @@ func (c *Client) BindPlatformSession(session *platform.Session) error {
 	}
 	c.platformSession = session
 	c.cacheDir = session.Paths.CacheDir
+	c.sweepExpiredCache()
 	c.platformLimiters = map[string]*platform.EndpointLimiter{}
 	c.platformBudgets = map[string]platform.EndpointBudget{}
 	return nil
@@ -1173,6 +1174,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		cacheDir:     cacheDir,
 		limiter:      newRateLimiter(rateLimit),
 	}
+	c.sweepExpiredCache()
 	if httpClient == nil {
 		return c
 	}
@@ -1653,7 +1655,7 @@ func (c *Client) readCacheWithHeaders(path string, params map[string]string, hea
 	resourceDir := c.cacheResourceDir(path)
 	cacheFile := filepath.Join(resourceDir, c.cacheKeyFor(http.MethodGet, path, params, headers, nil)+".json")
 	info, err := os.Stat(cacheFile)
-	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
+	if err != nil || time.Since(info.ModTime()) > responseCacheTTL {
 		return nil, false
 	}
 	if c.platformSession != nil && !c.platformCacheMetadataMatches(cacheFile) {
@@ -1683,6 +1685,70 @@ func (c *Client) writeCacheWithHeaders(path string, params map[string]string, he
 	ensureCachePerms(resourceDir, cacheFile)
 	if c.platformSession != nil {
 		c.writePlatformCacheMetadata(cacheFile)
+	}
+	sweepCacheNamespaceAfterWrite(resourceDir, time.Now())
+}
+
+// responseCacheTTL bounds how long a cached GET body may be served. The same
+// window decides when the sweep deletes the file, so nothing the read path
+// would reject stays on disk.
+const responseCacheTTL = 5 * time.Minute
+
+// responseCacheSweptAt records when this process last swept each namespace
+// dir, so a burst of writes (paged exports, syncs) lists a namespace at most
+// once per TTL instead of once per write.
+var responseCacheSweptAt sync.Map
+
+// sweepExpiredCache deletes expired response files across every resource
+// namespace. Expiry is otherwise only checked on read, so cached API payloads
+// for paths that are never requested again would stay on disk indefinitely.
+// The walk is one ReadDir of the namespace root plus one per namespace.
+func (c *Client) sweepExpiredCache() {
+	if c == nil || c.cacheDir == "" {
+		return
+	}
+	root := filepath.Join(c.cacheDir, "resources")
+	namespaces, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, namespace := range namespaces {
+		if namespace.IsDir() {
+			dir := filepath.Join(root, namespace.Name())
+			responseCacheSweptAt.Store(dir, now)
+			sweepExpiredCacheDir(dir, now)
+		}
+	}
+}
+
+func sweepCacheNamespaceAfterWrite(dir string, now time.Time) {
+	if last, ok := responseCacheSweptAt.Load(dir); ok {
+		if at, ok := last.(time.Time); ok && now.Sub(at) < responseCacheTTL {
+			return
+		}
+	}
+	responseCacheSweptAt.Store(dir, now)
+	sweepExpiredCacheDir(dir, now)
+}
+
+// sweepExpiredCacheDir removes regular files in one namespace whose mtime is
+// outside the TTL, including the .meta.json / .platform.json sidecars written
+// alongside each body. Fresh files from a concurrent writer are never touched.
+func sweepExpiredCacheDir(dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) <= responseCacheTTL {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
 	}
 }
 
@@ -1720,7 +1786,7 @@ func (c *Client) platformCacheMetadataMatches(cacheFile string) bool {
 func (c *Client) writePlatformCacheMetadata(cacheFile string) {
 	now := time.Now().UTC()
 	metadata := platformCacheMetadata{
-		FetchedAt: now, ExpiresAt: now.Add(5 * time.Minute),
+		FetchedAt: now, ExpiresAt: now.Add(responseCacheTTL),
 		Profile: c.platformSession.ProfileName, Source: c.platformSession.Source,
 		ExpectedIdentity:      c.platformSession.ExpectedIdentity,
 		ObservedIdentity:      c.platformSession.ObservedIdentity,
