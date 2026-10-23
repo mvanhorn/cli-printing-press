@@ -27,6 +27,7 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV8(t *testing.T) {
 	src := string(storeGo)
 	require.Contains(t, src, "const StoreSchemaVersion = 8")
 	require.NotContains(t, src, "const StoreSchemaVersion = 13")
+	require.NotContains(t, src, "const StoreSchemaVersion = 14")
 	require.NotContains(t, src, "parentKeyStorageIDSchemaVersion")
 	require.Contains(t, src, "s.migrateParentKeyStorageIDs(ctx, conn)")
 	require.Contains(t, src, "parentKeyLegacyBatchSize")
@@ -39,7 +40,7 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV8(t *testing.T) {
 	}
 }
 
-func TestGenerateStoreSchemaVersion_EnabledAdvancesToV13WithLearnTables(t *testing.T) {
+func TestGenerateStoreSchemaVersion_EnabledAdvancesToV14WithLearnTables(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-enabled")
@@ -52,7 +53,8 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV13WithLearnTables(t *testi
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 13")
+	require.Contains(t, src, "const StoreSchemaVersion = 14")
+	require.Contains(t, src, "ingress_surface TEXT NOT NULL DEFAULT 'cli'")
 	require.NotContains(t, src, "const StoreSchemaVersion = 8")
 	require.NotContains(t, src, "parentKeyStorageIDSchemaVersion")
 	require.Contains(t, src, "s.migrateParentKeyStorageIDs(ctx, conn)")

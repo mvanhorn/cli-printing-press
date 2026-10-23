@@ -41,6 +41,22 @@ type UpsertPlaybookInput struct {
 	NotesText             string
 	Source                string
 	PreserveExistingNotes bool
+	// IngressSurface records who supplied this text. Empty and any value
+	// other than mcp store as cli. mcp sticks: a later cli write does not
+	// clear it. Callers that accept user text pass LearnEventSurface();
+	// seed writes leave this empty so an MCP child process does not taint
+	// embedded playbooks.
+	IngressSurface string
+}
+
+// canonicalPlaybookIngress folds the caller-supplied surface to the two
+// values recall understands. Only mcp is untrusted; everything else,
+// including empty, is cli.
+func canonicalPlaybookIngress(surface string) string {
+	if strings.EqualFold(strings.TrimSpace(surface), LearnSurfaceMCP) {
+		return LearnSurfaceMCP
+	}
+	return LearnSurfaceCLI
 }
 
 // UpsertPlaybook inserts a playbook row for a query family or, on
@@ -93,6 +109,7 @@ func upsertPlaybookTx(tx *sql.Tx, in UpsertPlaybookInput, now time.Time) (int64,
 	if source == "" {
 		source = LearningSourceTaught
 	}
+	ingress := canonicalPlaybookIngress(in.IngressSurface)
 
 	var existingID int64
 	err := tx.QueryRow(
@@ -108,6 +125,8 @@ func upsertPlaybookTx(tx *sql.Tx, in UpsertPlaybookInput, now time.Time) (int64,
 		// re-teach preserve existing notes. PreserveExistingNotes
 		// additionally protects existing non-empty notes_text from
 		// being overwritten by a seed-loop upsert.
+		// mcp sticks. A later cli upsert must not clear text an MCP
+		// client already mixed into the row.
 		notesUpdate := `notes_text = CASE WHEN ? != '' THEN ? ELSE notes_text END`
 		if in.PreserveExistingNotes {
 			notesUpdate = `notes_text = CASE WHEN ? != '' AND (notes_text IS NULL OR notes_text = '') THEN ? ELSE notes_text END`
@@ -115,11 +134,13 @@ func upsertPlaybookTx(tx *sql.Tx, in UpsertPlaybookInput, now time.Time) (int64,
 		query := `UPDATE learning_playbooks
 			 SET playbook_json = CASE WHEN ? != '' THEN ? ELSE playbook_json END,
 			     ` + notesUpdate + `,
+			     ingress_surface = CASE WHEN ? = 'mcp' THEN 'mcp' ELSE ingress_surface END,
 			     last_observed_at = ?
 			 WHERE id = ?`
 		if _, err := tx.Exec(query,
 			in.PlaybookJSON, in.PlaybookJSON,
 			in.NotesText, in.NotesText,
+			ingress,
 			now, existingID,
 		); err != nil {
 			return 0, false, fmt.Errorf("upsert playbook update: %w", err)
@@ -132,9 +153,9 @@ func upsertPlaybookTx(tx *sql.Tx, in UpsertPlaybookInput, now time.Time) (int64,
 
 	res, err := tx.Exec(
 		`INSERT INTO learning_playbooks
-		 (query_family, playbook_json, notes_text, source, confidence, last_observed_at)
-		 VALUES (?, ?, ?, ?, 2, ?)`,
-		family, in.PlaybookJSON, in.NotesText, source, now,
+		 (query_family, playbook_json, notes_text, source, confidence, ingress_surface, last_observed_at)
+		 VALUES (?, ?, ?, ?, 2, ?, ?)`,
+		family, in.PlaybookJSON, in.NotesText, source, ingress, now,
 	)
 	if err != nil {
 		return 0, false, fmt.Errorf("upsert playbook insert: %w", err)
@@ -153,7 +174,7 @@ func upsertPlaybookTx(tx *sql.Tx, in UpsertPlaybookInput, now time.Time) (int64,
 // SQLite UPDATE uses COALESCE(notes_text, '') || ? so an absent or
 // NULL existing notes_text appends cleanly without a separate
 // read+rewrite step.
-func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) {
+func (s *Store) AppendPlaybookNotes(family, marker, ingressSurface string) (int64, bool, error) {
 	family = strings.TrimSpace(family)
 	if family == "" {
 		return 0, false, fmt.Errorf("append playbook notes: query_family is required")
@@ -172,7 +193,7 @@ func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) 
 	}
 	defer tx.Rollback()
 
-	id, inserted, err := appendPlaybookNotesTx(tx, family, marker, now)
+	id, inserted, err := appendPlaybookNotesTx(tx, family, marker, canonicalPlaybookIngress(ingressSurface), now)
 	if err != nil {
 		return 0, false, err
 	}
@@ -182,7 +203,7 @@ func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) 
 	return id, inserted, nil
 }
 
-func appendPlaybookNotesTx(tx *sql.Tx, family, marker string, now time.Time) (int64, bool, error) {
+func appendPlaybookNotesTx(tx *sql.Tx, family, marker, ingress string, now time.Time) (int64, bool, error) {
 	family = strings.TrimSpace(family)
 	if family == "" {
 		return 0, false, fmt.Errorf("append playbook notes: query_family is required")
@@ -201,9 +222,10 @@ func appendPlaybookNotesTx(tx *sql.Tx, family, marker string, now time.Time) (in
 		if _, err := tx.Exec(
 			`UPDATE learning_playbooks
 			 SET notes_text = COALESCE(notes_text, '') || ?,
+			     ingress_surface = CASE WHEN ? = 'mcp' THEN 'mcp' ELSE ingress_surface END,
 			     last_observed_at = ?
 			 WHERE id = ?`,
-			marker, now, existingID,
+			marker, ingress, now, existingID,
 		); err != nil {
 			return 0, false, fmt.Errorf("append playbook notes update: %w", err)
 		}
@@ -212,9 +234,9 @@ func appendPlaybookNotesTx(tx *sql.Tx, family, marker string, now time.Time) (in
 		initial := strings.TrimLeft(marker, "\n")
 		res, err := tx.Exec(
 			`INSERT INTO learning_playbooks
-			 (query_family, playbook_json, notes_text, source, confidence, last_observed_at)
-			 VALUES (?, '', ?, ?, 2, ?)`,
-			family, initial, LearningSourceTaught, now,
+			 (query_family, playbook_json, notes_text, source, confidence, ingress_surface, last_observed_at)
+			 VALUES (?, '', ?, ?, 2, ?, ?)`,
+			family, initial, LearningSourceTaught, ingress, now,
 		)
 		if err != nil {
 			return 0, false, fmt.Errorf("append playbook notes insert: %w", err)

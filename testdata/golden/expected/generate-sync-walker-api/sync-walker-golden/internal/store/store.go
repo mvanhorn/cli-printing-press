@@ -54,14 +54,15 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Learn-enabled CLIs advance to v13
-// to record the checkpoint scope beside each resource, on top of v12's
+// checked on every open. Learn-enabled CLIs advance to v14
+// to record which surface wrote each learning_playbooks row, on top of v13's
+// checkpoint scope beside each resource, v12's
 // parent-key storage-id migration, v11's trigram resources_fts rebuild
 // (CJK substring search), v10's learn_candidates and learn_events tables
 // plus the latest-sync-attempt completion marker, the v8 learning_playbooks
 // table, and the v6 canonical learn-loop tables (including the v3
 // resources_fts rowid rehash and v4 resources_fts content extraction).
-const StoreSchemaVersion = 13
+const StoreSchemaVersion = 14
 
 // resourcesFTSContentSchemaVersion pins the schema bump that rewrote
 // resources_fts content from raw JSON to searchable leaf values. Keep this
@@ -473,6 +474,9 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		// scope_key is not part of the primary key: one row per resource, and a
 		// changed scope resets the cursor instead of keeping both tenants.
 		{table: "sync_state", column: "scope_key", decl: "TEXT NOT NULL DEFAULT ''"},
+		// Pre-v14 playbook rows have no surface. Default cli so existing
+		// notes stay on the trusted recall fields.
+		{table: "learning_playbooks", column: "ingress_surface", decl: "TEXT NOT NULL DEFAULT 'cli'"},
 		{table: "leagues", column: "parent_id", decl: "TEXT"},
 		{table: "leagues", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"},
 		{table: "standings", column: "parent_id", decl: "TEXT"},
@@ -644,6 +648,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			notes_text TEXT,
 			source TEXT NOT NULL DEFAULT 'taught',
 			confidence INTEGER NOT NULL DEFAULT 2,
+			ingress_surface TEXT NOT NULL DEFAULT 'cli',
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			last_observed_at TIMESTAMP
 		)`,

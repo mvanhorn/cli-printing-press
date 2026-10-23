@@ -80,6 +80,7 @@ const (
 	extensionPPQuery               = "x-pp-query"
 	extensionPPResponseEnvelope    = "x-pp-response-envelope"
 	extensionPPMutation            = "x-pp-mutation"
+	extensionPPDestructive         = "x-pp-destructive"
 	extensionPPReplaySafe          = "x-pp-replay-safe"
 	extensionPPSyncable            = "x-pp-syncable"
 	extensionPPPagination          = "x-pp-pagination"
@@ -3702,6 +3703,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.Critical = pathCritical
 			if mutation, present := boolExtension(op.Extensions, extensionPPMutation); present {
 				endpoint.Mutation = new(mutation)
+			}
+			if raw, present := op.Extensions[extensionPPDestructive]; present {
+				if destructive, ok := boolExtension(op.Extensions, extensionPPDestructive); ok {
+					endpoint.Destructive = new(destructive)
+				} else {
+					warnf("%s %q: %s must be a boolean; ignoring %T value", strings.ToUpper(method), path, extensionPPDestructive, raw)
+				}
 			}
 			if replaySafe, present := boolExtension(op.Extensions, extensionPPReplaySafe); present {
 				endpoint.ReplaySafe = new(replaySafe)

@@ -143,6 +143,35 @@ func TestLearnEvent_SurfaceDetection(t *testing.T) {
 	if got := LearnEventSurface(); got != LearnSurfaceCLI {
 		t.Errorf("reset surface = %q, want cli", got)
 	}
+
+	// The env var is not read inside UpsertPlaybook. Seed writes pass an
+	// empty surface and stay cli even while this process is MCP. User-text
+	// callers pass LearnEventSurface() and then the row records mcp.
+	SetLearnEventSurface("")
+	t.Setenv(learnSurfaceEnvVar, "McP")
+	if got := LearnEventSurface(); got != LearnSurfaceMCP {
+		t.Fatalf("folded env surface = %q, want mcp", got)
+	}
+	s := openTestPlaybooksStore(t)
+	if _, _, err := s.UpsertPlaybook(UpsertPlaybookInput{
+		QueryFamily: "seed family",
+		NotesText:   "embedded",
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	if got := playbookIngress(t, s, "seed family"); got != LearnSurfaceCLI {
+		t.Fatalf("ambient mcp env tainted a seed write: %q", got)
+	}
+	if _, _, err := s.UpsertPlaybook(UpsertPlaybookInput{
+		QueryFamily:    "wired family",
+		NotesText:      "from the tool",
+		IngressSurface: LearnEventSurface(),
+	}); err != nil {
+		t.Fatalf("wired upsert: %v", err)
+	}
+	if got := playbookIngress(t, s, "wired family"); got != LearnSurfaceMCP {
+		t.Fatalf("LearnEventSurface did not stick: %q", got)
+	}
 }
 
 func TestLearnEvent_ConcurrentInsertsLoseNothing(t *testing.T) {

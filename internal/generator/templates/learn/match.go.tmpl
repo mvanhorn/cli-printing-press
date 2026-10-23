@@ -72,6 +72,10 @@ const (
 	// absent AND the candidates key is omitted entirely, keeping the
 	// envelope byte-stable for stores with nothing pending.
 	TopWarningCandidatesPresent = "candidates_present"
+	// TopWarningUntrustedPlaybook surfaces when the matched playbook row
+	// was stored over MCP. The text is under untrusted_data, not on the
+	// playbook or notes fields, and is not a next action.
+	TopWarningUntrustedPlaybook = "untrusted_playbook_text"
 )
 
 // Jaccard returns the token-set Jaccard coefficient of two string

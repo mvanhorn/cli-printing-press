@@ -2570,6 +2570,12 @@ type Endpoint struct {
 	// marks a GET action as state-changing; false marks a POST (or other
 	// non-GET) endpoint as a read so generated commands print the body.
 	Mutation *bool `yaml:"mutation,omitempty" json:"mutation,omitempty"`
+	// Destructive is the optional MCP destructiveHint for a write that
+	// stays a write. nil means DELETE advertises destructive and every
+	// other write leaves the hint unset, so hosts treat it as possibly
+	// destructive. false marks an additive write without making the
+	// command read-only. Reads ignore this field.
+	Destructive *bool `yaml:"destructive,omitempty" json:"destructive,omitempty"`
 	// ReplaySafe is the optional explicit replay override for a mutating
 	// request. nil means unset (the generator treats file-upload endpoints
 	// as replay-safe and every other POST/PATCH as unsafe). true lets the

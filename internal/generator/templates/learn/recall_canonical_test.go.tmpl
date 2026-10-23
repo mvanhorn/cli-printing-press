@@ -789,6 +789,9 @@ func TestRecall_PlaybookNotesOnly(t *testing.T) {
 	if got.Playbook.Notes != notes {
 		t.Errorf("ResolvedPlaybook.Notes = %q, want %q", got.Playbook.Notes, notes)
 	}
+	if got.UntrustedData != nil {
+		t.Errorf("a row with no ingress_surface column must stay trusted; got %+v", got.UntrustedData)
+	}
 }
 
 // TestRecall_PlaybookCoexistsWithResourceHit confirms playbooks land
