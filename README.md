@@ -554,7 +554,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Contributing
 
-Bug reports, feature requests, and PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; it explains the PR template, AI / automation disclosure, and the repo boundary between the Printing Press and printed CLIs. [AGENTS.md](AGENTS.md) carries the full developer conventions, glossary, commit style, and verification rules.
+Bug reports, feature requests, and PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; it explains the PR template, AI / automation disclosure, and the repo boundary between the Printing Press and printed CLIs. [AGENTS.md](AGENTS.md) carries the full developer conventions, glossary, commit style, and verification rules. Report a vulnerability privately; see [SECURITY.md](SECURITY.md).
 
 ## Development
 

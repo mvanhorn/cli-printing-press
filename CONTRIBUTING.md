@@ -2,6 +2,8 @@
 
 Thanks for helping improve the Printing Press. This repository contains the generator, templates, binary, skills, catalog, tests, and docs that produce printed CLIs. Printed-CLI-only fixes belong in the generated CLI or public library repo, not here.
 
+Report a vulnerability privately; see [SECURITY.md](SECURITY.md).
+
 ## Before Opening a PR
 
 - Check for an existing issue or PR that already covers the same work.
