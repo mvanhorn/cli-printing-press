@@ -485,6 +485,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newProjectsCmd(flags))
 	rootCmd.AddCommand(newReportsCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
+	rootCmd.AddCommand(newLocalDataCmd(flags))
 	if registeredPlatformSource != nil {
 		attachPlatformClientCommands(rootCmd, flags)
 	}
@@ -558,6 +559,7 @@ var learnHookSkipList = map[string]struct{}{
 	"agent-context": {},
 	"completion":    {},
 	"version":       {},
+	"local-data":    {},
 }
 
 // shouldSkipLearnHook reports whether a recall pre-run hook should
@@ -628,7 +630,7 @@ func journalInvocation(flags *rootFlags, rootCmd, executed *cobra.Command, err e
 	// The master --no-learn switch kills journaling too. On the
 	// parse-failure path the flag was never parsed into rootFlags, so
 	// the raw args are consulted as well.
-	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) {
+	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || isLocalDataInvocation(rootCmd, executed) {
 		return
 	}
 	exitCode := 0
@@ -666,6 +668,13 @@ func journalInvocation(flags *rootFlags, rootCmd, executed *cobra.Command, err e
 		FailedFlag:    failedFlag,
 		SuggestedFlag: suggestedFlag,
 	})
+}
+
+// isLocalDataInvocation keeps the learn loop from journaling or deriving
+// after local-data purge, which would recreate the files it just erased.
+func isLocalDataInvocation(rootCmd, executed *cobra.Command) bool {
+	chain := journalVerbChain(rootCmd, executed)
+	return len(chain) > 0 && chain[0] == "local-data"
 }
 
 // journalVerbChain resolves the subcommand verb chain for the journal
@@ -753,7 +762,7 @@ var learnFamilyCommands = map[string]struct{}{
 // appended may wait out the peer still holding the offset lock so that
 // line is not left unpaired when the process exits.
 func deriveFlagCorrections(flags *rootFlags, rootCmd, executed *cobra.Command) {
-	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() {
+	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() || isLocalDataInvocation(rootCmd, executed) {
 		return
 	}
 	chain := journalVerbChain(rootCmd, executed)
