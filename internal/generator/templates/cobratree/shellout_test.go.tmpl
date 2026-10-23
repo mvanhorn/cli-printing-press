@@ -406,6 +406,43 @@ func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	}
 }
 
+// TestBlockedStructuredArgsDropsInheritedPacingFlags pins that an MCP caller
+// cannot turn off the client-side pacing that keeps the operator's API key
+// under vendor rate limits, or stretch the operator's request timeout. A
+// command's own local --timeout stays available.
+func TestBlockedStructuredArgsDropsInheritedPacingFlags(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().Float64("rate-limit", 0, "max requests per second")
+	root.PersistentFlags().String("throttle-mode", "strict", "throttle mode")
+	root.PersistentFlags().Duration("timeout", time.Minute, "request timeout")
+
+	syncCmd := &cobra.Command{Use: "sync"}
+	root.AddCommand(syncCmd)
+	waitCmd := &cobra.Command{Use: "wait"}
+	waitCmd.Flags().Duration("timeout", 0, "how long to wait")
+	root.AddCommand(waitCmd)
+
+	blocked := blockedStructuredArgsForCommand(syncCmd)
+	for _, name := range []string{"rate-limit", "throttle-mode", "timeout"} {
+		if !blocked[name] {
+			t.Fatalf("inherited root --%s was not blocked: %#v", name, blocked)
+		}
+	}
+	got := cliArgsFromMCP(map[string]any{
+		"limit":         float64(5),
+		"rate-limit":    float64(0),
+		"throttle-mode": "off",
+		"timeout":       "24h",
+	}, blocked)
+	if want := []string{"--limit=5"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP pacing flags: got %v, want %v", got, want)
+	}
+
+	if blockedStructuredArgsForCommand(waitCmd)["timeout"] {
+		t.Fatal("command-local --timeout was blocked as a root flag")
+	}
+}
+
 func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 	pinMCPReadOnlyOff(t)
 	root := &cobra.Command{Use: "root"}
