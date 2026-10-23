@@ -178,9 +178,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// darwin_acl_test.go, darwin_acl_live_test.go). Always emitted:
 		// profile checks exist when auth is none.
 		// +1: cliutil/windows_account.go, the shared Windows SID helpers.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 193},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 197},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 194},
+		// +1: internal/cli/local_data.go, the always-emitted local-data purge.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 194},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 198},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 195},
 	}
 
 	for _, tt := range tests {

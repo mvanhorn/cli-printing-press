@@ -34,7 +34,7 @@ var infraCoreFiles = map[string]bool{
 var infraAllFiles = map[string]bool{
 	"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
 	"export.go": true, "import.go": true, "search.go": true, "sync.go": true,
-	"tail.go": true, "analytics.go": true,
+	"tail.go": true, "analytics.go": true, "local_data.go": true,
 }
 
 var actionableDoctorSuggestionRE = regexp.MustCompile(`(?i)\b(run|try)\b.{0,80}\bdoctor\b`)

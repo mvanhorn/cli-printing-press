@@ -225,7 +225,7 @@ func platformCommandNeedsGate(cmd *cobra.Command) bool {
 			// explicitly named profile-management surface is a control command.
 			return true
 		}
-	case "profile", "auth", "agent-context", "feedback", "which", "version", "completion", "about", "api":
+	case "profile", "auth", "agent-context", "feedback", "which", "version", "completion", "about", "api", "local-data":
 		return false
 	default:
 		return true
