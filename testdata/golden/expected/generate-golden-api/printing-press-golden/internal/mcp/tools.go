@@ -222,6 +222,25 @@ func RegisterTools(s *server.MCPServer) {
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
 	// not already covered by a typed endpoint or framework MCP tool.
 	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+
+	// The read-only switch covers every tool, so this runs after all
+	// registrations: typed endpoint tools and intents never consult it, and
+	// the mirror keeps local-store writers that hosts may auto-approve.
+	if cliutil.IsMCPReadOnlyEnv() {
+		dropNonReadOnlyTools(s)
+	}
+}
+
+// dropNonReadOnlyTools removes every tool not annotated readOnlyHint=true.
+// A tool with no annotation fails closed.
+func dropNonReadOnlyTools(s *server.MCPServer) {
+	var drop []string
+	for name, entry := range s.ListTools() {
+		if hint := entry.Tool.Annotations.ReadOnlyHint; hint == nil || !*hint {
+			drop = append(drop, name)
+		}
+	}
+	s.DeleteTools(drop...)
 }
 
 type mcpParamBinding struct {
