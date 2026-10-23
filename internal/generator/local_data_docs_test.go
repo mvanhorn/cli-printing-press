@@ -24,12 +24,12 @@ func TestGeneratedLocalDataDisclosure(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	for _, want := range []string{"### Local data", "None of it is encrypted", "local-data purge", "LOCAL_DOCS_NO_LOCAL_DATA=1",
-		"### Remote MCP over HTTP", "LOCAL_DOCS_MCP_HTTP_TOKEN", "--tls-cert", "LOCAL_DOCS_MCP_READ_ONLY=1"} {
+		"### Remote MCP over HTTP", "LOCAL_DOCS_MCP_HTTP_TOKEN", "at least 32 characters", "LOCAL_DOCS_MCP_HTTP_ALLOWED_ORIGINS", "--tls-cert", "LOCAL_DOCS_MCP_READ_ONLY=1"} {
 		require.Contains(t, string(readme), want)
 	}
 	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
 	require.NoError(t, err)
-	for _, want := range []string{"Local data is unencrypted", "LOCAL_DOCS_MCP_HTTP_TOKEN", "LOCAL_DOCS_MCP_READ_ONLY=1"} {
+	for _, want := range []string{"Local data is unencrypted", "LOCAL_DOCS_MCP_HTTP_TOKEN", "at least 32 characters", "LOCAL_DOCS_MCP_HTTP_ALLOWED_ORIGINS", "LOCAL_DOCS_MCP_READ_ONLY=1"} {
 		require.Contains(t, string(skill), want)
 	}
 	doctor, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))

@@ -34,7 +34,13 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 	mainSrc := readGeneratedMCPMain(t, outputDir, apiSpec.Name)
 	for _, want := range []string{
 		`httpTokenEnvVar = "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN"`,
+		`httpAllowedOriginsEnvVar = "HTTP_AUTH_PROOF_MCP_HTTP_ALLOWED_ORIGINS"`,
+		"mcpHTTPTokenMinLength   = 32",
 		"func requireHTTPCallerToken()",
+		"func parseHTTPOrigin(",
+		"func loadAllowedHTTPOrigins()",
+		"func requestOriginPermitted(",
+		"subtle.ConstantTimeCompare",
 		"func classifyHTTPBind(",
 		"func httpBindIsLoopback(",
 		"net.LookupIP(host)",
@@ -47,7 +53,7 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 		"func bearerTokenMatches(",
 		`flag.String("tls-cert"`,
 		`flag.String("tls-key"`,
-		"requireBearerAuth(token, inner)",
+		"requireBearerAuthWithOrigins(token, allowedOrigins, inner)",
 		"httpSrv.ListenAndServe()",
 		"httpSrv.ListenAndServeTLS(",
 	} {
@@ -58,6 +64,9 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 
 	testSrc := readGeneratedFile(t, outputDir, "cmd", naming.MCP(apiSpec.Name), "http_auth_test.go")
 	require.Contains(t, testSrc, "TestRequireBearerAuthRejectsMissingAndWrongTokens")
+	require.Contains(t, testSrc, "TestParseHTTPOriginBypasses")
+	require.Contains(t, testSrc, "TestMCPHTTPOriginGuard")
+	require.Contains(t, testSrc, "TestMCPHTTPInitializeRejectsForeignOrigin")
 	require.Contains(t, testSrc, "TestClassifyHTTPBindPinsNamedLoopback")
 	require.Contains(t, testSrc, "httptest.NewServer")
 
@@ -66,24 +75,69 @@ func TestGeneratedHTTPMCPRequiresCallerAuthAndTLS(t *testing.T) {
 	binPath := filepath.Join(outputDir, naming.MCP(apiSpec.Name))
 	runGoCommandRequired(t, outputDir, "build", "-o", binPath, "./cmd/"+naming.MCP(apiSpec.Name))
 
+	const httpToken = "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN"
+	const allowedOrigins = "HTTP_AUTH_PROOF_MCP_HTTP_ALLOWED_ORIGINS"
+	const validToken = "0123456789abcdef0123456789abcdef"
+
 	missingCtx, missingCancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(missingCancel)
 	missingToken := exec.CommandContext(missingCtx, binPath, "--transport", "http", "--addr", "127.0.0.1:0")
-	missingToken.Env = append(os.Environ(), "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN=")
+	missingToken.Env = mcpHTTPTestEnv(httpToken + "=")
 	out, err := missingToken.CombinedOutput()
 	require.Error(t, err, "HTTP transport without caller token must refuse: %s", out)
-	require.Contains(t, string(out), "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN")
+	require.Contains(t, string(out), httpToken)
+	require.Contains(t, string(out), "32")
+	require.NotContains(t, string(out), "serving MCP over streamable HTTP")
+
+	shortCtx, shortCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(shortCancel)
+	shortToken := exec.CommandContext(shortCtx, binPath, "--transport", "http", "--addr", "127.0.0.1:0")
+	shortToken.Env = mcpHTTPTestEnv(httpToken + "=x")
+	out, err = shortToken.CombinedOutput()
+	require.Error(t, err, "HTTP transport with a one-character token must refuse: %s", out)
+	require.Contains(t, string(out), httpToken)
+	require.Contains(t, string(out), "32")
+	require.NotContains(t, string(out), "serving MCP over streamable HTTP")
+
+	badOriginCtx, badOriginCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(badOriginCancel)
+	badOrigin := exec.CommandContext(badOriginCtx, binPath, "--transport", "http", "--addr", "127.0.0.1:0")
+	badOrigin.Env = mcpHTTPTestEnv(httpToken+"="+validToken, allowedOrigins+"=https://example.com/path")
+	out, err = badOrigin.CombinedOutput()
+	require.Error(t, err, "malformed origin allowlist must refuse: %s", out)
+	require.Contains(t, string(out), allowedOrigins)
+	require.NotContains(t, string(out), "serving MCP over streamable HTTP")
 
 	openCtx, openCancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(openCancel)
 	openDoor := exec.CommandContext(openCtx, binPath, "--transport", "http", "--addr", "0.0.0.0:0")
-	openDoor.Env = append(os.Environ(), "HTTP_AUTH_PROOF_MCP_HTTP_TOKEN=shared-secret")
+	openDoor.Env = mcpHTTPTestEnv(httpToken + "=" + validToken)
 	out, err = openDoor.CombinedOutput()
 	require.Error(t, err, "non-loopback HTTP without TLS must refuse: %s", out)
 	require.Contains(t, string(out), "--tls-cert")
 	require.True(t,
 		strings.Contains(string(out), "non-loopback") || strings.Contains(string(out), "loopback"),
 		"refusal should name the loopback/TLS rule: %s", out)
+}
+
+func mcpHTTPTestEnv(overrides ...string) []string {
+	values := make(map[string]string)
+	var order []string
+	for _, entry := range append(os.Environ(), overrides...) {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
+		}
+		values[key] = entry
+	}
+	env := make([]string, 0, len(order))
+	for _, key := range order {
+		env = append(env, values[key])
+	}
+	return env
 }
 
 func TestGeneratedHTTPMCPStdioOnlyOmitsCallerAuthHelpers(t *testing.T) {
@@ -99,6 +153,8 @@ func TestGeneratedHTTPMCPStdioOnlyOmitsCallerAuthHelpers(t *testing.T) {
 	require.Contains(t, mainSrc, "server.ServeStdio(s)")
 	require.NotContains(t, mainSrc, "requireHTTPCallerToken")
 	require.NotContains(t, mainSrc, "requireBearerAuth")
+	require.NotContains(t, mainSrc, "parseHTTPOrigin")
+	require.NotContains(t, mainSrc, "MCP_HTTP_ALLOWED_ORIGINS")
 	_, err := os.Stat(filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "http_auth_test.go"))
 	require.True(t, os.IsNotExist(err))
 }
