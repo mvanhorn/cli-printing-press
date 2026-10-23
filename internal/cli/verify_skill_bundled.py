@@ -522,10 +522,144 @@ def _keep_hook(
 
     Other files can pass only a package-level function or variable to
     registerNovelCommand. A later local with the same name must not hide it.
+    Call sites still prefer a local declared in the registering block; this
+    map is the fallback for every other registration of that name.
     """
     prev = found.get(name)
     if prev is None or (prev[2] > 0 and depth == 0):
         found[name] = (root_param, body, depth)
+
+
+@dataclass(frozen=True)
+class _LocalHook:
+    name: str
+    root_param: str
+    body: str
+    decl_end: int
+    scope_end: int
+    depth: int
+
+
+def _enclosing_block_end(text: str, depths: list[int], pos: int) -> int:
+    """Index of the brace that closes the block containing pos."""
+    if pos < 0 or pos >= len(text) or not depths or depths[pos] == 0:
+        return len(text)
+    depth = depths[pos]
+    for i in range(pos, len(text)):
+        if text[i] == "}" and depths[i] == depth:
+            return i
+    return len(text)
+
+
+def _preceded_by_var(text: str, open_paren: int) -> bool:
+    j = open_paren - 1
+    while j >= 0 and text[j].isspace():
+        j -= 1
+    if j < 2 or text[j - 2:j + 1] != "var":
+        return False
+    if j == 2:
+        return True
+    prev = text[j - 3]
+    return not (prev.isalnum() or prev == "_")
+
+
+def _in_var_group(text: str, pos: int, depths: list[int]) -> bool:
+    """True when pos sits in a `var (` group in the same brace block."""
+    if pos >= len(depths) or depths[pos] == 0:
+        return False
+    depth = depths[pos]
+    balance = 0
+    i = pos
+    while i > 0:
+        i -= 1
+        if depths[i] < depth:
+            return False
+        if depths[i] > depth:
+            continue
+        char = text[i]
+        if char == ")":
+            balance += 1
+            continue
+        if char != "(":
+            continue
+        if balance > 0:
+            balance -= 1
+            continue
+        return _preceded_by_var(text, i)
+    return False
+
+
+def _var_hook_is_local_decl(text: str, match: re.Match[str], depths: list[int]) -> bool:
+    """True for a function-local `:=`, `var name =`, or `var (` hook spec.
+
+    `name = func` assigns to a name that already exists, so it stays on the
+    package-level callback instead of opening a new scope.
+    """
+    if match.start() >= len(depths) or depths[match.start()] == 0:
+        return False
+    head = text[match.start():match.end(1)]
+    if re.match(r"var\s+", head):
+        return True
+    between = text[match.end(1):match.end()]
+    if re.match(r"(?:\s+func\b[^={}]*)?\s*:=", between):
+        return True
+    return _in_var_group(text, match.start(), depths)
+
+
+def _local_hook_decls(string_masked: str, comment_masked: str) -> list[_LocalHook]:
+    depths = _code_brace_depths(string_masked)
+    found: list[_LocalHook] = []
+    for match in VAR_HOOK_FUNC_RE.finditer(string_masked):
+        if not _var_hook_is_local_decl(string_masked, match, depths):
+            continue
+        body = _extract_function_body(comment_masked, match.end())
+        if body is None:
+            continue
+        # The short-var or var spec ends at the func literal. A call inside
+        # that literal still sees the outer name.
+        decl_end = match.end() + len(body) + 1
+        found.append(
+            _LocalHook(
+                name=match.group(1),
+                root_param=match.group(2),
+                body=body,
+                decl_end=decl_end,
+                scope_end=_enclosing_block_end(string_masked, depths, match.start()),
+                depth=depths[match.start()],
+            )
+        )
+    return found
+
+
+def _local_hook_at(hooks: list[_LocalHook], name: str, pos: int) -> _LocalHook | None:
+    chosen: _LocalHook | None = None
+    for hook in hooks:
+        if hook.name != name or pos < hook.decl_end or pos >= hook.scope_end:
+            continue
+        if chosen is None or (hook.depth, hook.decl_end) > (chosen.depth, chosen.decl_end):
+            chosen = hook
+    return chosen
+
+
+def _resolve_registered_hook(
+    name: str,
+    pos: int,
+    locals_: list[_LocalHook],
+    package: dict[str, tuple[str, str, int]],
+) -> tuple[str, str] | None:
+    """Resolve registerNovelCommand(name) from the registering block.
+
+    Two functions can register different locals that share a name, and a
+    local can shadow a package callback. The package map has one body per
+    name, so the call has to pick the local in scope before falling back.
+    """
+    local = _local_hook_at(locals_, name, pos)
+    if local is not None:
+        return local.root_param, local.body
+    hook = package.get(name)
+    if hook is None:
+        return None
+    return hook[0], hook[1]
 
 
 def _constructor_is_scaffold(body: str) -> bool:
@@ -724,15 +858,16 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
     named: dict[str, tuple[str, str, int]] = {}
     sources = _read_cli_go_files(cli_dir)
 
-    parsed: list[tuple[Path, str, str]] = []
+    parsed: list[tuple[Path, str, str, list[_LocalHook]]] = []
     for go_file, text in sources:
         comment_masked = _mask_go_comments(text)
         string_masked = _mask_go_strings(comment_masked)
-        parsed.append((go_file, comment_masked, string_masked))
+        file_locals = _local_hook_decls(string_masked, comment_masked)
+        parsed.append((go_file, comment_masked, string_masked, file_locals))
         for hook_name, hook in _named_hook_funcs(string_masked, comment_masked).items():
             _keep_hook(named, hook_name, hook[0], hook[1], hook[2])
 
-    for go_file, comment_masked, string_masked in parsed:
+    for go_file, comment_masked, string_masked, file_locals in parsed:
         for match in CONSTRUCTOR_RE.finditer(comment_masked):
             fn_name = match.group(1)
             body = _extract_function_body(comment_masked, match.end())
@@ -772,10 +907,11 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
         for root_param, body in _funclit_hooks(string_masked, comment_masked):
             _consume_hook_body(body, root_param, root_children, deferred)
         for match in HOOK_NAMED_RE.finditer(string_masked):
-            hook = named.get(match.group(1))
-            if hook is None:
+            resolved = _resolve_registered_hook(match.group(1), match.start(), file_locals, named)
+            if resolved is None:
                 continue
-            _consume_hook_body(hook[1], hook[0], root_children, deferred)
+            root_param, body = resolved
+            _consume_hook_body(body, root_param, root_children, deferred)
 
     root_list = list(root_children)
     _attach_deferred(constructors, root_list, deferred)
