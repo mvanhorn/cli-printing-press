@@ -234,6 +234,24 @@ func TestResolveBaseURL(t *testing.T) {
 			want:       "https://valid.com",
 		},
 		{
+			name:       "skip loopback, template, non-https and unparseable candidates",
+			explicit:   "",
+			candidates: []string{"http://127.0.0.1:${port}", "https://127.0.0.1:8080", "https://localhost", "https://10.0.0.5", "http://api.example.com", "https://{region}.example.com", "https://${host}/v1", "https://", "://bad", "https://api.example.com/v1"},
+			want:       "https://api.example.com/v1",
+		},
+		{
+			name:       "skip fully qualified localhost names",
+			explicit:   "",
+			candidates: []string{"https://localhost.", "https://api.localhost.", "https://127.0.0.1.", "https://api.example.com"},
+			want:       "https://api.example.com",
+		},
+		{
+			name:       "empty when only unusable candidates",
+			explicit:   "",
+			candidates: []string{"http://127.0.0.1:${port}"},
+			want:       "",
+		},
+		{
 			name:       "empty when nothing available",
 			explicit:   "",
 			candidates: nil,

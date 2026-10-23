@@ -2,6 +2,8 @@ package crowdsniff
 
 import (
 	"fmt"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -113,18 +115,39 @@ func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint, auth *Disco
 	return apiSpec, nil
 }
 
-// ResolveBaseURL picks the first non-empty URL from the cascade:
-// explicit flag > source candidates (in order).
+// ResolveBaseURL picks the base URL: the explicit value if set, otherwise the
+// first candidate that could be a real API origin. Candidates that are not
+// HTTPS, point at loopback/private hosts, or contain template placeholders
+// (typically harvested from SDK test fixtures) are skipped.
 func ResolveBaseURL(explicit string, candidates []string) string {
 	if explicit != "" {
 		return explicit
 	}
 	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate) != "" {
+		if usableBaseURLCandidate(candidate) {
 			return candidate
 		}
 	}
 	return ""
+}
+
+func usableBaseURLCandidate(candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" || strings.ContainsAny(candidate, "{}$") {
+		return false
+	}
+	u, err := url.Parse(candidate)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
+	}
+	return true
 }
 
 // buildAuthConfig converts a DiscoveredAuth into a spec.AuthConfig.

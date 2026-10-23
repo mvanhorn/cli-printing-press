@@ -699,6 +699,31 @@ func TestNPMSource_FetchDownloads(t *testing.T) {
 		assert.Equal(t, 21, result["pkg-a"])
 	})
 
+	t.Run("queries scoped packages individually", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			name := strings.TrimPrefix(r.URL.Path, "/downloads/point/last-week/")
+			if strings.Contains(name, ",") && strings.Contains(name, "@") {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if name == "@scope/pkg" {
+				_, _ = w.Write([]byte(`{"downloads":7,"package":"@scope/pkg"}`))
+				return
+			}
+			_, _ = w.Write(downloadsResponse(map[string]int{"pkg-a": 21, "pkg-b": 5}))
+		}))
+		defer server.Close()
+
+		src := NewNPMSource(NPMOptions{DownloadsBaseURL: server.URL})
+		result := src.fetchDownloads(context.Background(), []npmPackageInfo{
+			{Name: "pkg-a"}, {Name: "@scope/pkg"}, {Name: "pkg-b"},
+		})
+
+		assert.Equal(t, map[string]int{"pkg-a": 21, "pkg-b": 5, "@scope/pkg": 7}, result)
+	})
+
 	t.Run("parses bare counts in a bulk response", func(t *testing.T) {
 		t.Parallel()
 

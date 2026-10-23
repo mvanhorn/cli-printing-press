@@ -161,7 +161,7 @@ func TestRunCrowdSniff_NonHTTPSBaseURL(t *testing.T) {
 
 	opts := crowdSniffOptions{
 		sources: []crowdSniffSource{
-			&mockSource{result: endpointsResult("http://api.example.com",
+			&mockSource{result: endpointsResult("https://api.example.com",
 				crowdsniff.DiscoveredEndpoint{Method: "GET", Path: "/users", SourceTier: crowdsniff.TierCodeSearch, SourceName: "gh"},
 			)},
 		},
@@ -169,9 +169,29 @@ func TestRunCrowdSniff_NonHTTPSBaseURL(t *testing.T) {
 		stderr: &bytes.Buffer{},
 	}
 
-	err := runCrowdSniff(context.Background(), "test", "", "", false, opts)
+	err := runCrowdSniff(context.Background(), "test", "http://api.example.com", "", false, opts)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "base URL must use HTTPS")
+}
+
+func TestRunCrowdSniff_SkipsLoopbackCandidate(t *testing.T) {
+	t.Parallel()
+
+	outputPath := filepath.Join(t.TempDir(), "test-spec.yaml")
+	opts := crowdSniffOptions{
+		sources: []crowdSniffSource{
+			&mockSource{result: crowdsniff.SourceResult{
+				Endpoints: []crowdsniff.DiscoveredEndpoint{
+					{Method: "GET", Path: "/users", SourceTier: crowdsniff.TierCodeSearch, SourceName: "gh"},
+				},
+				BaseURLCandidates: []string{"http://127.0.0.1:${port}", "https://api.example.com"},
+			}},
+		},
+		stdout: &bytes.Buffer{},
+		stderr: &bytes.Buffer{},
+	}
+
+	require.NoError(t, runCrowdSniff(context.Background(), "test", "", outputPath, false, opts))
 }
 
 func TestRunCrowdSniff_BaseURLFlagOverridesCandidate(t *testing.T) {
