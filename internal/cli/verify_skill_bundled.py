@@ -169,6 +169,40 @@ CONSTRUCTOR_RE = re.compile(
 )
 ADDCMD_CHILD_RE = re.compile(r'\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(')
 ROOT_ADDCMD_RE = re.compile(r'rootCmd\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(')
+# Parent is one identifier (cmd, root, rootCmd, accountCmd). The candidate
+# constructor is the second argument, same role as AddCommand's argument.
+NOVEL_ATTACH_RE = re.compile(
+    r'\baddNovelCommandIfAbsent\s*\(\s*([A-Za-z_]\w*)\s*,\s*(new[A-Z]\w*Cmd)\s*\('
+)
+# A selector (pkg.registerNovelCommand) is not the package-level hook.
+HOOK_NAMED_RE = re.compile(r'(?<![\w.])registerNovelCommand\s*\(\s*([A-Za-z_]\w*)\s*\)')
+NAMED_HOOK_FUNC_RE = re.compile(
+    r'^func\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s+\*cobra\.Command\b[^)]*\)\s*\{',
+    re.MULTILINE,
+)
+# `var name = func`, `name := func`, and `var name func(...) = func`.
+# The optional type sits between the name and `=` so a typed variable still
+# resolves to the literal that is actually registered.
+VAR_HOOK_FUNC_RE = re.compile(
+    r'(?:(?<!\w)var\s+)?'
+    r'([A-Za-z_]\w*)'
+    r'(?:\s+func\b[^={}]*)?'
+    r'\s*(?::=|=)\s*func\s*\(\s*([A-Za-z_]\w*)\s+\*cobra\.Command\b[^)]*\)\s*\{'
+)
+ADDCMD_CALL_RE = re.compile(
+    r'\b([A-Za-z_]\w*)\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\('
+)
+SCAFFOLD_ANN_RE = re.compile(
+    r'"pp:novel-scaffold"\s*\]?\s*(?::|=)\s*"true"'
+)
+FIND_SLICE_RE = re.compile(
+    r'\b([A-Za-z_]\w*)\s*,\s*_\s*,\s*(?:err|_)\s*(?::=|=)\s*'
+    r'([A-Za-z_]\w*)\.Find\(\s*\[\]string\{([^}]*)\}'
+)
+FIND_FIELDS_RE = re.compile(
+    r'\b([A-Za-z_]\w*)\s*,\s*_\s*,\s*(?:err|_)\s*(?::=|=)\s*'
+    r'([A-Za-z_]\w*)\.Find\(\s*strings\.Fields\(\s*"([^"]*)"\s*\)'
+)
 
 
 def _extract_function_body(text: str, start_offset: int) -> str | None:
@@ -236,14 +270,1354 @@ class CommandConstructor:
     use: str
     args_info: tuple | None
     children: list[str] = field(default_factory=list)
+    scaffold: bool = False
+
+
+def _mask_go_comments(text: str) -> str:
+    """Blank // and /* */ comments without changing offsets or newlines.
+
+    Generated roots document registerNovelCommand inside a comment. A raw
+    search would treat that example as a live hook. Strings are left intact
+    so a later string mask, and Use:/Find literals, still see them.
+    """
+    if not text:
+        return text
+    chars = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if c == "/" and nxt == "/":
+            j = i
+            while j < n and text[j] != "\n":
+                chars[j] = " "
+                j += 1
+            i = j
+            continue
+        if c == "/" and nxt == "*":
+            end = text.find("*/", i + 2)
+            stop = n if end < 0 else end + 2
+            for j in range(i, stop):
+                if chars[j] != "\n":
+                    chars[j] = " "
+            i = stop
+            continue
+        if c == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                if text[i] == "\n":
+                    break
+                i += 1
+            continue
+        if c == "`":
+            end = text.find("`", i + 1)
+            i = n if end < 0 else end + 1
+            continue
+        if c == "'":
+            i += 1
+            if i < n and text[i] == "\\":
+                i += 2
+            elif i < n:
+                i += 1
+            if i < n and text[i] == "'":
+                i += 1
+            continue
+        i += 1
+    return "".join(chars)
+
+
+def _mask_go_strings(text: str) -> str:
+    """Blank string and rune contents without changing offsets or newlines."""
+    if not text:
+        return text
+    chars = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    for k in range(i + 1, j):
+                        if chars[k] != "\n":
+                            chars[k] = " "
+                    i = j + 1
+                    break
+                if text[j] == "\n":
+                    i = j
+                    break
+                j += 1
+            else:
+                i = n
+            continue
+        if c == "`":
+            end = text.find("`", i + 1)
+            if end < 0:
+                for k in range(i + 1, n):
+                    if chars[k] != "\n":
+                        chars[k] = " "
+                i = n
+                continue
+            for k in range(i + 1, end):
+                if chars[k] != "\n":
+                    chars[k] = " "
+            i = end + 1
+            continue
+        if c == "'":
+            j = i + 1
+            if j < n and text[j] == "\\":
+                j += 2
+            elif j < n:
+                j += 1
+            if j < n and text[j] == "'":
+                for k in range(i + 1, j):
+                    if chars[k] != "\n":
+                        chars[k] = " "
+                i = j + 1
+            else:
+                i += 1
+            continue
+        i += 1
+    return "".join(chars)
+
+
+def _read_balanced(text: str, open_index: int) -> tuple[str | None, int]:
+    """text[open_index] is '('. Return (inner, index_after_close)."""
+    if open_index >= len(text) or text[open_index] != "(":
+        return None, open_index
+    depth = 0
+    i = open_index
+    n = len(text)
+    in_string: str | None = None
+    while i < n:
+        c = text[i]
+        if in_string is not None:
+            if c == "\\" and in_string != "`" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_string:
+                in_string = None
+            i += 1
+            continue
+        if c in ('"', "`", "'"):
+            in_string = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1:i], i + 1
+        i += 1
+    return None, n
+
+
+def _first_param_if_cobra_command(params: str) -> str | None:
+    """Return the first parameter name when its type is *cobra.Command."""
+    depth = 0
+    buf: list[str] = []
+    for c in params:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif c == "," and depth == 0:
+            break
+        else:
+            buf.append(c)
+    field = "".join(buf).strip()
+    match = re.match(r"([A-Za-z_]\w*)\b", field)
+    if not match or "*cobra.Command" not in field:
+        return None
+    return match.group(1)
+
+
+def _append_unique(children: list[str], ctor: str) -> None:
+    if ctor not in children:
+        children.append(ctor)
+
+
+def _find_bindings(body: str, root_names: set[str]) -> dict[str, list[str]]:
+    """Map a variable assigned from root.Find to its command path segments."""
+    bindings: dict[str, list[str]] = {}
+
+    def take(var: str, recv: str, parts: list[str]) -> None:
+        if recv not in root_names or not var or var == "_":
+            return
+        cleaned = [part for part in parts if part]
+        if cleaned:
+            bindings[var] = cleaned
+
+    for match in FIND_SLICE_RE.finditer(body):
+        take(match.group(1), match.group(2), re.findall(r'"([^"]*)"', match.group(3)))
+    for match in FIND_FIELDS_RE.finditer(body):
+        take(match.group(1), match.group(2), match.group(3).split())
+    return bindings
+
+
+def _funclit_hooks(string_masked: str, comment_masked: str) -> list[tuple[str, str]]:
+    """Return (root param, body) for registerNovelCommand(func(...) { ... }) hooks.
+
+    The header is scanned on string-masked text so an example inside a string
+    literal is not a hook. The body is taken from comment-masked text so
+    Find path literals survive.
+    """
+    hooks: list[tuple[str, str]] = []
+    for match in re.finditer(r"(?<![\w.])registerNovelCommand\s*\(\s*func\b", string_masked):
+        i = match.end()
+        while i < len(string_masked) and string_masked[i].isspace():
+            i += 1
+        if i >= len(string_masked) or string_masked[i] != "(":
+            continue
+        params, after = _read_balanced(string_masked, i)
+        if params is None:
+            continue
+        i = after
+        while i < len(string_masked) and string_masked[i].isspace():
+            i += 1
+        if i >= len(string_masked) or string_masked[i] != "{":
+            continue
+        root_param = _first_param_if_cobra_command(params)
+        if not root_param:
+            continue
+        body = _extract_function_body(comment_masked, i + 1)
+        if body is None:
+            continue
+        hooks.append((root_param, body))
+    return hooks
+
+
+def _code_brace_depths(text: str) -> list[int]:
+    depths = [0] * len(text)
+    depth = 0
+    for i, char in enumerate(text):
+        depths[i] = depth
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+    return depths
+
+
+def _keep_hook(
+    found: dict[str, tuple[str, str, int]],
+    name: str,
+    root_param: str,
+    body: str,
+    depth: int,
+) -> None:
+    """Keep a package-level callback when a local reuses its name.
+
+    Other files can pass only a package-level function or variable to
+    registerNovelCommand. A later local with the same name must not hide it.
+    Call sites still prefer a local declared in the registering block; this
+    map is the fallback for every other registration of that name.
+    """
+    prev = found.get(name)
+    if prev is None or (prev[2] > 0 and depth == 0):
+        found[name] = (root_param, body, depth)
+
+
+@dataclass(frozen=True)
+class _LocalHook:
+    name: str
+    root_param: str
+    body: str
+    decl_end: int
+    scope_end: int
+    depth: int
+
+
+def _enclosing_block_end(text: str, depths: list[int], pos: int) -> int:
+    """Index of the brace that closes the block containing pos."""
+    if pos < 0 or pos >= len(text) or not depths or depths[pos] == 0:
+        return len(text)
+    depth = depths[pos]
+    for i in range(pos, len(text)):
+        if text[i] == "}" and depths[i] == depth:
+            return i
+    return len(text)
+
+
+_K_NAME = "name"
+_K_ARRAY = "array"
+_K_MAP = "map"
+_K_STRUCT = "struct"
+_K_VALUE = "value"
+_CONTROL_KEYWORDS = ("if", "for", "switch")
+_BINOPS = ("||", "&&", "==", "!=", "<=", ">=", "&^", "<<", ">>")
+
+
+def _ident_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _keyword_at(text: str, i: int, word: str) -> bool:
+    end = i + len(word)
+    if i < 0 or end > len(text) or not text.startswith(word, i):
+        return False
+    if i > 0 and _ident_char(text[i - 1]):
+        return False
+    return end == len(text) or not _ident_char(text[end])
+
+
+def _skip_ws(text: str, i: int) -> int:
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    return i
+
+
+def _read_ident(text: str, i: int) -> tuple[str, int]:
+    if i >= len(text) or not (text[i].isalpha() or text[i] == "_"):
+        return "", i
+    j = i + 1
+    while j < len(text) and _ident_char(text[j]):
+        j += 1
+    return text[i:j], j
+
+
+def _skip_go_string(text: str, i: int) -> int:
+    """i points at a quote. Return the index after that literal."""
+    if i >= len(text):
+        return i
+    quote = text[i]
+    n = len(text)
+    if quote == "`":
+        end = text.find("`", i + 1)
+        return n if end < 0 else end + 1
+    if quote not in "\"'":
+        return i
+    i += 1
+    if quote == "'":
+        if i < n and text[i] == "\\":
+            i += 2
+        elif i < n:
+            i += 1
+        if i < n and text[i] == "'":
+            return i + 1
+        return i
+    while i < n:
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            return i + 1
+        if text[i] == "\n":
+            return i
+        i += 1
+    return n
+
+
+def _skip_number(text: str, i: int) -> int:
+    n = len(text)
+    if text.startswith(("0x", "0X", "0b", "0B", "0o", "0O"), i):
+        i += 2
+        while i < n and (text[i].isalnum() or text[i] == "_"):
+            i += 1
+        return i
+    while i < n and (text[i].isdigit() or text[i] == "_"):
+        i += 1
+    if i < n and text[i] == "." and i + 1 < n and text[i + 1].isdigit():
+        i += 2
+        while i < n and (text[i].isdigit() or text[i] == "_"):
+            i += 1
+    if i < n and text[i] in "eE":
+        j = i + 1
+        if j < n and text[j] in "+-":
+            j += 1
+        if j < n and text[j].isdigit():
+            i = j + 1
+            while i < n and (text[i].isdigit() or text[i] == "_"):
+                i += 1
+    if i < n and text[i] == "i":
+        i += 1
+    return i
+
+
+def _matching_close_brace(text: str, depths: list[int], open_brace: int) -> int | None:
+    """Index of the '}' that closes the '{' at open_brace."""
+    if open_brace < 0 or open_brace >= len(text) or text[open_brace] != "{":
+        return None
+    target = depths[open_brace] + 1
+    for i in range(open_brace + 1, len(text)):
+        if text[i] == "}" and depths[i] == target:
+            return i
+    return None
+
+
+def _skip_matched_brace(text: str, depths: list[int], i: int) -> int | None:
+    close = _matching_close_brace(text, depths, i)
+    if close is None:
+        return None
+    return close + 1
+
+
+def _skip_bracket_group(text: str, i: int) -> int | None:
+    """i points at '['. Return the index after the matching ']'."""
+    if i >= len(text) or text[i] != "[":
+        return None
+    bracket = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        if char in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket -= 1
+            if bracket == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _skip_paren_group(text: str, i: int) -> int | None:
+    """i points at '('. Return the index after the matching ')'."""
+    if i >= len(text) or text[i] != "(":
+        return None
+    paren = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        if char in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+            if paren == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _skip_type(text: str, depths: list[int], i: int) -> int:
+    """Skip a type. Does not consume a following composite literal."""
+    n = len(text)
+    while True:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i
+        if text.startswith("<-", i):
+            i += 2
+            continue
+        if _keyword_at(text, i, "chan"):
+            i += 4
+            i = _skip_ws(text, i)
+            if text.startswith("<-", i):
+                i += 2
+            continue
+        if text[i] == "*":
+            i += 1
+            continue
+        break
+    i = _skip_ws(text, i)
+    if i >= n:
+        return i
+    if _keyword_at(text, i, "func"):
+        return _skip_func_type(text, depths, i)
+    if _keyword_at(text, i, "struct") or _keyword_at(text, i, "interface"):
+        word = "struct" if _keyword_at(text, i, "struct") else "interface"
+        j = _skip_ws(text, i + len(word))
+        if j < n and text[j] == "{":
+            end = _skip_matched_brace(text, depths, j)
+            return j if end is None else end
+        return j
+    if _keyword_at(text, i, "map"):
+        return _skip_map_type(text, depths, i)
+    if text[i] == "[":
+        return _skip_array_type(text, depths, i)
+    if text[i] == "(":
+        end = _skip_paren_group(text, i)
+        return i + 1 if end is None else end
+    if text[i].isalpha() or text[i] == "_":
+        _, i = _read_ident(text, i)
+        while True:
+            j = _skip_ws(text, i)
+            if j < n and text[j] == ".":
+                j = _skip_ws(text, j + 1)
+                if j < n and (text[j].isalpha() or text[j] == "_"):
+                    _, j = _read_ident(text, j)
+                    i = j
+                    continue
+                return j
+            if j < n and text[j] == "[":
+                end = _skip_bracket_group(text, j)
+                if end is None:
+                    return j
+                i = end
+                continue
+            return j
+    return i
+
+
+def _skip_array_type(text: str, depths: list[int], i: int) -> int:
+    end = _skip_bracket_group(text, i)
+    if end is None:
+        return i + 1
+    return _skip_type(text, depths, end)
+
+
+def _skip_map_type(text: str, depths: list[int], i: int) -> int:
+    j = _skip_ws(text, i + 3)
+    if j >= len(text) or text[j] != "[":
+        return j
+    end = _skip_bracket_group(text, j)
+    if end is None:
+        return j
+    return _skip_type(text, depths, end)
+
+
+def _skip_func_type(text: str, depths: list[int], i: int) -> int:
+    """Skip a function type starting at func, without a body."""
+    j = _skip_ws(text, i + 4)
+    if j >= len(text) or text[j] != "(":
+        return j
+    j = _skip_paren_group(text, j)
+    if j is None:
+        return i + 4
+    j = _skip_ws(text, j)
+    if j < len(text) and text[j] == "(":
+        end = _skip_paren_group(text, j)
+        return j if end is None else end
+    if j < len(text) and text[j] != "{":
+        return _skip_type(text, depths, j)
+    return j
+
+
+def _header_keyword(text: str, depths: list[int], pos: int) -> tuple[int, str] | None:
+    """if/for/switch whose header contains pos.
+
+    A '{' at the same brace depth means pos is in that block, not in a
+    statement header before the block.
+    """
+    if pos <= 0 or pos >= len(depths) or depths[pos] == 0:
+        return None
+    depth = depths[pos]
+    paren = 0
+    bracket = 0
+    i = pos
+    while i > 0:
+        i -= 1
+        if depths[i] < depth:
+            return None
+        if depths[i] > depth:
+            continue
+        char = text[i]
+        if char == ")":
+            paren += 1
+            continue
+        if char == "(":
+            if paren == 0:
+                return None
+            paren -= 1
+            continue
+        if char == "]":
+            bracket += 1
+            continue
+        if char == "[":
+            if bracket == 0:
+                return None
+            bracket -= 1
+            continue
+        if paren or bracket:
+            continue
+        if char == "{":
+            return None
+        for word in _CONTROL_KEYWORDS:
+            if _keyword_at(text, i, word):
+                return i, word
+    return None
+
+
+def _opens_composite(kind: str, expr_lev: int) -> bool:
+    """Whether '{' after this primary is a composite literal.
+
+    In a control clause, a name, selector, or index is the statement
+    block. Array, slice, map, and struct types still take a literal.
+    Nested expressions (calls, parens, literal elements) accept a name too.
+    """
+    if kind in (_K_ARRAY, _K_MAP, _K_STRUCT):
+        return True
+    return kind == _K_NAME and expr_lev > 0
+
+
+def _bin_op_len(text: str, i: int) -> int:
+    for op in _BINOPS:
+        if text.startswith(op, i):
+            return len(op)
+    if text.startswith("<-", i):
+        return 0
+    if i < len(text) and text[i] in "+-|^*/%&<>":
+        return 1
+    return 0
+
+
+def _skip_literal_value(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> int:
+    """i points at '{'. Return the index after the composite literal."""
+    open_depth = depths[i] if i < len(depths) else depth
+    i += 1
+    n = len(text)
+    while i < n:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i
+        if text[i] in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if text[i] == "}" and i < len(depths) and depths[i] == open_depth + 1:
+            return i + 1
+        if text[i] == ",":
+            i += 1
+            continue
+        if text[i] == "{":
+            i = _skip_literal_value(text, depths, i, depth, expr_lev + 1)
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, expr_lev + 1)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+        j = _skip_ws(text, i)
+        if j < n and text[j] == ":":
+            i = j + 1
+    return i
+
+
+def _skip_operand(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    n = len(text)
+    i = _skip_ws(text, i)
+    if i >= n:
+        return i, _K_VALUE
+    char = text[i]
+    if char in "\"'`":
+        return _skip_go_string(text, i), _K_VALUE
+    if char.isdigit():
+        return _skip_number(text, i), _K_VALUE
+    if char == "{":
+        if expr_lev > 0:
+            return _skip_literal_value(text, depths, i, depth, expr_lev), _K_VALUE
+        return i, _K_VALUE
+    if char == "(":
+        return _skip_paren_expr(text, depths, i, depth, expr_lev)
+    if char == "[":
+        return _skip_array_type(text, depths, i), _K_ARRAY
+    if char.isalpha() or char == "_":
+        word, j = _read_ident(text, i)
+        if word == "func":
+            return _skip_func_expr(text, depths, i)
+        if word == "struct":
+            k = _skip_ws(text, j)
+            if k < n and text[k] == "{":
+                end = _skip_matched_brace(text, depths, k)
+                k = k if end is None else end
+            return k, _K_STRUCT
+        if word == "interface":
+            k = _skip_ws(text, j)
+            if k < n and text[k] == "{":
+                end = _skip_matched_brace(text, depths, k)
+                k = k if end is None else end
+            return k, _K_VALUE
+        if word == "map":
+            return _skip_map_type(text, depths, i), _K_MAP
+        if word == "chan":
+            return _skip_type(text, depths, i), _K_VALUE
+        return j, _K_NAME
+    return i, _K_VALUE
+
+
+def _skip_func_expr(
+    text: str,
+    depths: list[int],
+    i: int,
+) -> tuple[int, str]:
+    j = _skip_func_type(text, depths, i)
+    j = _skip_ws(text, j)
+    if j < len(text) and text[j] == "{":
+        end = _skip_matched_brace(text, depths, j)
+        if end is None:
+            return j, _K_VALUE
+        return end, _K_VALUE
+    return j, _K_VALUE
+
+
+def _skip_paren_expr(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    """Parentheses keep the inner type kind so (struct{...}){...} still composites."""
+    j, kind = _skip_expr(text, depths, i + 1, depth, expr_lev + 1)
+    j = _skip_ws(text, j)
+    if j < len(text) and text[j] == ")":
+        j += 1
+    return j, kind
+
+
+def _skip_primary(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    i, kind = _skip_operand(text, depths, i, depth, expr_lev)
+    n = len(text)
+    while True:
+        j = _skip_ws(text, i)
+        if j >= n:
+            return j, kind
+        char = text[j]
+        if char == ".":
+            if text.startswith("...", j):
+                return j, kind
+            k = j + 1
+            k = _skip_ws(text, k)
+            if k < n and text[k] == "(":
+                end = _skip_paren_group(text, k)
+                if end is None:
+                    return k, _K_VALUE
+                i = end
+                kind = _K_VALUE
+                continue
+            if k < n and (text[k].isalpha() or text[k] == "_"):
+                _, i = _read_ident(text, k)
+                kind = _K_NAME
+                continue
+            return j, kind
+        if char == "[":
+            i, sliced = _skip_bracket_suffix(text, depths, j, depth, expr_lev)
+            kind = _K_VALUE if sliced else _K_NAME
+            continue
+        if char == "(":
+            i = _skip_call_args(text, depths, j, depth, expr_lev)
+            kind = _K_VALUE
+            continue
+        if char == "{":
+            if _opens_composite(kind, expr_lev):
+                i = _skip_literal_value(text, depths, j, depth, expr_lev)
+                kind = _K_VALUE
+                continue
+            return j, kind
+        return j, kind
+
+
+def _skip_bracket_suffix(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, bool]:
+    """i points at '[' of an index, slice, or instantiation. Return (after, is_slice)."""
+    i += 1
+    n = len(text)
+    sliced = False
+    while i < n and text[i] != "]":
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i, sliced
+        if text[i] == "]":
+            break
+        if text[i] in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if text[i] == ":":
+            sliced = True
+            i += 1
+            continue
+        if text[i] == ",":
+            i += 1
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, expr_lev + 1)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+    if i < n and text[i] == "]":
+        i += 1
+    return i, sliced
+
+
+def _skip_call_args(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> int:
+    i += 1
+    n = len(text)
+    while i < n and text[i] != ")":
+        i = _skip_ws(text, i)
+        if i >= n or text[i] == ")":
+            break
+        if text[i] == ",":
+            i += 1
+            continue
+        if text.startswith("...", i):
+            i += 3
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, expr_lev + 1)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+    if i < n and text[i] == ")":
+        i += 1
+    return i
+
+
+def _skip_unary(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    n = len(text)
+    prefixed = False
+    while True:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i, _K_VALUE
+        if text.startswith("<-", i):
+            i += 2
+            prefixed = True
+            continue
+        if text[i] in "+-!^&~*":
+            i += 1
+            prefixed = True
+            continue
+        break
+    i, kind = _skip_primary(text, depths, i, depth, expr_lev)
+    if prefixed:
+        kind = _K_VALUE
+    return i, kind
+
+
+def _skip_expr(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    i, kind = _skip_unary(text, depths, i, depth, expr_lev)
+    while True:
+        j = _skip_ws(text, i)
+        op = _bin_op_len(text, j)
+        if op == 0:
+            return j, kind
+        i, _ = _skip_unary(text, depths, j + op, depth, expr_lev)
+        kind = _K_VALUE
+
+
+def _control_body_open(text: str, depths: list[int], i: int, depth: int) -> int | None:
+    """Index of the '{' that opens an if/for/switch body, scanning from i."""
+    n = len(text)
+    while i < n:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return None
+        if i < len(depths) and depths[i] < depth:
+            return None
+        char = text[i]
+        if char == "{" and (i >= len(depths) or depths[i] == depth):
+            return i
+        if char == ";":
+            i += 1
+            continue
+        if text.startswith((":=", "++", "--", "<-"), i):
+            i += 2
+            continue
+        if char == "=":
+            i += 1
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, 0)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+    return None
+
+
+def _extend_through_else(text: str, depths: list[int], close_brace: int, depth: int) -> int:
+    """Include an if's else or else-if chain. close_brace is the then-block '}'."""
+    i = _skip_ws(text, close_brace + 1)
+    if not _keyword_at(text, i, "else"):
+        return close_brace
+    i = _skip_ws(text, i + 4)
+    if _keyword_at(text, i, "if"):
+        nested = _control_statement_end(text, depths, i + 2, "if", depth)
+        return close_brace if nested is None else nested
+    if i < len(text) and text[i] == "{":
+        close = _matching_close_brace(text, depths, i)
+        return close_brace if close is None else close
+    return close_brace
+
+
+def _control_statement_end(
+    text: str,
+    depths: list[int],
+    scan_from: int,
+    keyword: str,
+    depth: int,
+) -> int | None:
+    body = _control_body_open(text, depths, scan_from, depth)
+    if body is None:
+        return None
+    end = _matching_close_brace(text, depths, body)
+    if end is None:
+        return None
+    if keyword == "if":
+        return _extend_through_else(text, depths, end, depth)
+    return end
+
+
+def _statement_header_end(
+    text: str,
+    depths: list[int],
+    pos: int,
+    decl_end: int,
+) -> int | None:
+    """End of the if/for/switch whose header declares pos, else None.
+
+    Scan starts after this declaration's func literal so that literal's
+    braces are not the statement body.
+    """
+    found = _header_keyword(text, depths, pos)
+    if found is None or pos >= len(depths):
+        return None
+    _, keyword = found
+    return _control_statement_end(text, depths, decl_end, keyword, depths[pos])
+
+
+def _local_hook_scope_end(
+    text: str,
+    depths: list[int],
+    pos: int,
+    decl_end: int,
+) -> int:
+    """Scope end for a local callback declared at pos.
+
+    Brace blocks end at the enclosing '}'. An if, for, or switch header is
+    its own implicit block and ends with that statement, including an if's
+    else chain, so a later registration sees the outer callback.
+    """
+    block_end = _enclosing_block_end(text, depths, pos)
+    stmt_end = _statement_header_end(text, depths, pos, decl_end)
+    if stmt_end is not None and decl_end < stmt_end < block_end:
+        return stmt_end
+    return block_end
+
+
+def _preceded_by_var(text: str, open_paren: int) -> bool:
+    j = open_paren - 1
+    while j >= 0 and text[j].isspace():
+        j -= 1
+    if j < 2 or text[j - 2:j + 1] != "var":
+        return False
+    if j == 2:
+        return True
+    prev = text[j - 3]
+    return not (prev.isalnum() or prev == "_")
+
+
+def _in_var_group(text: str, pos: int, depths: list[int]) -> bool:
+    """True when pos sits in a `var (` group in the same brace block."""
+    if pos >= len(depths) or depths[pos] == 0:
+        return False
+    depth = depths[pos]
+    balance = 0
+    i = pos
+    while i > 0:
+        i -= 1
+        if depths[i] < depth:
+            return False
+        if depths[i] > depth:
+            continue
+        char = text[i]
+        if char == ")":
+            balance += 1
+            continue
+        if char != "(":
+            continue
+        if balance > 0:
+            balance -= 1
+            continue
+        return _preceded_by_var(text, i)
+    return False
+
+
+def _var_hook_is_local_decl(text: str, match: re.Match[str], depths: list[int]) -> bool:
+    """True for a function-local `:=`, `var name =`, or `var (` hook spec.
+
+    `name = func` assigns to a name that already exists, so it stays on the
+    package-level callback instead of opening a new scope.
+    """
+    if match.start() >= len(depths) or depths[match.start()] == 0:
+        return False
+    head = text[match.start():match.end(1)]
+    if re.match(r"var\s+", head):
+        return True
+    between = text[match.end(1):match.end()]
+    if re.match(r"(?:\s+func\b[^={}]*)?\s*:=", between):
+        return True
+    return _in_var_group(text, match.start(), depths)
+
+
+def _local_hook_decls(string_masked: str, comment_masked: str) -> list[_LocalHook]:
+    depths = _code_brace_depths(string_masked)
+    found: list[_LocalHook] = []
+    for match in VAR_HOOK_FUNC_RE.finditer(string_masked):
+        if not _var_hook_is_local_decl(string_masked, match, depths):
+            continue
+        body = _extract_function_body(comment_masked, match.end())
+        if body is None:
+            continue
+        # The short-var or var spec ends at the func literal. A call inside
+        # that literal still sees the outer name.
+        decl_end = match.end() + len(body) + 1
+        found.append(
+            _LocalHook(
+                name=match.group(1),
+                root_param=match.group(2),
+                body=body,
+                decl_end=decl_end,
+                scope_end=_local_hook_scope_end(
+                    string_masked, depths, match.start(), decl_end
+                ),
+                depth=depths[match.start()],
+            )
+        )
+    return found
+
+
+def _local_hook_at(hooks: list[_LocalHook], name: str, pos: int) -> _LocalHook | None:
+    chosen: _LocalHook | None = None
+    for hook in hooks:
+        if hook.name != name or pos < hook.decl_end or pos >= hook.scope_end:
+            continue
+        if chosen is None or (hook.depth, hook.decl_end) > (chosen.depth, chosen.decl_end):
+            chosen = hook
+    return chosen
+
+
+def _resolve_registered_hook(
+    name: str,
+    pos: int,
+    locals_: list[_LocalHook],
+    package: dict[str, tuple[str, str, int]],
+) -> tuple[str, str] | None:
+    """Resolve registerNovelCommand(name) from the registering block.
+
+    Two functions can register different locals that share a name, and a
+    local can shadow a package callback. The package map has one body per
+    name, so the call has to pick the local in scope before falling back.
+    """
+    local = _local_hook_at(locals_, name, pos)
+    if local is not None:
+        return local.root_param, local.body
+    hook = package.get(name)
+    if hook is None:
+        return None
+    return hook[0], hook[1]
+
+
+def _constructor_is_scaffold(body: str) -> bool:
+    """body is comment-masked. A copy of the annotation inside a string is
+    not the command's own pp:novel-scaffold marker.
+    """
+    masked = _mask_go_strings(body)
+    for match in SCAFFOLD_ANN_RE.finditer(body):
+        if masked[match.start()] == body[match.start()]:
+            return True
+    return False
+
+
+def _named_hook_funcs(string_masked: str, comment_masked: str) -> dict[str, tuple[str, str, int]]:
+    found: dict[str, tuple[str, str, int]] = {}
+    for match in NAMED_HOOK_FUNC_RE.finditer(string_masked):
+        body = _extract_function_body(comment_masked, match.end())
+        if body is None:
+            continue
+        _keep_hook(found, match.group(1), match.group(2), body, 0)
+    depths = _code_brace_depths(string_masked)
+    for match in VAR_HOOK_FUNC_RE.finditer(string_masked):
+        body = _extract_function_body(comment_masked, match.end())
+        if body is None:
+            continue
+        depth = depths[match.start()] if match.start() < len(depths) else 0
+        _keep_hook(found, match.group(1), match.group(2), body, depth)
+    return found
+
+
+def _record_hook_child(
+    parent: str,
+    ctor: str,
+    root_param: str,
+    bindings: dict[str, list[str]],
+    root_children: dict[str, None],
+    deferred: list[tuple[list[str], str]],
+) -> None:
+    if parent == root_param or parent == "rootCmd":
+        root_children.setdefault(ctor, None)
+        return
+    path = bindings.get(parent)
+    if path:
+        deferred.append((path, ctor))
+
+
+def _consume_hook_body(
+    body: str,
+    root_param: str,
+    root_children: dict[str, None],
+    deferred: list[tuple[list[str], str]],
+) -> None:
+    scan = _mask_go_strings(body)
+    bindings = _find_bindings(body, {root_param, "rootCmd"})
+    for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
+        _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
+    for parent, ctor in ADDCMD_CALL_RE.findall(scan):
+        _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
+
+
+def _command_at_token(
+    constructors: dict[str, CommandConstructor],
+    names: list[str],
+    token: str,
+) -> CommandConstructor | None:
+    """A pp:novel-scaffold command is removed when a real command with the
+    same name is registered. The scaffold is often the earlier registration,
+    so the first Use match is the command the running CLI has already dropped.
+    """
+    matches: list[CommandConstructor] = []
+    for fn_name in names:
+        info = constructors.get(fn_name)
+        if info is None:
+            continue
+        leaf, _, _, _ = parse_use(info.use)
+        if leaf == token:
+            matches.append(info)
+    for info in matches:
+        if not info.scaffold:
+            return info
+    if matches:
+        return matches[0]
+    return None
+
+
+def _constructor_at_path(
+    constructors: dict[str, CommandConstructor],
+    root_children: list[str],
+    cmd_path: list[str],
+) -> CommandConstructor | None:
+    if not cmd_path:
+        return None
+    current = _command_at_token(constructors, root_children, cmd_path[0])
+    if current is None:
+        return None
+    for token in cmd_path[1:]:
+        current = _command_at_token(constructors, current.children, token)
+        if current is None:
+            return None
+    return current
+
+
+def _drop_replaced_scaffolds(
+    names: list[str],
+    constructors: dict[str, CommandConstructor],
+) -> list[str]:
+    by_leaf: dict[str, list[CommandConstructor]] = {}
+    for name in names:
+        info = constructors.get(name)
+        if info is None:
+            continue
+        leaf, _, _, _ = parse_use(info.use)
+        by_leaf.setdefault(leaf, []).append(info)
+    replaced: set[str] = set()
+    for group in by_leaf.values():
+        if any(not info.scaffold for info in group):
+            for info in group:
+                if info.scaffold:
+                    replaced.add(info.name)
+    if not replaced:
+        return names
+    return [name for name in names if name not in replaced]
+
+
+def _apply_scaffold_replacement(
+    constructors: dict[str, CommandConstructor],
+    root_children: list[str],
+) -> list[str]:
+    root_children = _drop_replaced_scaffolds(root_children, constructors)
+    pending = list(root_children)
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        info = constructors.get(name)
+        if info is None:
+            continue
+        info.children = _drop_replaced_scaffolds(info.children, constructors)
+        pending.extend(info.children)
+    return root_children
+
+
+def _attach_deferred(
+    constructors: dict[str, CommandConstructor],
+    root_children: list[str],
+    deferred: list[tuple[list[str], str]],
+) -> None:
+    pending = list(deferred)
+    for _ in range(len(pending)):
+        next_pending: list[tuple[list[str], str]] = []
+        progressed = False
+        for path, ctor in pending:
+            parent = _constructor_at_path(constructors, root_children, path)
+            if parent is None or parent.name == ctor:
+                if parent is None:
+                    next_pending.append((path, ctor))
+                continue
+            if ctor not in parent.children:
+                parent.children.append(ctor)
+                progressed = True
+        pending = next_pending
+        if not progressed:
+            break
+
+
+def _read_cli_go_files(cli_dir: Path) -> list[tuple[Path, str]]:
+    src = cli_dir / "internal/cli"
+    if not src.exists():
+        return []
+    files: list[tuple[Path, str]] = []
+    for go_file in sorted(src.glob("*.go")):
+        if go_file.name.endswith("_test.go"):
+            continue
+        try:
+            files.append((go_file, read_utf8(go_file)))
+        except Exception:
+            continue
+    return files
+
+
+@lru_cache(maxsize=None)
+def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[str, ...]]:
+    """Build constructors and root children, including novel-command hooks.
+
+    addNovelCommandIfAbsent(parent, newXxxCmd) is the same edge as
+    parent.AddCommand(newXxxCmd). registerNovelCommand hooks are roots
+    because init runs them from a file that often defines no constructor.
+    A pp:novel-scaffold command is dropped when a real command with the
+    same name is registered on that parent, matching the running CLI.
+    """
+    constructors: dict[str, CommandConstructor] = {}
+    root_children: dict[str, None] = {}
+    deferred: list[tuple[list[str], str]] = []
+    named: dict[str, tuple[str, str, int]] = {}
+    sources = _read_cli_go_files(cli_dir)
+
+    parsed: list[tuple[Path, str, str, list[_LocalHook]]] = []
+    for go_file, text in sources:
+        comment_masked = _mask_go_comments(text)
+        string_masked = _mask_go_strings(comment_masked)
+        file_locals = _local_hook_decls(string_masked, comment_masked)
+        parsed.append((go_file, comment_masked, string_masked, file_locals))
+        for hook_name, hook in _named_hook_funcs(string_masked, comment_masked).items():
+            _keep_hook(named, hook_name, hook[0], hook[1], hook[2])
+
+    for go_file, comment_masked, string_masked, file_locals in parsed:
+        for match in CONSTRUCTOR_RE.finditer(comment_masked):
+            fn_name = match.group(1)
+            body = _extract_function_body(comment_masked, match.end())
+            if body is None:
+                continue
+            use_match = USE_RE.search(body)
+            if not use_match:
+                continue
+            args_match = ARGS_RE.search(body)
+            args_info = (args_match.group(1), args_match.group(2)) if args_match else None
+            scan = _mask_go_strings(body)
+            children: list[str] = []
+            for child in ADDCMD_CHILD_RE.finditer(scan):
+                _append_unique(children, child.group(1))
+            bindings = _find_bindings(body, {"root", "rootCmd"})
+            for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
+                if parent == "rootCmd":
+                    continue
+                if parent in bindings:
+                    deferred.append((bindings[parent], ctor))
+                else:
+                    _append_unique(children, ctor)
+            constructors[fn_name] = CommandConstructor(
+                name=fn_name,
+                file=go_file,
+                use=use_match.group(1),
+                args_info=args_info,
+                children=children,
+                scaffold=_constructor_is_scaffold(body),
+            )
+
+        for match in ROOT_ADDCMD_RE.finditer(string_masked):
+            root_children.setdefault(match.group(1), None)
+        for parent, ctor in NOVEL_ATTACH_RE.findall(string_masked):
+            if parent == "rootCmd":
+                root_children.setdefault(ctor, None)
+        for root_param, body in _funclit_hooks(string_masked, comment_masked):
+            _consume_hook_body(body, root_param, root_children, deferred)
+        for match in HOOK_NAMED_RE.finditer(string_masked):
+            resolved = _resolve_registered_hook(match.group(1), match.start(), file_locals, named)
+            if resolved is None:
+                continue
+            root_param, body = resolved
+            _consume_hook_body(body, root_param, root_children, deferred)
+
+    root_list = list(root_children)
+    _attach_deferred(constructors, root_list, deferred)
+    root_list = _apply_scaffold_replacement(constructors, root_list)
+    return constructors, tuple(root_list)
 
 
 @lru_cache(maxsize=None)
 def collect_command_constructors(cli_dir: Path) -> dict[str, CommandConstructor]:
     """Scan internal/cli/*.go for `func newXxxCmd(...) *cobra.Command`
     declarations. For each, capture the Use string, the cobra.Args
-    validator, and the list of child constructor names called via
-    `<var>.AddCommand(newYyyCmd(...))` within the function body.
+    validator, and child constructors registered with AddCommand or
+    addNovelCommandIfAbsent in the function body.
 
     Result maps constructor name → CommandConstructor.
 
@@ -253,62 +1627,23 @@ def collect_command_constructors(cli_dir: Path) -> dict[str, CommandConstructor]
     file-system scan only needs to happen once. Callers must not
     mutate the returned dict (it's the cache's storage).
     """
-    src = cli_dir / "internal/cli"
-    if not src.exists():
-        return {}
-    constructors: dict[str, CommandConstructor] = {}
-    for go_file in src.glob("*.go"):
-        if go_file.name.endswith("_test.go"):
-            continue
-        try:
-            text = read_utf8(go_file)
-        except Exception:
-            continue
-        for m in CONSTRUCTOR_RE.finditer(text):
-            fn_name = m.group(1)
-            body = _extract_function_body(text, m.end())
-            if body is None:
-                continue
-            use_match = USE_RE.search(body)
-            if not use_match:
-                continue
-            args_match = ARGS_RE.search(body)
-            args_info = (args_match.group(1), args_match.group(2)) if args_match else None
-            children = list(dict.fromkeys(
-                child.group(1) for child in ADDCMD_CHILD_RE.finditer(body)
-            ))
-            constructors[fn_name] = CommandConstructor(
-                name=fn_name,
-                file=go_file,
-                use=use_match.group(1),
-                args_info=args_info,
-                children=children,
-            )
+    constructors, _ = _command_tree(cli_dir)
     return constructors
 
 
 @lru_cache(maxsize=None)
 def find_root_children(cli_dir: Path) -> list[str]:
-    """Return the constructor names called from `rootCmd.AddCommand(...)`
-    anywhere in internal/cli/*.go. The ordering follows source order, but
-    the result is deduplicated.
+    """Return constructors registered on the root command.
+
+    That is rootCmd.AddCommand, addNovelCommandIfAbsent(rootCmd, ...),
+    and registerNovelCommand hooks that attach to the hook's root
+    parameter (addNovelCommandIfAbsent(root, ...) or root.AddCommand).
+    Ordering follows source order across sorted filenames. Deduplicated.
 
     Cached per cli_dir; callers must not mutate the returned list.
     See collect_command_constructors for rationale."""
-    src = cli_dir / "internal/cli"
-    if not src.exists():
-        return []
-    seen: dict[str, None] = {}
-    for go_file in src.glob("*.go"):
-        if go_file.name.endswith("_test.go"):
-            continue
-        try:
-            text = read_utf8(go_file)
-        except Exception:
-            continue
-        for m in ROOT_ADDCMD_RE.finditer(text):
-            seen.setdefault(m.group(1), None)
-    return list(seen)
+    _, root_children = _command_tree(cli_dir)
+    return list(root_children)
 
 
 def resolve_command_path(
@@ -335,32 +1670,9 @@ def resolve_command_path(
     if not constructors or not root_children:
         return None, None, None
 
-    current = None
-    for fn_name in root_children:
-        info = constructors.get(fn_name)
-        if info is None:
-            continue
-        leaf, _, _, _ = parse_use(info.use)
-        if leaf == cmd_path[0]:
-            current = info
-            break
+    current = _constructor_at_path(constructors, root_children, cmd_path)
     if current is None:
         return None, None, None
-
-    for token in cmd_path[1:]:
-        next_info = None
-        for child_fn in current.children:
-            child = constructors.get(child_fn)
-            if child is None:
-                continue
-            leaf, _, _, _ = parse_use(child.use)
-            if leaf == token:
-                next_info = child
-                break
-        if next_info is None:
-            return None, None, None
-        current = next_info
-
     return current.file, current.use, current.args_info
 
 
@@ -373,12 +1685,14 @@ def find_command_source(cli_dir: Path, cmd_path: list[str]):
 
     Resolution strategy:
 
-      1. Walk the rootCmd.AddCommand graph (the durable approach added in
-         retro #301 F1). When the CLI follows the standard `func newXxxCmd`
-         + `<parent>.AddCommand(newXxxCmd(...))` convention, this returns
-         exactly one file per command path with no false positives, even
-         when two different commands share a leaf name (e.g.,
-         `recipe-goat-pp-cli save` vs `recipe-goat-pp-cli profile save`).
+      1. Walk the command graph (the durable approach added in
+         retro #301 F1). Edges are `<parent>.AddCommand(newXxxCmd(...))`
+         and `addNovelCommandIfAbsent(<parent>, newXxxCmd(...))`, including
+         commands registered from a `registerNovelCommand` hook. When the
+         CLI follows that convention, this returns exactly one file per
+         command path with no false positives, even when two different
+         commands share a leaf name (e.g., `checkpoint save` vs
+         `profile save`).
 
       2. If the graph walk fails (unconventional CLI, missing rootCmd,
          constructor functions not named `newXxxCmd`), fall back to a

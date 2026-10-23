@@ -1076,6 +1076,372 @@ func Query(cursor string) {}
 	}
 }
 
+func TestRegisteredCommandFiles_FollowsRegisterNovelCommandHookFile(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generated group is wired in root.go. Novels live in a hook file that
+	// defines no constructor, plus addNovelCommandIfAbsent under the group.
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newAccountCmd(flags))
+	// registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+	//     addNovelCommandIfAbsent(root, newCommentedCmd(flags))
+	// })
+	for _, hook := range novelCommandHooks {
+		hook(rootCmd, flags)
+	}
+	return rootCmd
+}
+func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "account.go"), `package cli
+import "github.com/spf13/cobra"
+func newAccountCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{Use: "account"}
+	addNovelCommandIfAbsent(cmd, newAccountBudgetCmd(flags))
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "account_budget.go"), `package cli
+import "github.com/spf13/cobra"
+func newAccountBudgetCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "budget"}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+import "github.com/spf13/cobra"
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newStaleCmd(flags))
+		addNovelCommandIfAbsent(root, newCheckpointCmd(flags))
+	})
+}
+var syncHook = func(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newSyncCmd(flags))
+}
+func init() { registerNovelCommand(syncHook) }
+`)
+	writeFile(t, filepath.Join(cliDir, "stale.go"), `package cli
+func newStaleCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+func newSyncCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "checkpoint.go"), `package cli
+import "github.com/spf13/cobra"
+func newCheckpointCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{Use: "checkpoint"}
+	addNovelCommandIfAbsent(cmd, newCheckpointSaveCmd(flags))
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "checkpoint_save.go"), `package cli
+import "github.com/spf13/cobra"
+func newCheckpointSaveCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "save"}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "commented.go"), `package cli
+func newCommentedCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost.go"), `package cli
+import "github.com/spf13/cobra"
+func newGhostCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "ghost"}
+}
+func unused() {
+	addNovelCommandIfAbsent(root, newGhostChildCmd(flags))
+	registerNovelCommand()
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost_child.go"), `package cli
+func newGhostChildCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "from_test.go"), `package cli
+func newFromTestCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "from_test_register_test.go"), `package cli
+import "github.com/spf13/cobra"
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newFromTestCmd(flags))
+	})
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "broken.go"), `package cli
+func init() { registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newBrokenCmd(flags))
+`)
+	writeFile(t, filepath.Join(cliDir, "broken_cmd.go"), `package cli
+func newBrokenCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "selector.go"), `package cli
+func init() {
+	cli.registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newSelectorCmd(flags))
+	})
+}
+func newSelectorCmd(flags *rootFlags) {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	for _, name := range []string{"account.go", "account_budget.go", "stale.go", "sync.go", "checkpoint.go", "checkpoint_save.go"} {
+		if !registered[name] {
+			t.Errorf("expected %s to be reachable, got %v", name, registered)
+		}
+	}
+	for _, name := range []string{"commented.go", "ghost.go", "ghost_child.go", "from_test.go", "broken_cmd.go", "selector.go", "fixture_register.go", "root.go"} {
+		if registered[name] {
+			t.Errorf("expected %s to stay unreachable, got %v", name, registered)
+		}
+	}
+}
+
+func TestRegisteredCommandFiles_FollowsNamedHookInOtherFile(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newLiveCmd(nil))
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "live.go"), `package cli
+func newLiveCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+func init() {
+	registerNovelCommand(registerSync)
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync_wire.go"), `package cli
+import "github.com/spf13/cobra"
+func registerSync(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(
+		root,
+		newSyncCmd(flags),
+	)
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+func newSyncCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost.go"), `package cli
+func newGhostCmd(flags *rootFlags) {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	if !registered["live.go"] || !registered["sync.go"] {
+		t.Fatalf("expected live.go and sync.go, got %v", registered)
+	}
+	if registered["ghost.go"] || registered["sync_wire.go"] || registered["fixture_register.go"] {
+		t.Fatalf("expected wiring files and orphan to stay out, got %v", registered)
+	}
+}
+
+func TestRegisteredCommandFiles_HookOnlyTreeExcludesOrphans(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// root.go has the hook runner but no literal AddCommand. An empty
+	// registration set used to fall open and count every file.
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd(flags *rootFlags) {
+	for _, hook := range novelCommandHooks {
+		hook(rootCmd, flags)
+	}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		root.AddCommand(newStaleCmd(flags))
+	})
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "stale.go"), `package cli
+func newStaleCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost.go"), `package cli
+func newGhostCmd(flags *rootFlags) {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	if !registered["stale.go"] {
+		t.Fatalf("expected hook-only registration to be reachable, got %v", registered)
+	}
+	if registered["ghost.go"] {
+		t.Fatalf("expected orphan to stay excluded when the gate is on, got %v", registered)
+	}
+}
+
+func TestRegisteredCommandFiles_NoHooksAndNoAddCommandFallsOpen(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {}
+`)
+	writeFile(t, filepath.Join(cliDir, "stale.go"), `package cli
+func newStaleCmd() {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	if len(registered) != 0 {
+		t.Fatalf("expected empty map when nothing is registered, got %v", registered)
+	}
+}
+
+func TestRegisteredCommandFiles_UnparseableRootStillSeesHooks(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cliDir, "root.go"), "package cli\nfunc (\n")
+	writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newStaleCmd(flags))
+	})
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "stale.go"), `package cli
+func newStaleCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost.go"), `package cli
+func newGhostCmd(flags *rootFlags) {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	if !registered["stale.go"] || registered["ghost.go"] {
+		t.Fatalf("expected only the hook command when root.go does not parse, got %v", registered)
+	}
+}
+
+func TestScorecard_HookRegistrationMatchesRootWiring(t *testing.T) {
+	hookDir := novelReachabilityFixture(t, true)
+	rootDir := novelReachabilityFixture(t, false)
+
+	hookRegistered := registeredCommandFiles(filepath.Join(hookDir, "internal", "cli"))
+	rootRegistered := registeredCommandFiles(filepath.Join(rootDir, "internal", "cli"))
+	for _, name := range []string{"account.go", "budget.go", "stale.go", "sync.go", "checkpoint.go", "checkpoint_save.go"} {
+		if !hookRegistered[name] || !rootRegistered[name] {
+			t.Fatalf("hook %v root %v, missing %s", hookRegistered, rootRegistered, name)
+		}
+	}
+	if hookRegistered["stats_ghost.go"] || rootRegistered["stats_ghost.go"] {
+		t.Fatalf("orphan counted: hook %v root %v", hookRegistered, rootRegistered)
+	}
+
+	if got, want := scoreInsight(hookDir), scoreInsight(rootDir); got != want || got != 4 {
+		t.Fatalf("insight hook=%d root=%d, want both 4", got, want)
+	}
+	if got, want := scoreWorkflows(hookDir), scoreWorkflows(rootDir); got != want || got != 4 {
+		t.Fatalf("workflows hook=%d root=%d, want both 4", got, want)
+	}
+	if got, want := scoreDeadCode(hookDir), scoreDeadCode(rootDir); got != want {
+		t.Fatalf("dead_code hook=%d root=%d", got, want)
+	}
+	if got, want := scoreBreadth(hookDir), scoreBreadth(rootDir); got != want {
+		t.Fatalf("breadth hook=%d root=%d", got, want)
+	}
+}
+
+func novelReachabilityFixture(t *testing.T, viaHook bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newAccountCmd(nil))
+`
+	if !viaHook {
+		root += `	rootCmd.AddCommand(newStaleCmd(nil))
+	rootCmd.AddCommand(newSyncCmd(nil))
+	rootCmd.AddCommand(newCheckpointCmd(nil))
+`
+	}
+	root += `}
+`
+	writeFile(t, filepath.Join(cliDir, "root.go"), root)
+	if viaHook {
+		writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newStaleCmd(flags))
+		addNovelCommandIfAbsent(root, newSyncCmd(flags))
+		addNovelCommandIfAbsent(root, newCheckpointCmd(flags))
+	})
+}
+`)
+	} else {
+		writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+// preserved hook file with no registration
+`)
+	}
+	writeFile(t, filepath.Join(cliDir, "account.go"), `package cli
+import "github.com/spf13/cobra"
+func newAccountCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "account"}
+	addNovelCommandIfAbsent(cmd, newBudgetCmd(flags))
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "budget.go"), `package cli
+import "github.com/spf13/cobra"
+func newBudgetCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "budget"}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "stale.go"), `package cli
+func newStaleCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+func newSyncCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "checkpoint.go"), `package cli
+import "github.com/spf13/cobra"
+func newCheckpointCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "checkpoint"}
+	addNovelCommandIfAbsent(cmd, newCheckpointSaveCmd(flags))
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "checkpoint_save.go"), `package cli
+import "github.com/spf13/cobra"
+func newCheckpointSaveCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "save"}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "stats_ghost.go"), `package cli
+func newStatsGhostCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(dir, CLIManifestFilename), `{
+  "novel_features": [
+    {"name": "Budget", "command": "account budget", "description": "Estimate the account budget"}
+  ]
+}`)
+	return dir
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1083,5 +1449,131 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIndexNovelHookFile_IncludesFunctionLiteralVars(t *testing.T) {
+	calls, callees, funcs := indexNovelHookFile(`package cli
+func registerSync(root *cobra.Command, flags *rootFlags) {}
+func (s *svc) method(root *cobra.Command, flags *rootFlags) {}
+var syncHook = func(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newSyncCmd(flags))
+}
+func init() { registerNovelCommand(syncHook) }
+var (
+	plain = 1
+	blockHook = func(root *cobra.Command, flags *rootFlags) {}
+)
+var typed func(root *cobra.Command, flags *rootFlags) = func(root *cobra.Command, flags *rootFlags) {}
+var assigned func(root *cobra.Command, flags *rootFlags)
+func init() {
+	assigned = func(root *cobra.Command, flags *rootFlags) {}
+	local := func(root *cobra.Command, flags *rootFlags) {}
+	_ = local
+}
+var wrong = func(flags *rootFlags) {}
+var notAHook = func() {}
+`)
+	if !calls {
+		t.Fatal("expected registerNovelCommand to count as a hook call")
+	}
+	if len(callees) != 1 || callees[0] != "syncHook" {
+		t.Fatalf("callees = %v", callees)
+	}
+	got := map[string]bool{}
+	for _, name := range funcs {
+		got[name] = true
+	}
+	for _, name := range []string{"registerSync", "syncHook", "blockHook", "typed", "assigned", "init"} {
+		if !got[name] {
+			t.Errorf("expected %s in %v", name, funcs)
+		}
+	}
+	for _, name := range []string{"method", "plain", "local", "wrong", "notAHook"} {
+		if got[name] {
+			t.Errorf("expected %s to stay out of %v", name, funcs)
+		}
+	}
+}
+
+func TestRegisteredCommandFiles_FollowsHookVarInOtherFile(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newLiveCmd(nil))
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "live.go"), `package cli
+func newLiveCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "fixture_register.go"), `package cli
+func init() {
+	registerNovelCommand(syncHook)
+	registerNovelCommand(assignedHook)
+	registerNovelCommand(wrongHook)
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync_wire.go"), `package cli
+import "github.com/spf13/cobra"
+var (
+	syncHook = func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newSyncCmd(flags))
+	}
+)
+`)
+	writeFile(t, filepath.Join(cliDir, "assigned_wire.go"), `package cli
+import "github.com/spf13/cobra"
+var assignedHook func(root *cobra.Command, flags *rootFlags)
+func init() {
+	assignedHook = func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newAssignedCmd(flags))
+	}
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "wrong_wire.go"), `package cli
+var wrongHook = func(flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newWrongCmd(flags))
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "zz_decoy.go"), `package cli
+import "github.com/spf13/cobra"
+func init() {
+	syncHook := func(root *cobra.Command, flags *rootFlags) {
+		addNovelCommandIfAbsent(root, newDecoyCmd(flags))
+	}
+	_ = syncHook
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+func newSyncCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "assigned.go"), `package cli
+func newAssignedCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "wrong.go"), `package cli
+func newWrongCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "decoy.go"), `package cli
+func newDecoyCmd(flags *rootFlags) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "ghost.go"), `package cli
+func newGhostCmd(flags *rootFlags) {}
+`)
+
+	registered := registeredCommandFiles(cliDir)
+	for _, name := range []string{"live.go", "sync.go", "assigned.go"} {
+		if !registered[name] {
+			t.Errorf("expected %s to be reachable, got %v", name, registered)
+		}
+	}
+	for _, name := range []string{"wrong.go", "decoy.go", "ghost.go", "sync_wire.go", "assigned_wire.go", "wrong_wire.go", "zz_decoy.go", "fixture_register.go", "root.go"} {
+		if registered[name] {
+			t.Errorf("expected %s to stay unreachable, got %v", name, registered)
+		}
 	}
 }

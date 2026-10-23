@@ -1830,22 +1830,27 @@ func manifestNovelFeatureLeaves(dir string) map[string]bool {
 }
 
 // registeredCommandFiles returns the set of cli/*.go filenames whose command
-// constructor is wired into the Cobra tree through AddCommand calls. Files
-// without a registered constructor should not inflate workflow/insight scores
-// even if they match prefix or behavioral heuristics — they're orphans, dead
-// code, or half-built commands that the user cannot actually invoke.
+// constructor is wired into the Cobra tree. Files without a registered
+// constructor should not inflate workflow/insight scores even if they match
+// prefix or behavioral heuristics — they're orphans, dead code, or
+// half-built commands that the user cannot actually invoke.
 //
-// Returns an empty map if root.go is missing or parsing yields no matches so
-// callers can fall open to the prior heuristic behavior (older or partial CLI
-// trees where the registration graph isn't parseable).
+// Reachability starts at root.go and at every non-test file that calls
+// registerNovelCommand. Hook files are roots because init runs them, and the
+// file often defines no constructor, so a constructor-definition scan never
+// enters it. addNovelCommandIfAbsent inside an already-reachable file counts
+// the same as AddCommand.
+//
+// Returns an empty map if root.go is missing or no registrations are found so
+// callers can fall open for older or partial CLI trees.
 func registeredCommandFiles(cliDir string) map[string]bool {
 	rootContent := readFileContent(filepath.Join(cliDir, "root.go"))
 	if rootContent == "" {
 		return map[string]bool{}
 	}
 
-	reachableCtors := addCommandConstructorCalls(rootContent)
-	if len(reachableCtors) == 0 {
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
 		return map[string]bool{}
 	}
 
@@ -1853,10 +1858,6 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 	// Re-scan newly reachable command files for child AddCommand calls so
 	// subcommands defined outside root.go still count as user-reachable.
 	defRe := regexp.MustCompile(`^func\s+(new[A-Z][A-Za-z0-9_]*Cmd)\s*\(`)
-	entries, err := os.ReadDir(cliDir)
-	if err != nil {
-		return map[string]bool{}
-	}
 	fileContent := map[string]string{}
 	fileDefs := map[string][]string{}
 	for _, e := range entries {
@@ -1871,6 +1872,14 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 				fileDefs[e.Name()] = append(fileDefs[e.Name()], sm[1])
 			}
 		}
+	}
+
+	reachableCtors := addCommandConstructorCalls(rootContent)
+	for ctor := range novelHookReachableConstructors(fileContent) {
+		reachableCtors[ctor] = true
+	}
+	if len(reachableCtors) == 0 {
+		return map[string]bool{}
 	}
 
 	result := make(map[string]bool)
@@ -1899,6 +1908,161 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 		}
 	}
 	return result
+}
+
+// novelHookReachableConstructors returns constructors passed to AddCommand or
+// addNovelCommandIfAbsent from registerNovelCommand hook files. A hook file is
+// a root even when the callback is a named function, or a package-level
+// variable holding a function literal, in another file: init registers it,
+// and that other file may itself define no constructor.
+func novelHookReachableConstructors(fileContent map[string]string) map[string]bool {
+	type hookIndex struct {
+		calls   bool
+		callees []string
+		funcs   []string
+	}
+	indexed := make(map[string]hookIndex, len(fileContent))
+	definedIn := map[string][]string{}
+	for name, content := range fileContent {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		calls, callees, funcs := indexNovelHookFile(content)
+		indexed[name] = hookIndex{calls: calls, callees: callees, funcs: funcs}
+		for _, fn := range funcs {
+			definedIn[fn] = append(definedIn[fn], name)
+		}
+	}
+
+	rooted := map[string]bool{}
+	for name, idx := range indexed {
+		if !idx.calls {
+			continue
+		}
+		rooted[name] = true
+		for _, callee := range idx.callees {
+			for _, file := range definedIn[callee] {
+				rooted[file] = true
+			}
+		}
+	}
+
+	ctors := map[string]bool{}
+	for name := range rooted {
+		for ctor := range addCommandConstructorCalls(fileContent[name]) {
+			ctors[ctor] = true
+		}
+	}
+	return ctors
+}
+
+func indexNovelHookFile(content string) (calls bool, callees []string, funcs []string) {
+	file, err := parser.ParseFile(token.NewFileSet(), "", content, parser.SkipObjectResolution)
+	if err != nil {
+		return false, nil, nil
+	}
+	funcs = novelHookFuncNames(file)
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || ident.Name != "registerNovelCommand" || len(call.Args) != 1 {
+			return true
+		}
+		calls = true
+		if arg, ok := call.Args[0].(*ast.Ident); ok && arg.Name != "" {
+			callees = append(callees, arg.Name)
+		}
+		return true
+	})
+	return calls, callees, funcs
+}
+
+// novelHookFuncNames lists names another file can pass to registerNovelCommand:
+// package-level funcs, and package-level variables holding a hook literal.
+// Locals are omitted because indexing one would root its file when a real
+// hook reused the name.
+func novelHookFuncNames(file *ast.File) []string {
+	seen := map[string]bool{}
+	var funcs []string
+	add := func(name string) {
+		if name == "" || name == "_" || seen[name] {
+			return
+		}
+		seen[name] = true
+		funcs = append(funcs, name)
+	}
+	pkgVars := map[string]bool{}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Recv != nil || d.Name == nil {
+				continue
+			}
+			add(d.Name.Name)
+		case *ast.GenDecl:
+			if d.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if name == nil || name.Name == "" || name.Name == "_" {
+						continue
+					}
+					pkgVars[name.Name] = true
+					if i < len(vs.Values) && isNovelHookFuncLit(vs.Values[i]) {
+						add(name.Name)
+					}
+				}
+			}
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.ASSIGN {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || !pkgVars[ident.Name] || i >= len(assign.Rhs) {
+				continue
+			}
+			if isNovelHookFuncLit(assign.Rhs[i]) {
+				add(ident.Name)
+			}
+		}
+		return true
+	})
+	return funcs
+}
+
+// registerNovelCommand runs func(root *cobra.Command, ...). Other function
+// values are not that callback.
+func isNovelHookFuncLit(expr ast.Expr) bool {
+	lit, ok := expr.(*ast.FuncLit)
+	if !ok || lit.Type == nil || lit.Type.Params == nil || len(lit.Type.Params.List) == 0 {
+		return false
+	}
+	return isStarCobraCommand(lit.Type.Params.List[0].Type)
+}
+
+func isStarCobraCommand(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "Command" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "cobra"
 }
 
 func addCommandConstructorCalls(content string) map[string]bool {
@@ -2005,7 +2169,7 @@ func scoreWorkflows(dir string) int {
 			continue
 		}
 
-		// If root.go registration is discoverable, require the file to define a
+		// If command registration is discoverable, require the file to define a
 		// registered constructor. Falls open when no registrations are found at
 		// all (older CLIs or partial builds) so we don't zero out scores
 		// unexpectedly.

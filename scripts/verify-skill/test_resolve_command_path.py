@@ -539,5 +539,1401 @@ class TestExtractProseInvocations(unittest.TestCase):
             self.assertIn("--bogusflag", flags)
 
 
+NOVEL_ROOT_GO = '''package cli
+import "github.com/spf13/cobra"
+
+// Device-template comment must not register newMyCmd.
+//
+//	func init() {
+//		registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+//			root.AddCommand(newMyCmd(flags))
+//		})
+//	}
+
+const sample = "registerNovelCommand(func(root *cobra.Command, flags *rootFlags) { addNovelCommandIfAbsent(root, newFakeFromStringCmd(flags)) })"
+
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newAccountCmd(flags))
+    rootCmd.AddCommand(newProfileCmd(flags))
+    addNovelCommandIfAbsent(rootCmd, newNovelAuditCmd(flags))
+    return rootCmd
+}
+'''
+
+NOVEL_ACCOUNT_GO = '''package cli
+import "github.com/spf13/cobra"
+func newAccountCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "account"}
+    cmd.AddCommand(newAccountGetCmd(flags))
+    addNovelCommandIfAbsent(cmd, newNovelAccountEstimateCmd(flags))
+    return cmd
+}
+func newAccountGetCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "get <id>"}
+}
+'''
+
+NOVEL_ESTIMATE_GO = '''package cli
+import "github.com/spf13/cobra"
+func newNovelAccountEstimateCmd(flags *rootFlags) *cobra.Command {
+    var posts string
+    cmd := &cobra.Command{Use: "estimate"}
+    cmd.Flags().StringVar(&posts, "posts", "", "Post filter")
+    return cmd
+}
+'''
+
+NOVEL_BUDGET_GO = '''package cli
+import "github.com/spf13/cobra"
+func newNovelAccountBudgetCmd(flags *rootFlags) *cobra.Command {
+    var limit int
+    cmd := &cobra.Command{Use: "budget"}
+    cmd.Flags().IntVar(&limit, "limit", 10, "Row limit")
+    return cmd
+}
+'''
+
+NOVEL_PROFILE_GO = '''package cli
+import "github.com/spf13/cobra"
+func newProfileCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "profile"}
+    cmd.AddCommand(newProfileSaveCmd(flags))
+    cmd.AddCommand(newProfileShowCmd(flags))
+    return cmd
+}
+func newProfileSaveCmd(flags *rootFlags) *cobra.Command {
+    var label string
+    cmd := &cobra.Command{Use: "save <name>"}
+    cmd.Flags().StringVar(&label, "label", "", "Profile label")
+    return cmd
+}
+func newProfileShowCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "show <name>"}
+}
+'''
+
+NOVEL_CHECKPOINT_GO = '''package cli
+import "github.com/spf13/cobra"
+func newCheckpointCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "checkpoint"}
+    addNovelCommandIfAbsent(cmd, newCheckpointSaveCmd(flags))
+    return cmd
+}
+func newCheckpointSaveCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "save"}
+}
+'''
+
+NOVEL_WATCHLIST_GO = '''package cli
+import "github.com/spf13/cobra"
+func newWatchlistCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "watchlist"}
+    cmd.AddCommand(newWatchlistShowCmd(flags))
+    return cmd
+}
+func newWatchlistShowCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "show"}
+}
+'''
+
+NOVEL_AUDIT_GO = '''package cli
+import "github.com/spf13/cobra"
+func newNovelAuditCmd(flags *rootFlags) *cobra.Command {
+    var since string
+    cmd := &cobra.Command{Use: "audit"}
+    cmd.Flags().StringVar(&since, "since", "", "Since when")
+    return cmd
+}
+'''
+
+NOVEL_DEVICE_GO = '''package cli
+import "github.com/spf13/cobra"
+func newDeviceStyleCmd(flags *rootFlags) *cobra.Command {
+    var mode string
+    cmd := &cobra.Command{Use: "device-style"}
+    cmd.Flags().StringVar(&mode, "mode", "", "Mode")
+    return cmd
+}
+func newWrappedCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "wrapped"}
+}
+'''
+
+NOVEL_ORPHAN_GO = '''package cli
+import "github.com/spf13/cobra"
+func newOrphanCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "orphan <id>"}
+}
+func newFakeFromStringCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "fake-from-string"}
+}
+func newMyCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "my"}
+}
+func newNopeCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "nope"}
+}
+'''
+
+NOVEL_REGISTER_GO = '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newCheckpointCmd(flags))
+        addNovelCommandIfAbsent(root, newWatchlistCmd(flags))
+        accountCmd, _, err := root.Find([]string{"account"})
+        if err == nil {
+            addNovelCommandIfAbsent(accountCmd, newNovelAccountBudgetCmd(flags))
+        }
+    })
+}
+func init() {
+    registerNovelCommand(registerDeviceStyle)
+}
+func registerDeviceStyle(root *cobra.Command, flags *rootFlags) {
+    root.AddCommand(newDeviceStyleCmd(flags))
+}
+func init() {
+    registerNovelCommand(func(
+        root *cobra.Command,
+        flags *rootFlags,
+    ) {
+        addNovelCommandIfAbsent(root, newWrappedCmd(flags))
+    })
+}
+func init() {
+    registerNovelCommand(func(flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newNopeCmd(flags))
+    })
+}
+'''
+
+
+def _novel_cli(tmp: Path) -> Path:
+    return _write_cli(Path(tmp), {
+        "root.go": NOVEL_ROOT_GO,
+        "account.go": NOVEL_ACCOUNT_GO,
+        "estimate.go": NOVEL_ESTIMATE_GO,
+        "budget.go": NOVEL_BUDGET_GO,
+        "profile.go": NOVEL_PROFILE_GO,
+        "checkpoint.go": NOVEL_CHECKPOINT_GO,
+        "watchlist.go": NOVEL_WATCHLIST_GO,
+        "audit.go": NOVEL_AUDIT_GO,
+        "device.go": NOVEL_DEVICE_GO,
+        "orphan.go": NOVEL_ORPHAN_GO,
+        "fixture_register.go": NOVEL_REGISTER_GO,
+    })
+
+
+class TestNovelCommandRegistration(unittest.TestCase):
+    def test_hook_and_helper_commands_resolve_past_shared_leaves(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _novel_cli(Path(td))
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newCheckpointCmd", roots)
+            self.assertIn("newWatchlistCmd", roots)
+            self.assertIn("newNovelAuditCmd", roots)
+            self.assertIn("newDeviceStyleCmd", roots)
+            self.assertIn("newWrappedCmd", roots)
+            self.assertIn("newAccountCmd", roots)
+            self.assertIn("newProfileCmd", roots)
+            for orphan in ("newOrphanCmd", "newFakeFromStringCmd", "newMyCmd", "newNopeCmd", "newNovelAccountBudgetCmd"):
+                self.assertNotIn(orphan, roots, orphan)
+
+            ctors = collect_command_constructors(cli_dir)
+            self.assertIn("newNovelAccountEstimateCmd", ctors["newAccountCmd"].children)
+            self.assertIn("newNovelAccountBudgetCmd", ctors["newAccountCmd"].children)
+            self.assertIn("newCheckpointSaveCmd", ctors["newCheckpointCmd"].children)
+            self.assertNotIn("newOrphanCmd", ctors["newAccountCmd"].children)
+
+            file, use, _ = resolve_command_path(cli_dir, ["checkpoint", "save"])
+            self.assertEqual(file.name, "checkpoint.go")
+            self.assertEqual(use, "save")
+
+            file, use, _ = resolve_command_path(cli_dir, ["profile", "save"])
+            self.assertEqual(file.name, "profile.go")
+            self.assertEqual(use, "save <name>")
+
+            file, use, _ = resolve_command_path(cli_dir, ["watchlist", "show"])
+            self.assertEqual(file.name, "watchlist.go")
+            self.assertEqual(use, "show")
+
+            file, use, _ = resolve_command_path(cli_dir, ["profile", "show"])
+            self.assertEqual(use, "show <name>")
+
+            file, use, _ = resolve_command_path(cli_dir, ["account", "estimate"])
+            self.assertEqual(file.name, "estimate.go")
+            self.assertEqual(use, "estimate")
+
+            file, use, _ = resolve_command_path(cli_dir, ["account", "budget"])
+            self.assertEqual(file.name, "budget.go")
+
+            file, _, _ = resolve_command_path(cli_dir, ["orphan"])
+            self.assertIsNone(file)
+            file, _, _ = resolve_command_path(cli_dir, ["my"])
+            self.assertIsNone(file)
+            file, _, _ = resolve_command_path(cli_dir, ["nope"])
+            self.assertIsNone(file)
+
+    def test_skill_checks_pass_for_hook_and_grouped_novels(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _novel_cli(Path(td))
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} account estimate --posts recent
+{binary} account budget --limit 5
+{binary} account get acct_123
+{binary} checkpoint save
+{binary} watchlist show
+{binary} profile save alice
+{binary} profile show bob
+{binary} audit --since 7d
+{binary} device-style --mode safe
+{binary} wrapped
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"flag-commands", "positional-args", "unknown-command"})
+            self.assertEqual([], report.findings, [f.detail for f in report.findings])
+
+    def test_subcommand_flags_stay_on_that_subcommand(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _novel_cli(Path(td))
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} account estimate --label x
+{binary} account budget --posts recent
+{binary} account --posts recent
+{binary} checkpoint save extra
+{binary} watchlist show extra
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"flag-commands", "positional-args"})
+            details = {(f.check, f.command, f.detail) for f in report.findings}
+            self.assertIn(
+                ("flag-commands", f"{binary} account estimate", "--label is declared elsewhere but not on account estimate"),
+                details,
+            )
+            self.assertIn(
+                ("flag-commands", f"{binary} account budget", "--posts is declared elsewhere but not on account budget"),
+                details,
+            )
+            self.assertIn(
+                ("flag-commands", f"{binary} account", "--posts is declared elsewhere but not on account"),
+                details,
+            )
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            self.assertTrue(any("checkpoint save" in f.command and "got 1 positional" in f.detail for f in positional))
+            self.assertTrue(any("watchlist show" in f.command and "got 1 positional" in f.detail for f in positional))
+            self.assertFalse(any(f.likely_false_positive for f in positional))
+
+    def test_cross_file_named_hook_and_fields_find(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newIssuesCmd(flags))
+    return rootCmd
+}
+''',
+                "issues.go": '''package cli
+import "github.com/spf13/cobra"
+func newIssuesCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "issues"}
+}
+''',
+                "fixture_register.go": '''package cli
+func init() { registerNovelCommand(registerSync) }
+''',
+                "sync_wire.go": '''package cli
+import "github.com/spf13/cobra"
+func registerSync(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(
+        root,
+        newSyncCmd(flags),
+    )
+    if parent, _, err := root.Find(strings.Fields("issues")); err == nil {
+        addNovelCommandIfAbsent(parent, newIssuesStaleCmd(flags))
+    }
+}
+''',
+                "sync.go": '''package cli
+import "github.com/spf13/cobra"
+func newSyncCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "sync"}
+}
+''',
+                "stale.go": '''package cli
+import "github.com/spf13/cobra"
+func newIssuesStaleCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "stale"}
+}
+''',
+                "orphan.go": '''package cli
+import "github.com/spf13/cobra"
+func newOrphanCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "orphan"}
+}
+''',
+            })
+            self.assertIn("newSyncCmd", find_root_children(cli_dir))
+            file, use, _ = resolve_command_path(cli_dir, ["issues", "stale"])
+            self.assertEqual(file.name, "stale.go")
+            self.assertEqual(use, "stale")
+            file, _, _ = resolve_command_path(cli_dir, ["orphan"])
+            self.assertIsNone(file)
+
+    def test_unclosed_hook_does_not_hide_a_later_hook(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newLiveCmd())
+    return rootCmd
+}
+''',
+                "live.go": '''package cli
+import "github.com/spf13/cobra"
+func newLiveCmd() *cobra.Command { return &cobra.Command{Use: "live"} }
+''',
+                "fixture_register.go": '''package cli
+func init() {
+    registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newBrokenCmd(flags))
+    // hook left unclosed; a later hook must still register
+func init() {
+    registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newStaleCmd(flags))
+    })
+}
+''',
+                "stale.go": '''package cli
+import "github.com/spf13/cobra"
+func newStaleCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "stale"} }
+''',
+                "broken.go": '''package cli
+import "github.com/spf13/cobra"
+func newBrokenCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "broken"} }
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newStaleCmd", roots)
+            self.assertNotIn("newBrokenCmd", roots)
+            self.assertIn("newLiveCmd", roots)
+
+    def test_test_file_hook_is_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newLiveCmd())
+    return rootCmd
+}
+''',
+                "live.go": '''package cli
+import "github.com/spf13/cobra"
+func newLiveCmd() *cobra.Command { return &cobra.Command{Use: "live"} }
+''',
+                "from_test_register_test.go": '''package cli
+func init() {
+    registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newFromTestCmd(flags))
+    })
+}
+''',
+                "from_test.go": '''package cli
+import "github.com/spf13/cobra"
+func newFromTestCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "from-test"} }
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertEqual(roots, {"newLiveCmd"})
+            file, _, _ = resolve_command_path(cli_dir, ["from-test"])
+            self.assertIsNone(file)
+
+    def test_selector_call_is_not_a_hook(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newLiveCmd())
+    return rootCmd
+}
+''',
+                "live.go": '''package cli
+import "github.com/spf13/cobra"
+func newLiveCmd() *cobra.Command { return &cobra.Command{Use: "live"} }
+''',
+                "selector.go": '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    cli.registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newSelectorCmd(flags))
+    })
+    cli.registerNovelCommand(registerSelector)
+}
+func registerSelector(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newSelectorNamedCmd(flags))
+}
+func newSelectorCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "selector"} }
+func newSelectorNamedCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "selector-named"} }
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertEqual(roots, {"newLiveCmd"})
+            for path in (["selector"], ["selector-named"]):
+                file, _, _ = resolve_command_path(cli_dir, path)
+                self.assertIsNone(file, path)
+
+    def test_implemented_command_replaces_novel_scaffold(self):
+        # root.go attaches the scaffold first. A later hook attaches the
+        # implementation (and a second real command) under the same Use.
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newAccountCmd(flags))
+    addNovelCommandIfAbsent(rootCmd, newNovelAuditCmd(flags))
+    addNovelCommandIfAbsent(rootCmd, newTodoCmd(flags))
+    return rootCmd
+}
+''',
+                "account.go": '''package cli
+import "github.com/spf13/cobra"
+func newAccountCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "account"}
+    addNovelCommandIfAbsent(cmd, newNovelAccountEstimateCmd(flags))
+    return cmd
+}
+''',
+                "audit_scaffold.go": '''package cli
+import "github.com/spf13/cobra"
+func newNovelAuditCmd(flags *rootFlags) *cobra.Command {
+    var since string
+    cmd := &cobra.Command{
+        Use: "audit",
+        Annotations: map[string]string{
+            "pp:novel-scaffold": "true",
+        },
+    }
+    cmd.Flags().StringVar(&since, "since", "", "Since when")
+    return cmd
+}
+''',
+                "estimate_scaffold.go": '''package cli
+import "github.com/spf13/cobra"
+func newNovelAccountEstimateCmd(flags *rootFlags) *cobra.Command {
+    var since string
+    cmd := &cobra.Command{Use: "estimate"}
+    cmd.Annotations = map[string]string{}
+    cmd.Annotations["pp:novel-scaffold"] = "true"
+    cmd.Flags().StringVar(&since, "since", "", "Since when")
+    return cmd
+}
+''',
+                "audit_live.go": '''package cli
+import "github.com/spf13/cobra"
+func newAuditCmd(flags *rootFlags) *cobra.Command {
+    // "pp:novel-scaffold": "true"
+    const doc = `"pp:novel-scaffold": "true"`
+    _ = doc
+    var window string
+    cmd := &cobra.Command{
+        Use: "audit <id>",
+        Annotations: map[string]string{"pp:novel-scaffold": "false"},
+    }
+    cmd.Flags().StringVar(&window, "window", "", "Window")
+    return cmd
+}
+''',
+                "audit_extra.go": '''package cli
+import "github.com/spf13/cobra"
+func newAuditExtraCmd(flags *rootFlags) *cobra.Command {
+    var extra string
+    cmd := &cobra.Command{Use: "audit"}
+    cmd.Flags().StringVar(&extra, "extra", "", "Extra")
+    return cmd
+}
+''',
+                "estimate_live.go": '''package cli
+import "github.com/spf13/cobra"
+func newEstimateCmd(flags *rootFlags) *cobra.Command {
+    var window string
+    cmd := &cobra.Command{Use: "estimate <id>"}
+    cmd.Flags().StringVar(&window, "window", "", "Window")
+    return cmd
+}
+''',
+                "todo.go": '''package cli
+import "github.com/spf13/cobra"
+func newTodoCmd(flags *rootFlags) *cobra.Command {
+    var dry string
+    cmd := &cobra.Command{
+        Use: "todo",
+        Annotations: map[string]string{"pp:novel-scaffold": "true"},
+    }
+    cmd.Flags().StringVar(&dry, "dry", "", "Dry run marker")
+    return cmd
+}
+''',
+                "zz_hook.go": '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newAuditCmd(flags))
+        root.AddCommand(newAuditExtraCmd(flags))
+        accountCmd, _, err := root.Find([]string{"account"})
+        if err == nil {
+            addNovelCommandIfAbsent(accountCmd, newEstimateCmd(flags))
+        }
+    })
+}
+''',
+            })
+            file, use, _ = resolve_command_path(cli_dir, ["audit"])
+            self.assertEqual(file.name, "audit_live.go")
+            self.assertEqual(use, "audit <id>")
+            file, use, _ = resolve_command_path(cli_dir, ["account", "estimate"])
+            self.assertEqual(file.name, "estimate_live.go")
+            self.assertEqual(use, "estimate <id>")
+            file, use, _ = resolve_command_path(cli_dir, ["todo"])
+            self.assertEqual(file.name, "todo.go")
+            self.assertEqual(use, "todo")
+
+            roots = find_root_children(cli_dir)
+            self.assertNotIn("newNovelAuditCmd", roots)
+            self.assertIn("newAuditCmd", roots)
+            self.assertIn("newAuditExtraCmd", roots)
+            self.assertIn("newTodoCmd", roots)
+            ctors = collect_command_constructors(cli_dir)
+            self.assertNotIn("newNovelAccountEstimateCmd", ctors["newAccountCmd"].children)
+            self.assertIn("newEstimateCmd", ctors["newAccountCmd"].children)
+            self.assertTrue(ctors["newNovelAuditCmd"].scaffold)
+            self.assertTrue(ctors["newNovelAccountEstimateCmd"].scaffold)
+            self.assertTrue(ctors["newTodoCmd"].scaffold)
+            self.assertFalse(ctors["newAuditCmd"].scaffold)
+            self.assertFalse(ctors["newAuditExtraCmd"].scaffold)
+
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} audit --window
+{binary} audit ACCT123
+{binary} audit --since
+{binary} audit --extra
+{binary} audit ACCT123 EXTRA
+{binary} account estimate --window
+{binary} account estimate ACCT123
+{binary} account estimate --since
+{binary} account estimate ACCT123 EXTRA
+{binary} todo --dry
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"flag-commands", "positional-args", "unknown-command"})
+            details = {(f.check, f.command, f.detail) for f in report.findings}
+            self.assertIn(
+                ("flag-commands", f"{binary} audit", "--since is declared elsewhere but not on audit"),
+                details,
+            )
+            self.assertIn(
+                ("flag-commands", f"{binary} audit", "--extra is declared elsewhere but not on audit"),
+                details,
+            )
+            self.assertIn(
+                (
+                    "flag-commands",
+                    f"{binary} account estimate",
+                    "--since is declared elsewhere but not on account estimate",
+                ),
+                details,
+            )
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            self.assertTrue(any(
+                f.command == f"{binary} audit" and 'Use: "audit <id>"' in f.detail and "got 2 positional" in f.detail
+                and not f.likely_false_positive
+                for f in positional
+            ), [f.detail for f in positional])
+            self.assertTrue(any(
+                f.command == f"{binary} account estimate" and 'Use: "estimate <id>"' in f.detail
+                and "got 2 positional" in f.detail and not f.likely_false_positive
+                for f in positional
+            ), [f.detail for f in positional])
+            self.assertFalse(any("got 1 positional" in f.detail for f in positional), [f.detail for f in positional])
+            self.assertFalse(any(f.check == "flag-commands" and "--window" in f.detail for f in report.findings))
+            self.assertFalse(any(f.check == "flag-commands" and "--dry" in f.detail for f in report.findings))
+            self.assertFalse(any(f.check == "unknown-command" for f in report.findings))
+
+    def test_addcommand_on_find_parent_registers_child(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newAccountCmd(flags))
+    rootCmd.AddCommand(newProfileCmd(flags))
+    return rootCmd
+}
+''',
+                "account.go": '''package cli
+import "github.com/spf13/cobra"
+func newAccountCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "account"}
+}
+''',
+                "profile.go": '''package cli
+import "github.com/spf13/cobra"
+func newProfileCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "profile"}
+    cmd.AddCommand(newProfileSaveCmd(flags))
+    return cmd
+}
+func newProfileSaveCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "save <name>"}
+}
+''',
+                "save_cmd.go": '''package cli
+import "github.com/spf13/cobra"
+func newCheckpointSaveCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "save"}
+}
+''',
+                "wrapped.go": '''package cli
+import "github.com/spf13/cobra"
+func newWrappedCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "wrapped"}
+}
+''',
+                "decoys.go": '''package cli
+import "github.com/spf13/cobra"
+func newCommentedCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "commented"}
+}
+func newFakeCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "fake"}
+}
+func newGhostCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "ghost"}
+}
+func newMysteryCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "mystery"}
+}
+''',
+                "zz_hook.go": '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+        // accountCmd.AddCommand(newCommentedCmd(flags))
+        const sample = "accountCmd.AddCommand(newFakeCmd(flags))"
+        _ = sample
+        accountCmd, _, err := root.Find([]string{"account"})
+        if err == nil {
+            accountCmd.AddCommand(newCheckpointSaveCmd(flags))
+        }
+        other.AddCommand(newGhostCmd(flags))
+        mystery, _, err := other.Find([]string{"account"})
+        if err == nil {
+            mystery.AddCommand(newMysteryCmd(flags))
+        }
+        root.AddCommand(newWrappedCmd(flags))
+    })
+}
+''',
+            })
+            file, use, _ = resolve_command_path(cli_dir, ["account", "save"])
+            self.assertEqual(file.name, "save_cmd.go")
+            self.assertEqual(use, "save")
+            file, use, _ = resolve_command_path(cli_dir, ["profile", "save"])
+            self.assertEqual(file.name, "profile.go")
+            self.assertEqual(use, "save <name>")
+            file, _, _ = resolve_command_path(cli_dir, ["wrapped"])
+            self.assertEqual(file.name, "wrapped.go")
+            ctors = collect_command_constructors(cli_dir)
+            self.assertEqual(ctors["newAccountCmd"].children, ["newCheckpointSaveCmd"])
+            for path in (["commented"], ["fake"], ["ghost"], ["mystery"], ["account", "commented"]):
+                file, _, _ = resolve_command_path(cli_dir, path)
+                self.assertIsNone(file, path)
+
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} account save
+{binary} account save EXTRA
+{binary} profile save alice
+{binary} wrapped
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"flag-commands", "positional-args", "unknown-command"})
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            account_save = [f for f in positional if f.command == f"{binary} account save"]
+            self.assertEqual(len(account_save), 1, [f.detail for f in positional])
+            self.assertIn('Use: "save"', account_save[0].detail)
+            self.assertIn("got 1 positional", account_save[0].detail)
+            self.assertNotIn("<name>", account_save[0].detail)
+            self.assertFalse(account_save[0].likely_false_positive)
+            self.assertFalse(any(f.command == f"{binary} profile save" for f in positional))
+            self.assertFalse(any(f.check == "unknown-command" for f in report.findings), [f.detail for f in report.findings])
+
+    def test_variable_hook_funcs_are_registered(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newProfileCmd(flags))
+    return rootCmd
+}
+''',
+                "profile.go": '''package cli
+import "github.com/spf13/cobra"
+func newProfileCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "profile"}
+    cmd.AddCommand(newProfileSaveCmd(flags))
+    return cmd
+}
+func newProfileSaveCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "save <name>"}
+}
+''',
+                "same_file_hook.go": '''package cli
+import "github.com/spf13/cobra"
+var syncHook = func(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newSyncCmd(flags))
+}
+func init() { registerNovelCommand(syncHook) }
+func init() {
+    localHook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newLocalCmd(flags))
+    }
+    registerNovelCommand(localHook)
+}
+var typedHook func(root *cobra.Command, flags *rootFlags) = func(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newTypedCmd(flags))
+}
+func init() { registerNovelCommand(typedHook) }
+var assignedHook func(root *cobra.Command, flags *rootFlags)
+func init() {
+    assignedHook = func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newAssignedCmd(flags))
+    }
+    registerNovelCommand(assignedHook)
+}
+var nopeHook = func(flags *rootFlags) {
+    addNovelCommandIfAbsent(flags, newNopeCmd(flags))
+}
+func init() { registerNovelCommand(nopeHook) }
+// var commentedHook = func(root *cobra.Command, flags *rootFlags) {
+//     addNovelCommandIfAbsent(root, newCommentedCmd(flags))
+// }
+// func init() { registerNovelCommand(commentedHook) }
+const sample = "var stringHook = func(root *cobra.Command, flags *rootFlags) { addNovelCommandIfAbsent(root, newStringHookCmd(flags)) }"
+func init() { registerNovelCommand(stringHook) }
+''',
+                "fixture_register.go": '''package cli
+func init() { registerNovelCommand(blockHook) }
+''',
+                "block_wire.go": '''package cli
+import "github.com/spf13/cobra"
+var (
+    blockHook = func(
+        root *cobra.Command,
+        flags *rootFlags,
+    ) {
+        addNovelCommandIfAbsent(root, newCheckpointCmd(flags))
+    }
+)
+''',
+                "zz_decoy.go": '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    syncHook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newDecoyCmd(flags))
+    }
+    _ = syncHook
+}
+''',
+                "sync.go": '''package cli
+import "github.com/spf13/cobra"
+func newSyncCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "sync"} }
+''',
+                "local.go": '''package cli
+import "github.com/spf13/cobra"
+func newLocalCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "local"} }
+''',
+                "typed.go": '''package cli
+import "github.com/spf13/cobra"
+func newTypedCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "typed"} }
+''',
+                "assigned.go": '''package cli
+import "github.com/spf13/cobra"
+func newAssignedCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "assigned"} }
+''',
+                "checkpoint.go": '''package cli
+import "github.com/spf13/cobra"
+func newCheckpointCmd(flags *rootFlags) *cobra.Command {
+    cmd := &cobra.Command{Use: "checkpoint"}
+    cmd.AddCommand(newCheckpointSaveCmd(flags))
+    return cmd
+}
+''',
+                "save_cmd.go": '''package cli
+import "github.com/spf13/cobra"
+func newCheckpointSaveCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "save"}
+}
+''',
+                "decoy.go": '''package cli
+import "github.com/spf13/cobra"
+func newDecoyCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "decoy"} }
+func newNopeCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "nope"} }
+func newCommentedCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "commented"} }
+func newStringHookCmd(flags *rootFlags) *cobra.Command { return &cobra.Command{Use: "string-hook"} }
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            for name in ("newSyncCmd", "newLocalCmd", "newTypedCmd", "newAssignedCmd", "newCheckpointCmd", "newProfileCmd"):
+                self.assertIn(name, roots, name)
+            for name in ("newDecoyCmd", "newNopeCmd", "newCommentedCmd", "newStringHookCmd"):
+                self.assertNotIn(name, roots, name)
+            file, use, _ = resolve_command_path(cli_dir, ["checkpoint", "save"])
+            self.assertEqual(file.name, "save_cmd.go")
+            self.assertEqual(use, "save")
+            file, use, _ = resolve_command_path(cli_dir, ["profile", "save"])
+            self.assertEqual(use, "save <name>")
+            for path in (["decoy"], ["nope"], ["commented"], ["string-hook"]):
+                file, _, _ = resolve_command_path(cli_dir, path)
+                self.assertIsNone(file, path)
+
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} checkpoint save
+{binary} checkpoint save EXTRA
+{binary} profile save alice
+{binary} sync
+{binary} local
+{binary} typed
+{binary} assigned
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"positional-args", "unknown-command"})
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            checkpoint = [f for f in positional if f.command == f"{binary} checkpoint save"]
+            self.assertEqual(len(checkpoint), 1, [f.detail for f in positional])
+            self.assertIn('Use: "save"', checkpoint[0].detail)
+            self.assertIn("got 1 positional", checkpoint[0].detail)
+            self.assertNotIn("<name>", checkpoint[0].detail)
+            self.assertFalse(any(f.check == "unknown-command" for f in report.findings), [f.detail for f in report.findings])
+
+    def test_same_named_local_hooks_keep_their_own_edges(self):
+        # Two init funcs can each register a local callback named hook.
+        # The name map stores one body, so the second registration must
+        # still be resolved from the init that contains it.
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newProfileCmd(flags))
+    return rootCmd
+}
+''',
+                "profile.go": '''package cli
+import "github.com/spf13/cobra"
+func newProfileCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "profile"}
+}
+''',
+                "hooks.go": '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newAlphaCmd(flags))
+    }
+    registerNovelCommand(hook)
+}
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        if parent, _, err := root.Find(strings.Fields("profile")); err == nil {
+            addNovelCommandIfAbsent(parent, newBetaCmd(flags))
+        }
+    }
+    registerNovelCommand(hook)
+}
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newGammaCmd(flags))
+    }
+    _ = hook
+}
+''',
+                "alpha.go": '''package cli
+import "github.com/spf13/cobra"
+func newAlphaCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "alpha"}
+}
+''',
+                "beta.go": '''package cli
+import "github.com/spf13/cobra"
+func newBetaCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "beta <id>"}
+}
+''',
+                "gamma.go": '''package cli
+import "github.com/spf13/cobra"
+func newGammaCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "gamma"}
+}
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newAlphaCmd", roots)
+            self.assertIn("newProfileCmd", roots)
+            self.assertNotIn("newBetaCmd", roots)
+            self.assertNotIn("newGammaCmd", roots)
+            file, use, _ = resolve_command_path(cli_dir, ["alpha"])
+            self.assertEqual(file.name, "alpha.go")
+            self.assertEqual(use, "alpha")
+            file, use, _ = resolve_command_path(cli_dir, ["profile", "beta"])
+            self.assertEqual(file.name, "beta.go")
+            self.assertEqual(use, "beta <id>")
+            file, _, _ = resolve_command_path(cli_dir, ["gamma"])
+            self.assertIsNone(file)
+
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} alpha EXTRA
+{binary} profile beta
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"positional-args", "unknown-command"})
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            alpha = [f for f in positional if f.command == f"{binary} alpha"]
+            beta = [f for f in positional if f.command == f"{binary} profile beta"]
+            self.assertEqual(len(alpha), 1, [f.detail for f in report.findings])
+            self.assertIn('Use: "alpha"', alpha[0].detail)
+            self.assertIn("got 1 positional", alpha[0].detail)
+            self.assertEqual(len(beta), 1, [f.detail for f in report.findings])
+            self.assertIn('Use: "beta <id>"', beta[0].detail)
+            self.assertIn("got 0 positional", beta[0].detail)
+            self.assertFalse(any(f.check == "unknown-command" for f in report.findings), [f.detail for f in report.findings])
+
+    def test_local_hook_shadows_package_callback(self):
+        # registerNovelCommand(hook) inside the local's block is the local
+        # callback. A registration outside that block is the package func.
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+''',
+                "hooks.go": '''package cli
+import "github.com/spf13/cobra"
+func hook(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newPackageCmd(flags))
+}
+func init() {
+    registerNovelCommand(hook)
+}
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newShadowCmd(flags))
+    }
+    registerNovelCommand(hook)
+}
+''',
+                "package_cmd.go": '''package cli
+import "github.com/spf13/cobra"
+func newPackageCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "package-cmd"}
+}
+''',
+                "shadow.go": '''package cli
+import "github.com/spf13/cobra"
+func newShadowCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "shadow"}
+}
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newPackageCmd", roots)
+            self.assertIn("newShadowCmd", roots)
+            file, use, _ = resolve_command_path(cli_dir, ["package-cmd"])
+            self.assertEqual(file.name, "package_cmd.go")
+            self.assertEqual(use, "package-cmd")
+            file, use, _ = resolve_command_path(cli_dir, ["shadow"])
+            self.assertEqual(file.name, "shadow.go")
+            self.assertEqual(use, "shadow")
+
+    def test_var_group_local_hook_shadows_package_callback(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+''',
+                "hooks.go": '''package cli
+import "github.com/spf13/cobra"
+func hook(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newPackageCmd(flags))
+}
+func init() {
+    var (
+        hook = func(root *cobra.Command, flags *rootFlags) {
+            addNovelCommandIfAbsent(root, newShadowCmd(flags))
+        }
+    )
+    registerNovelCommand(hook)
+}
+func init() { registerNovelCommand(hook) }
+''',
+                "package_cmd.go": '''package cli
+import "github.com/spf13/cobra"
+func newPackageCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "package-cmd"}
+}
+''',
+                "shadow.go": '''package cli
+import "github.com/spf13/cobra"
+func newShadowCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "shadow"}
+}
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newPackageCmd", roots)
+            self.assertIn("newShadowCmd", roots)
+
+    def test_nested_local_hook_stays_in_its_block(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+''',
+                "hooks.go": '''package cli
+import "github.com/spf13/cobra"
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newOuterCmd(flags))
+    }
+    {
+        hook := func(root *cobra.Command, flags *rootFlags) {
+            addNovelCommandIfAbsent(root, newInnerCmd(flags))
+        }
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+                "outer.go": '''package cli
+import "github.com/spf13/cobra"
+func newOuterCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "outer"}
+}
+''',
+                "inner.go": '''package cli
+import "github.com/spf13/cobra"
+func newInnerCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "inner"}
+}
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newOuterCmd", roots)
+            self.assertIn("newInnerCmd", roots)
+
+    def test_statement_initializer_callback_does_not_outlive_statement(self):
+        # A short variable in an if, for, or switch header lives until that
+        # statement ends, including an if's else. The call after the statement
+        # registers the outer callback.
+        head = '''package cli
+import "github.com/spf13/cobra"
+
+func hook(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newPackageCmd(flags))
+}
+'''
+        root = '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+'''
+
+        def check(label: str, extra: str, present: set[str], absent: set[str]) -> None:
+            with tempfile.TemporaryDirectory() as td:
+                cli_dir = _write_cli(Path(td), {
+                    "root.go": root,
+                    "hooks.go": head + extra,
+                })
+                got = set(find_root_children(cli_dir))
+            missing = present - got
+            unexpected = absent & got
+            self.assertFalse(missing, f"{label}: missing {missing} from {got}")
+            self.assertFalse(unexpected, f"{label}: unexpected {unexpected} in {got}")
+
+        check(
+            "if",
+            '''
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newLocalCmd(flags))
+    }; []struct{ X int }{{X: 1}}[0].X == 1 && (struct{ Y int }{Y: 1}).Y == 1 && func() bool { return true }() {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newLocalCmd"},
+            set(),
+        )
+        check(
+            "else",
+            '''
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newElseCmd(flags))
+    }; false {
+    } /* keep */ else {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newElseCmd"},
+            set(),
+        )
+        check(
+            "else-if",
+            '''
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newOuterCmd(flags))
+    }; false {
+    } else if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newInnerCmd(flags))
+    }; false {
+    } else {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newInnerCmd"},
+            {"newOuterCmd"},
+        )
+        check(
+            "for",
+            '''
+func init() {
+    for hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newForCmd(flags))
+    }; []int{1, 2}[0] == 1; hook = nil {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newForCmd"},
+            set(),
+        )
+        check(
+            "switch",
+            '''
+func init() {
+    switch hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newSwitchCmd(flags))
+    }; map[string]int{"a": 1}["a"] {
+    default:
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newSwitchCmd"},
+            set(),
+        )
+        check(
+            "body",
+            '''
+func init() {
+    if true {
+        hook := func(root *cobra.Command, flags *rootFlags) {
+            addNovelCommandIfAbsent(root, newBodyCmd(flags))
+        }
+    } else {
+        registerNovelCommand(hook)
+    }
+}
+''',
+            {"newPackageCmd"},
+            {"newBodyCmd"},
+        )
+        check(
+            "nested",
+            '''
+func init() {
+    for hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newForCmd(flags))
+    }; false; {
+        if hook := func(root *cobra.Command, flags *rootFlags) {
+            addNovelCommandIfAbsent(root, newIfCmd(flags))
+        }; true {
+            registerNovelCommand(hook)
+        }
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newForCmd", "newIfCmd"},
+            set(),
+        )
+        check(
+            "shadow",
+            '''
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newOuterCmd(flags))
+    }
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newIfCmd(flags))
+    }; true {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newOuterCmd", "newIfCmd"},
+            {"newPackageCmd"},
+        )
+
+    def test_if_initializer_package_callback_keeps_its_command(self):
+        # The call inside the if registers the local callback. The call after
+        # it registers the package callback, so an example is checked against
+        # that command's Use line.
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+''',
+                "hooks.go": '''package cli
+import "github.com/spf13/cobra"
+func hook(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newPackageCmd(flags))
+}
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newLocalCmd(flags))
+    }; true {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+                "package_cmd.go": '''package cli
+import "github.com/spf13/cobra"
+func newPackageCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "package-cmd"}
+}
+''',
+                "local.go": '''package cli
+import "github.com/spf13/cobra"
+func newLocalCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "local-cmd <id>"}
+}
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newPackageCmd", roots)
+            self.assertIn("newLocalCmd", roots)
+            file, use, _ = resolve_command_path(cli_dir, ["package-cmd"])
+            self.assertEqual(file.name, "package_cmd.go")
+            self.assertEqual(use, "package-cmd")
+            file, use, _ = resolve_command_path(cli_dir, ["local-cmd"])
+            self.assertEqual(file.name, "local.go")
+            self.assertEqual(use, "local-cmd <id>")
+
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} package-cmd EXTRA
+{binary} local-cmd
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"positional-args", "unknown-command"})
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            package_hit = [f for f in positional if f.command == f"{binary} package-cmd"]
+            local_hit = [f for f in positional if f.command == f"{binary} local-cmd"]
+            self.assertEqual(len(package_hit), 1, [f.detail for f in report.findings])
+            self.assertIn('Use: "package-cmd"', package_hit[0].detail)
+            self.assertIn("got 1 positional", package_hit[0].detail)
+            self.assertEqual(len(local_hit), 1, [f.detail for f in report.findings])
+            self.assertIn('Use: "local-cmd <id>"', local_hit[0].detail)
+            self.assertIn("got 0 positional", local_hit[0].detail)
+            self.assertFalse(
+                any(f.check == "unknown-command" for f in report.findings),
+                [f.detail for f in report.findings],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
