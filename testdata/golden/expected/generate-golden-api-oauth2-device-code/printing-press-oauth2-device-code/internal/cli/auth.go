@@ -58,6 +58,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var clientID string
 	var deviceCode bool
 	var poll bool
+	var scopeOverride []string
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -104,7 +105,9 @@ for CLIs and agents: no localhost callback server and no client secret.
 				deviceAuthorizationURL = "https://login.device.example/oauth/device"
 			}
 			scopes := []string{"items.read"}
-			if scope := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
+			if len(scopeOverride) > 0 {
+				scopes = scopeOverride
+			} else if scope := cliutil.EnvOverride("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
 				scopes = strings.Fields(scope)
 			}
 
@@ -182,6 +185,7 @@ for CLIs and agents: no localhost callback server and no client secret.
 	}
 	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 public client ID; defaults to $DEVICE_CODE_CLIENT_ID, config, or the spec default")
 	cmd.Flags().BoolVar(&deviceCode, "device-code", true, "Use OAuth2 device-code flow")
+	cmd.Flags().StringSliceVar(&scopeOverride, "scopes", nil, "OAuth scopes to request, comma-separated (replaces the default; env PRINTING_PRESS_OAUTH2_OAUTH_SCOPE)")
 	cmd.Flags().BoolVar(&poll, "poll", outputIsTerminal(), "Poll until authorization completes; defaults to false when stdout is non-interactive")
 	return cmd
 }

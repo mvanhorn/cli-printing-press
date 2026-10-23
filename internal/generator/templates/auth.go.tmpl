@@ -20,6 +20,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+{{- if eq .Auth.ParseRefreshTokenMechanism.Kind "scope"}}
+	"slices"
+{{- end}}
 	"strings"
 	"time"
 
@@ -125,6 +128,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var clientID string
 	var clientSecret string
 	var port int
+	var scopeOverride []string
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -141,18 +145,19 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 			if clientSecret == "" {
 				clientSecret = os.Getenv("{{envName .Name}}_CLIENT_SECRET")
 			}
-			return runOAuthLogin(cmd, flags, clientID, clientSecret, port, clientIDFromFlag, clientSecretFromFlag)
+			return runOAuthLogin(cmd, flags, clientID, clientSecret, port, scopeOverride, clientIDFromFlag, clientSecretFromFlag)
 		},
 	}
 
 	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 client ID")
 	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 client secret")
 	cmd.Flags().IntVar(&port, "port", 8085, "Local callback server port")
+	cmd.Flags().StringSliceVar(&scopeOverride, "scopes", nil, "OAuth scopes to request, comma-separated (replaces the default; env {{envName .Name}}_SCOPES)")
 
 	return cmd
 }
 
-func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, clientIDFromFlag, clientSecretFromFlag bool) error {
+func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, scopeOverride []string, clientIDFromFlag, clientSecretFromFlag bool) error {
 	w := cmd.OutOrStdout()
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -223,8 +228,17 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	params.Set({{printf "%q" $refreshMech.Key}}, {{printf "%q" $refreshMech.Value}})
 {{- end}}
 	scopes := []string{ {{- range .Auth.Scopes}}"{{.}}", {{end}} }
+	// --scopes, else {{envName .Name}}_SCOPES (comma or space separated), replaces the spec default.
+	if len(scopeOverride) == 0 {
+		scopeOverride = strings.FieldsFunc(os.Getenv("{{envName .Name}}_SCOPES"), func(r rune) bool { return r == ',' || r == ' ' })
+	}
+	if len(scopeOverride) > 0 {
+		scopes = scopeOverride
+	}
 {{- if eq $refreshMech.Kind "scope"}}
-	scopes = append(scopes, {{printf "%q" $refreshMech.Scope}})
+	if !slices.Contains(scopes, {{printf "%q" $refreshMech.Scope}}) {
+		scopes = append(scopes, {{printf "%q" $refreshMech.Scope}})
+	}
 {{- end}}
 	if len(scopes) > 0 {
 		params.Set("scope", strings.Join(scopes, " "))

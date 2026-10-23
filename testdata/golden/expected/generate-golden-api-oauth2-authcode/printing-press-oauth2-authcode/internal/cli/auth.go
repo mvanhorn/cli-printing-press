@@ -76,6 +76,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var clientID string
 	var clientSecret string
 	var port int
+	var scopeOverride []string
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -92,18 +93,19 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 			if clientSecret == "" {
 				clientSecret = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
 			}
-			return runOAuthLogin(cmd, flags, clientID, clientSecret, port, clientIDFromFlag, clientSecretFromFlag)
+			return runOAuthLogin(cmd, flags, clientID, clientSecret, port, scopeOverride, clientIDFromFlag, clientSecretFromFlag)
 		},
 	}
 
 	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 client ID")
 	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 client secret")
 	cmd.Flags().IntVar(&port, "port", 8085, "Local callback server port")
+	cmd.Flags().StringSliceVar(&scopeOverride, "scopes", nil, "OAuth scopes to request, comma-separated (replaces the default; env PRINTING_PRESS_OAUTH2_SCOPES)")
 
 	return cmd
 }
 
-func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, clientIDFromFlag, clientSecretFromFlag bool) error {
+func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, scopeOverride []string, clientIDFromFlag, clientSecretFromFlag bool) error {
 	w := cmd.OutOrStdout()
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -161,6 +163,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		params.Set("code_challenge_method", "S256")
 	}
 	scopes := []string{"read", "write"}
+	// --scopes, else PRINTING_PRESS_OAUTH2_SCOPES (comma or space separated), replaces the spec default.
+	if len(scopeOverride) == 0 {
+		scopeOverride = strings.FieldsFunc(os.Getenv("PRINTING_PRESS_OAUTH2_SCOPES"), func(r rune) bool { return r == ',' || r == ' ' })
+	}
+	if len(scopeOverride) > 0 {
+		scopes = scopeOverride
+	}
 	if len(scopes) > 0 {
 		params.Set("scope", strings.Join(scopes, " "))
 	}
