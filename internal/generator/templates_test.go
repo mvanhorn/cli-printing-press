@@ -285,8 +285,8 @@ func TestAuthStatusHintsOnlyRequestCredentialEnvVars(t *testing.T) {
 	require.NotEqual(t, -1, end, "auth status hint block should terminate before returning auth error:\n%s", hintBlock)
 	hintBlock = hintBlock[:end]
 
-	require.Contains(t, hintBlock, `export STATUS_AUTH_TOKEN=\"your-token-here\"`)
-	require.Contains(t, hintBlock, `export STATUS_AUTH_OPTIONAL_TOKEN=\"your-token-here\"`)
+	require.Contains(t, hintBlock, `cliutil.EnvAssignHint(true, "STATUS_AUTH_TOKEN", "your-token-here")`)
+	require.Contains(t, hintBlock, `cliutil.EnvAssignHint(true, "STATUS_AUTH_OPTIONAL_TOKEN", "your-token-here")`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_ID`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_SECRET`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_SESSION_COOKIE`)
@@ -322,11 +322,11 @@ func TestAuthStatusHintsUseDescriptionAndNameShapePlaceholders(t *testing.T) {
 	require.NoError(t, err)
 	content := string(authSrc)
 
-	require.Contains(t, content, `export FRESHSERVICE_DOMAIN=\"acme.freshservice.com\" # Tenant domain (for example acme.freshservice.com), not your Freshworks org dashboard URL.`)
-	require.Contains(t, content, `export SEC_EDGAR_USER_AGENT=\"you@example.com (Your Tool Name)\"`)
-	require.Contains(t, content, `export DOMINOS_USERNAME=\"your-username\"`)
-	require.Contains(t, content, `export GOOGLE_ADS_LOGIN_CUSTOMER_ID=\"your-token-here\"`)
-	require.Contains(t, content, `export SENTRY_AUTH_TOKEN=\"your-token-here\"`)
+	require.Contains(t, content, `cliutil.EnvAssignHint(true, "FRESHSERVICE_DOMAIN", "acme.freshservice.com")+" # Tenant domain (for example acme.freshservice.com), not your Freshworks org dashboard URL."`)
+	require.Contains(t, content, `cliutil.EnvAssignHint(true, "SEC_EDGAR_USER_AGENT", "you@example.com (Your Tool Name)")`)
+	require.Contains(t, content, `cliutil.EnvAssignHint(true, "DOMINOS_USERNAME", "your-username")`)
+	require.Contains(t, content, `cliutil.EnvAssignHint(true, "GOOGLE_ADS_LOGIN_CUSTOMER_ID", "your-token-here")`)
+	require.Contains(t, content, `cliutil.EnvAssignHint(true, "SENTRY_AUTH_TOKEN", "your-token-here")`)
 }
 
 // An auth env var description containing a double-quote or backslash must not

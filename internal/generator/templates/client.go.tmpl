@@ -400,7 +400,7 @@ func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 	{{- end}}
 		auth := requestAuth{Value: value, In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}
 		if authHeaderLooksLikePlaceholderCredential(auth.Value) {
-			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{index $tier.Auth.EnvVars 0}}=<your-token>")
+			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, {{envAssignHintCall false (index $tier.Auth.EnvVars 0) "<your-token>"}})
 		}
 		return auth, nil
 	{{- else}}
@@ -1846,7 +1846,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 					if carried == "" && c.Config != nil {
 						if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 							if authHeaderLooksLikePlaceholderCredential(v) {
-								return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+								return authPlaceholderCredentialErrorWithSetup(c.Config, {{envAssignHintCall false .EnvVar.Name "<your-token>"}})
 							}
 							carried = v
 						}
@@ -1866,7 +1866,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 				if req.Header.Get("{{.Header}}") == "" && c.Config != nil {
 					if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 						if authHeaderLooksLikePlaceholderCredential(v) {
-							return authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+							return authPlaceholderCredentialErrorWithSetup(c.Config, {{envAssignHintCall false .EnvVar.Name "<your-token>"}})
 						}
 						req.Header.Set("{{.Header}}", v)
 					}
@@ -3739,7 +3739,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- end}}
 				if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 					if authHeaderLooksLikePlaceholderCredential(v) {
-						return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+						return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, {{envAssignHintCall false .EnvVar.Name "<your-token>"}})
 					}
 {{- if eq .In "query"}}
 					q := req.URL.Query()
@@ -3760,7 +3760,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- range .Auth.AdditionalHeaders}}
 			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 				if authHeaderLooksLikePlaceholderCredential(v) {
-					return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+					return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, {{envAssignHintCall false .EnvVar.Name "<your-token>"}})
 				}
 {{- if eq .In "query"}}
 				q := req.URL.Query()
@@ -4728,7 +4728,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, {{printf "%q" (authPlaceholderCredentialSetup .Auth .Name)}})
+	return authPlaceholderCredentialErrorWithSetup(cfg, {{authPlaceholderCredentialSetup .Auth .Name}})
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {

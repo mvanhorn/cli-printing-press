@@ -253,7 +253,7 @@ func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 		})
 		auth := requestAuth{Value: value, In: "header", Name: "Authorization"}
 		if authHeaderLooksLikePlaceholderCredential(auth.Value) {
-			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, "export TIER_ENTERPRISE_TOKEN=<your-token>")
+			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, cliutil.EnvAssignHint(false, "TIER_ENTERPRISE_TOKEN", "<your-token>"))
 		}
 		return auth, nil
 	case "free":
@@ -266,7 +266,7 @@ func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 		value := tierValue0
 		auth := requestAuth{Value: value, In: "query", Name: "api_key"}
 		if authHeaderLooksLikePlaceholderCredential(auth.Value) {
-			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, "export TIER_PAID_KEY=<your-token>")
+			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, cliutil.EnvAssignHint(false, "TIER_PAID_KEY", "<your-token>"))
 		}
 		return auth, nil
 	default:
@@ -2698,7 +2698,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "export TIER_GLOBAL_TOKEN=<your-token-here> or echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token")
+	return authPlaceholderCredentialErrorWithSetup(cfg, cliutil.EnvAssignHint(false, "TIER_GLOBAL_TOKEN", "<your-token-here>")+" or echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {

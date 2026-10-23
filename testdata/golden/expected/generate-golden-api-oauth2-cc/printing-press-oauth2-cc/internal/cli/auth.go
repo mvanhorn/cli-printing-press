@@ -240,8 +240,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Mint a token:")
-				fmt.Fprintln(w, "  export PRINTING_PRESS_OAUTH2_CLIENT_ID=\"<client-id>\"")
-				fmt.Fprintln(w, "  export PRINTING_PRESS_OAUTH2_CLIENT_SECRET=\"<client-secret>\"")
+				fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "PRINTING_PRESS_OAUTH2_CLIENT_ID", "<client-id>"))
+				fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "PRINTING_PRESS_OAUTH2_CLIENT_SECRET", "<client-secret>"))
 				fmt.Fprintf(w, "  printing-press-oauth2-pp-cli auth login\n")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}

@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"templated-auth-token-pp-cli/internal/cliutil"
 )
 
 // templateVarPattern matches {placeholder} occurrences in a URL. The character
@@ -22,7 +24,7 @@ var templateVarPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 // templateVarEnvNames maps each placeholder declared in
 // APISpec.EndpointTemplateVars to the environment variable that resolves it.
 // The mapping is fixed at generate time so request-time substitution can
-// produce an actionable error ("export SHOPIFY_SHOP=...") without consulting
+// produce an actionable error naming that variable without consulting
 // the spec. Placeholders that escape into a URL but aren't in this map fall
 // back to a generic "template variable {x} unresolved" message.
 var templateVarEnvNames = map[string]string{
@@ -86,7 +88,7 @@ func ResolvedBaseURL(base string, vars map[string]string) string {
 }
 
 // TemplateVarError reports unresolved {var} placeholders detected at request
-// time. The message names the env var(s) the user needs to export — not just
+// time. The message names the env var(s) the user needs to set — not just
 // the placeholder — because the placeholder ("shop") is implementation
 // vocabulary while the env var ("SHOPIFY_SHOP") is what they will actually
 // type into a shell.
@@ -170,7 +172,7 @@ func (e *TemplateVarError) Error() string {
 	parts := make([]string, 0, len(e.Names))
 	for _, name := range e.Names {
 		if env := templateVarEnvNames[name]; env != "" {
-			parts = append(parts, fmt.Sprintf("%s not set; export %s=<value>", env, env))
+			parts = append(parts, env+" not set; "+cliutil.EnvAssignHint(false, env, "<value>"))
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("template variable {%s} unresolved", name))

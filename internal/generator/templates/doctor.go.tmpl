@@ -348,7 +348,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				if header == "" {
 					report["auth"] = "inferred (not configured)"
 {{- if $authSetupHint}}
-					report["auth_hint"] = {{printf "%q" $authSetupHint}}
+					report["auth_hint"] = {{$authSetupHint}}
 {{- end}}
 				} else {
 					authConfigured = true
@@ -400,7 +400,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth"] = "not configured"
 {{- end}}
 {{- with .Auth.OAuth2RefreshTokenEnvVar}}
-					report["auth_hint"] = "export {{.Name}}=<your-oauth-refresh-value>"
+					report["auth_hint"] = {{envAssignHintCall false .Name "<your-oauth-refresh-value>"}}
 {{- end}}
 {{- if .Auth.KeyURL}}
 					report["auth_key_url"] = {{printf "%q" .Auth.KeyURL}}
@@ -458,7 +458,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth_hint"] = "{{.Name}}-pp-cli login"
 {{- else}}
 {{- if $authSetupHint}}
-					report["auth_hint"] = {{printf "%q" $authSetupHint}}
+					report["auth_hint"] = {{$authSetupHint}}
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
@@ -477,7 +477,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok && expired {
 						report["auth"] = "ERROR token expired at " + expiresAt
 {{- if $authSetupHint}}
-						report["auth_hint"] = {{printf "%q" $authSetupHint}}
+						report["auth_hint"] = {{$authSetupHint}}
 {{- end}}
 					}
 {{- end}}
