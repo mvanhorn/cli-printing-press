@@ -26,9 +26,10 @@ func newShareCmd(flags *rootFlags) *cobra.Command {
 		Short: "Publish or subscribe to a git-backed snapshot of the local cache",
 		Long: `Share the local {{.Name}}-pp-cli cache across teammates via a git repo.
 One teammate with API credentials runs 'share publish' on a cadence; the
-rest run 'share subscribe <remote>' once, then read from the cache
-without needing credentials. Auto-refresh picks up new snapshots on the
-next read command.`,
+rest run 'share subscribe' once, then read from the cache without needing
+credentials. Auto-refresh picks up new snapshots on the next read command.
+Publish and subscribe always use the git remote this CLI was generated with
+(the spec's share.default_repo); there is no flag to change it.`,
 		// share is a local-operator command group: it drives git and the local
 		// cache store, so it is hidden from the MCP surface entirely (parent and
 		// every child) rather than mirrored as a shell-out tool.
@@ -120,17 +121,19 @@ CI cache warming, or a manual restore from a known-good snapshot.`,
 }
 
 func newSharePublishCmd(flags *rootFlags) *cobra.Command {
-	var repoPath, remote, branch, message string
+	var repoPath, branch, message string
 	cmd := &cobra.Command{
 		Use:   "publish",
 		Annotations: map[string]string{"mcp:hidden": "true"},
 		Short: "Export the local cache and push it to a git remote",
 		Long: `Publish is the full team-snapshot workflow: ensure the share repo,
 pull any upstream changes, export the current cache, commit, and push.
-Runs idempotently — an unchanged snapshot produces no commit.`,
-		Example: `  {{.Name}}-pp-cli share publish --remote git@github.com:acme/{{.Name}}-snapshots.git`,
+Runs idempotently — an unchanged snapshot produces no commit. The remote is
+the spec's share.default_repo; when it is empty, publish commits locally
+and does not push.`,
+		Example: `  {{.Name}}-pp-cli share publish`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := resolveShareOptions(repoPath, remote, branch)
+			opts, err := resolveShareOptions(repoPath, branch)
 			if err != nil {
 				return err
 			}
@@ -177,14 +180,13 @@ Runs idempotently — an unchanged snapshot produces no commit.`,
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Local repo checkout path (default: runstate dir)")
-	cmd.Flags().StringVar(&remote, "remote", "{{.Share.DefaultRepo}}", "Git remote URL")
 	cmd.Flags().StringVar(&branch, "branch", "{{if .Share.DefaultBranch}}{{.Share.DefaultBranch}}{{else}}main{{end}}", "Git branch to push to")
 	cmd.Flags().StringVar(&message, "message", "", "Override the commit message")
 	return cmd
 }
 
 func newShareSubscribeCmd(flags *rootFlags) *cobra.Command {
-	var repoPath, remote, branch string
+	var repoPath, branch string
 	cmd := &cobra.Command{
 		Use:   "subscribe",
 		Annotations: map[string]string{"mcp:hidden": "true"},
@@ -192,15 +194,16 @@ func newShareSubscribeCmd(flags *rootFlags) *cobra.Command {
 		Long: `Subscribe is the credential-free onboarding flow: clone the share repo,
 read the latest manifest, and re-hydrate the local cache. After subscribe,
 read commands work offline. Auto-refresh picks up future publishes when
-cache.enabled is set in the spec.`,
-		Example: `  {{.Name}}-pp-cli share subscribe --remote git@github.com:acme/{{.Name}}-snapshots.git`,
+cache.enabled is set in the spec. The remote is the spec's
+share.default_repo.`,
+		Example: `  {{.Name}}-pp-cli share subscribe`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := resolveShareOptions(repoPath, remote, branch)
+			opts, err := resolveShareOptions(repoPath, branch)
 			if err != nil {
 				return err
 			}
 			if opts.Remote == "" {
-				return fmt.Errorf("--remote is required for subscribe")
+				return fmt.Errorf("this CLI was generated without share.default_repo, so there is no remote to subscribe to; use 'share import --repo <dir>' for a local snapshot")
 			}
 			ctx := cmd.Context()
 			if err := share.EnsureRepo(ctx, opts); err != nil {
@@ -232,19 +235,18 @@ cache.enabled is set in the spec.`,
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Local repo checkout path (default: runstate dir)")
-	cmd.Flags().StringVar(&remote, "remote", "{{.Share.DefaultRepo}}", "Git remote URL (required)")
 	cmd.Flags().StringVar(&branch, "branch", "{{if .Share.DefaultBranch}}{{.Share.DefaultBranch}}{{else}}main{{end}}", "Git branch to pull from")
 	return cmd
 }
 
-// resolveShareOptions applies the default repo/branch and resolves a
-// default checkout path under the user's runstate directory when none
-// was supplied. Keeping state under runstate (rather than HOME) means
+// resolveShareOptions pins the remote to the spec's default repo and
+// resolves a default checkout path under the user's runstate directory when
+// none was supplied. Keeping state under runstate (rather than HOME) means
 // multiple worktree-based dev sessions don't stomp on each other.
-func resolveShareOptions(repoPath, remote, branch string) (share.Options, error) {
+func resolveShareOptions(repoPath, branch string) (share.Options, error) {
 	opts := share.Options{
 		RepoPath: repoPath,
-		Remote:   remote,
+		Remote:   share.DefaultRemote,
 		Branch:   branch,
 	}
 	if opts.RepoPath == "" {

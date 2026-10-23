@@ -893,6 +893,113 @@ func TestGenerateShareEmittedWhenEnabled(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 	runGoCommand(t, outputDir, "test", "./internal/share/...")
+
+	// With no share.default_repo there is no remote: subscribe refuses and
+	// the caller cannot supply one.
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	env := shareDecoyEnv(t)
+	out, err := runGeneratedCLI(t, binaryPath, env, "share", "subscribe", "--repo", filepath.Join(t.TempDir(), "sub"))
+	require.Error(t, err, out)
+	assert.Contains(t, out, "generated without share.default_repo")
+	out, err = runGeneratedCLI(t, binaryPath, env, "share", "subscribe", "--remote", "https://example.invalid/x.git")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "unknown flag: --remote")
+}
+
+// TestGenerateSharePinsRemoteToDefaultRepo drives a share-enabled binary whose
+// spec names a default repo (a local bare repo here): publish and subscribe take
+// no --remote, publish pushes to the default repo, subscribe hydrates from it,
+// and a --repo checkout whose origin is any other remote is refused before git
+// fetches or pushes.
+func TestGenerateSharePinsRemoteToDefaultRepo(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found on PATH")
+	}
+
+	work := t.TempDir()
+	pinned := filepath.Join(work, "pinned.git")
+	gitInWork := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = work
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+	gitInWork("init", "--bare", pinned)
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	apiSpec.Cache = spec.CacheConfig{Enabled: true, StaleAfter: "6h"}
+	apiSpec.Share = spec.ShareConfig{
+		Enabled:        true,
+		SnapshotTables: []string{"users", "sync_state"},
+		DefaultRepo:    pinned,
+	}
+
+	outputDir, binaryPath := buildGeneratedBinary(t, apiSpec)
+	shareSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "share", "share.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(shareSrc), fmt.Sprintf("const DefaultRemote = %q", pinned))
+	cmdSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "share_commands.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(cmdSrc), `"remote", `, "share commands must not register a --remote flag")
+
+	env := shareDecoyEnv(t)
+	for _, sub := range []string{"publish", "subscribe"} {
+		out, err := runGeneratedCLI(t, binaryPath, env, "share", sub, "--remote", filepath.Join(work, "other.git"))
+		require.Error(t, err, out)
+		assert.Contains(t, out, "unknown flag: --remote", "share %s must not accept a caller-supplied remote", sub)
+	}
+
+	// A --repo checkout whose origin is some other remote is refused.
+	other := filepath.Join(work, "other.git")
+	gitInWork("init", "--bare", other)
+	foreign := filepath.Join(work, "foreign")
+	gitInWork("clone", "--", other, foreign)
+	out, err := runGeneratedCLI(t, binaryPath, env, "share", "publish", "--repo", foreign)
+	require.Error(t, err, out)
+	assert.Contains(t, out, "not the pinned remote")
+	refs := exec.Command("git", "--git-dir", other, "for-each-ref")
+	refsOut, err := refs.CombinedOutput()
+	require.NoError(t, err, string(refsOut))
+	assert.Empty(t, strings.TrimSpace(string(refsOut)), "nothing may be pushed to a remote other than the pinned one")
+
+	// publish clones the pinned default repo and pushes the snapshot to it.
+	out, err = runGeneratedCLI(t, binaryPath, env, "share", "publish", "--repo", filepath.Join(work, "pub"))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, pinned)
+	manifest := exec.Command("git", "--git-dir", pinned, "show", "main:manifest.json")
+	manifestOut, err := manifest.CombinedOutput()
+	require.NoError(t, err, string(manifestOut))
+	assert.Contains(t, string(manifestOut), naming.CLI(apiSpec.Name))
+
+	// subscribe hydrates from the same pinned remote.
+	out, err = runGeneratedCLI(t, binaryPath, env, "share", "subscribe", "--repo", filepath.Join(work, "sub"))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, pinned)
+}
+
+// shareDecoyEnv returns an environment whose home and XDG dirs point at a
+// fresh temp dir and whose git identity is fixed, so share commands run by a
+// generated binary never touch the real profile.
+func shareDecoyEnv(t *testing.T) []string {
+	t.Helper()
+	home := t.TempDir()
+	return append(os.Environ(),
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@example.invalid",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@example.invalid",
+	)
 }
 
 // TestGenerateShareSkippedWhenDisabled confirms share is not emitted for

@@ -3875,6 +3875,16 @@ func TestCacheShareValidation(t *testing.T) {
 			wantErr: "appears more than once",
 		},
 		{
+			name:    "share default_repo relative path rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultRepo: "./snapshots.git"},
+			wantErr: "share.default_repo \"./snapshots.git\" is a relative path",
+		},
+		{
+			name:    "share default_repo bare relative path rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultRepo: "team/snapshots.git"},
+			wantErr: "is a relative path",
+		},
+		{
 			name:    "cache stale_after invalid duration",
 			cache:   CacheConfig{Enabled: true, StaleAfter: "yesterday"},
 			wantErr: "not a valid Go duration",
@@ -3952,6 +3962,22 @@ func TestCacheShareAcceptsValidShapes(t *testing.T) {
 		{
 			name:  "share only, no cache",
 			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items", "teams", "sync_state"}},
+		},
+		{
+			name:  "share default_repo URL",
+			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultRepo: "https://example.invalid/acme/snapshots.git"},
+		},
+		{
+			name:  "share default_repo scp-style",
+			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultRepo: "git@github.com:acme/snapshots.git"},
+		},
+		{
+			name:  "share default_repo absolute Unix path",
+			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultRepo: "/srv/git/snapshots.git"},
+		},
+		{
+			name:  "share default_repo absolute Windows path",
+			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultRepo: `C:\git\snapshots.git`},
 		},
 		{
 			name:  "cache and share both enabled",
