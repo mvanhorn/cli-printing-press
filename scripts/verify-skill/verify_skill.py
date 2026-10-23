@@ -551,6 +551,697 @@ def _enclosing_block_end(text: str, depths: list[int], pos: int) -> int:
     return len(text)
 
 
+_K_NAME = "name"
+_K_ARRAY = "array"
+_K_MAP = "map"
+_K_STRUCT = "struct"
+_K_VALUE = "value"
+_CONTROL_KEYWORDS = ("if", "for", "switch")
+_BINOPS = ("||", "&&", "==", "!=", "<=", ">=", "&^", "<<", ">>")
+
+
+def _ident_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _keyword_at(text: str, i: int, word: str) -> bool:
+    end = i + len(word)
+    if i < 0 or end > len(text) or not text.startswith(word, i):
+        return False
+    if i > 0 and _ident_char(text[i - 1]):
+        return False
+    return end == len(text) or not _ident_char(text[end])
+
+
+def _skip_ws(text: str, i: int) -> int:
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    return i
+
+
+def _read_ident(text: str, i: int) -> tuple[str, int]:
+    if i >= len(text) or not (text[i].isalpha() or text[i] == "_"):
+        return "", i
+    j = i + 1
+    while j < len(text) and _ident_char(text[j]):
+        j += 1
+    return text[i:j], j
+
+
+def _skip_go_string(text: str, i: int) -> int:
+    """i points at a quote. Return the index after that literal."""
+    if i >= len(text):
+        return i
+    quote = text[i]
+    n = len(text)
+    if quote == "`":
+        end = text.find("`", i + 1)
+        return n if end < 0 else end + 1
+    if quote not in "\"'":
+        return i
+    i += 1
+    if quote == "'":
+        if i < n and text[i] == "\\":
+            i += 2
+        elif i < n:
+            i += 1
+        if i < n and text[i] == "'":
+            return i + 1
+        return i
+    while i < n:
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            return i + 1
+        if text[i] == "\n":
+            return i
+        i += 1
+    return n
+
+
+def _skip_number(text: str, i: int) -> int:
+    n = len(text)
+    if text.startswith(("0x", "0X", "0b", "0B", "0o", "0O"), i):
+        i += 2
+        while i < n and (text[i].isalnum() or text[i] == "_"):
+            i += 1
+        return i
+    while i < n and (text[i].isdigit() or text[i] == "_"):
+        i += 1
+    if i < n and text[i] == "." and i + 1 < n and text[i + 1].isdigit():
+        i += 2
+        while i < n and (text[i].isdigit() or text[i] == "_"):
+            i += 1
+    if i < n and text[i] in "eE":
+        j = i + 1
+        if j < n and text[j] in "+-":
+            j += 1
+        if j < n and text[j].isdigit():
+            i = j + 1
+            while i < n and (text[i].isdigit() or text[i] == "_"):
+                i += 1
+    if i < n and text[i] == "i":
+        i += 1
+    return i
+
+
+def _matching_close_brace(text: str, depths: list[int], open_brace: int) -> int | None:
+    """Index of the '}' that closes the '{' at open_brace."""
+    if open_brace < 0 or open_brace >= len(text) or text[open_brace] != "{":
+        return None
+    target = depths[open_brace] + 1
+    for i in range(open_brace + 1, len(text)):
+        if text[i] == "}" and depths[i] == target:
+            return i
+    return None
+
+
+def _skip_matched_brace(text: str, depths: list[int], i: int) -> int | None:
+    close = _matching_close_brace(text, depths, i)
+    if close is None:
+        return None
+    return close + 1
+
+
+def _skip_bracket_group(text: str, i: int) -> int | None:
+    """i points at '['. Return the index after the matching ']'."""
+    if i >= len(text) or text[i] != "[":
+        return None
+    bracket = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        if char in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket -= 1
+            if bracket == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _skip_paren_group(text: str, i: int) -> int | None:
+    """i points at '('. Return the index after the matching ')'."""
+    if i >= len(text) or text[i] != "(":
+        return None
+    paren = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        if char in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+            if paren == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _skip_type(text: str, depths: list[int], i: int) -> int:
+    """Skip a type. Does not consume a following composite literal."""
+    n = len(text)
+    while True:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i
+        if text.startswith("<-", i):
+            i += 2
+            continue
+        if _keyword_at(text, i, "chan"):
+            i += 4
+            i = _skip_ws(text, i)
+            if text.startswith("<-", i):
+                i += 2
+            continue
+        if text[i] == "*":
+            i += 1
+            continue
+        break
+    i = _skip_ws(text, i)
+    if i >= n:
+        return i
+    if _keyword_at(text, i, "func"):
+        return _skip_func_type(text, depths, i)
+    if _keyword_at(text, i, "struct") or _keyword_at(text, i, "interface"):
+        word = "struct" if _keyword_at(text, i, "struct") else "interface"
+        j = _skip_ws(text, i + len(word))
+        if j < n and text[j] == "{":
+            end = _skip_matched_brace(text, depths, j)
+            return j if end is None else end
+        return j
+    if _keyword_at(text, i, "map"):
+        return _skip_map_type(text, depths, i)
+    if text[i] == "[":
+        return _skip_array_type(text, depths, i)
+    if text[i] == "(":
+        end = _skip_paren_group(text, i)
+        return i + 1 if end is None else end
+    if text[i].isalpha() or text[i] == "_":
+        _, i = _read_ident(text, i)
+        while True:
+            j = _skip_ws(text, i)
+            if j < n and text[j] == ".":
+                j = _skip_ws(text, j + 1)
+                if j < n and (text[j].isalpha() or text[j] == "_"):
+                    _, j = _read_ident(text, j)
+                    i = j
+                    continue
+                return j
+            if j < n and text[j] == "[":
+                end = _skip_bracket_group(text, j)
+                if end is None:
+                    return j
+                i = end
+                continue
+            return j
+    return i
+
+
+def _skip_array_type(text: str, depths: list[int], i: int) -> int:
+    end = _skip_bracket_group(text, i)
+    if end is None:
+        return i + 1
+    return _skip_type(text, depths, end)
+
+
+def _skip_map_type(text: str, depths: list[int], i: int) -> int:
+    j = _skip_ws(text, i + 3)
+    if j >= len(text) or text[j] != "[":
+        return j
+    end = _skip_bracket_group(text, j)
+    if end is None:
+        return j
+    return _skip_type(text, depths, end)
+
+
+def _skip_func_type(text: str, depths: list[int], i: int) -> int:
+    """Skip a function type starting at func, without a body."""
+    j = _skip_ws(text, i + 4)
+    if j >= len(text) or text[j] != "(":
+        return j
+    j = _skip_paren_group(text, j)
+    if j is None:
+        return i + 4
+    j = _skip_ws(text, j)
+    if j < len(text) and text[j] == "(":
+        end = _skip_paren_group(text, j)
+        return j if end is None else end
+    if j < len(text) and text[j] != "{":
+        return _skip_type(text, depths, j)
+    return j
+
+
+def _header_keyword(text: str, depths: list[int], pos: int) -> tuple[int, str] | None:
+    """if/for/switch whose header contains pos.
+
+    A '{' at the same brace depth means pos is in that block, not in a
+    statement header before the block.
+    """
+    if pos <= 0 or pos >= len(depths) or depths[pos] == 0:
+        return None
+    depth = depths[pos]
+    paren = 0
+    bracket = 0
+    i = pos
+    while i > 0:
+        i -= 1
+        if depths[i] < depth:
+            return None
+        if depths[i] > depth:
+            continue
+        char = text[i]
+        if char == ")":
+            paren += 1
+            continue
+        if char == "(":
+            if paren == 0:
+                return None
+            paren -= 1
+            continue
+        if char == "]":
+            bracket += 1
+            continue
+        if char == "[":
+            if bracket == 0:
+                return None
+            bracket -= 1
+            continue
+        if paren or bracket:
+            continue
+        if char == "{":
+            return None
+        for word in _CONTROL_KEYWORDS:
+            if _keyword_at(text, i, word):
+                return i, word
+    return None
+
+
+def _opens_composite(kind: str, expr_lev: int) -> bool:
+    """Whether '{' after this primary is a composite literal.
+
+    In a control clause, a name, selector, or index is the statement
+    block. Array, slice, map, and struct types still take a literal.
+    Nested expressions (calls, parens, literal elements) accept a name too.
+    """
+    if kind in (_K_ARRAY, _K_MAP, _K_STRUCT):
+        return True
+    return kind == _K_NAME and expr_lev > 0
+
+
+def _bin_op_len(text: str, i: int) -> int:
+    for op in _BINOPS:
+        if text.startswith(op, i):
+            return len(op)
+    if text.startswith("<-", i):
+        return 0
+    if i < len(text) and text[i] in "+-|^*/%&<>":
+        return 1
+    return 0
+
+
+def _skip_literal_value(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> int:
+    """i points at '{'. Return the index after the composite literal."""
+    open_depth = depths[i] if i < len(depths) else depth
+    i += 1
+    n = len(text)
+    while i < n:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i
+        if text[i] in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if text[i] == "}" and i < len(depths) and depths[i] == open_depth + 1:
+            return i + 1
+        if text[i] == ",":
+            i += 1
+            continue
+        if text[i] == "{":
+            i = _skip_literal_value(text, depths, i, depth, expr_lev + 1)
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, expr_lev + 1)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+        j = _skip_ws(text, i)
+        if j < n and text[j] == ":":
+            i = j + 1
+    return i
+
+
+def _skip_operand(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    n = len(text)
+    i = _skip_ws(text, i)
+    if i >= n:
+        return i, _K_VALUE
+    char = text[i]
+    if char in "\"'`":
+        return _skip_go_string(text, i), _K_VALUE
+    if char.isdigit():
+        return _skip_number(text, i), _K_VALUE
+    if char == "{":
+        if expr_lev > 0:
+            return _skip_literal_value(text, depths, i, depth, expr_lev), _K_VALUE
+        return i, _K_VALUE
+    if char == "(":
+        return _skip_paren_expr(text, depths, i, depth, expr_lev)
+    if char == "[":
+        return _skip_array_type(text, depths, i), _K_ARRAY
+    if char.isalpha() or char == "_":
+        word, j = _read_ident(text, i)
+        if word == "func":
+            return _skip_func_expr(text, depths, i)
+        if word == "struct":
+            k = _skip_ws(text, j)
+            if k < n and text[k] == "{":
+                end = _skip_matched_brace(text, depths, k)
+                k = k if end is None else end
+            return k, _K_STRUCT
+        if word == "interface":
+            k = _skip_ws(text, j)
+            if k < n and text[k] == "{":
+                end = _skip_matched_brace(text, depths, k)
+                k = k if end is None else end
+            return k, _K_VALUE
+        if word == "map":
+            return _skip_map_type(text, depths, i), _K_MAP
+        if word == "chan":
+            return _skip_type(text, depths, i), _K_VALUE
+        return j, _K_NAME
+    return i, _K_VALUE
+
+
+def _skip_func_expr(
+    text: str,
+    depths: list[int],
+    i: int,
+) -> tuple[int, str]:
+    j = _skip_func_type(text, depths, i)
+    j = _skip_ws(text, j)
+    if j < len(text) and text[j] == "{":
+        end = _skip_matched_brace(text, depths, j)
+        if end is None:
+            return j, _K_VALUE
+        return end, _K_VALUE
+    return j, _K_VALUE
+
+
+def _skip_paren_expr(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    """Parentheses keep the inner type kind so (struct{...}){...} still composites."""
+    j, kind = _skip_expr(text, depths, i + 1, depth, expr_lev + 1)
+    j = _skip_ws(text, j)
+    if j < len(text) and text[j] == ")":
+        j += 1
+    return j, kind
+
+
+def _skip_primary(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    i, kind = _skip_operand(text, depths, i, depth, expr_lev)
+    n = len(text)
+    while True:
+        j = _skip_ws(text, i)
+        if j >= n:
+            return j, kind
+        char = text[j]
+        if char == ".":
+            if text.startswith("...", j):
+                return j, kind
+            k = j + 1
+            k = _skip_ws(text, k)
+            if k < n and text[k] == "(":
+                end = _skip_paren_group(text, k)
+                if end is None:
+                    return k, _K_VALUE
+                i = end
+                kind = _K_VALUE
+                continue
+            if k < n and (text[k].isalpha() or text[k] == "_"):
+                _, i = _read_ident(text, k)
+                kind = _K_NAME
+                continue
+            return j, kind
+        if char == "[":
+            i, sliced = _skip_bracket_suffix(text, depths, j, depth, expr_lev)
+            kind = _K_VALUE if sliced else _K_NAME
+            continue
+        if char == "(":
+            i = _skip_call_args(text, depths, j, depth, expr_lev)
+            kind = _K_VALUE
+            continue
+        if char == "{":
+            if _opens_composite(kind, expr_lev):
+                i = _skip_literal_value(text, depths, j, depth, expr_lev)
+                kind = _K_VALUE
+                continue
+            return j, kind
+        return j, kind
+
+
+def _skip_bracket_suffix(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, bool]:
+    """i points at '[' of an index, slice, or instantiation. Return (after, is_slice)."""
+    i += 1
+    n = len(text)
+    sliced = False
+    while i < n and text[i] != "]":
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i, sliced
+        if text[i] == "]":
+            break
+        if text[i] in "\"'`":
+            i = _skip_go_string(text, i)
+            continue
+        if text[i] == ":":
+            sliced = True
+            i += 1
+            continue
+        if text[i] == ",":
+            i += 1
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, expr_lev + 1)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+    if i < n and text[i] == "]":
+        i += 1
+    return i, sliced
+
+
+def _skip_call_args(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> int:
+    i += 1
+    n = len(text)
+    while i < n and text[i] != ")":
+        i = _skip_ws(text, i)
+        if i >= n or text[i] == ")":
+            break
+        if text[i] == ",":
+            i += 1
+            continue
+        if text.startswith("...", i):
+            i += 3
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, expr_lev + 1)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+    if i < n and text[i] == ")":
+        i += 1
+    return i
+
+
+def _skip_unary(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    n = len(text)
+    prefixed = False
+    while True:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return i, _K_VALUE
+        if text.startswith("<-", i):
+            i += 2
+            prefixed = True
+            continue
+        if text[i] in "+-!^&~*":
+            i += 1
+            prefixed = True
+            continue
+        break
+    i, kind = _skip_primary(text, depths, i, depth, expr_lev)
+    if prefixed:
+        kind = _K_VALUE
+    return i, kind
+
+
+def _skip_expr(
+    text: str,
+    depths: list[int],
+    i: int,
+    depth: int,
+    expr_lev: int,
+) -> tuple[int, str]:
+    i, kind = _skip_unary(text, depths, i, depth, expr_lev)
+    while True:
+        j = _skip_ws(text, i)
+        op = _bin_op_len(text, j)
+        if op == 0:
+            return j, kind
+        i, _ = _skip_unary(text, depths, j + op, depth, expr_lev)
+        kind = _K_VALUE
+
+
+def _control_body_open(text: str, depths: list[int], i: int, depth: int) -> int | None:
+    """Index of the '{' that opens an if/for/switch body, scanning from i."""
+    n = len(text)
+    while i < n:
+        i = _skip_ws(text, i)
+        if i >= n:
+            return None
+        if i < len(depths) and depths[i] < depth:
+            return None
+        char = text[i]
+        if char == "{" and (i >= len(depths) or depths[i] == depth):
+            return i
+        if char == ";":
+            i += 1
+            continue
+        if text.startswith((":=", "++", "--", "<-"), i):
+            i += 2
+            continue
+        if char == "=":
+            i += 1
+            continue
+        nxt, _ = _skip_expr(text, depths, i, depth, 0)
+        if nxt <= i:
+            i += 1
+            continue
+        i = nxt
+    return None
+
+
+def _extend_through_else(text: str, depths: list[int], close_brace: int, depth: int) -> int:
+    """Include an if's else or else-if chain. close_brace is the then-block '}'."""
+    i = _skip_ws(text, close_brace + 1)
+    if not _keyword_at(text, i, "else"):
+        return close_brace
+    i = _skip_ws(text, i + 4)
+    if _keyword_at(text, i, "if"):
+        nested = _control_statement_end(text, depths, i + 2, "if", depth)
+        return close_brace if nested is None else nested
+    if i < len(text) and text[i] == "{":
+        close = _matching_close_brace(text, depths, i)
+        return close_brace if close is None else close
+    return close_brace
+
+
+def _control_statement_end(
+    text: str,
+    depths: list[int],
+    scan_from: int,
+    keyword: str,
+    depth: int,
+) -> int | None:
+    body = _control_body_open(text, depths, scan_from, depth)
+    if body is None:
+        return None
+    end = _matching_close_brace(text, depths, body)
+    if end is None:
+        return None
+    if keyword == "if":
+        return _extend_through_else(text, depths, end, depth)
+    return end
+
+
+def _statement_header_end(
+    text: str,
+    depths: list[int],
+    pos: int,
+    decl_end: int,
+) -> int | None:
+    """End of the if/for/switch whose header declares pos, else None.
+
+    Scan starts after this declaration's func literal so that literal's
+    braces are not the statement body.
+    """
+    found = _header_keyword(text, depths, pos)
+    if found is None or pos >= len(depths):
+        return None
+    _, keyword = found
+    return _control_statement_end(text, depths, decl_end, keyword, depths[pos])
+
+
+def _local_hook_scope_end(
+    text: str,
+    depths: list[int],
+    pos: int,
+    decl_end: int,
+) -> int:
+    """Scope end for a local callback declared at pos.
+
+    Brace blocks end at the enclosing '}'. An if, for, or switch header is
+    its own implicit block and ends with that statement, including an if's
+    else chain, so a later registration sees the outer callback.
+    """
+    block_end = _enclosing_block_end(text, depths, pos)
+    stmt_end = _statement_header_end(text, depths, pos, decl_end)
+    if stmt_end is not None and decl_end < stmt_end < block_end:
+        return stmt_end
+    return block_end
+
+
 def _preceded_by_var(text: str, open_paren: int) -> bool:
     j = open_paren - 1
     while j >= 0 and text[j].isspace():
@@ -624,7 +1315,9 @@ def _local_hook_decls(string_masked: str, comment_masked: str) -> list[_LocalHoo
                 root_param=match.group(2),
                 body=body,
                 decl_end=decl_end,
-                scope_end=_enclosing_block_end(string_masked, depths, match.start()),
+                scope_end=_local_hook_scope_end(
+                    string_masked, depths, match.start(), decl_end
+                ),
                 depth=depths[match.start()],
             )
         )

@@ -1691,6 +1691,249 @@ func newInnerCmd(flags *rootFlags) *cobra.Command {
             self.assertIn("newOuterCmd", roots)
             self.assertIn("newInnerCmd", roots)
 
+    def test_statement_initializer_callback_does_not_outlive_statement(self):
+        # A short variable in an if, for, or switch header lives until that
+        # statement ends, including an if's else. The call after the statement
+        # registers the outer callback.
+        head = '''package cli
+import "github.com/spf13/cobra"
+
+func hook(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newPackageCmd(flags))
+}
+'''
+        root = '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+'''
+
+        def check(label: str, extra: str, present: set[str], absent: set[str]) -> None:
+            with tempfile.TemporaryDirectory() as td:
+                cli_dir = _write_cli(Path(td), {
+                    "root.go": root,
+                    "hooks.go": head + extra,
+                })
+                got = set(find_root_children(cli_dir))
+            missing = present - got
+            unexpected = absent & got
+            self.assertFalse(missing, f"{label}: missing {missing} from {got}")
+            self.assertFalse(unexpected, f"{label}: unexpected {unexpected} in {got}")
+
+        check(
+            "if",
+            '''
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newLocalCmd(flags))
+    }; []struct{ X int }{{X: 1}}[0].X == 1 && (struct{ Y int }{Y: 1}).Y == 1 && func() bool { return true }() {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newLocalCmd"},
+            set(),
+        )
+        check(
+            "else",
+            '''
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newElseCmd(flags))
+    }; false {
+    } /* keep */ else {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newElseCmd"},
+            set(),
+        )
+        check(
+            "else-if",
+            '''
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newOuterCmd(flags))
+    }; false {
+    } else if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newInnerCmd(flags))
+    }; false {
+    } else {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newInnerCmd"},
+            {"newOuterCmd"},
+        )
+        check(
+            "for",
+            '''
+func init() {
+    for hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newForCmd(flags))
+    }; []int{1, 2}[0] == 1; hook = nil {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newForCmd"},
+            set(),
+        )
+        check(
+            "switch",
+            '''
+func init() {
+    switch hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newSwitchCmd(flags))
+    }; map[string]int{"a": 1}["a"] {
+    default:
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newSwitchCmd"},
+            set(),
+        )
+        check(
+            "body",
+            '''
+func init() {
+    if true {
+        hook := func(root *cobra.Command, flags *rootFlags) {
+            addNovelCommandIfAbsent(root, newBodyCmd(flags))
+        }
+    } else {
+        registerNovelCommand(hook)
+    }
+}
+''',
+            {"newPackageCmd"},
+            {"newBodyCmd"},
+        )
+        check(
+            "nested",
+            '''
+func init() {
+    for hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newForCmd(flags))
+    }; false; {
+        if hook := func(root *cobra.Command, flags *rootFlags) {
+            addNovelCommandIfAbsent(root, newIfCmd(flags))
+        }; true {
+            registerNovelCommand(hook)
+        }
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newPackageCmd", "newForCmd", "newIfCmd"},
+            set(),
+        )
+        check(
+            "shadow",
+            '''
+func init() {
+    hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newOuterCmd(flags))
+    }
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newIfCmd(flags))
+    }; true {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+            {"newOuterCmd", "newIfCmd"},
+            {"newPackageCmd"},
+        )
+
+    def test_if_initializer_package_callback_keeps_its_command(self):
+        # The call inside the if registers the local callback. The call after
+        # it registers the package callback, so an example is checked against
+        # that command's Use line.
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func newRootCmd(flags *rootFlags) *cobra.Command {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    return rootCmd
+}
+''',
+                "hooks.go": '''package cli
+import "github.com/spf13/cobra"
+func hook(root *cobra.Command, flags *rootFlags) {
+    addNovelCommandIfAbsent(root, newPackageCmd(flags))
+}
+func init() {
+    if hook := func(root *cobra.Command, flags *rootFlags) {
+        addNovelCommandIfAbsent(root, newLocalCmd(flags))
+    }; true {
+        registerNovelCommand(hook)
+    }
+    registerNovelCommand(hook)
+}
+''',
+                "package_cmd.go": '''package cli
+import "github.com/spf13/cobra"
+func newPackageCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "package-cmd"}
+}
+''',
+                "local.go": '''package cli
+import "github.com/spf13/cobra"
+func newLocalCmd(flags *rootFlags) *cobra.Command {
+    return &cobra.Command{Use: "local-cmd <id>"}
+}
+''',
+            })
+            roots = set(find_root_children(cli_dir))
+            self.assertIn("newPackageCmd", roots)
+            self.assertIn("newLocalCmd", roots)
+            file, use, _ = resolve_command_path(cli_dir, ["package-cmd"])
+            self.assertEqual(file.name, "package_cmd.go")
+            self.assertEqual(use, "package-cmd")
+            file, use, _ = resolve_command_path(cli_dir, ["local-cmd"])
+            self.assertEqual(file.name, "local.go")
+            self.assertEqual(use, "local-cmd <id>")
+
+            binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{binary} package-cmd EXTRA
+{binary} local-cmd
+```
+""",
+                encoding="utf-8",
+            )
+            report = run_checks(cli_dir, {"positional-args", "unknown-command"})
+            positional = [f for f in report.findings if f.check == "positional-args"]
+            package_hit = [f for f in positional if f.command == f"{binary} package-cmd"]
+            local_hit = [f for f in positional if f.command == f"{binary} local-cmd"]
+            self.assertEqual(len(package_hit), 1, [f.detail for f in report.findings])
+            self.assertIn('Use: "package-cmd"', package_hit[0].detail)
+            self.assertIn("got 1 positional", package_hit[0].detail)
+            self.assertEqual(len(local_hit), 1, [f.detail for f in report.findings])
+            self.assertIn('Use: "local-cmd <id>"', local_hit[0].detail)
+            self.assertIn("got 0 positional", local_hit[0].detail)
+            self.assertFalse(
+                any(f.check == "unknown-command" for f in report.findings),
+                [f.detail for f in report.findings],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
