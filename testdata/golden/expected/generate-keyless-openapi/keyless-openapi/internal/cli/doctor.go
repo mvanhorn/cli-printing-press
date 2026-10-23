@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -376,6 +378,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			report["version"] = version
+			localFiles, aclWarning := collectLocalFilesReport()
+			report["local_files"] = localFiles
+			if aclWarning != "" {
+				report["data_dir_acl"] = aclWarning
+			}
 
 			if flags.asJSON {
 				if err := printJSONFiltered(cmd.OutOrStdout(), report, flags); err != nil {
@@ -396,6 +403,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{"credentials_location_warning", "Credentials Storage"},
 				{"api", "API"},
 				{"credentials", "Credentials"},
+				{"data_dir_acl", "Data Dir ACL"},
 			}
 			for _, ck := range checkKeys {
 				v, ok := report[ck.key]
@@ -452,6 +460,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					renderPathsReport(w, pathsRep)
 				}
 			}
+			fmt.Fprintf(w, "  Local files: %d store file(s), %d bytes; response cache %d file(s), %d bytes (unencrypted)\n",
+				len(localFiles.StoreFiles), localFiles.StoreBytes, localFiles.ResponseCacheFiles, localFiles.ResponseCacheBytes)
 			return doctorExitForFailOn(failOn, report)
 		},
 	}
@@ -520,6 +530,50 @@ func pathsWarning(report map[string]any) string {
 		return ""
 	}
 	return "WARN paths: " + strings.Join(parts, "; ")
+}
+
+// doctorLocalFiles is the on-disk API data an operator may need to account
+// for: store files of every credential scope and the HTTP response cache.
+type doctorLocalFiles struct {
+	StoreFiles         []string `json:"store_files"`
+	StoreBytes         int64    `json:"store_bytes"`
+	ResponseCacheFiles int      `json:"response_cache_files"`
+	ResponseCacheBytes int64    `json:"response_cache_bytes"`
+}
+
+// collectLocalFilesReport sizes the local copies of API data. On Windows it
+// also reports when the data directory's DACL admits more than the current
+// user, SYSTEM, and Administrators: chmod-style hardening is a no-op on NTFS,
+// so a relocated --home on a shared folder would otherwise go unnoticed.
+func collectLocalFilesReport() (doctorLocalFiles, string) {
+	report := doctorLocalFiles{StoreFiles: []string{}}
+	aclWarning := ""
+	if dir, err := cliutil.DataDir(); err == nil {
+		// Match entry names, not a glob over dir: a relocated dir may contain
+		// pattern characters such as brackets.
+		entries, _ := os.ReadDir(dir)
+		for _, entry := range entries {
+			if matched, _ := filepath.Match("data*.db*", entry.Name()); !matched || !entry.Type().IsRegular() {
+				continue
+			}
+			if info, err := entry.Info(); err == nil {
+				report.StoreFiles = append(report.StoreFiles, filepath.Join(dir, entry.Name()))
+				report.StoreBytes += info.Size()
+			}
+		}
+	}
+	if dir, err := cliutil.CacheDir(); err == nil {
+		_ = filepath.WalkDir(filepath.Join(dir, "http"), func(_ string, entry fs.DirEntry, err error) error {
+			if err == nil && entry.Type().IsRegular() {
+				if info, infoErr := entry.Info(); infoErr == nil {
+					report.ResponseCacheFiles++
+					report.ResponseCacheBytes += info.Size()
+				}
+			}
+			return nil
+		})
+	}
+	return report, aclWarning
 }
 
 func renderPathsReport(w io.Writer, rep map[string]any) {
@@ -701,6 +755,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	fresh := true
 	haveAny := false
 	oldest := time.Duration(0)
+	var oldestSyncedAt time.Time
 	for rows.Next() {
 		var rtype string
 		var count int64
@@ -720,6 +775,9 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 			if age > oldest {
 				oldest = age
 			}
+			if oldestSyncedAt.IsZero() || lastSynced.Time.Before(oldestSyncedAt) {
+				oldestSyncedAt = lastSynced.Time
+			}
 		} else {
 			r["staleness"] = "never"
 			fresh = false
@@ -728,6 +786,9 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	}
 	report["resources"] = resources
 	report["stale_after"] = staleAfter.String()
+	if !oldestSyncedAt.IsZero() {
+		report["oldest_synced_at"] = oldestSyncedAt.UTC().Format(time.RFC3339)
+	}
 
 	switch {
 	case !haveAny:
@@ -783,6 +844,9 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 	}
 	if v, ok := rep["oldest_age"]; ok {
 		fmt.Fprintf(w, "    oldest_age: %v\n", v)
+	}
+	if v, ok := rep["oldest_synced_at"]; ok {
+		fmt.Fprintf(w, "    oldest_synced_at: %v\n", v)
 	}
 	if resourcesAny, ok := rep["resources"]; ok {
 		if resources, ok := resourcesAny.([]map[string]any); ok && len(resources) > 0 {

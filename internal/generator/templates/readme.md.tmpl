@@ -201,6 +201,19 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```
 
 </details>
+{{- if .HasMCPTransport "http"}}
+
+### Remote MCP over HTTP
+
+`{{.Name}}-pp-mcp --transport http` (or `PP_MCP_TRANSPORT=http`) serves streamable HTTP at `http://{{if .MCP.Addr}}{{.MCP.Addr}}{{else}}127.0.0.1:7777{{end}}/mcp`. It refuses to start until `{{envName .Name}}_MCP_HTTP_TOKEN` is set, and every request must send `Authorization: Bearer <token>`. Plain HTTP is allowed only on a loopback `--addr`; any other bind, including `:7777` (every interface), also needs `--tls-cert` and `--tls-key`.
+
+```bash
+export {{envName .Name}}_MCP_HTTP_TOKEN="$(openssl rand -hex 32)"
+{{.Name}}-pp-mcp --transport http
+```
+
+Set `{{envName .Name}}_MCP_READ_ONLY=1` (exactly `1`) to drop mirrored commands that are not marked read-only and make the raw execute tool refuse state-changing calls. Commands marked local-write, which write only this CLI's own learn store, stay available.
+{{- end}}
 {{- if and .Narrative .Narrative.AuthNarrative}}
 
 {{if .Auth.Optional}}## Optional: API Key{{else}}## Authentication{{end}}
@@ -508,6 +521,20 @@ Relocation is one-way. Unsetting `{{envName .Name}}_HOME` does not move files ba
 Existing installs keep working because the platform-default rung matches the legacy layout. On the first auth write, stored secrets leave `config.toml` and are consolidated into `credentials.toml` under the data directory. Run `{{.Name}}-pp-cli doctor --fail-on warn` to check path and credential-location warnings in automation.
 {{- else -}}
 Existing installs keep working because the platform-default rung matches the legacy layout. Run `{{.Name}}-pp-cli doctor --fail-on warn` to check path warnings in automation.
+{{- end}}
+
+### Local data
+
+{{if .HasDataLayer -}}
+Reads are saved locally by default: in `--data-source auto` mode every successful read is also written to the SQLite store (`data.db`, or `data-<hash>.db` per credential) in the data directory. {{end -}}
+GET responses are cached for five minutes under `http/` in the cache directory.{{if .HasAuthCommand}} Credentials live in `credentials.toml` in the data directory.{{end}}{{if .Learn.Enabled}} The learn journal lives under `learn/` in the state directory.{{end}} `{{.Name}}-pp-cli doctor` prints the resolved paths, every store file, and the response-cache size.
+
+None of it is encrypted. New files are created owner-only; beyond that the data relies on OS account permissions and full-disk encryption (FileVault, BitLocker, LUKS).
+
+- **Erase it:** `{{.Name}}-pp-cli local-data purge` lists the store files, response cache, and learn journal it would delete; add `--yes` to delete them, or `--only store|cache|journal` to narrow it. Config and credentials are kept.
+- **Run without a local copy:** set `{{envName .Name}}_NO_LOCAL_DATA=1`. Reads go to the API{{if .HasDataLayer}} (`--data-source live`; `--data-source local` still reads an existing store){{end}}, the response cache is off (`--no-cache`), nothing new is written to the store, and `sync`{{if .HasDataLayer}} and `workflow archive`{{end}} refuse to run. Set it in an MCP host's `env` block and every command the server runs inherits it.
+{{- if .HasDataLayer}}
+- **Choose the read source without flags:** `{{envName .Name}}_DATA_SOURCE=auto|live|local` sets the `--data-source` default; an explicit flag wins.
 {{- end}}
 
 ## Commands

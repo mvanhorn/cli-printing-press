@@ -136,6 +136,8 @@ Agents should treat the CLI's path resolver as part of the runtime contract:
 
 Fleet precedence: an inherited per-kind env var overrides an explicit `--home` for that kind. Use `LEARN_DISABLED_EXAMPLE_HOME` or per-kind vars as durable fleet levers, and use `--home` only for a single invocation. Relocation is not reversible by unsetting env vars; move files manually before clearing `LEARN_DISABLED_EXAMPLE_HOME`, or `doctor` will not find credentials left under the former root.
 
+Local data is unencrypted and relies on OS account permissions plus disk encryption. Reads in the default `--data-source auto` mode are written to the SQLite store; GET responses are cached for five minutes under the cache dir. `local-data purge` previews what it would erase (store files, response cache, learn journal) and deletes only with `--yes`; it is not exposed over MCP. `LEARN_DISABLED_EXAMPLE_NO_LOCAL_DATA=1` disables the response cache and store writes, turns `auto` reads into live reads, and blocks `sync` and `workflow archive`; `--data-source local` still reads an existing store, and `LEARN_DISABLED_EXAMPLE_DATA_SOURCE` sets the `--data-source` default.
+
 ## Agent Feedback
 
 When you (or the agent) notice something off about this CLI, record it:
@@ -205,6 +207,8 @@ claude mcp add learn-disabled-example-pp-mcp -- learn-disabled-example-pp-mcp
 ```
 
 Verify: `claude mcp list`
+
+For a remote host, `learn-disabled-example-pp-mcp --transport http` requires `LEARN_DISABLED_EXAMPLE_MCP_HTTP_TOKEN` (callers send `Authorization: Bearer <token>`), binds `127.0.0.1:7777` by default, and needs `--tls-cert`/`--tls-key` for any non-loopback `--addr`. `LEARN_DISABLED_EXAMPLE_MCP_READ_ONLY=1` drops mirrored write commands (local-write commands that only touch the CLI's own learn store stay) and makes the raw execute tool refuse state-changing calls.
 
 ## Direct Use
 
