@@ -21,8 +21,11 @@ import (
 // GenerateMCPSurface into tools.go; these snapshots are restored or
 // merged afterward so a description refresh cannot delete poll loops,
 // annotation rules, destination-flag blocklists, or HTTP timeouts.
+// httpAuthTests is keyed by the entrypoint path and restored only when
+// that entrypoint cannot compile the regenerated HTTP auth tests.
 type mcpRuntimeSnapshot struct {
-	files map[string][]byte
+	files         map[string][]byte
+	httpAuthTests map[string][]byte
 }
 
 var (
@@ -50,8 +53,27 @@ func snapshotMCPRuntime(cliDir string) (*mcpRuntimeSnapshot, error) {
 		if err := snapshotExistingFile(cliDir, snap, rel); err != nil {
 			return nil, err
 		}
+		if err := snapshotMCPHTTPAuthTest(cliDir, snap, rel); err != nil {
+			return nil, err
+		}
 	}
 	return snap, nil
+}
+
+func snapshotMCPHTTPAuthTest(cliDir string, snap *mcpRuntimeSnapshot, mainRel string) error {
+	testRel := filepath.Join(filepath.Dir(mainRel), "http_auth_test.go")
+	data, err := os.ReadFile(filepath.Join(cliDir, testRel))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", testRel, err)
+	}
+	if snap.httpAuthTests == nil {
+		snap.httpAuthTests = map[string][]byte{}
+	}
+	snap.httpAuthTests[filepath.ToSlash(mainRel)] = data
+	return nil
 }
 
 func snapshotDirGoFiles(cliDir string, snap *mcpRuntimeSnapshot, relDir string) error {
@@ -117,8 +139,74 @@ func restoreMCPRuntime(cliDir string, snap *mcpRuntimeSnapshot) error {
 		if err := writeFileAtomic(abs, before); err != nil {
 			return err
 		}
+		if err := preserveHTTPAuthTests(cliDir, snap, rel, before); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func isMCPEntrypointMain(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	return strings.HasPrefix(rel, "cmd/") && strings.Contains(rel, "-pp-mcp/") && strings.HasSuffix(rel, "/main.go")
+}
+
+// preserveHTTPAuthTests puts the pre-sync HTTP tests back when the restored
+// entrypoint lacks the origin helpers the regenerated tests call. An
+// entrypoint that already defines those helpers keeps the regenerated tests.
+func preserveHTTPAuthTests(cliDir string, snap *mcpRuntimeSnapshot, mainRel string, mainSrc []byte) error {
+	if snap == nil || !isMCPEntrypointMain(mainRel) || mcpEntrypointSupportsHTTPAuthTests(mainSrc) {
+		return nil
+	}
+	testRel := filepath.ToSlash(filepath.Join(filepath.Dir(filepath.FromSlash(mainRel)), "http_auth_test.go"))
+	abs := filepath.Join(cliDir, filepath.FromSlash(testRel))
+	if before, ok := snap.httpAuthTests[filepath.ToSlash(mainRel)]; ok {
+		return writeFileAtomic(abs, before)
+	}
+	if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing %s: %w", testRel, err)
+	}
+	return nil
+}
+
+// mcpEntrypointSupportsHTTPAuthTests reports whether mainSrc defines the
+// helpers the regenerated HTTP auth tests call. Parameter counts match
+// the declarations, not a particular formatting of the call.
+func mcpEntrypointSupportsHTTPAuthTests(mainSrc []byte) bool {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", mainSrc, 0)
+	if err != nil {
+		return false
+	}
+	var origins, limits bool
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Type == nil {
+			continue
+		}
+		switch fn.Name.Name {
+		case "requireBearerAuthWithOrigins":
+			origins = funcParamCount(fn.Type.Params) == 3
+		case "requireBearerAuthWithLimits":
+			limits = funcParamCount(fn.Type.Params) == 5
+		}
+	}
+	return origins && limits
+}
+
+func funcParamCount(list *ast.FieldList) int {
+	if list == nil {
+		return 0
+	}
+	n := 0
+	for _, field := range list.List {
+		if len(field.Names) == 0 {
+			n++
+			continue
+		}
+		n += len(field.Names)
+	}
+	return n
 }
 
 func isMCPIntentFile(rel string) bool {
