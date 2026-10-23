@@ -456,17 +456,31 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (CLIComma
 	return result, nil
 }
 
+// Mirrored CLI children do not authenticate the MCP listener. Copying this
+// bearer into every command environment only exposes it.
+const mcpHTTPTokenEnvVar = "PRINTING_PRESS_GOLDEN_MCP_HTTP_TOKEN"
+
 func mcpChildEnviron() []string {
-	prefix := cliutil.MCPChildEnvVar + "="
 	base := os.Environ()
 	env := make([]string, 0, len(base)+1)
 	for _, entry := range base {
-		if strings.HasPrefix(entry, prefix) {
+		if mcpChildEnvDropped(entry) {
 			continue
 		}
 		env = append(env, entry)
 	}
-	return append(env, prefix+"1")
+	return append(env, cliutil.MCPChildEnvVar+"=1")
+}
+
+func mcpChildEnvDropped(entry string) bool {
+	key, _, ok := strings.Cut(entry, "=")
+	if !ok {
+		return false
+	}
+	if key == cliutil.MCPChildEnvVar {
+		return true
+	}
+	return strings.EqualFold(key, mcpHTTPTokenEnvVar)
 }
 
 func cliFailureDetail(stdout, stderr string) string {

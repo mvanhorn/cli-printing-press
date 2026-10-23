@@ -290,8 +290,8 @@ func TestIsMCPExecutionReadOnly(t *testing.T) {
 		return err
 	}
 	mainSrc := strings.Replace(string(mainData),
-		"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))",
-		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuth(token, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
+		"\t\thttpSrv := newMCPHTTPServer(bindAddr, requireBearerAuthWithOrigins(token, allowedOrigins, inner))",
+		"\t\thttpSrv := &http.Server{\n\t\t\tAddr:              bindAddr,\n\t\t\tHandler:           requireBearerAuthWithOrigins(token, allowedOrigins, inner),\n\t\t\tReadHeaderTimeout: 10 * time.Second,\n\t\t\tReadTimeout:       30 * time.Second,\n\t\t\tWriteTimeout:      30 * time.Second,\n\t\t\tIdleTimeout:       120 * time.Second,\n\t\t}",
 		1)
 	if mainSrc == string(mainData) {
 		return errPlant("main.go HTTP timeouts")
@@ -568,7 +568,7 @@ func TestSyncPreservesAssignedHTTPTimeout(t *testing.T) {
 	mainPath := filepath.Join(cliDir, "cmd", "handmcp-pp-mcp", "main.go")
 	mainData, err := os.ReadFile(mainPath)
 	require.NoError(t, err)
-	const anchor = "httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuth(token, inner))"
+	const anchor = "httpSrv := newMCPHTTPServer(bindAddr, requireBearerAuthWithOrigins(token, allowedOrigins, inner))"
 	const assignment = anchor + "\n\thttpSrv.ReadTimeout = 30 * time.Second"
 	planted := strings.Replace(string(mainData), anchor, assignment, 1)
 	require.NotEqual(t, string(mainData), planted)

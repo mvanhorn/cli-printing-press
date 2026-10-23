@@ -403,7 +403,7 @@ claude mcp add printing-press-rich-pp-mcp -- printing-press-rich-pp-mcp
 
 Verify: `claude mcp list`
 
-For a remote host, `printing-press-rich-pp-mcp --transport http` requires `PRINTING_PRESS_RICH_MCP_HTTP_TOKEN` (callers send `Authorization: Bearer <token>`), binds `127.0.0.1:7777` by default, and needs `--tls-cert`/`--tls-key` for any non-loopback `--addr`. `PRINTING_PRESS_RICH_MCP_READ_ONLY=1` drops mirrored write commands (local-write commands that only touch the CLI's own learn store stay) and makes the raw execute tool refuse state-changing calls.
+For a remote host, `printing-press-rich-pp-mcp --transport http` requires `PRINTING_PRESS_RICH_MCP_HTTP_TOKEN` set to at least 32 characters (callers send `Authorization: Bearer <token>`; `openssl rand -hex 32` prints 64 hex characters and meets that minimum), binds `127.0.0.1:7777` by default, and needs `--tls-cert`/`--tls-key` for any non-loopback `--addr`. Requests with no `Origin` header are accepted. Loopback origins are accepted; any other `Origin` is refused unless listed in `PRINTING_PRESS_RICH_MCP_HTTP_ALLOWED_ORIGINS` (comma-separated `scheme://host[:port]` values). `PRINTING_PRESS_RICH_MCP_READ_ONLY=1` drops mirrored write commands (local-write commands that only touch the CLI's own learn store stay) and makes the raw execute tool refuse state-changing calls.
 
 ## Direct Use
 
