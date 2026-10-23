@@ -1624,7 +1624,7 @@ func classifyHTMLTransportError(err error) error {
 	}
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	if htmlLooksLikeAuthFailure(evidence) {
-		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + {{printf "%q" (authSetupHint .Auth .Name)}}))
+		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. %s", {{authSetupHint .Auth .Name}}))
 	}
 {{- end}}
 	return apiErr(fmt.Errorf("%w\nhint: the request may have reached a web page or the wrong endpoint", err))
@@ -1657,7 +1657,7 @@ func classifyAPIErrorOnly(err error) error {
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 {{- if $authSetupHint}}
-			{{printf "%q" (printf "\n      %s" $authSetupHint)}}+
+			"\n      " + {{$authSetupHint}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
@@ -1685,7 +1685,7 @@ func classifyAPIErrorOnly(err error) error {
 {{- else if eq .Auth.Type "bearer_token"}}
 		return authErr(fmt.Errorf("%w\nhint: check your token."+
 {{- if $authSetupHint}}
-			{{printf "%q" (printf "\n      %s" $authSetupHint)}}+
+			"\n      " + {{$authSetupHint}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
@@ -1699,7 +1699,7 @@ func classifyAPIErrorOnly(err error) error {
 {{- else if eq .Auth.Type "api_key"}}
 		return authErr(fmt.Errorf("%w\nhint: {{authErrorCheckHint .Auth}}"+
 {{- if $authSetupHint}}
-			{{printf "%q" (printf " %s" $authSetupHint)}}+
+			" " + {{$authSetupHint}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
@@ -1716,7 +1716,7 @@ func classifyAPIErrorOnly(err error) error {
 {{- else}}
 		return authErr(fmt.Errorf("%w\nhint: check your API credentials."+
 {{- if $authSetupHint}}
-			{{printf "%q" (printf " %s" $authSetupHint)}}+
+			" " + {{$authSetupHint}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
@@ -1753,7 +1753,7 @@ func classifyAPIErrorOnly(err error) error {
 		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
 			"\n      Check that your credentials have the required permissions and match the API's expected auth scheme."+
 {{- if $authSetupHint}}
-			{{printf "%q" (printf "\n      %s" $authSetupHint)}}+
+			"\n      " + {{$authSetupHint}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
@@ -5382,7 +5382,7 @@ func nonJSONPayloadError(data json.RawMessage) error {
 	if len(trimmed) > 0 && trimmed[0] == '<' {
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 		if htmlLooksLikeAuthFailure(trimmed) {
-			return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + {{printf "%q" (authSetupHint .Auth .Name)}}))
+			return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. %s", {{authSetupHint .Auth .Name}}))
 		}
 {{- end}}
 		return apiErr(fmt.Errorf("API returned HTML instead of JSON; the request may have reached a web page or the wrong endpoint"))

@@ -43,13 +43,13 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
-			fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"your-token-here\"")
+			fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_API_KEY", "your-token-here"))
 			fmt.Fprintln(w, "  echo \"$TOKEN\" | printing-press-rich-pp-cli auth set-token")
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Optional request credentials:")
-			fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"your-token-here\"")
-			fmt.Fprintln(w, "  export RICH_AUTH_BOT_TOKEN=\"your-token-here\"")
-			fmt.Fprintln(w, "  export RICH_AUTH_USER_TOKEN=\"your-token-here\"")
+			fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_OPTIONAL_TOKEN", "your-token-here"))
+			fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_BOT_TOKEN", "your-token-here"))
+			fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_USER_TOKEN", "your-token-here"))
 			if !launch {
 				return nil
 			}
@@ -119,13 +119,13 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Set your credentials:")
-				fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"your-token-here\" # Rich Auth API key.")
+				fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_API_KEY", "your-token-here")+" # Rich Auth API key.")
 				fmt.Fprintf(w, "  echo \"$TOKEN\" | printing-press-rich-pp-cli auth set-token\n")
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Optional request credentials:")
-				fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"your-token-here\" # Optional token for elevated read limits.")
-				fmt.Fprintln(w, "  export RICH_AUTH_BOT_TOKEN=\"your-token-here\" # Set this OR RICH_AUTH_USER_TOKEN for workspace access.")
-				fmt.Fprintln(w, "  export RICH_AUTH_USER_TOKEN=\"your-token-here\" # Set this OR RICH_AUTH_BOT_TOKEN for workspace access.")
+				fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_OPTIONAL_TOKEN", "your-token-here")+" # Optional token for elevated read limits.")
+				fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_BOT_TOKEN", "your-token-here")+" # Set this OR RICH_AUTH_USER_TOKEN for workspace access.")
+				fmt.Fprintln(w, "  "+cliutil.EnvAssignHint(true, "RICH_AUTH_USER_TOKEN", "your-token-here")+" # Set this OR RICH_AUTH_BOT_TOKEN for workspace access.")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
 
@@ -135,7 +135,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			if _, line, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok {
 				fmt.Fprintf(w, "  Token expires: %s\n", line)
 				if expired {
-					fmt.Fprintf(w, "  %s\n", "Set your API key with: export RICH_AUTH_API_KEY=\"your-token-here\"")
+					fmt.Fprintf(w, "  %s\n", "Set your API key with: "+cliutil.EnvAssignHint(true, "RICH_AUTH_API_KEY", "your-token-here"))
 				}
 			}
 			return nil

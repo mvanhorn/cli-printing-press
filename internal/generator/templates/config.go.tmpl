@@ -390,7 +390,7 @@ func Load(configPath string) (*Config, error) {
 	// Endpoint template vars: resolve each {placeholder} in BaseURL or the
 	// GraphQL path against the matching env var. Populated even when values
 	// are empty so the client's buildURL helper can issue an actionable
-	// "export FOO_BAR=..." error instead of silently sending a request to a
+	// error naming the unset variable instead of silently sending a request to a
 	// URL with literal "{shop}" in it. Under PRINTING_PRESS_VERIFY=1 (set by
 	// the printing-press verifier in every mock subprocess), an unset
 	// template var falls through to "<name>_placeholder" so dry-run legs

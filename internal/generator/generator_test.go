@@ -86,6 +86,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/odata_date_test.go",
 		"internal/cliutil/query.go",
 		"internal/cliutil/query_test.go",
+		"internal/cliutil/envassign.go",
+		"internal/cliutil/envassign_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/client/client_test.go",
@@ -179,9 +181,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// profile checks exist when auth is none.
 		// +1: cliutil/windows_account.go, the shared Windows SID helpers.
 		// +1: internal/cli/local_data.go, the always-emitted local-data purge.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 194},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 198},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 195},
+		// +2: cliutil.EnvAssignHint and its GOOS test.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 196},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 200},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 197},
 	}
 
 	for _, tt := range tests {
@@ -2886,7 +2889,7 @@ func TestGenerate403HintsFollowAuthMode(t *testing.T) {
 				want: []string{
 					"Your credentials are valid but lack access",
 					"Check that your credentials have the required permissions and match the API's expected auth scheme.",
-					`Set your API key with: export MYAPI_TOKEN=\"your-token-here\"`,
+					`"Set your API key with: "+cliutil.EnvAssignHint(true, "MYAPI_TOKEN", "your-token-here")`,
 				},
 				reject: []string{"This API is configured without credentials"},
 			},
@@ -2894,7 +2897,7 @@ func TestGenerate403HintsFollowAuthMode(t *testing.T) {
 				want: []string{
 					"your credentials are valid but lack access",
 					"match the API's expected auth scheme",
-					`Set your API key with: export MYAPI_TOKEN=\"your-token-here\"`,
+					`"Set your API key with: " + cliutil.EnvAssignHint(true, "MYAPI_TOKEN", "your-token-here")`,
 				},
 				reject: []string{"this API is configured without credentials"},
 			},
@@ -12732,7 +12735,7 @@ func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
 		assert.Equal(t, 1, strings.Count(helpers401, "auth set-token"), helpers401)
 		assert.Contains(t, helpers401, `echo \"$TOKEN\" | bearerhints-pp-cli auth set-token`)
 		assert.NotContains(t, helpers401, "auth set-token <token>")
-		assert.Contains(t, helpers401, `or export BEARERHINTS_TOKEN=\"your-token-here\"`)
+		assert.Contains(t, helpers401, `cliutil.EnvAssignHint(true, "BEARERHINTS_TOKEN", "your-token-here")`)
 
 		tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 		tools401 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
@@ -12829,7 +12832,7 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
 	require.NoError(t, err)
 	helpers := string(helpersGo)
-	assert.Contains(t, helpers, `Set Basic credentials with: export BASICAUTH_USERNAME=\"your-username\" BASICAUTH_PASSWORD=\"your-password\"`)
+	assert.Contains(t, helpers, `"Set Basic credentials with: "+cliutil.EnvAssignHint(true, "BASICAUTH_USERNAME", "your-username", "BASICAUTH_PASSWORD", "your-password")`)
 	assert.Contains(t, helpers, "check your Basic credentials")
 	assert.NotContains(t, helpers, "hint: check your API key")
 	assert.NotContains(t, helpers, "Set your API key: export BASICAUTH_USERNAME=<your-key>")
@@ -12838,7 +12841,7 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcp := string(mcpGo)
-	assert.Contains(t, mcp, `Set Basic credentials with: export BASICAUTH_USERNAME=\"your-username\" BASICAUTH_PASSWORD=\"your-password\"`)
+	assert.Contains(t, mcp, `"Set Basic credentials with: " + cliutil.EnvAssignHint(true, "BASICAUTH_USERNAME", "your-username", "BASICAUTH_PASSWORD", "your-password")`)
 	assert.Contains(t, mcp, "check your Basic credentials")
 	assert.NotContains(t, mcp, "hint: check your API key")
 	assert.NotContains(t, mcp, "Set your API key: export BASICAUTH_USERNAME=<your-key>")
@@ -12847,14 +12850,14 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	doctor := string(doctorGo)
-	assert.Contains(t, doctor, `report["auth_hint"] = "Set Basic credentials with: export BASICAUTH_USERNAME=\"your-username\" BASICAUTH_PASSWORD=\"your-password\""`)
+	assert.Contains(t, doctor, `report["auth_hint"] = "Set Basic credentials with: " + cliutil.EnvAssignHint(true, "BASICAUTH_USERNAME", "your-username", "BASICAUTH_PASSWORD", "your-password")`)
 	assert.NotContains(t, doctor, `report["auth_hint"] = "export BASICAUTH_USERNAME=<your-key>"`)
 
 	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	auth := string(authGo)
-	assert.Contains(t, auth, `export BASICAUTH_USERNAME=\"your-username\"`)
-	assert.Contains(t, auth, `export BASICAUTH_PASSWORD=\"your-password\"`)
+	assert.Contains(t, auth, `cliutil.EnvAssignHint(true, "BASICAUTH_USERNAME", "your-username")`)
+	assert.Contains(t, auth, `cliutil.EnvAssignHint(true, "BASICAUTH_PASSWORD", "your-password")`)
 	setupStart := strings.Index(auth, "func newAuthSetupCmd")
 	require.NotEqual(t, -1, setupStart)
 	setupEnd := strings.Index(auth[setupStart:], "func newAuthStatusCmd")
@@ -13121,7 +13124,7 @@ func TestGeneratedDoctor_AuthHintsWithKeyURL(t *testing.T) {
 	content := string(doctorGo)
 
 	// Should contain the env var hint
-	assert.Contains(t, content, `Set your API key with: export STEAM_API_KEY=\"your-token-here\"`)
+	assert.Contains(t, content, `"Set your API key with: " + cliutil.EnvAssignHint(true, "STEAM_API_KEY", "your-token-here")`)
 	// Should contain the key URL
 	assert.Contains(t, content, `https://steamcommunity.com/dev/apikey`)
 }
@@ -13163,7 +13166,7 @@ func TestGeneratedDoctor_AuthHintsWithoutKeyURL(t *testing.T) {
 	content := string(doctorGo)
 
 	// Should contain the env var hint
-	assert.Contains(t, content, `Set your API key with: export NOURL_API_KEY=\"your-token-here\"`)
+	assert.Contains(t, content, `"Set your API key with: " + cliutil.EnvAssignHint(true, "NOURL_API_KEY", "your-token-here")`)
 	// Should NOT contain any key URL line
 	assert.NotContains(t, content, "auth_key_url")
 }
@@ -18633,6 +18636,7 @@ import (
 	"testing"
 
 	cfgpkg "shopify-pp-cli/internal/config"
+	"shopify-pp-cli/internal/cliutil"
 )
 
 func TestBuildURLSubstitutes(t *testing.T) {
@@ -18651,18 +18655,30 @@ func TestBuildURLSubstitutes(t *testing.T) {
 }
 
 func TestBuildURLMissingShopReturnsActionableError(t *testing.T) {
+	orig := cliutil.EnvAssignHintGOOS
+	t.Cleanup(func() { cliutil.EnvAssignHintGOOS = orig })
 	vars := map[string]string{"api_version": "2026-04"}
-	_, err := buildURL("https://{shop}", "/admin/api/{api_version}/graphql.json", vars)
-	if err == nil {
-		t.Fatal("expected error when {shop} cannot be resolved")
+	check := func(goos, want string, rejectExport bool) {
+		t.Helper()
+		cliutil.EnvAssignHintGOOS = goos
+		_, err := buildURL("https://{shop}", "/admin/api/{api_version}/graphql.json", vars)
+		if err == nil {
+			t.Fatal("expected error when {shop} cannot be resolved")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "SHOPIFY_SHOP not set") {
+			t.Errorf("%s error must name SHOPIFY_SHOP; got %q", goos, msg)
+		}
+		if !strings.Contains(msg, want) {
+			t.Errorf("%s error = %q, want %q", goos, msg, want)
+		}
+		if rejectExport && strings.Contains(msg, "export SHOPIFY_SHOP") {
+			t.Errorf("%s error included export: %q", goos, msg)
+		}
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "SHOPIFY_SHOP not set") {
-		t.Errorf("error must name SHOPIFY_SHOP; got %q", msg)
-	}
-	if !strings.Contains(msg, "export SHOPIFY_SHOP=") {
-		t.Errorf("error must include export hint; got %q", msg)
-	}
+	check("linux", "export SHOPIFY_SHOP=<value>", false)
+	check("darwin", "export SHOPIFY_SHOP=<value>", false)
+	check("windows", "$env:SHOPIFY_SHOP = \"<value>\"", true)
 }
 
 func TestBuildURLPassthroughWhenNoPlaceholders(t *testing.T) {
@@ -18794,7 +18810,7 @@ func TestGenerateInfersEndpointTemplateVarsFromBaseURL(t *testing.T) {
 // EndpointTemplateVars and the runtime env var (e.g. SHOPIFY_SHOP) is unset,
 // verify mode must seed Config.TemplateVars with a "<name>_placeholder" so
 // dry-run / validate-narrative / dogfood legs reach Cobra. Production
-// behavior — the actionable "export X=..." error from buildURL — must stay
+// behavior — the actionable unset-variable error from buildURL — must stay
 // unchanged when verify mode is off.
 func TestGenerateEndpointTemplateVarsVerifyPlaceholderFallback(t *testing.T) {
 	t.Parallel()

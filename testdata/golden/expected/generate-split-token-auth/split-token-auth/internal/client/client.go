@@ -1235,7 +1235,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 				if req.Header.Get("X-Account-Token") == "" && c.Config != nil {
 					if v := c.Config.SplitTokenAccountToken; v != "" {
 						if authHeaderLooksLikePlaceholderCredential(v) {
-							return authPlaceholderCredentialErrorWithSetup(c.Config, "export SPLIT_TOKEN_ACCOUNT_TOKEN=<your-token>")
+							return authPlaceholderCredentialErrorWithSetup(c.Config, cliutil.EnvAssignHint(false, "SPLIT_TOKEN_ACCOUNT_TOKEN", "<your-token>"))
 						}
 						req.Header.Set("X-Account-Token", v)
 					}
@@ -2425,7 +2425,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			if opScheme == "accountToken" {
 				if v := c.Config.SplitTokenAccountToken; v != "" {
 					if authHeaderLooksLikePlaceholderCredential(v) {
-						return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export SPLIT_TOKEN_ACCOUNT_TOKEN=<your-token>")
+						return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, cliutil.EnvAssignHint(false, "SPLIT_TOKEN_ACCOUNT_TOKEN", "<your-token>"))
 					}
 					req.Header.Set("X-Account-Token", v)
 				}
@@ -2829,7 +2829,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "export SPLIT_TOKEN_SERVER_TOKEN=<your-token-here> or echo \"$TOKEN\" | split-token-pp-cli auth set-token")
+	return authPlaceholderCredentialErrorWithSetup(cfg, cliutil.EnvAssignHint(false, "SPLIT_TOKEN_SERVER_TOKEN", "<your-token-here>")+" or echo \"$TOKEN\" | split-token-pp-cli auth set-token")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {

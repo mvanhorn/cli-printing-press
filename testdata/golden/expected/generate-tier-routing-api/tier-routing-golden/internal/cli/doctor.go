@@ -286,14 +286,14 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					configured, authSource := doctorAuthConfiguredState(cfg)
 					if !configured {
 						report["auth"] = "not configured"
-						report["auth_hint"] = "Set it with: echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token or export TIER_GLOBAL_TOKEN=\"your-token-here\""
+						report["auth_hint"] = "Set it with: echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token or " + cliutil.EnvAssignHint(true, "TIER_GLOBAL_TOKEN", "your-token-here")
 					} else {
 						authConfigured = true
 						report["auth"] = "configured"
 						report["auth_source"] = authSource
 						if expiresAt, _, expired, ok := jwtCredentialExpiry(jwtExpirySource(cfg)); ok && expired {
 							report["auth"] = "ERROR token expired at " + expiresAt
-							report["auth_hint"] = "Set it with: echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token or export TIER_GLOBAL_TOKEN=\"your-token-here\""
+							report["auth_hint"] = "Set it with: echo \"$TOKEN\" | tier-routing-golden-pp-cli auth set-token or " + cliutil.EnvAssignHint(true, "TIER_GLOBAL_TOKEN", "your-token-here")
 						}
 					}
 				}

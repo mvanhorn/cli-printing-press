@@ -234,7 +234,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
 {{- range .Auth.EnvVarSpecs}}
-			fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"")
+			fmt.Fprintln(w, "  " + {{envAssignHintCall true .Name (authEnvPlaceholder .)}})
 {{- end}}
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "OAuth2 refresh-token credentials are exchanged automatically before API calls.")
@@ -243,7 +243,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
 {{- range $requiredRequestAuthEnvVars}}
-			fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"")
+			fmt.Fprintln(w, "  " + {{envAssignHintCall true .Name (authEnvPlaceholder .)}})
 {{- end}}
 {{- end}}
 {{- if $authSetTokenAvailable}}
@@ -260,7 +260,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "Optional request credentials:")
 {{- end}}
 {{- range $optionalRequestAuthEnvVars}}
-			fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"")
+			fmt.Fprintln(w, "  " + {{envAssignHintCall true .Name (authEnvPlaceholder .)}})
 {{- end}}
 {{- end}}
 {{- end}}
@@ -268,7 +268,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
 {{- range .Auth.EnvVars}}
-			fmt.Fprintln(w, "  export {{.}}=\"{{authEnvPlaceholderByName .}}\"")
+			fmt.Fprintln(w, "  " + {{envAssignHintCall true . (authEnvPlaceholderByName .)}})
 {{- end}}
 {{- if $authSetTokenAvailable}}
 			fmt.Fprintln(w, "  echo \"$TOKEN\" | {{.Name}}-pp-cli auth set-token")
@@ -534,7 +534,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 {{- range .Auth.EnvVarSpecs}}
 {{- if or (and (isRequestAuthEnvVar .) .Required) (eq $.Auth.Type "oauth2_refresh")}}
 {{- $hint := authEnvHintComment .}}
-				fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"{{if $hint}} # {{$hint}}{{end}}")
+				fmt.Fprintln(w, "  " + {{envAssignHintCall true .Name (authEnvPlaceholder .)}}{{if $hint}} + " # {{$hint}}"{{end}})
 {{- end}}
 {{- end}}
 {{- if $authSetTokenAvailable}}
@@ -548,12 +548,12 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, "Optional request credentials:")
 {{- range $optionalRequestAuthEnvVars}}
 {{- $hint := authEnvHintComment .}}
-				fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"{{if $hint}} # {{$hint}}{{end}}")
+				fmt.Fprintln(w, "  " + {{envAssignHintCall true .Name (authEnvPlaceholder .)}}{{if $hint}} + " # {{$hint}}"{{end}})
 {{- end}}
 {{- end}}
 {{- else}}
 {{- range .Auth.EnvVars}}
-				fmt.Fprintln(w, "  export {{.}}=\"{{authEnvPlaceholderByName .}}\"")
+				fmt.Fprintln(w, "  " + {{envAssignHintCall true . (authEnvPlaceholderByName .)}})
 {{- end}}
 {{- end}}
 				return authErr(fmt.Errorf("no credentials configured"))
@@ -567,7 +567,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintf(w, "  Token expires: %s\n", line)
 				if expired {
 {{- if $authSetupHint}}
-					fmt.Fprintf(w, "  %s\n", {{printf "%q" $authSetupHint}})
+					fmt.Fprintf(w, "  %s\n", {{$authSetupHint}})
 {{- else}}
 					fmt.Fprintln(w, "  Refresh the token with auth login or auth set-token.")
 {{- end}}
