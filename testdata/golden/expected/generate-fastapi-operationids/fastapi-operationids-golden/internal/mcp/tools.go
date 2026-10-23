@@ -66,7 +66,6 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("quotes_create",
 			mcplib.WithDescription("Generate quote."),
 			mcplib.WithSchemaAdditionalProperties(false),
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("POST", "/api/quotes/generate", false, false, nil, mcpPageConfig{}, []mcpParamBinding{}, []string{}),
@@ -116,7 +115,6 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("Update quote status. Required: quote_id."),
 			mcplib.WithString("quote_id", mcplib.Required(), mcplib.Description("Quote id")),
 			mcplib.WithSchemaAdditionalProperties(false),
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("POST", "/api/quotes/{quote_id}", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
@@ -159,8 +157,8 @@ func RegisterTools(s *server.MCPServer) {
 	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
 
 	// The read-only switch covers every tool, so this runs after all
-	// registrations: typed endpoint tools and intents never consult it, and
-	// the mirror keeps local-store writers that hosts may auto-approve.
+	// registrations. Tools without readOnlyHint, including local-store
+	// writers, are removed.
 	if cliutil.IsMCPReadOnlyEnv() {
 		dropNonReadOnlyTools(s)
 	}

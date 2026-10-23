@@ -202,8 +202,8 @@ Usage errors (unknown id, non-open status) exit 2.`,
 		Example: `  learn-loop-example-pp-cli learnings confirm 3`,
 		// Usage errors here exit 2 by design; declare it so
 		// `cli-printing-press verify` scores the Execute cell honestly.
-		// Confirm materializes into the CLI's own local store only, so it
-		// carries the non-destructive local-write hints.
+		// Confirm materializes into the CLI's own local store only. The
+		// mirror keeps the tool possibly destructive so MCP hosts prompt.
 		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
@@ -316,9 +316,10 @@ func confirmAndMaterializeCandidate(s *store.Store, row store.CandidateRow) (sto
 			return store.CandidateRow{}, nil, fmt.Errorf("candidate %d payload carries no playbook content", row.ID)
 		}
 		confirmed, pbID, inserted, err := s.ConfirmCandidateWithPlaybook(row.ID, store.UpsertPlaybookInput{
-			QueryFamily:  family,
-			PlaybookJSON: p.PlaybookJSON,
-			NotesText:    p.NotesText,
+			QueryFamily:    family,
+			PlaybookJSON:   p.PlaybookJSON,
+			NotesText:      p.NotesText,
+			IngressSurface: store.LearnEventSurface(),
 		})
 		if err != nil {
 			return store.CandidateRow{}, nil, fmt.Errorf("materialize playbook: %w", err)
@@ -349,7 +350,7 @@ func confirmAndMaterializeCandidate(s *store.Store, row store.CandidateRow) (sto
 			return store.CandidateRow{}, nil, fmt.Errorf("candidate %d has no query_family anchor for its correction note; recall the query family first, then confirm", row.ID)
 		}
 		marker := flagAliasAmendMarker(row, p)
-		confirmed, pbID, inserted, err := s.ConfirmCandidateWithPlaybookNote(row.ID, family, marker)
+		confirmed, pbID, inserted, err := s.ConfirmCandidateWithPlaybookNote(row.ID, family, marker, store.LearnEventSurface())
 		if err != nil {
 			return store.CandidateRow{}, nil, fmt.Errorf("materialize correction note: %w", err)
 		}

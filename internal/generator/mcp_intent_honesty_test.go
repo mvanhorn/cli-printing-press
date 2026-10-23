@@ -129,8 +129,8 @@ func TestIntentSafetyMetadata(t *testing.T) {
 	if hold.Tool.Annotations.ReadOnlyHint != nil && *hold.Tool.Annotations.ReadOnlyHint {
 		t.Fatalf("hold_trip must not be read-only")
 	}
-	if hold.Tool.Annotations.DestructiveHint == nil || *hold.Tool.Annotations.DestructiveHint {
-		t.Fatalf("hold_trip destructiveHint = %v, want false", hold.Tool.Annotations.DestructiveHint)
+	if hold.Tool.Annotations.DestructiveHint == nil || !*hold.Tool.Annotations.DestructiveHint {
+		t.Fatalf("hold_trip destructiveHint = %v, want possibly destructive", hold.Tool.Annotations.DestructiveHint)
 	}
 	if hold.Tool.Annotations.OpenWorldHint == nil || !*hold.Tool.Annotations.OpenWorldHint {
 		t.Fatalf("hold_trip openWorldHint = %v, want true", hold.Tool.Annotations.OpenWorldHint)

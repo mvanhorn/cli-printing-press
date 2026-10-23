@@ -28,11 +28,11 @@ const (
 	// LocalWriteAnnotation, when set on a Cobra command to "true"/"1"/"yes",
 	// marks a command whose only writes land in the CLI's own local store
 	// (teach-style learn writes, playbook notes) - never external state and
-	// never user-visible files. The walker registers the resulting MCP tool
-	// with destructiveHint=false and openWorldHint=false; readOnlyHint stays
-	// unset because the command genuinely writes locally. Commands that
-	// delete user-visible data keep honest destructive semantics and must
-	// not carry this annotation.
+	// never user-visible files. The walker leaves destructiveHint at the
+	// possibly-destructive default and sets openWorldHint true so hosts
+	// prompt; readOnlyHint stays unset because the command genuinely writes
+	// locally. Commands that delete user-visible data keep honest
+	// destructive semantics and must not carry this annotation.
 	LocalWriteAnnotation = "mcp:local-write"
 	// PositionalWriteSinksAnnotation lists zero-based positional argument
 	// indexes that write to user-visible files when populated. It is enforced

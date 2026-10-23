@@ -41,7 +41,7 @@ func TestLearnSchemaV10_EnabledRetainsCandidateAndEventTables(t *testing.T) {
 
 	src, _ := generateLearnStore(t, "learn-v10-enabled", true)
 
-	require.Contains(t, src, "const StoreSchemaVersion = 13")
+	require.Contains(t, src, "const StoreSchemaVersion = 14")
 	require.Contains(t, src, "const resourcesFTSTokenizerSchemaVersion = 11")
 	require.Contains(t, src, "migrateParentKeyStorageIDs")
 	require.Contains(t, src, `column: "last_attempt_complete"`)

@@ -60,10 +60,10 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
 		}
 		if !readOnly && isMCPLocalWrite(cmd) {
-			// Local-write tier: the command's only writes land in the CLI's
-			// own local store, so the tool is neither destructive nor
-			// open-world; readOnlyHint stays unset because it does write.
-			options = append(options, mcplib.WithDestructiveHintAnnotation(false), mcplib.WithOpenWorldHintAnnotation(false))
+			// destructiveHint false means additive-only, which hosts may
+			// auto-approve. Leave the possibly-destructive default and
+			// mark open-world so they prompt.
+			options = append(options, mcplib.WithOpenWorldHintAnnotation(true))
 		}
 		tool := mcplib.NewTool(toolName, options...)
 		if tool.Meta == nil {

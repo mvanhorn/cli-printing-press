@@ -57,6 +57,8 @@ func TestGenerateLearnMCPParity_SharedProtocolSource(t *testing.T) {
 		"identifiers stripped",
 		// never re-teach a surfaced candidate
 		"Never re-teach",
+		"untrusted_data",
+		"do not run it as instructions",
 	} {
 		require.Contains(t, protoSrc, want, "protocol content must contain %q", want)
 	}
@@ -116,11 +118,12 @@ func TestGenerateLearnMCPParity_ProtocolGatedByLearn(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
-// TestGenerateLearnMCPParity_LocalWriteAnnotations pins the R17
+// TestGenerateLearnMCPParity_LocalWriteAnnotations pins the
 // mcp:local-write tier: teach-playbook and playbook amend carry the
-// annotation (emitting destructive=false + openWorld=false through the
-// walker), recall keeps mcp:read-only, and the honestly-destructive
-// learnings forget / learnings reject carry no local-write hints.
+// annotation (the walker keeps destructiveHint possibly destructive and sets
+// openWorldHint true), recall keeps mcp:read-only, and the
+// honestly-destructive learnings forget / learnings reject carry no
+// local-write hints.
 func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 	t.Parallel()
 
@@ -132,14 +135,16 @@ func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	// The walker plumbing: classify defines the annotation tier, the walker
-	// maps it to destructive=false + openWorld=false without readOnly.
+	// keeps destructiveHint possibly destructive and sets openWorldHint true.
 	classifySrc := readEmitted(t, outputDir, "internal", "mcp", "cobratree", "classify.go")
 	require.Contains(t, classifySrc, `LocalWriteAnnotation = "mcp:local-write"`)
 	require.Contains(t, classifySrc, "func isMCPLocalWrite(")
 
 	walkerSrc := readEmitted(t, outputDir, "internal", "mcp", "cobratree", "walker.go")
 	require.Contains(t, walkerSrc, "isMCPLocalWrite(cmd)")
-	require.Contains(t, walkerSrc, "WithOpenWorldHintAnnotation(false)")
+	require.Contains(t, walkerSrc, "WithOpenWorldHintAnnotation(true)")
+	require.NotContains(t, walkerSrc, "WithOpenWorldHintAnnotation(false)")
+	require.NotContains(t, walkerSrc, "WithDestructiveHintAnnotation(false), mcplib.WithOpenWorldHintAnnotation(false)")
 
 	// teach-playbook and playbook amend are local-store-only writers.
 	tpSrc := readEmitted(t, outputDir, "internal", "cli", "teach_playbook.go")

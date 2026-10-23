@@ -74,11 +74,11 @@ func RegisterIntents(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(true),
-{{- else if intentIsDestructive $.APISpec .}}
-			mcplib.WithDestructiveHintAnnotation(true),
-			mcplib.WithOpenWorldHintAnnotation(true),
 {{- else}}
-			mcplib.WithDestructiveHintAnnotation(false),
+			{{- $hint := intentDestructiveHint $.APISpec .}}
+			{{- if $hint.Set}}
+			mcplib.WithDestructiveHintAnnotation({{$hint.Value}}),
+			{{- end}}
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),

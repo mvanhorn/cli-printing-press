@@ -55,6 +55,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
 | `x-pp-mutation` | operation | `Endpoint.Mutation` | No |
+| `x-pp-destructive` | operation | `Endpoint.Destructive` | No |
 | `x-pp-replay-safe` | operation | `Endpoint.ReplaySafe` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
@@ -1618,6 +1619,45 @@ paths:
       responses:
         "200":
           description: Matched rows
+```
+
+### `x-pp-destructive`
+
+Sets the MCP `destructiveHint` for a write that stays a write. Unset DELETE
+operations advertise `destructiveHint: true`. Unset POST, PUT, and PATCH
+operations leave the hint unset, so hosts treat them as possibly destructive.
+`false` marks an additive write (`destructiveHint: false`) without making the
+command read-only. `true` forces `destructiveHint: true`.
+
+A read (GET, `x-pp-mutation: false`, or `mcp:read-only`) keeps
+`readOnlyHint: true` and `destructiveHint: false`. This extension does not
+override that.
+
+Parsed field: `Endpoint.Destructive`
+
+Rules:
+- Optional.
+- Must be a native boolean. A string such as `"false"` is ignored.
+- Applies only at the operation level.
+- Internal YAML uses the same boolean as `destructive:`.
+
+Example:
+
+```yaml
+paths:
+  /devices/{id}/retire:
+    post:
+      operationId: retireDevice
+      responses:
+        "204":
+          description: Retired
+  /devices/{id}/tag:
+    post:
+      operationId: tagDevice
+      x-pp-destructive: false
+      responses:
+        "204":
+          description: Tagged
 ```
 
 ### `x-pp-replay-safe`

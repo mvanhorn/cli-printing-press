@@ -331,7 +331,7 @@ func TestPlaybookInit_ReseedPreservesFirstInsertAmend(t *testing.T) {
 		t.Fatal("beta example query normalized to empty family")
 	}
 	marker := "\n\n[amend 2026-05-27T03:14Z]: hard-won agent gotcha"
-	if _, inserted, err := s.AppendPlaybookNotes(betaFamily, marker); err != nil {
+	if _, inserted, err := s.AppendPlaybookNotes(betaFamily, marker, ""); err != nil {
 		t.Fatalf("amend: %v", err)
 	} else if !inserted {
 		t.Fatal("expected INSERT path (no pre-existing beta row)")
