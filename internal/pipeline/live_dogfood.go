@@ -254,6 +254,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		RanAt:   time.Now().UTC(),
 	}
 
+	parsedSpec := loadLiveDogfoodParsedSpec(opts.CLIDir)
 	ctx := resolveCtx{
 		binaryPath:       binaryPath,
 		cliDir:           opts.CLIDir,
@@ -264,7 +265,8 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		authTier:         resolveLiveDogfoodAuthTier(opts.AuthTier),
 		allowDestructive: opts.AllowDestructive,
 		storeDBPath:      liveDogfoodDefaultDBPath(liveDogfoodCLINameForStore(binaryPath, opts.BinaryName)),
-		bodyFixtures:     loadLiveDogfoodBodyFixtures(opts.CLIDir),
+		bodyFixtures:     liveDogfoodBodyFixturesFromSpec(parsedSpec),
+		specEndpoints:    liveDogfoodSpecEndpoints(parsedSpec),
 	}
 	// Snapshot before any matrix subprocess so a file created beside the
 	// binary, or by any path other than the scratch cwd, is still reported.
@@ -818,6 +820,7 @@ type resolveCtx struct {
 	allowDestructive bool
 	storeDBPath      string
 	bodyFixtures     []liveDogfoodBodyFixture
+	specEndpoints    []liveDogfoodSpecEndpoint
 }
 
 type liveDogfoodBodyFixture struct {
@@ -1768,7 +1771,7 @@ func collectLiveDogfoodCommands(prefix []string, command dogfoodAgentCommand, cm
 	}
 }
 
-func loadLiveDogfoodBodyFixtures(cliDir string) []liveDogfoodBodyFixture {
+func loadLiveDogfoodParsedSpec(cliDir string) *apispec.APISpec {
 	for _, specPath := range liveDogfoodBundledSpecPaths(cliDir) {
 		data, err := openapiparser.LoadSpecBytes(specPath, false, false)
 		if err != nil {
@@ -1785,14 +1788,24 @@ func loadLiveDogfoodBodyFixtures(cliDir string) []liveDogfoodBodyFixture {
 		if err != nil || parsed == nil {
 			continue
 		}
-
-		var fixtures []liveDogfoodBodyFixture
-		for resourceName, resource := range parsed.Resources {
-			fixtures = appendLiveDogfoodBodyFixtures(fixtures, []string{resourceName}, resource, "")
-		}
-		return fixtures
+		return parsed
 	}
 	return nil
+}
+
+func loadLiveDogfoodBodyFixtures(cliDir string) []liveDogfoodBodyFixture {
+	return liveDogfoodBodyFixturesFromSpec(loadLiveDogfoodParsedSpec(cliDir))
+}
+
+func liveDogfoodBodyFixturesFromSpec(parsed *apispec.APISpec) []liveDogfoodBodyFixture {
+	if parsed == nil {
+		return nil
+	}
+	var fixtures []liveDogfoodBodyFixture
+	for resourceName, resource := range parsed.Resources {
+		fixtures = appendLiveDogfoodBodyFixtures(fixtures, []string{resourceName}, resource, "")
+	}
+	return fixtures
 }
 
 func liveDogfoodBundledSpecPaths(cliDir string) []string {
@@ -1949,11 +1962,28 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	helpPassed := helpRun.exitCode == 0
 	help := helpRun.stdout + helpRun.stderr
 	if helpPassed && extractExamplesSection(help) == "" {
-		helpPassed = false
-		helpResult.Status = LiveDogfoodStatusFail
-		helpResult.Reason = "missing Examples section"
+		if reason := liveDogfoodOmittedExampleSkipReason(command, ctx.specEndpoints); reason != "" {
+			helpResult.Status = LiveDogfoodStatusSkip
+			helpResult.Reason = reason
+			// No declared fixture means the rest of the matrix cannot run.
+			// Continuing would fail reads with "missing runnable example"
+			// and still block promotion. A pp:happy-args or pp:happy-stdin
+			// fixture stays probed; only the help row is non-blocking.
+			if !liveDogfoodCommandHasDeclaredFixture(command) {
+				return []LiveDogfoodTestResult{
+					helpResult,
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reason),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reason),
+					skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reason),
+				}
+			}
+		} else {
+			helpPassed = false
+			helpResult.Status = LiveDogfoodStatusFail
+			helpResult.Reason = "missing Examples section"
+		}
 	}
-	if helpPassed {
+	if helpPassed && helpResult.Status != LiveDogfoodStatusSkip {
 		helpResult.Status = LiveDogfoodStatusPass
 		helpResult.Reason = ""
 	}
