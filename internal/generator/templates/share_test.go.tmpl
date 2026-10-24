@@ -6,10 +6,14 @@ package share
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -62,19 +66,19 @@ func TestShare_ExportThenImportRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	src := openStore(t)
 
-	// Seed sync_state with one row per snapshot table so Export has
-	// something to write out. sync_state is always in SnapshotTables
-	// when share is enabled, so this gives us non-empty JSONL.
-	for _, table := range SnapshotTables {
-		if table == "sync_state" {
-			_, err := src.DB().ExecContext(ctx,
-				`INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES(?, CURRENT_TIMESTAMP, 1)`,
-				"seeded",
-			)
-			if err != nil {
-				t.Fatalf("seed sync_state: %v", err)
-			}
-		}
+	// snapshot_tables is an allowlist and does not have to include
+	// sync_state. Seed a row in a table that is actually shared so the
+	// roundtrip still moves data for every allowlist the spec accepts.
+	table, err := chooseSnapshotSeedTable(SnapshotTables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isSnapshotTable(table) {
+		t.Fatalf("seeded %s, which is not in the snapshot allowlist", table)
+	}
+	column, marker, err := seedSnapshotRow(ctx, src.DB(), table)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	repoDir := filepath.Join(t.TempDir(), "share-repo")
@@ -86,7 +90,6 @@ func TestShare_ExportThenImportRoundtrip(t *testing.T) {
 		t.Fatalf("manifest not created: %v", err)
 	}
 
-	// Re-import into a fresh store and confirm sync_state row round-trips.
 	dst := openStore(t)
 	importedManifest, err := Import(ctx, dst, opts)
 	if err != nil {
@@ -98,14 +101,417 @@ func TestShare_ExportThenImportRoundtrip(t *testing.T) {
 	if importedManifest.CLIName != "{{.Name}}-pp-cli" {
 		t.Fatalf("cli_name = %q, want %q", importedManifest.CLIName, "{{.Name}}-pp-cli")
 	}
+	seededRows := -1
+	for _, entry := range importedManifest.Tables {
+		if entry.Name == table {
+			seededRows = entry.Rows
+			break
+		}
+	}
+	if seededRows < 1 {
+		t.Fatalf("export recorded %d rows for %s, want at least 1", seededRows, table)
+	}
+	if err := assertSeededSnapshotRow(ctx, dst.DB(), table, column, marker); err != nil {
+		t.Fatal(err)
+	}
+}
 
-	// Spot-check that at least one row landed.
-	var count int
-	if err := dst.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_state WHERE resource_type = ?`, "seeded").Scan(&count); err != nil {
-		t.Fatalf("count seeded row: %v", err)
+func TestShare_ChooseSnapshotSeedTable(t *testing.T) {
+	cases := []struct {
+		name    string
+		tables  []string
+		want    string
+		wantErr bool
+	}{
+		{name: "prefers sync_state", tables: []string{"items", "sync_state"}, want: "sync_state"},
+		{name: "sync_state only", tables: []string{"sync_state"}, want: "sync_state"},
+		{name: "first table when sync_state is absent", tables: []string{"items", "teams"}, want: "items"},
+		{name: "empty allowlist", tables: nil, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := chooseSnapshotSeedTable(tc.tables)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("chooseSnapshotSeedTable() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShare_SnapshotCheckLiterals(t *testing.T) {
+	createSQL := `CREATE TABLE t (
+		event TEXT NOT NULL CHECK(event IN ('ok','no')),
+		"kind" TEXT CHECK("kind" IN ("a","b")),
+		n INTEGER CHECK(n IN (1, 2))
+	)`
+	got := snapshotCheckLiterals(createSQL)
+	if len(got["event"]) != 2 || got["event"][0] != "ok" || got["event"][1] != "no" {
+		t.Fatalf("event literals = %#v", got["event"])
+	}
+	if len(got["kind"]) != 2 || got["kind"][0] != "a" || got["kind"][1] != "b" {
+		t.Fatalf("kind literals = %#v", got["kind"])
+	}
+	if len(got["n"]) != 2 || got["n"][0] != "1" || got["n"][1] != "2" {
+		t.Fatalf("n literals = %#v", got["n"])
+	}
+	if len(snapshotCheckLiterals("")) != 0 {
+		t.Fatal("empty schema should have no literals")
+	}
+	if len(snapshotCheckLiterals("CREATE TABLE t (id INTEGER PRIMARY KEY)")) != 0 {
+		t.Fatal("schema without CHECK IN should have no literals")
+	}
+}
+
+func TestShare_SeedSnapshotRowHonorsSchema(t *testing.T) {
+	ctx := context.Background()
+	db := openStore(t).DB()
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE share_seed_probe (
+			id INTEGER PRIMARY KEY,
+			label TEXT NOT NULL DEFAULT 'unused',
+			event TEXT NOT NULL CHECK(event IN ('ok','no')),
+			note TEXT
+		)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	column, marker, err := seedSnapshotRow(ctx, db, "share_seed_probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if column != "id" {
+		t.Fatalf("marker column = %q, want id", column)
+	}
+	var event, label string
+	var note sql.NullString
+	err = db.QueryRowContext(ctx, `SELECT event, label, note FROM share_seed_probe WHERE id = ?`, marker).Scan(&event, &label, &note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event != "ok" {
+		t.Fatalf("event = %q, want first CHECK literal", event)
+	}
+	if label != "unused" {
+		t.Fatalf("label = %q, want column default", label)
+	}
+	if note.Valid {
+		t.Fatalf("note = %q, want NULL", note.String)
+	}
+}
+
+func TestShare_SeedSnapshotRowUsesDeclaredTypes(t *testing.T) {
+	ctx := context.Background()
+	db := openStore(t).DB()
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE share_seed_types (
+			id TEXT PRIMARY KEY,
+			n INTEGER NOT NULL,
+			r REAL NOT NULL,
+			j JSON NOT NULL,
+			label TEXT NOT NULL
+		)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	column, marker, err := seedSnapshotRow(ctx, db, "share_seed_types")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if column != "id" || marker != "seeded" {
+		t.Fatalf("marker = %s %#v, want id seeded", column, marker)
+	}
+	var n int
+	var r float64
+	var j, label string
+	err = db.QueryRowContext(ctx, `SELECT n, r, j, label FROM share_seed_types WHERE id = ?`, marker).Scan(&n, &r, &j, &label)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || r != 1 || j != "{}" || label != "seeded" {
+		t.Fatalf("n=%d r=%v j=%q label=%q", n, r, j, label)
+	}
+}
+
+func TestShare_SeedSnapshotRowUsesColumnDefaults(t *testing.T) {
+	ctx := context.Background()
+	db := openStore(t).DB()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE share_seed_defaults (n INTEGER NOT NULL DEFAULT 7)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertSeededSnapshotRow(ctx, db, "share_seed_defaults", "", nil); err == nil {
+		t.Fatal("expected no rows before seed")
+	}
+	column, marker, err := seedSnapshotRow(ctx, db, "share_seed_defaults")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if column != "" || marker != nil {
+		t.Fatalf("default-only seed returned column %q marker %#v", column, marker)
+	}
+	if err := assertSeededSnapshotRow(ctx, db, "share_seed_defaults", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertSeededSnapshotRow(ctx, db, "share_seed_defaults", "n", 99); err == nil {
+		t.Fatal("expected a mismatched marker to fail")
+	}
+	var count, n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM share_seed_defaults`).Scan(&count); err != nil {
+		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("sync_state after import has %d rows for 'seeded', want 1", count)
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT n FROM share_seed_defaults`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Fatalf("n = %d, want default 7", n)
+	}
+}
+
+func TestShare_SeedSnapshotRowReportsLookupError(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := seedSnapshotRow(ctx, s.DB(), "sync_state")
+	if err == nil || !strings.Contains(err.Error(), "sync_state") {
+		t.Fatalf("got %v, want a lookup error", err)
+	}
+}
+
+func TestShare_AssertSeededSnapshotRowReportsQueryError(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"", "resource_type"} {
+		err := assertSeededSnapshotRow(ctx, s.DB(), "sync_state", column, "seeded")
+		if err == nil || !strings.Contains(err.Error(), "sync_state") {
+			t.Fatalf("column %q: got %v, want a count error", column, err)
+		}
+	}
+}
+
+func TestShare_SeedSnapshotRowRejectsMissingTable(t *testing.T) {
+	ctx := context.Background()
+	db := openStore(t).DB()
+	_, _, err := seedSnapshotRow(ctx, db, "missing_share_table")
+	if err == nil || !strings.Contains(err.Error(), "missing_share_table") {
+		t.Fatalf("got %v, want a missing-table error", err)
+	}
+}
+
+func TestShare_SeedSnapshotRowReturnsInsertError(t *testing.T) {
+	ctx := context.Background()
+	db := openStore(t).DB()
+	_, err := db.ExecContext(ctx, `CREATE TABLE share_seed_reject (n INTEGER NOT NULL CHECK(n > 10))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = seedSnapshotRow(ctx, db, "share_seed_reject")
+	if err == nil || !strings.Contains(err.Error(), "share_seed_reject") {
+		t.Fatalf("got %v, want an insert error naming the table", err)
+	}
+}
+
+// sync_state is preferred when the allowlist includes it, but the spec
+// validator does not require that table.
+func chooseSnapshotSeedTable(tables []string) (string, error) {
+	if len(tables) == 0 {
+		return "", errors.New("no snapshot tables configured")
+	}
+	for _, table := range tables {
+		if table == "sync_state" {
+			return table, nil
+		}
+	}
+	return tables[0], nil
+}
+
+type snapshotColumn struct {
+	name       string
+	typ        string
+	notNull    bool
+	primaryKey int
+	hasDefault bool
+}
+
+func seedSnapshotRow(ctx context.Context, db *sql.DB, table string) (column string, marker any, err error) {
+	exists, err := snapshotTableExists(ctx, db, table)
+	if err != nil {
+		return "", nil, fmt.Errorf("lookup snapshot table %s: %w", table, err)
+	}
+	if !exists {
+		return "", nil, fmt.Errorf("snapshot table %q is not in the store", table)
+	}
+	cols, err := loadSnapshotColumns(ctx, db, table)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(cols) == 0 {
+		return "", nil, fmt.Errorf("snapshot table %q has no columns", table)
+	}
+	createSQL, err := snapshotCreateSQL(ctx, db, table)
+	if err != nil {
+		return "", nil, fmt.Errorf("read %s schema: %w", table, err)
+	}
+	checks := snapshotCheckLiterals(createSQL)
+
+	var names []string
+	var args []any
+	for _, col := range cols {
+		if col.primaryKey == 0 && (!col.notNull || col.hasDefault) {
+			continue
+		}
+		val := snapshotSeedValue(col.typ, checks[strings.ToLower(col.name)])
+		names = append(names, quoteIdent(col.name))
+		args = append(args, val)
+		if column == "" || col.primaryKey == 1 {
+			column = col.name
+			marker = val
+		}
+	}
+	if len(names) == 0 {
+		if _, err := db.ExecContext(ctx, "INSERT INTO "+quoteIdent(table)+" DEFAULT VALUES"); err != nil {
+			return "", nil, fmt.Errorf("seed %s: %w", table, err)
+		}
+		return "", nil, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(args)), ",")
+	query := "INSERT INTO " + quoteIdent(table) + " (" + strings.Join(names, ", ") + ") VALUES (" + placeholders + ")"
+	if _, err := db.ExecContext(ctx, query, args...); err != nil {
+		return "", nil, fmt.Errorf("seed %s: %w", table, err)
+	}
+	return column, marker, nil
+}
+
+func assertSeededSnapshotRow(ctx context.Context, db *sql.DB, table, column string, marker any) error {
+	var count int
+	var err error
+	if column == "" {
+		err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(table)).Scan(&count)
+	} else {
+		query := "SELECT COUNT(*) FROM " + quoteIdent(table) + " WHERE " + quoteIdent(column) + " = ?"
+		err = db.QueryRowContext(ctx, query, marker).Scan(&count)
+	}
+	if err != nil {
+		return fmt.Errorf("count seeded %s row: %w", table, err)
+	}
+	if count != 1 {
+		if column == "" {
+			return fmt.Errorf("%s after import has %d rows, want 1", table, count)
+		}
+		return fmt.Errorf("%s.%s after import matched %d rows, want 1", table, column, count)
+	}
+	return nil
+}
+
+func snapshotTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func loadSnapshotColumns(ctx context.Context, db *sql.DB, table string) ([]snapshotColumn, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid`, table)
+	if err != nil {
+		return nil, fmt.Errorf("read %s columns: %w", table, err)
+	}
+	defer rows.Close()
+	var cols []snapshotColumn
+	for rows.Next() {
+		var col snapshotColumn
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&col.name, &col.typ, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		col.notNull = notNull != 0
+		col.primaryKey = pk
+		col.hasDefault = dflt != nil
+		cols = append(cols, col)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return cols, nil
+}
+
+func snapshotCreateSQL(ctx context.Context, db *sql.DB, table string) (string, error) {
+	var createSQL sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&createSQL); err != nil {
+		return "", err
+	}
+	return createSQL.String, nil
+}
+
+var (
+	snapshotCheckInPattern    = regexp.MustCompile(`(?i)check\s*\(\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s+in\s*\(([^)]*)\)`)
+	snapshotSQLLiteralPattern = regexp.MustCompile(`'([^']*)'|"([^"]*)"`)
+)
+
+func snapshotCheckLiterals(createSQL string) map[string][]string {
+	found := make(map[string][]string)
+	if strings.TrimSpace(createSQL) == "" {
+		return found
+	}
+	for _, match := range snapshotCheckInPattern.FindAllStringSubmatch(createSQL, -1) {
+		column := match[1]
+		if column == "" {
+			column = match[2]
+		}
+		list := match[3]
+		var literals []string
+		for _, lit := range snapshotSQLLiteralPattern.FindAllStringSubmatch(list, -1) {
+			if strings.HasPrefix(lit[0], "'") {
+				literals = append(literals, lit[1])
+			} else {
+				literals = append(literals, lit[2])
+			}
+		}
+		if len(literals) == 0 {
+			for _, part := range strings.Split(list, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					literals = append(literals, part)
+				}
+			}
+		}
+		if column != "" && len(literals) > 0 {
+			found[strings.ToLower(column)] = literals
+		}
+	}
+	return found
+}
+
+func snapshotSeedValue(typ string, literals []string) any {
+	if len(literals) > 0 {
+		return literals[0]
+	}
+	upper := strings.ToUpper(strings.TrimSpace(typ))
+	switch {
+	case strings.HasPrefix(upper, "INT"), strings.HasPrefix(upper, "BOOL"):
+		return 1
+	case strings.HasPrefix(upper, "REAL"), strings.HasPrefix(upper, "FLOA"), strings.HasPrefix(upper, "DOUB"), strings.HasPrefix(upper, "NUM"):
+		return 1.0
+	case strings.HasPrefix(upper, "JSON"):
+		return "{}"
+	default:
+		return "seeded"
 	}
 }
 
