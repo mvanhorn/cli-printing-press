@@ -118,6 +118,18 @@ Resource scoping:
 				return usageErr(err)
 			}
 
+			// Validate --since before the store opens or a checkpoint is
+			// cleared. A usage error must leave sync_state unchanged. Render
+			// in UTC so the zone is "Z"; some APIs reject a numeric offset.
+			sinceTS := ""
+			if since != "" {
+				ts, err := parseSinceDuration(since)
+				if err != nil {
+					return fmt.Errorf("invalid --since value %q: %w", since, err)
+				}
+				sinceTS = ts.UTC().Format(time.RFC3339)
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -209,18 +221,6 @@ Resource scoping:
 			// safety limit, which is a real anomaly worth surfacing.
 			effectiveLatestOnly := latestOnly && since == ""
 
-			// Resolve --since into an RFC3339 timestamp. Render in UTC so the
-			// zone is "Z" rather than a numeric offset like "-04:00"; some APIs
-			// reject the offset form of the temporal filter as an invalid date.
-			sinceTS := ""
-			if since != "" {
-				ts, err := parseSinceDuration(since)
-				if err != nil {
-					return fmt.Errorf("invalid --since value %q: %w", since, err)
-				}
-				sinceTS = ts.UTC().Format(time.RFC3339)
-			}
-
 			// Worker pool: produce resources, N workers consume
 			if concurrency < 1 {
 				concurrency = 4
@@ -231,6 +231,13 @@ Resource scoping:
 			// the writer and trips SQLITE_BUSY despite _busy_timeout.
 			if cliutil.IsVerifyEnv() {
 				concurrency = 1
+			}
+
+			// The checkpoint clear has already committed. Do not start walks
+			// on a cancelled command; those rows stay incomplete until a
+			// later run walks them.
+			if err := cmd.Context().Err(); err != nil {
+				return err
 			}
 
 			started := time.Now()
