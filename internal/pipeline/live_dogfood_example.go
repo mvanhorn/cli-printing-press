@@ -25,6 +25,10 @@ func liveDogfoodSpecEndpoints(parsed *apispec.APISpec) []liveDogfoodSpecEndpoint
 	if parsed == nil {
 		return nil
 	}
+	// The archive is the pre-generation input. Generate drops captured
+	// resource-id defaults before it decides an example is derivable; seeing
+	// the original default here fails help for an example that was omitted.
+	generator.SanitizeCapturedResourceIDsForGenerate(parsed)
 	var out []liveDogfoodSpecEndpoint
 	for name, resource := range parsed.Resources {
 		out = appendLiveDogfoodSpecEndpoints(out, "", resource, name)

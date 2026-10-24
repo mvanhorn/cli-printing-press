@@ -4064,7 +4064,11 @@ func (g *Generator) renderLearnFiles() error {
 	return nil
 }
 
-func sanitizeCapturedResourceIDsForGenerate(apiSpec *spec.APISpec) {
+// SanitizeCapturedResourceIDsForGenerate drops captured resource-id defaults
+// before example synthesis. Official, community, and docs specs are left
+// alone so authored defaults still count as derivable. Live dogfood runs
+// this on the archived spec, which still has the pre-generation defaults.
+func SanitizeCapturedResourceIDsForGenerate(apiSpec *spec.APISpec) {
 	if !shouldSanitizeCapturedResourceIDs(apiSpec) {
 		return
 	}
@@ -4095,7 +4099,7 @@ func (g *Generator) resolveCursorRequestParams() error {
 }
 
 func (g *Generator) Generate() error {
-	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	SanitizeCapturedResourceIDsForGenerate(g.Spec)
 	if err := g.resolveCursorRequestParams(); err != nil {
 		return err
 	}
@@ -4396,7 +4400,7 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 // autoRefresh, oauth token client) stay in renderOptionalSupportFiles so they don't get
 // emitted when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
-	sanitizeCapturedResourceIDsForGenerate(g.Spec)
+	SanitizeCapturedResourceIDsForGenerate(g.Spec)
 	if err := g.resolveCursorRequestParams(); err != nil {
 		return err
 	}
