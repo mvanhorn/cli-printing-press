@@ -3654,6 +3654,8 @@ func (s *Store) readSyncScope(resourceType, scopeKey string, bind bool) (string,
 // ClearSyncScopeIfCurrent drops the resume cursor when scopeKey is already
 // the stored scope. A different scope is left intact so a full sync cannot
 // wipe another tenant before that tenant's walk starts. No row stays absent.
+// Completion stays unset: the clear has not walked the resource, so a crash
+// before the walk must not read as a finished sync of zero rows.
 func (s *Store) ClearSyncScopeIfCurrent(resourceType, scopeKey string) error {
 	s.lockForWrite()
 	defer s.unlockAfterWrite()
@@ -3672,7 +3674,7 @@ func (s *Store) ClearSyncScopeIfCurrent(resourceType, scopeKey string) error {
 		return nil
 	}
 	_, err = s.db.Exec(
-		`UPDATE sync_state SET last_cursor = '', last_synced_at = ?, total_count = 0, last_attempt_complete = 1 WHERE resource_type = ?`,
+		`UPDATE sync_state SET last_cursor = '', last_synced_at = ?, total_count = 0, last_attempt_complete = 0 WHERE resource_type = ?`,
 		time.Time{}.UTC().Format(time.RFC3339), resourceType,
 	)
 	return err
