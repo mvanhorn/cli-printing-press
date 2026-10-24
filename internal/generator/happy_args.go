@@ -31,6 +31,25 @@ func requiredInputsAreDerivable(ep spec.Endpoint) bool {
 	return ok
 }
 
+// ExampleOmittedForUnderivableInputs reports whether example synthesis leaves
+// this endpoint without a runnable Cobra Example because its required inputs
+// are not derivable. Live dogfood calls it so that omission is a non-blocking
+// help skip instead of a promotion failure. An explicit runnable example or a
+// synthesized body example still counts as emitted. Narrative quick-start
+// lines are chosen at render time and are not visible on the endpoint; when
+// one matches, help already has an Examples section and this predicate is
+// not consulted.
+func ExampleOmittedForUnderivableInputs(ep spec.Endpoint) bool {
+	if strings.TrimSpace(ep.Example) != "" {
+		return runnableExampleLine(ep.Example) == "" && !requiredInputsAreDerivable(ep)
+	}
+	g := &Generator{Spec: &spec.APISpec{Name: "api"}}
+	if g.synthesizedRunnableExample(nil, ep) != "" {
+		return false
+	}
+	return !requiredInputsAreDerivable(ep)
+}
+
 func synthesizeHappyArgTokens(ep spec.Endpoint) ([]string, bool) {
 	positionals := orderedPositionalParams(ep)
 	var tokens []string

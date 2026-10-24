@@ -203,6 +203,75 @@ func TestEndpointHappyArgsRejectsLiteralBackslash(t *testing.T) {
 	}
 }
 
+func TestExampleOmittedForUnderivableInputs(t *testing.T) {
+	t.Parallel()
+
+	g := New(minimalSpec("omit-ex"), t.TempDir())
+	opaque := spec.Endpoint{
+		Method: "GET",
+		Path:   "/videos/{video_id}",
+		Params: []spec.Param{
+			{Name: "video_id", Type: "string", Required: true, Positional: true, PathParam: true},
+		},
+	}
+	withExample := spec.Endpoint{
+		Method: "GET",
+		Path:   "/search",
+		Params: []spec.Param{{Name: "q", Type: "string", Required: true, Example: "cats"}},
+	}
+	vacuous := spec.Endpoint{Method: "GET", Path: "/items"}
+	authored := opaque
+	authored.Example = "  omit-ex-pp-cli videos get real-id"
+	nonRunnableAuthored := opaque
+	nonRunnableAuthored.Example = "  omit-ex-pp-cli videos get example-value"
+	derivableNonRunnable := withExample
+	derivableNonRunnable.Example = "  omit-ex-pp-cli search example-value"
+	spacedBody := spec.Endpoint{
+		Method: "POST",
+		Path:   "/transfers",
+		Body: []spec.Param{
+			{Name: "memo", Type: "string", Required: true, Example: "invoice 41"},
+		},
+	}
+	emptyBody := spec.Endpoint{
+		Method: "POST",
+		Path:   "/comments",
+		Body:   []spec.Param{{Name: "message", Type: "string", Required: true}},
+	}
+	declaredFixture := opaque
+	declaredFixture.HappyArgs = "video_id=real-id"
+
+	tests := []struct {
+		name        string
+		endpoint    spec.Endpoint
+		wantExample bool
+		wantOmitted bool
+	}{
+		{name: "opaque id", endpoint: opaque, wantOmitted: true},
+		{name: "derivable flag", endpoint: withExample, wantExample: true},
+		{name: "no required inputs", endpoint: vacuous, wantExample: true},
+		{name: "authored runnable example", endpoint: authored, wantExample: true},
+		{name: "authored non-runnable example and underivable inputs", endpoint: nonRunnableAuthored, wantOmitted: true},
+		{name: "authored non-runnable example and derivable inputs", endpoint: derivableNonRunnable},
+		{name: "body example that happy-args cannot encode", endpoint: spacedBody, wantExample: true},
+		{name: "required body field without an example", endpoint: emptyBody, wantOmitted: true},
+		{name: "declared happy args are not an example", endpoint: declaredFixture, wantOmitted: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := g.exampleLine("videos", "get", tt.endpoint)
+			if tt.wantExample {
+				assert.NotEmpty(t, got)
+			} else {
+				assert.Empty(t, got)
+			}
+			assert.Equal(t, tt.wantOmitted, ExampleOmittedForUnderivableInputs(tt.endpoint))
+		})
+	}
+	assert.False(t, requiredInputsAreDerivable(spacedBody))
+	assert.False(t, requiredInputsAreDerivable(declaredFixture))
+}
+
 func TestRequiredInputsAreDerivableVacuousAndOpaque(t *testing.T) {
 	t.Parallel()
 

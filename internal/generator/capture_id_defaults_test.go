@@ -218,13 +218,13 @@ func TestSanitizeCapturedResourceIDsForGenerate(t *testing.T) {
 
 	for _, source := range []string{"official", "community", "docs"} {
 		apiSpec := newSpec(source)
-		sanitizeCapturedResourceIDsForGenerate(apiSpec)
+		SanitizeCapturedResourceIDsForGenerate(apiSpec)
 		assert.Equal(t, uuid, apiSpec.Resources["clients"].Endpoints["get"].Params[0].Default, source)
 	}
 
 	for _, source := range []string{"", "sniffed"} {
 		apiSpec := newSpec(source)
-		sanitizeCapturedResourceIDsForGenerate(apiSpec)
+		SanitizeCapturedResourceIDsForGenerate(apiSpec)
 		assert.Nil(t, apiSpec.Resources["clients"].Endpoints["get"].Params[0].Default, source)
 	}
 }
