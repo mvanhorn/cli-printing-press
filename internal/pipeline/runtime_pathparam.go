@@ -23,8 +23,10 @@ type pathParamProbe struct {
 // generator-emitted positional validators print when their (potentially
 // mis-indexed) `len(args) < N` guard fires: e.g. `Error: tagId is
 // required`. Case-insensitive so generator wording drift does not blind
-// the probe.
-var pathParamRequiredSentinelRe = regexp.MustCompile(`(?i)\bis required\b`)
+// the probe. The token before "is required" must not start with `--`:
+// `Error: --email is required` is a flag-gated error from a correct
+// RunE, not a mis-indexed positional guard.
+var pathParamRequiredSentinelRe = regexp.MustCompile(`(?i)(?:^|[^-\w])[\w<>]+ is required\b`)
 
 // pathParamUsageRe captures the first content line under `Usage:`.
 // Tolerant of multi-level command paths: it does not anchor on the

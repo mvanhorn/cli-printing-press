@@ -83,6 +83,7 @@ func TestPathParamRequiredSentinel(t *testing.T) {
 		"error: id is required\n",
 		"<region> is required",
 		"Error: COMPANY_ID is required",
+		"Error: --email given but tagId is required",
 	}
 	for _, m := range matches {
 		assert.True(t, pathParamRequiredSentinelRe.MatchString(m), "should match: %q", m)
@@ -92,6 +93,8 @@ func TestPathParamRequiredSentinel(t *testing.T) {
 		`Error: required flag(s) "owner" not set`,
 		"unknown command",
 		"connection refused",
+		"Error: --email is required",
+		"--email is required\n",
 	}
 	for _, m := range doesNotMatch {
 		assert.False(t, pathParamRequiredSentinelRe.MatchString(m), "should not match: %q", m)
