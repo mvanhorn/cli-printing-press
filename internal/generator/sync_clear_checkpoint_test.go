@@ -73,6 +73,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,11 +83,20 @@ import (
 
 func TestSyncClearCheckpoint(t *testing.T) {
 	var calls atomic.Int32
+	var onRequestMu sync.Mutex
 	var onRequest func(*http.Request)
+	setOnRequest := func(fn func(*http.Request)) {
+		onRequestMu.Lock()
+		onRequest = fn
+		onRequestMu.Unlock()
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if onRequest != nil {
-			onRequest(r)
+		onRequestMu.Lock()
+		fn := onRequest
+		onRequestMu.Unlock()
+		if fn != nil {
+			fn(r)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, "[{\"id\":\"one\"}]")
@@ -152,7 +162,7 @@ func TestSyncClearCheckpoint(t *testing.T) {
 			timeout:    time.Second,
 			dryRun:     dryRun,
 		})
-		var stdout bytes.Buffer
+		var stdout lockedBuffer
 		cmd.SetOut(&stdout)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(append([]string{"--db", dbPath}, args...))
@@ -312,15 +322,19 @@ func TestSyncClearCheckpoint(t *testing.T) {
 		calls.Store(0)
 		db, path := open(t)
 		notes := read(t, db, "notes")
+		var seenMu sync.Mutex
 		seen := map[string]checkpoint{}
-		onRequest = func(r *http.Request) {
+		setOnRequest(func(r *http.Request) {
 			resource := strings.Trim(r.URL.Path, "/")
-			seen[resource] = read(t, db, resource)
+			got := read(t, db, resource)
+			seenMu.Lock()
+			seen[resource] = got
+			seenMu.Unlock()
 			if strings.Contains(r.URL.RawQuery, "old-") {
 				t.Errorf("full sync resumed a cleared cursor: %s", r.URL.RawQuery)
 			}
-		}
-		t.Cleanup(func() { onRequest = nil })
+		})
+		t.Cleanup(func() { setOnRequest(nil) })
 		if err := run(t, path, nil, false, "--full", "--resources", "devices,audits"); err != nil {
 			t.Fatal(err)
 		}
@@ -328,7 +342,9 @@ func TestSyncClearCheckpoint(t *testing.T) {
 			t.Fatalf("calls = %d, want 2", calls.Load())
 		}
 		for _, resource := range []string{"devices", "audits"} {
+			seenMu.Lock()
 			got, ok := seen[resource]
+			seenMu.Unlock()
 			if !ok {
 				t.Fatalf("no in-flight checkpoint for %s", resource)
 			}
@@ -343,12 +359,12 @@ func TestSyncClearCheckpoint(t *testing.T) {
 	t.Run("full valid since marks complete", func(t *testing.T) {
 		calls.Store(0)
 		db, path := open(t)
-		onRequest = func(r *http.Request) {
+		setOnRequest(func(r *http.Request) {
 			if strings.Contains(r.URL.RawQuery, "old-") {
 				t.Errorf("full sync resumed a cleared cursor: %s", r.URL.RawQuery)
 			}
-		}
-		t.Cleanup(func() { onRequest = nil })
+		})
+		t.Cleanup(func() { setOnRequest(nil) })
 		if err := run(t, path, nil, false, "--full", "--since", "7d", "--resources", "devices"); err != nil {
 			t.Fatal(err)
 		}
@@ -365,7 +381,7 @@ func TestSyncClearCheckpoint(t *testing.T) {
 	t.Run("latest-only with since does not clear before the walk", func(t *testing.T) {
 		calls.Store(0)
 		db, path := open(t)
-		onRequest = func(r *http.Request) {
+		setOnRequest(func(r *http.Request) {
 			if r.URL.Path != "/devices" {
 				return
 			}
@@ -373,8 +389,8 @@ func TestSyncClearCheckpoint(t *testing.T) {
 			if got.cursor != "old-devices" || got.count != 100 || got.complete != 0 {
 				t.Errorf("in-flight devices checkpoint = %+v, want the pre-walk row", got)
 			}
-		}
-		t.Cleanup(func() { onRequest = nil })
+		})
+		t.Cleanup(func() { setOnRequest(nil) })
 		if err := run(t, path, nil, false, "--latest-only", "--since", "7d", "--resources", "devices"); err != nil {
 			t.Fatal(err)
 		}
@@ -429,6 +445,24 @@ func TestSyncClearCheckpoint(t *testing.T) {
 			t.Fatalf("matching clear = %+v", got)
 		}
 	})
+}
+
+// Sync workers write machine events to stdout at the same time.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 type checkpoint struct {
