@@ -143,6 +143,33 @@ func TestRootLongHandlesBackticksInNarrativeText(t *testing.T) {
 		"generated root.go with sanitized narrative should compile")
 }
 
+// TestRootShortUsesDisplayNameNotSlug verifies that when the narrative carries
+// a display name that differs from the slug-derived humanName, the root command
+// Short (and Long) use the display name, not the title-cased slug.
+// Regression guard for #5226: "CIPP" must not become "Cipp".
+func TestRootShortUsesDisplayNameNotSlug(t *testing.T) {
+	t.Parallel()
+
+	// Use a slug whose humanName("cipp-api") = "Cipp Api" — clearly wrong.
+	apiSpec := minimalSpec("cipp-api")
+	outputDir := filepath.Join(t.TempDir(), "cipp-api-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		DisplayName: "CIPP",
+		Headline:    "Every CIPP endpoint as a typed command, plus cross-tenant fan-out",
+	}
+	require.NoError(t, gen.Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	content := string(rootGo)
+
+	assert.Contains(t, content, "CIPP CLI —",
+		"root Short must use the narrative display name, not the slug-derived humanName")
+	assert.NotContains(t, content, "Cipp Api CLI",
+		"root Short must not use the slug-derived title-cased humanName")
+}
+
 // yamlUnmarshalForTest is a tiny shim so root_long_test doesn't need to
 // import yaml.v3 directly — delegates to skill_test's yaml import via
 // the same package. Kept as a separate helper to make the intent clear
