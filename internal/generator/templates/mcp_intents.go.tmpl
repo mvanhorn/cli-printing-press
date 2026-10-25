@@ -433,6 +433,9 @@ var (
 )
 
 func init() {
+	// Uncached on purpose: init runs before a test can point the CLI path
+	// env var at a stand-in or reset the process memo, and a cached miss
+	// here would stick for every later registration.
 	recipeCLIPath, recipeCLIPathErr = cobratree.SiblingCLIPath()
 }
 

@@ -275,7 +275,7 @@ func TestGenerateLearnMCPParity_CodeOrchestrationExposesLearnTools(t *testing.T)
 	mcpSrc := readEmitted(t, outputDir, "internal", "mcp", "tools.go")
 	require.Contains(t, mcpSrc, "RegisterCodeOrchestrationTools(s)",
 		"code orchestration must register its registry tools")
-	require.Contains(t, mcpSrc, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)",
+	require.Contains(t, mcpSrc, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.CachedSiblingCLIPath)",
 		"the runtime Cobra-tree mirror must still run under code orchestration so learn commands surface as MCP tools")
 	require.Contains(t, mcpSrc, "learn.RecallFirstProtocol",
 		"the context tool must carry the learn protocol under code orchestration too")

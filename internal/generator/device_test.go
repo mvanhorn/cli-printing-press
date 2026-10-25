@@ -187,7 +187,7 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	tools := string(toolsSrc)
-	assert.Contains(t, tools, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
+	assert.Contains(t, tools, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.CachedSiblingCLIPath)")
 	assert.Contains(t, tools, `mcplib.NewTool("context"`)
 	assert.Contains(t, tools, "device.Capabilities()")
 	// The device MCP binary has no typed HTTP endpoint tools — it must not import

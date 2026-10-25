@@ -35,7 +35,7 @@ func TestGeneratedLocalSQLiteMCPUsesCobraMirrorInsteadOfHTTPTools(t *testing.T) 
 	require.Contains(t, mcpSrc, `"source": "local"`)
 	require.Contains(t, mcpSrc, `"oldest_synced_at"`)
 	require.Contains(t, mcpSrc, `"meta":         meta`)
-	require.Contains(t, mcpSrc, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
+	require.Contains(t, mcpSrc, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.CachedSiblingCLIPath)")
 
 	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
 	require.NotContains(t, commandSrc, `"pp:endpoint"`)

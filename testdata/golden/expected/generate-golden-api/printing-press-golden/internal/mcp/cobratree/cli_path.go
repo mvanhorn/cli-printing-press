@@ -9,22 +9,65 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
+
+var companionCLIResolve = SiblingCLIPath
+
+var siblingCLICache struct {
+	mu   sync.Mutex
+	done bool
+	path string
+	err  error
+}
 
 // SiblingCLIPath resolves the companion CLI via sibling-of-executable,
 // PRINTING_PRESS_GOLDEN_CLI_PATH env var, then PATH.
 func SiblingCLIPath() (string, error) {
-	if exe, err := os.Executable(); err == nil {
-		for _, candidate := range siblingCLICandidates(runtime.GOOS, runtime.GOARCH, exe) {
+	return resolveCompanionCLI(runtime.GOOS, runtime.GOARCH, os.Executable, os.Getenv("PRINTING_PRESS_GOLDEN_CLI_PATH"), exec.LookPath)
+}
+
+// Lookups are parameters so tests can pin sibling, env, then PATH without
+// scanning the real PATH or planting a binary next to the test executable.
+func resolveCompanionCLI(goos, goarch string, executable func() (string, error), envPath string, lookPath func(string) (string, error)) (string, error) {
+	if exe, err := executable(); err == nil {
+		for _, candidate := range siblingCLICandidates(goos, goarch, exe) {
 			if _, err := os.Stat(candidate); err == nil {
 				return candidate, nil
 			}
 		}
 	}
-	if v := os.Getenv("PRINTING_PRESS_GOLDEN_CLI_PATH"); v != "" {
-		return v, nil
+	if envPath != "" {
+		return envPath, nil
 	}
-	return exec.LookPath(cliExecutableName(runtime.GOOS))
+	return lookPath(cliExecutableName(goos))
+}
+
+// CachedSiblingCLIPath memoizes SiblingCLIPath for the process. RegisterAll
+// calls its resolver once per invocation; this keeps a second registration
+// from scanning PATH again when the companion binary has not moved.
+func CachedSiblingCLIPath() (string, error) {
+	siblingCLICache.mu.Lock()
+	defer siblingCLICache.mu.Unlock()
+	if siblingCLICache.done {
+		return siblingCLICache.path, siblingCLICache.err
+	}
+	path, err := companionCLIResolve()
+	siblingCLICache.done = true
+	siblingCLICache.path = path
+	siblingCLICache.err = err
+	return path, err
+}
+
+// ResetSiblingCLIPathCache drops the memo. Tests that point
+// PRINTING_PRESS_GOLDEN_CLI_PATH at a stand-in call this first; otherwise a
+// registration earlier in the process keeps the first path.
+func ResetSiblingCLIPathCache() {
+	siblingCLICache.mu.Lock()
+	defer siblingCLICache.mu.Unlock()
+	siblingCLICache.done = false
+	siblingCLICache.path = ""
+	siblingCLICache.err = nil
 }
 
 // Suffixed names follow the bare name so a multi-platform bundle can ship
