@@ -2951,3 +2951,423 @@ func toolResultContentText(result *mcplib.CallToolResult, index int) string {
 	}
 	return text.Text
 }
+
+const cobraStatsHelp = "Show stats\n\nUsage:\n  demo stats [flags]\n\nFlags:\n  -h, --help   help for stats\n"
+
+func TestCLIStdoutIsCobraHelp(t *testing.T) {
+	helpWithSection := "Usage:\n  demo [command]\n\nAvailable Commands:\n  stats   Show stats\n\nFlags:\n  -h, --help   help for demo\n"
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"short then usage", cobraStatsHelp, true},
+		{"usage first", "Usage:\n  demo stats [flags]\n\nFlags:\n  -h, --help   help for stats\n", true},
+		{"crlf", "Show stats\r\n\r\nUsage:\r\n  demo stats [flags]\r\n\r\nFlags:\r\n  -h, --help   help for stats\r\n", true},
+		{"leading blank", "\n\n" + cobraStatsHelp, true},
+		{"bom", "\uFEFF" + cobraStatsHelp, true},
+		{"tab before help for", "Usage:\n  demo stats [flags]\n\nFlags:\n  -h, --help\thelp for stats\n", true},
+		{"default suffix", "Usage:\n  demo stats [flags]\n\nFlags:\n  -h, --help   help for stats (default false)\n", true},
+		{"global flags", "Usage:\n  demo stats\n\nGlobal Flags:\n  -h, --help   help for stats\n", true},
+		{"available commands", helpWithSection, true},
+		{"empty", "", false},
+		{"whitespace", " \n\t", false},
+		{"json object", "{\"items\":1}\n", false},
+		{"json with leading space", "  {\"items\":1}\n", false},
+		{"quoted short then help", "\"stats\" overview\n\n" + cobraStatsHelp, true},
+		{"brace prefixed help", "{\n\n" + cobraStatsHelp, true},
+		{"json array", "[{\"ok\":true}]\n", false},
+		{"json string", "\"just text\"\n", false},
+		{"json embedding help", "{\"note\":\"Usage:\\n\\nFlags:\\n  -h, --help   help for stats\"}\n", false},
+		{"quota line", "Usage: 3 of 10\n", false},
+		{"usage without flags", "Usage:\nread the docs\n", false},
+		{"flags without usage heading", "Flags:\n  -h, --help   help for stats\n", false},
+		{"prose help flag", "See -h, --help help for stats in the manual.\n", false},
+		{"usage and flags without help flag", "Usage:\n  demo stats [flags]\n\nFlags:\n  --limit int   max rows\n", false},
+		{"dry run", "dry-run: would run stats; no changes made\n", false},
+		{"plain report", "synced 3 items\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cliStdoutIsCobraHelp(tc.in); got != tc.want {
+				t.Fatalf("cliStdoutIsCobraHelp() = %v, want %v\n%q", got, tc.want, tc.in)
+			}
+		})
+	}
+
+	helpResult := ToolResultFromCLICommand(CLICommandResult{Stdout: cobraStatsHelp})
+	if helpResult == nil || !helpResult.IsError {
+		t.Fatal("help stdout was a successful tool result")
+	}
+	if got := toolResultText(helpResult); got != cliHelpOnlyResult {
+		t.Fatalf("help result = %q, want %q", got, cliHelpOnlyResult)
+	}
+	if !strings.Contains(toolResultContentText(helpResult, 1), "Usage:") || !strings.Contains(toolResultContentText(helpResult, 1), "-h, --help") {
+		t.Fatalf("help page was dropped: %q", toolResultContentText(helpResult, 1))
+	}
+
+	report := ToolResultFromCLICommand(CLICommandResult{Stdout: "{\"items\":1}\n"})
+	if report == nil || report.IsError {
+		t.Fatalf("json report was an error: %s", toolResultText(report))
+	}
+	if !strings.Contains(toolResultText(report), "\"items\":1") {
+		t.Fatalf("report = %q", toolResultText(report))
+	}
+
+	emptyHelp := toolResultFromCLIHelp(" \n")
+	if emptyHelp == nil || !emptyHelp.IsError || toolResultText(emptyHelp) != cliHelpOnlyResult || len(emptyHelp.Content) != 1 {
+		t.Fatalf("empty help result = %#v", emptyHelp)
+	}
+}
+
+func TestMirroredBareCallHelpIsNotSuccess(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	bin := writeHelpReportStub(t)
+	stats := &cobra.Command{
+		Use:   "stats",
+		Short: "Show stats",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	stats.Flags().Int("limit", 0, "max rows")
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(stats)
+	for _, name := range []string{"report", "plain", "quota", "guide", "docs", "broken"} {
+		root.AddCommand(&cobra.Command{
+			Use:   name,
+			Short: name,
+			RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+		})
+	}
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	tools := s.ListTools()
+
+	bareHelp := callMirrorTool(t, tools, "stats", nil)
+	if !bareHelp.IsError {
+		t.Fatalf("bare stats help was success: %s", toolResultText(bareHelp))
+	}
+	if got := toolResultText(bareHelp); got != cliHelpOnlyResult {
+		t.Fatalf("bare stats = %q, want %q", got, cliHelpOnlyResult)
+	}
+	if strings.HasPrefix(strings.TrimSpace(toolResultText(bareHelp)), "Usage:") {
+		t.Fatal("help text was the successful payload")
+	}
+
+	withParam := callMirrorTool(t, tools, "stats", map[string]any{"limit": float64(1)})
+	if !withParam.IsError || toolResultText(withParam) != cliHelpOnlyResult {
+		t.Fatalf("stats --limit help was success: %s", toolResultText(withParam))
+	}
+
+	report := callMirrorTool(t, tools, "report", nil)
+	if report.IsError {
+		t.Fatalf("bare report failed: %s", toolResultText(report))
+	}
+	if !strings.Contains(toolResultText(report), "{\"items\":1}") {
+		t.Fatalf("report = %q, want the stub's JSON", toolResultText(report))
+	}
+
+	plain := callMirrorTool(t, tools, "plain", nil)
+	if plain.IsError || !strings.Contains(toolResultText(plain), "synced 3 items") {
+		t.Fatalf("plain report = error:%v %q", plain.IsError, toolResultText(plain))
+	}
+
+	for _, name := range []string{"quota", "guide", "docs"} {
+		got := callMirrorTool(t, tools, name, nil)
+		if got.IsError {
+			t.Fatalf("%s was treated as help: %s", name, toolResultText(got))
+		}
+	}
+	if !strings.Contains(toolResultText(callMirrorTool(t, tools, "docs", nil)), "-h, --help") {
+		t.Fatal("json payload that mentions help was altered")
+	}
+
+	broken := callMirrorTool(t, tools, "broken", nil)
+	if !broken.IsError {
+		t.Fatal("non-zero help exit was success")
+	}
+	if toolResultText(broken) == cliHelpOnlyResult {
+		t.Fatal("non-zero exit was reclassified on the success path")
+	}
+	if !strings.Contains(toolResultText(broken), "Usage:") {
+		t.Fatalf("broken stdout = %q", toolResultText(broken))
+	}
+}
+
+func callMirrorTool(t *testing.T, tools map[string]*server.ServerTool, name string, args map[string]any) *mcplib.CallToolResult {
+	t.Helper()
+	entry, ok := tools[name]
+	if !ok || entry.Handler == nil {
+		t.Fatalf("tool %q missing: %#v", name, tools)
+	}
+	result, err := entry.Handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: args,
+	}})
+	if err != nil {
+		t.Fatalf("%s handler: %v", name, err)
+	}
+	if result == nil {
+		t.Fatalf("%s returned a nil result", name)
+	}
+	return result
+}
+
+func writeHelpReportStub(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	cmd := ""
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
+	}
+	switch cmd {
+	case "stats":
+		fmt.Print("Show stats\n\nUsage:\n  demo stats [flags]\n\nFlags:\n  -h, --help   help for stats\n")
+	case "report":
+		fmt.Print("{\"items\":1}\n")
+	case "plain":
+		fmt.Print("synced 3 items\n")
+	case "quota":
+		fmt.Print("Usage: 3 of 10\n")
+	case "guide":
+		fmt.Print("Usage:\nread the docs\n")
+	case "docs":
+		fmt.Print("{\"note\":\"Usage:\\n\\nFlags:\\n  -h, --help   help for stats\"}\n")
+	case "broken":
+		fmt.Print("Show stats\n\nUsage:\n  demo stats [flags]\n\nFlags:\n  -h, --help   help for stats\n")
+		os.Exit(2)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected %q\n", cmd)
+		os.Exit(2)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module helpreport\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("write stub go.mod: %v", err)
+	}
+	bin := filepath.Join(dir, "stub")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
+	cmd.Dir = dir
+	cmd.Env = helpReportBuildEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build stub: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func helpReportBuildEnv() []string {
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if key == "GOTOOLCHAIN" || key == "GOFLAGS" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "GOTOOLCHAIN=local", "GOSUMDB=off")
+}
+
+func TestRegisterAllResolvesCompanionCLIOnce(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	var calls int
+	resolve := func() (string, error) {
+		calls++
+		return "", errors.New("missing companion")
+	}
+	root := &cobra.Command{Use: "root"}
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		root.AddCommand(&cobra.Command{Use: name, Short: name, RunE: noop})
+	}
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, resolve)
+	if calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 for 3 commands", calls)
+	}
+	tools := s.ListTools()
+	if len(tools) != 3 {
+		t.Fatalf("tools = %d, want 3", len(tools))
+	}
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		got := callMirrorTool(t, tools, name, nil)
+		if !got.IsError || !strings.Contains(toolResultText(got), "companion CLI binary not found") || !strings.Contains(toolResultText(got), "missing companion") {
+			t.Fatalf("%s error = %q", name, toolResultText(got))
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("handlers resolved again: calls = %d", calls)
+	}
+
+	s2 := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s2, root, resolve)
+	if calls != 2 {
+		t.Fatalf("second RegisterAll calls = %d, want 2", calls)
+	}
+
+	before := calls
+	RegisterAll(s, nil, resolve)
+	RegisterAll(s, &cobra.Command{Use: "root"}, resolve)
+	group := &cobra.Command{Use: "root"}
+	group.AddCommand(&cobra.Command{Use: "group", Short: "Group"})
+	RegisterAll(s, group, resolve)
+	if calls != before {
+		t.Fatalf("resolver ran with nothing to mirror: calls %d -> %d", before, calls)
+	}
+}
+
+func TestCachedSiblingCLIPathMemoAndReset(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	t.Cleanup(func() {
+		companionCLIResolve = SiblingCLIPath
+		ResetSiblingCLIPathCache()
+	})
+	ResetSiblingCLIPathCache()
+
+	var calls int
+	companionCLIResolve = func() (string, error) {
+		calls++
+		return "", errors.New("not found")
+	}
+	_, err1 := CachedSiblingCLIPath()
+	_, err2 := CachedSiblingCLIPath()
+	if err1 == nil || err2 == nil || err1.Error() != "not found" || err2.Error() != err1.Error() || calls != 1 {
+		t.Fatalf("cached error err1=%v err2=%v calls=%d", err1, err2, calls)
+	}
+	ResetSiblingCLIPathCache()
+	if _, err := CachedSiblingCLIPath(); err == nil || calls != 2 {
+		t.Fatalf("reset did not resolve again: err=%v calls=%d", err, calls)
+	}
+
+	ResetSiblingCLIPathCache()
+	companionCLIResolve = func() (string, error) {
+		calls++
+		return "stale-path", nil
+	}
+	calls = 0
+	root := &cobra.Command{Use: "root"}
+	noop := func(cmd *cobra.Command, args []string) error { return nil }
+	for _, name := range []string{"one", "two", "three"} {
+		root.AddCommand(&cobra.Command{Use: name, Short: name, RunE: noop})
+	}
+	RegisterAll(server.NewMCPServer("test", "0.0.0"), root, CachedSiblingCLIPath)
+	RegisterAll(server.NewMCPServer("test", "0.0.0"), root, CachedSiblingCLIPath)
+	if calls != 1 {
+		t.Fatalf("process memo calls = %d, want 1 across two RegisterAll calls", calls)
+	}
+
+	bin := writeShelloutHelper(t, "success")
+	t.Setenv("{{envPrefix .Name}}_CLI_PATH", bin)
+	ResetSiblingCLIPathCache()
+	companionCLIResolve = SiblingCLIPath
+	got, err := CachedSiblingCLIPath()
+	if err != nil {
+		t.Fatalf("resolve stand-in: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("path = %q, want {{envPrefix .Name}}_CLI_PATH stand-in %q", got, bin)
+	}
+	standIn := &cobra.Command{Use: "root"}
+	standIn.AddCommand(&cobra.Command{Use: "report", Short: "Report", RunE: noop})
+	registered := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(registered, standIn, CachedSiblingCLIPath)
+	result := callMirrorTool(t, registered.ListTools(), "report", nil)
+	if result.IsError || !strings.Contains(toolResultText(result), "report") {
+		t.Fatalf("stand-in result = error:%v %q", result.IsError, toolResultText(result))
+	}
+}
+
+func TestCompanionCLIResolutionOrder(t *testing.T) {
+	var looked []string
+	look := func(name string) (string, error) {
+		looked = append(looked, name)
+		return "", errors.New("not on path")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "mcp-server")
+	bare := filepath.Join(dir, "{{.Name}}-pp-cli")
+	arch := filepath.Join(dir, "{{.Name}}-pp-cli-linux-amd64")
+	if err := os.WriteFile(arch, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write arch sibling: %v", err)
+	}
+	execOK := func() (string, error) { return exe, nil }
+	got, err := resolveCompanionCLI("linux", "amd64", execOK, "from-env", look)
+	if err != nil || got != arch {
+		t.Fatalf("arch sibling = %q, %v", got, err)
+	}
+	if len(looked) != 0 {
+		t.Fatalf("PATH scanned while a sibling exists: %v", looked)
+	}
+	if err := os.WriteFile(bare, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write bare sibling: %v", err)
+	}
+	got, err = resolveCompanionCLI("linux", "amd64", execOK, "from-env", look)
+	if err != nil || got != bare {
+		t.Fatalf("bare sibling = %q, %v, want it ahead of the arch name", got, err)
+	}
+
+	got, err = resolveCompanionCLI("linux", "amd64", func() (string, error) {
+		return "", errors.New("no exe")
+	}, "from-env", look)
+	if err != nil || got != "from-env" {
+		t.Fatalf("env fallback = %q, %v", got, err)
+	}
+	if len(looked) != 0 {
+		t.Fatalf("PATH scanned while env is set: %v", looked)
+	}
+
+	winDir := t.TempDir()
+	winBare := filepath.Join(winDir, "{{.Name}}-pp-cli")
+	winExeName := filepath.Join(winDir, "{{.Name}}-pp-cli.exe")
+	if err := os.WriteFile(winBare, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write unsuffixed windows sibling: %v", err)
+	}
+	if err := os.WriteFile(winExeName, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write windows sibling: %v", err)
+	}
+	got, err = resolveCompanionCLI("windows", "amd64", func() (string, error) {
+		return filepath.Join(winDir, "mcp.exe"), nil
+	}, "from-env", look)
+	if err != nil || got != winExeName {
+		t.Fatalf("windows sibling = %q, %v, want the .exe form", got, err)
+	}
+
+	empty := t.TempDir()
+	_, err = resolveCompanionCLI("windows", "amd64", func() (string, error) {
+		return filepath.Join(empty, "mcp.exe"), nil
+	}, "", look)
+	if err == nil || err.Error() != "not on path" || len(looked) != 1 || looked[0] != "{{.Name}}-pp-cli.exe" {
+		t.Fatalf("windows PATH lookup = %v, err %v", looked, err)
+	}
+	looked = nil
+	_, err = resolveCompanionCLI("darwin", "arm64", func() (string, error) {
+		return filepath.Join(empty, "mcp"), nil
+	}, "", look)
+	if err == nil || len(looked) != 1 || looked[0] != "{{.Name}}-pp-cli" {
+		t.Fatalf("darwin PATH lookup = %v, err %v", looked, err)
+	}
+	looked = nil
+	_, err = resolveCompanionCLI("linux", "amd64", func() (string, error) {
+		return "", errors.New("no exe")
+	}, "", look)
+	if err == nil || len(looked) != 1 || looked[0] != "{{.Name}}-pp-cli" {
+		t.Fatalf("executable failure should fall through to PATH: %v, err %v", looked, err)
+	}
+}

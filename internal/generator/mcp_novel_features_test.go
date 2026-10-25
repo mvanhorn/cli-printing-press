@@ -52,12 +52,12 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 	assert.Contains(t, content, "func RegisterNovelFeatureTools(s *server.MCPServer) {")
 	assert.Contains(t, content, "_ = s")
 	assert.NotContains(t, content, `shellOutToCLI("snapshot")`)
-	assert.Contains(t, content, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
+	assert.Contains(t, content, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.CachedSiblingCLIPath)")
 
 	cobratreeCLIPath, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cobratreeCLIPath), `cliExecutableName(runtime.GOOS)`)
-	assert.Contains(t, string(cobratreeCLIPath), `os.Getenv("NOVELTEST_CLI_PATH")`)
+	assert.Contains(t, string(cobratreeCLIPath), `resolveCompanionCLI(runtime.GOOS, runtime.GOARCH, os.Executable, os.Getenv("NOVELTEST_CLI_PATH"), exec.LookPath)`)
+	assert.Contains(t, string(cobratreeCLIPath), `lookPath(cliExecutableName(goos))`)
 
 	cobratreeShellout, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "shellout.go"))
 	require.NoError(t, err)
@@ -319,9 +319,10 @@ func TestMCPCobraTreeSiblingCLIPathUsesWindowsExecutableSuffix(t *testing.T) {
 
 	cliPath, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cliPath), "siblingCLICandidates(runtime.GOOS, runtime.GOARCH, exe)")
+	assert.Contains(t, string(cliPath), "siblingCLICandidates(goos, goarch, exe)")
 	assert.Contains(t, string(cliPath), `os.Getenv("PATHCHECK_CLI_PATH")`)
-	assert.Contains(t, string(cliPath), "exec.LookPath(cliExecutableName(runtime.GOOS))")
+	assert.Contains(t, string(cliPath), `resolveCompanionCLI(runtime.GOOS, runtime.GOARCH, os.Executable, os.Getenv("PATHCHECK_CLI_PATH"), exec.LookPath)`)
+	assert.Contains(t, string(cliPath), "lookPath(cliExecutableName(goos))")
 
 	var testSrc strings.Builder
 	testSrc.WriteString(`package cobratree

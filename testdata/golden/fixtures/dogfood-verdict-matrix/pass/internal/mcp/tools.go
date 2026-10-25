@@ -14,5 +14,5 @@ import (
 )
 
 func RegisterTools(s *server.MCPServer) {
-	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.CachedSiblingCLIPath)
 }

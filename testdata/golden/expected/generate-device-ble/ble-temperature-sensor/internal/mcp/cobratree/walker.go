@@ -6,6 +6,7 @@ package cobratree
 
 import (
 	"strings"
+	"sync"
 
 	"ble-temperature-sensor-pp-cli/internal/cliutil"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -19,6 +20,9 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 	if root == nil {
 		return
 	}
+	// shellOutToCLI resolves cliPath while registering. One shared lookup
+	// covers every mirrored command; the next RegisterAll resolves again.
+	cliPath = shareCLIPath(cliPath)
 	readOnlyMode := cliutil.IsMCPReadOnlyEnv()
 	walk(root, nil, func(cmd *cobra.Command, path []string) {
 		switch classify(cmd) {
@@ -79,6 +83,18 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		tool.Meta.AdditionalFields[mirrorCLICommandMetaKey] = strings.Join(path, " ")
 		s.AddTool(tool, guardMirroredMCPCall(cmd, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd))))
 	})
+}
+
+func shareCLIPath(cliPath func() (string, error)) func() (string, error) {
+	var once sync.Once
+	var path string
+	var err error
+	return func() (string, error) {
+		once.Do(func() {
+			path, err = cliPath()
+		})
+		return path, err
+	}
 }
 
 func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string)) {

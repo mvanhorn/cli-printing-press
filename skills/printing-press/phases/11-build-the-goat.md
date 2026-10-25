@@ -97,7 +97,7 @@ After building each command in Priority 1 and Priority 2, verify these 13 princi
 5. **Safe retries**: Mutation commands support `--dry-run`, idempotent where possible
 6. **Composability**: Exit codes are typed (0/2/3/4/5/6/7/10 as applicable), output pipes to `jq` cleanly
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
-8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` only for unambiguous help-only invocations (no args and no flags), short-circuit on `dryRunOK(flags)` before any IO, and return `usageErr(...)` with exit 2 when required input is missing in real mode.
+8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE. Fall through to `cmd.Help()` only for an unambiguous help-only invocation (no args and no flags) when the command has required input, or when a bare run would write, sync, or run long. A read-only command with no required inputs runs its default action on a bare call. Short-circuit on `dryRunOK(flags)` before any IO, and return `usageErr(...)` with exit 2 when required input is missing in real mode.
    - **Use string for "positional OR flag" commands**: when a command accepts a positional `<x>` OR a flag `--y` as alternatives (e.g., `snapshot <co>` or `snapshot --domain example.com`), declare `Use: "<cmd> [x]"` with **square brackets** (optional), not `<x>` (required). Validate "exactly one of x or --y" inside RunE. Required positionals declared with angle brackets break verify-skill recipes that use the flag-only form. Live dogfood follows the same convention: an optional `[name]` positional runs without that argument when the Example leaves it empty, and when `pp:happy-args` is present and declares only flags (the Example's optional value is omitted). A required `<name>` positional still needs a real id from a sibling list command, the local store, or `pp:happy-args`. A required positional the runner cannot resolve is skipped with a reason that names `pp:happy-args`, and that novel command stays hollow until the annotation supplies a real value. Generator-emitted `which`, `tail`, `api`, `import`, `profile save`, `profile show`, `profile use`, `profile delete`, `learnings forget`, `learnings confirm`, and `learnings reject` are not hollow coverage. Other `profile` and `learnings` commands still are when their happy path never passes.
    - **Declare verifier fixture inputs when generic values are not enough**: generated endpoint commands synthesize `pp:happy-args` from spec `example` / `enum` / `default` / `format` when every required input is derivable, and they omit `example-value` from `Example:` rather than shipping a known-broken copy-paste. Hand-author the annotation for novel commands, or for endpoint mirrors whose required inputs are genuinely underivable (opaque IDs, coordinates with no schema hint). Add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example;--dry-run"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes tokens separated by unescaped semicolons in order: escape a literal semicolon as `\;`. Positional tokens are `label=value` pairs — the label is discarded and the value becomes the positional, so `<item>=example-id` and `item=example-id` behave identically. **Bare positional values without `=` are silently ignored**, so write `item=example-id`, never just `example-id`; a missing `=` produces no positional fixture and the happy path silently skips. `--flag=value` tokens replace matching Example flags or add new flag/value pairs; bare `--flag` tokens are treated as boolean `--flag=true`. Negative numeric flag values use the `--flag=-12.3` form. Commands without the annotation keep the generic synthesized inputs. When no portable fixture can exist for a flag (continuation cursors, account-specific paths, resource URLs), declare it as `--flag=example-value`: a placeholder value in `pp:happy-args` marks the row `blocked-fixture: required API parameter` on any flag name, so `happy_path` and `json_fidelity` are skipped instead of failed. Never bake real account data into the annotation to dodge this; a real declared value that the API rejects still counts as a failure.
    - **Local-store novel commands need a happy path that exits 0 to pass publish.** Publish's phase5 gate rejects novel features that never reached a passing live-dogfood happy path ("hollow coverage"), and only a non-`--dry-run` `happy_path` check with exit 0 counts. So a local-only command (e.g. `entity report`, `monitor diff`) needs happy-path inputs it can actually satisfy: declare `Annotations: map[string]string{"pp:happy-args": "<name>=example"}` so the matrix has a real positional, and have the command report an empty local store as an ordinary exit-0 result (the shape `learnings stats` uses on a fresh print) rather than a graceful not-found exit. `pp:typed-exit-codes` is not a substitute: the live matrix records a declared non-zero happy path as a skip with reason `declared non-zero exit <code>`, which keeps it out of the failure column but leaves the feature hollow, so `publish validate` still fails with "phase5 acceptance has hollow coverage" and the whole publish loop restarts.
@@ -174,7 +174,7 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && cmd.Flags().NFlag() == 0 {
-				return cmd.Help()
+				return cmd.Help() // --status is required; a bare call is help, not a scan
 			}
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "scan")
@@ -242,7 +242,11 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 
 #### Verify-friendly RunE template
 
-Use this shape for every hand-written transcendence command. The generator emits the `dryRunOK` helper into `internal/cli/helpers.go`:
+Use one of these shapes for every hand-written transcendence command. The generator emits the `dryRunOK` helper into `internal/cli/helpers.go`.
+
+`cmd.Help()` returns nil, so a help-only branch prints usage and exits 0. The MCP mirror shells out with only the caller's parameters, and an exit-0 help page is not a successful tool result. Keep the help-only branch only when the command has required input, or when a bare run would write, sync, capture, export, prune, or otherwise run long. A read-only command with no required inputs runs its default action on a bare call. `--help` still prints help through cobra.
+
+Commands with required input:
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {
@@ -260,7 +264,22 @@ RunE: func(cmd *cobra.Command, args []string) error {
 }
 ```
 
-Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand --dry-run` probes before required-flag validation, required positionals, network, or filesystem IO; it must end in `writeDryRun(cmd.OutOrStdout(), flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. Never `return nil` from this branch: empty stdout under `--json` fails dogfood `json_fidelity`. Generated novel-feature TODO scaffolds (`novel_feature_command.go.tmpl`) already emit this same `writeDryRun` short-circuit before positional or required-flag gates; keep that branch when replacing the TODO body. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+Commands with no required inputs:
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+    if dryRunOK(flags) {
+        return writeDryRun(cmd.OutOrStdout(), flags, "<command name>")
+    }
+    // ... real work: bare `<cli> mycommand` runs the default report ...
+}
+```
+
+Omit both the help-only branch and the `usageErr(...)` branch. A bare call is the default report.
+
+Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch is only for commands that cannot do useful work with no input, or whose bare run would write, sync, or run long. It is not for a read-only command whose default report needs nothing. The `dryRunOK` branch handles verify's `<cli> mycommand --dry-run` probes before required-flag validation, required positionals, network, or filesystem IO; it must end in `writeDryRun(cmd.OutOrStdout(), flags, "<command name>")` so `--dry-run --json` still produces a parseable envelope. Never `return nil` from this branch: empty stdout under `--json` fails dogfood `json_fidelity`. Generated novel-feature TODO scaffolds (`novel_feature_command.go.tmpl`) already emit this same `writeDryRun` short-circuit before positional or required-flag gates; keep that branch when replacing the TODO body. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+
+An argless read that dials a host outside `flags.newClient()` (a raw HTTP call, or a sibling client that does not use the generated transport) must return before that dial when `cliutil.IsVerifyEnv()` is true. Verify's mock bare probe must not reach a real host. `flags.newClient()` already stays on the mock under verify.
 
 For SQLite-backed novel commands only, add this missing-mirror guard after `dryRunOK(flags)`, after any required-input `usageErr(...)` check, and after `dbPath` is resolved, but before `store.OpenWithContext`, `store.OpenReadOnly`, `sql.Open`, or other SQLite access:
 
@@ -295,7 +314,7 @@ This preserves verify-friendly help behavior for 0 args while making partial pos
 
 Do not collapse the first and third branches into `if len(args) == 0 || <flag empty> { return cmd.Help() }`. `cmd.Help()` returns `nil`, so agents and scripts cannot distinguish "help was requested" from "the command skipped required work."
 
-For commands with no required inputs, omit the `usageErr(...)` branch entirely and keep the help-only plus dry-run branches.
+For commands with no required inputs, omit both the help-only branch and the `usageErr(...)` branch. Keep `dryRunOK` first, then run the default action. A bare `<cli> mycommand` prints the report and exits 0. Mutating or long-running argless commands (sync, capture, backfill, export, prune) keep the help-only branch so a bare call does not write or start the long run.
 
 If the command reads a file or directory (`os.ReadFile`, `os.ReadDir`, `os.Stat`, `os.Open`, `os.OpenFile`, `os.Lstat`, `filepath.Walk`, `filepath.WalkDir`, or any other filesystem access), the read MUST come after `dryRunOK()`, not before. Filesystem reads before `dryRunOK()` cause `validate-narrative --full-examples` to fail with a missing-file error rather than a clean dry-run exit 0.
 
@@ -485,6 +504,8 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 ```
 
 **RunE skeleton — API-call shape** (live data via a sibling typed client):
+
+The skeletons below include the help-only branch because they still have a required-input check. When the command has no required inputs, delete that branch and the `usageErr` branch together. `dryRunOK` stays first, and the bare call runs the default action. The scan-and-filter example keeps help-only because `--status` is required. Mutating or long-running argless commands keep help-only so a bare call does not write or start the long run.
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {

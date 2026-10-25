@@ -6,9 +6,11 @@ package cobratree
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -390,15 +392,70 @@ type CLICommandResult struct {
 	Stderr string
 }
 
+// cliHelpOnlyResult is the tool error when a mirrored command exits 0 after
+// printing cobra help. Help returns nil, so the exit code alone cannot tell
+// a real run from a usage page.
+const cliHelpOnlyResult = "command printed help instead of running"
+
+// cobraHelpFlagLine matches cobra's default help flag. A line that only
+// starts with "Usage:" is not help; pflag always emits this flag line.
+var cobraHelpFlagLine = regexp.MustCompile(`(?m)^[ \t]*-h, --help[ \t]+help for[ \t]+\S+`)
+
 // ToolResultFromCLICommand keeps stdout in the first content block and places
 // filtered CLI hints in a separate block for clients that display auxiliary
-// content.
+// content. Cobra help on exit 0 is an error: the command did not run.
 func ToolResultFromCLICommand(result CLICommandResult) *mcplib.CallToolResult {
+	if cliStdoutIsCobraHelp(result.Stdout) {
+		return toolResultFromCLIHelp(result.Stdout)
+	}
 	toolResult := mcplib.NewToolResultText(bound.Text(result.Stdout))
 	if len(result.StderrHints) > 0 {
 		toolResult.Content = append(toolResult.Content, mcplib.NewTextContent(bound.Text(strings.Join(result.StderrHints, "\n"))))
 	}
 	return toolResult
+}
+
+func toolResultFromCLIHelp(stdout string) *mcplib.CallToolResult {
+	toolResult := mcplib.NewToolResultError(bound.Text(cliHelpOnlyResult))
+	if text := strings.TrimSpace(stdout); text != "" {
+		toolResult.Content = append(toolResult.Content, mcplib.NewTextContent(bound.Text(text)))
+	}
+	return toolResult
+}
+
+// cliStdoutIsCobraHelp reports cobra's default help page. The help flag line
+// plus a Usage heading and a Flags or commands heading is the shape cmd.Help()
+// prints. Valid JSON stays a successful result, including a payload that
+// quotes a help page. A help page whose description starts with a quote or
+// brace is not valid JSON, so it still matches.
+func cliStdoutIsCobraHelp(stdout string) bool {
+	text := normalizeCLIText(stdout)
+	if text == "" || json.Valid([]byte(text)) {
+		return false
+	}
+	if !cliHelpHeading(text, "Usage:") {
+		return false
+	}
+	if !cliHelpHeading(text, "Flags:") && !cliHelpHeading(text, "Global Flags:") && !cliHelpHeading(text, "Available Commands:") {
+		return false
+	}
+	return cobraHelpFlagLine.MatchString(text)
+}
+
+func normalizeCLIText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.TrimPrefix(s, "\uFEFF")
+	return strings.TrimSpace(s)
+}
+
+func cliHelpHeading(text, heading string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == heading {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolResultFromCLIFailure marks the call as an error and keeps stdout in the
