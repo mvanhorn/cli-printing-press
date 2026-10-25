@@ -162,7 +162,7 @@ Don't write MCP descriptions from general API knowledge — that produces plausi
 
 **Per-tool spec walk** (do this for every finding, not a sample):
 
-1. **Find the operation.** `tools-manifest.json` gives you `path` and `method`. Look up `spec.paths[<path>][<method>]`.
+1. **Find the operation.** `tools-manifest.json` gives you `path` and `method`. Look up `spec.paths[<path>][<method>]`. When the tool also has `base_url`, join that origin in front of `path` to get the request URL the CLI calls. The `spec.paths` lookup uses `path`.
 
 2. **Description prose** comes from the operation:
    - `description` field — usually richer than `summary`. Primary source.

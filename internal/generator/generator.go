@@ -438,8 +438,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"composeIntentToolDescription":        composeIntentToolDescription,
 		"intentParamsForEmit":                 intentParamsForEmit,
 		"intentParamDefaultGo":                intentParamDefaultGo,
-		"effectiveEndpointPath":               effectiveEndpointPath,
-		"effectiveSubEndpointPath":            effectiveSubEndpointPath,
+		"effectiveEndpointPath":               spec.EffectiveEndpointPath,
+		"effectiveSubEndpointPath":            spec.EffectiveSubEndpointPath,
 		"operationAuthRoutes":                 operationAuthRoutes,
 		"perOperationDoctorSchemes":           perOperationDoctorSchemes,
 		"hasNonPerOperationAdditionalHeaders": hasNonPerOperationAdditionalHeaders,
@@ -4812,7 +4812,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
 				ResourceName:       name,
-				EffectivePath:      effectiveEndpointPath(resource, endpoint),
+				EffectivePath:      spec.EffectiveEndpointPath(resource, endpoint),
 				EffectiveTier:      g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:         name,
 				CommandPath:        resourceCommand,
@@ -4881,7 +4881,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				}
 				epData := endpointTemplateData{
 					ResourceName:  subName,
-					EffectivePath: effectiveSubEndpointPath(resource, subResource, endpoint),
+					EffectivePath: spec.EffectiveSubEndpointPath(resource, subResource, endpoint),
 					EffectiveTier: g.Spec.EffectiveTier(effectiveResource, endpoint),
 					FuncPrefix:    naming.funcPrefix,
 					CommandPath:   naming.commandPath,
@@ -6596,7 +6596,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			PromotedName:  pc.PromotedName,
 			ResourceName:  pc.ResourceName,
 			EndpointName:  pc.EndpointName,
-			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
+			EffectivePath: spec.EffectiveEndpointPath(resource, pc.Endpoint),
 			Endpoint:      pc.Endpoint,
 			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
 			HasStore:      g.hasDataLayer(),
@@ -7612,7 +7612,7 @@ func resourceReadPathEntries(data visionRenderData) []resourcePathEntry {
 		}
 		entries[name] = resourcePathEntry{
 			Name:         name,
-			Path:         effectiveEndpointPath(resource, endpoint),
+			Path:         spec.EffectiveEndpointPath(resource, endpoint),
 			ResponsePath: endpoint.ResponsePath,
 			Pagination:   endpoint.Pagination,
 			PageSize:     resourcePathPageSize(data, endpoint),
@@ -7656,7 +7656,7 @@ func resourceWritePathEntries(data visionRenderData) []resourcePathEntry {
 		if !ok {
 			continue
 		}
-		entries[name] = resourcePathEntry{Name: name, Path: effectiveEndpointPath(resource, endpoint)}
+		entries[name] = resourcePathEntry{Name: name, Path: spec.EffectiveEndpointPath(resource, endpoint)}
 	}
 	return sortedResourcePathEntries(entries)
 }
@@ -7676,7 +7676,7 @@ func resourceDetailPathEntries(data visionRenderData) []resourcePathEntry {
 			if !strings.EqualFold(endpoint.Method, "GET") || endpoint.Response.Type == "array" || endpoint.Pagination != nil || strings.Count(endpoint.Path, "{") != 1 || strings.Count(endpoint.Path, "}") != 1 {
 				continue
 			}
-			entries[name] = resourcePathEntry{Name: name, Path: effectiveEndpointPath(resource, endpoint)}
+			entries[name] = resourcePathEntry{Name: name, Path: spec.EffectiveEndpointPath(resource, endpoint)}
 			break
 		}
 	}
@@ -7912,7 +7912,7 @@ func endpointMatchesSyncPath(resource spec.Resource, endpoint spec.Endpoint, pat
 	if strings.TrimSpace(endpoint.Path) == path {
 		return true
 	}
-	return effectiveEndpointPath(resource, endpoint) == path
+	return spec.EffectiveEndpointPath(resource, endpoint) == path
 }
 
 // Lower wins. Syncable still outranks non-syncable; within a band,
@@ -8483,9 +8483,9 @@ func hasMCPParamDefault(apiSpec *spec.APISpec) bool {
 	walk = func(parent spec.Resource, resources map[string]spec.Resource, subResource bool) bool {
 		for _, resource := range resources {
 			for _, endpoint := range resource.Endpoints {
-				pathTemplate := effectiveEndpointPath(resource, endpoint)
+				pathTemplate := spec.EffectiveEndpointPath(resource, endpoint)
 				if subResource {
-					pathTemplate = effectiveSubEndpointPath(parent, resource, endpoint)
+					pathTemplate = spec.EffectiveSubEndpointPath(parent, resource, endpoint)
 				}
 				if endpointHasMCPParamDefault(endpoint, pathTemplate) {
 					return true
@@ -11427,7 +11427,7 @@ func lookupEndpointForTemplate(api *spec.APISpec, ref string) (templateEndpoint,
 		}
 		return templateEndpoint{
 			Endpoint:      e,
-			EffectivePath: effectiveEndpointPath(r, e),
+			EffectivePath: spec.EffectiveEndpointPath(r, e),
 			EffectiveTier: api.EffectiveTier(r, e),
 		}, true
 	case 3:
@@ -11449,45 +11449,10 @@ func lookupEndpointForTemplate(api *spec.APISpec, ref string) (templateEndpoint,
 		}
 		return templateEndpoint{
 			Endpoint:      e,
-			EffectivePath: effectiveSubEndpointPath(r, sub, e),
+			EffectivePath: spec.EffectiveSubEndpointPath(r, sub, e),
 			EffectiveTier: api.EffectiveTier(effectiveSub, e),
 		}, true
 	default:
 		return templateEndpoint{}, false
 	}
-}
-
-func effectiveEndpointPath(resource spec.Resource, endpoint spec.Endpoint) string {
-	return endpointPathWithBase(effectiveEndpointBaseURL(resource, endpoint), endpoint.Path)
-}
-
-func effectiveSubEndpointPath(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
-	return endpointPathWithBase(effectiveSubEndpointBaseURL(parent, sub, endpoint), endpoint.Path)
-}
-
-func effectiveEndpointBaseURL(resource spec.Resource, endpoint spec.Endpoint) string {
-	baseURL := endpoint.BaseURL
-	if baseURL == "" {
-		baseURL = resource.BaseURL
-	}
-	return strings.TrimRight(baseURL, "/")
-}
-
-func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
-	baseURL := endpoint.BaseURL
-	if baseURL == "" {
-		baseURL = sub.BaseURL
-	}
-	if baseURL == "" {
-		baseURL = parent.BaseURL
-	}
-	return strings.TrimRight(baseURL, "/")
-}
-
-func endpointPathWithBase(baseURL, path string) string {
-	baseURL = strings.TrimRight(baseURL, "/")
-	if baseURL == "" || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
-		return path
-	}
-	return baseURL + path
 }

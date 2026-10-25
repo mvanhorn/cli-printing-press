@@ -46,7 +46,7 @@ func collectOperationAuthRoutes(routes *[]operationAuthRoute, root spec.Resource
 		}
 		*routes = append(*routes, operationAuthRoute{
 			Method: endpoint.Method,
-			Path:   effectiveEndpointPath(root, endpoint),
+			Path:   spec.EffectiveEndpointPath(root, endpoint),
 			Scheme: endpoint.AuthScheme,
 		})
 	}
@@ -63,7 +63,7 @@ func collectSubOperationAuthRoutes(routes *[]operationAuthRoute, root spec.Resou
 			}
 			*routes = append(*routes, operationAuthRoute{
 				Method: endpoint.Method,
-				Path:   effectiveSubEndpointPath(root, sub, endpoint),
+				Path:   spec.EffectiveSubEndpointPath(root, sub, endpoint),
 				Scheme: endpoint.AuthScheme,
 			})
 		}

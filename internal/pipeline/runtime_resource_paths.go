@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 var generatedResourcePathEntryRE = regexp.MustCompile(`(?m)^\s*"([^"]+)":\s*"([^"]+)",\s*$`)
@@ -16,7 +18,7 @@ var generatedResourceNameRE = regexp.MustCompile(`"([a-zA-Z0-9][a-zA-Z0-9_-]*)"`
 func runResourcePathContractChecks(dir string) []CommandResult {
 	manifest, err := ReadToolsManifest(dir)
 	if err != nil {
-		if !hasGeneratedResourceCommand(dir) {
+		if !dirHasResourcePathContractSubject(dir) {
 			return nil
 		}
 		return []CommandResult{{
@@ -26,7 +28,7 @@ func runResourcePathContractChecks(dir string) []CommandResult {
 	}
 	manifestMethods := make(map[string]map[string]bool)
 	for _, tool := range manifest.Tools {
-		path := strings.TrimSpace(tool.Path)
+		path := manifestToolRequestPath(tool)
 		if path == "" {
 			continue
 		}
@@ -63,6 +65,9 @@ func runResourcePathContractChecks(dir string) []CommandResult {
 			continue
 		}
 		source := string(sourceBytes)
+		if !resourcePathContractApplies(source, check.resolver) {
+			continue
+		}
 		result := CommandResult{Command: "resource-path:" + check.command, Kind: "static", Help: true, DryRun: true, Execute: true, Score: 3}
 		var mismatches []string
 		if strings.Contains(source, check.resolver) {
@@ -102,13 +107,49 @@ func runResourcePathContractChecks(dir string) []CommandResult {
 	return results
 }
 
-func hasGeneratedResourceCommand(dir string) bool {
+// resourcePathContractApplies reports whether this command file is the API
+// reader the resolver contract describes. Sharing a filename with tail,
+// export, or import is not enough: a local-store dump has no API path to resolve.
+func resourcePathContractApplies(source, resolver string) bool {
+	if strings.Contains(source, resolver) || strings.Contains(source, `path := "/" + resource`) {
+		return true
+	}
+	return resourceCommandCallsAPI(source)
+}
+
+// hasClientSignal counts every non-reserved internal import, so a SQLite
+// helper such as internal/localstore would force the resolver contract.
+func resourceCommandCallsAPI(source string) bool {
+	return clientCallDirectiveRe.MatchString(source) ||
+		clientImportRe.MatchString(source) ||
+		clientCallRe.MatchString(source)
+}
+
+func resourceCommandResolvesAPIPaths(source string) bool {
+	return strings.Contains(source, "resourceReadPath(") ||
+		strings.Contains(source, "resourceWritePath(") ||
+		strings.Contains(source, `path := "/" + resource`)
+}
+
+func dirHasResourcePathContractSubject(dir string) bool {
 	for _, command := range []string{"tail.go", "export.go", "import.go"} {
-		if _, err := os.Stat(filepath.Join(dir, "internal", "cli", command)); err == nil {
+		source, err := os.ReadFile(filepath.Join(dir, "internal", "cli", command))
+		if err != nil {
+			continue
+		}
+		if resourceCommandResolvesAPIPaths(string(source)) || resourceCommandCallsAPI(string(source)) {
 			return true
 		}
 	}
 	return false
+}
+
+func manifestToolRequestPath(tool ManifestTool) string {
+	path := strings.TrimSpace(tool.Path)
+	if path == "" {
+		return ""
+	}
+	return spec.EndpointPathWithBase(strings.TrimSpace(tool.BaseURL), path)
 }
 
 func generatedResourcePathMap(source, startMarker, endMarker string) map[string]string {

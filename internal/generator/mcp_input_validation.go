@@ -26,7 +26,7 @@ func (g *Generator) validateMCPInputNames() error {
 		res := g.Spec.Resources[resName]
 		for _, epName := range sortedKeys(res.Endpoints) {
 			ep := res.Endpoints[epName]
-			if err := validateEndpointMCPInputNames(res, resName, epName, ep, effectiveEndpointPath(res, ep), vars); err != nil {
+			if err := validateEndpointMCPInputNames(res, resName, epName, ep, spec.EffectiveEndpointPath(res, ep), vars); err != nil {
 				return err
 			}
 		}
@@ -34,7 +34,7 @@ func (g *Generator) validateMCPInputNames() error {
 			sub := res.SubResources[subName]
 			for _, epName := range sortedKeys(sub.Endpoints) {
 				ep := sub.Endpoints[epName]
-				if err := validateEndpointMCPInputNames(sub, resName+"/"+subName, epName, ep, effectiveSubEndpointPath(res, sub, ep), vars); err != nil {
+				if err := validateEndpointMCPInputNames(sub, resName+"/"+subName, epName, ep, spec.EffectiveSubEndpointPath(res, sub, ep), vars); err != nil {
 					return err
 				}
 			}
