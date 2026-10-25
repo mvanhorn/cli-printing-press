@@ -32,6 +32,7 @@ func TestDryRunLeavesLearnStoreUntouched(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	modulePath := generatedModulePath(t, outputDir)
 	require.NoError(t, os.WriteFile(
@@ -111,6 +112,24 @@ func TestDryRunLeavesLearnStoreUntouched(t *testing.T) {
 			"--home", home, "teach", "--dry-run", "--not-a-flag")
 		require.NotEqual(t, 0, code)
 		assertNoStoreOrJournal(t, home, cliName)
+	})
+
+	t.Run("parse failure dry-run is query value", func(t *testing.T) {
+		home := t.TempDir()
+		_, stderr, code := runDryRunCLI(t, binaryPath, dryRunStoreEnv(t, home, prefix),
+			"--home", home, "teach", "--query", "--dry-run", "--not-a-flag")
+		require.NotEqual(t, 0, code)
+		assertNoStore(t, home, cliName)
+		require.NotEmpty(t, journalSegments(t, home, cliName), "stderr:\n%s", stderr)
+	})
+
+	t.Run("parse failure dry-run overridden", func(t *testing.T) {
+		home := t.TempDir()
+		_, stderr, code := runDryRunCLI(t, binaryPath, dryRunStoreEnv(t, home, prefix),
+			"--home", home, "--dry-run=true", "--dry-run=false", "--not-a-flag")
+		require.NotEqual(t, 0, code)
+		assertNoStore(t, home, cliName)
+		require.NotEmpty(t, journalSegments(t, home, cliName), "stderr:\n%s", stderr)
 	})
 
 	t.Run("parse failure without dry-run still journals", func(t *testing.T) {
@@ -407,6 +426,7 @@ import (
 
 	"__MODULE_PATH__/internal/cliutil"
 	"__MODULE_PATH__/internal/store"
+	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 )
 
@@ -414,6 +434,7 @@ func TestDryRunStore_ParsedFlagBeatsArgv(t *testing.T) {
 	orig := preRunReached
 	t.Cleanup(func() { preRunReached = orig })
 
+	root := RootCmd()
 	cases := []struct {
 		name string
 		args []string
@@ -435,29 +456,90 @@ func TestDryRunStore_ParsedFlagBeatsArgv(t *testing.T) {
 		{name: "absent", args: []string{"teach", "--query", "x"}, want: false},
 		{name: "after end of flags", args: []string{"--", "--dry-run"}, want: false},
 		{name: "before end of flags", args: []string{"--dry-run", "--", "x"}, want: true},
+		{name: "stop before later override", args: []string{"--dry-run", "--", "--dry-run=false"}, want: true},
 		{name: "value not flag", args: []string{"--query=--dry-run"}, want: false},
+		{name: "query consumes dry-run", args: []string{"teach", "--query", "--dry-run", "--not-a-flag"}, want: false},
+		{name: "query consumes then real flag", args: []string{"teach", "--query", "--dry-run", "--dry-run"}, want: true},
+		{name: "query equals does not consume", args: []string{"teach", "--query=hello", "--dry-run"}, want: true},
+		{name: "query consumes end marker", args: []string{"teach", "--query", "--", "--dry-run"}, want: true},
+		{name: "last false wins", args: []string{"--dry-run=true", "--dry-run=false", "--not-a-flag"}, want: false},
+		{name: "last true wins", args: []string{"--dry-run=false", "--dry-run=true", "--not-a-flag"}, want: true},
+		{name: "bare then false", args: []string{"--dry-run", "--dry-run=false"}, want: false},
+		{name: "false then bare", args: []string{"--dry-run=false", "--dry-run"}, want: true},
+		{name: "unrecognized does not clear", args: []string{"--dry-run", "--dry-run=yes"}, want: true},
+		{name: "empty does not clear", args: []string{"--dry-run", "--dry-run="}, want: true},
+		{name: "unknown does not consume", args: []string{"--not-a-flag", "--dry-run"}, want: true},
+		{name: "unknown command", args: []string{"nosuch", "--dry-run"}, want: true},
+		{name: "bool does not consume", args: []string{"teach", "--json", "--dry-run"}, want: true},
+		{name: "home consumes dry-run", args: []string{"teach", "--home", "--dry-run"}, want: false},
+		{name: "home equals does not consume", args: []string{"teach", "--home=/tmp", "--dry-run"}, want: true},
+		{name: "nested name consumes", args: []string{"items", "create", "--name", "--dry-run"}, want: false},
+		{name: "missing value", args: []string{"teach", "--query"}, want: false},
+		{name: "bad long syntax", args: []string{"---dry-run"}, want: false},
+		{name: "leading equals is not a flag", args: []string{"--=dry-run"}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := argsRequestDryRun(tc.args); got != tc.want {
+			if got := argsRequestDryRun(root, tc.args); got != tc.want {
 				t.Fatalf("argsRequestDryRun(%q) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
 	}
 
 	preRunReached = false
-	if !dryRunActive(&rootFlags{dryRun: true}) {
+	if !dryRunActive(&rootFlags{dryRun: true}, root) {
 		t.Fatal("parsed flag must count before pre-run")
 	}
-	if dryRunActive(nil) != argsRequestDryRun(os.Args[1:]) {
+	if dryRunActive(nil, root) != argsRequestDryRun(root, os.Args[1:]) {
 		t.Fatal("nil flags before parse must follow argv")
 	}
 	preRunReached = true
-	if dryRunActive(&rootFlags{}) {
+	if dryRunActive(&rootFlags{}, root) {
 		t.Fatal("parsed invocation without the flag must not follow argv")
 	}
-	if !dryRunActive(&rootFlags{dryRun: true}) {
+	if !dryRunActive(&rootFlags{dryRun: true}, root) {
 		t.Fatal("parsed flag must count after pre-run")
+	}
+}
+
+func TestDryRunStore_ShortFlagValues(t *testing.T) {
+	root := &cobra.Command{Use: "cli"}
+	root.PersistentFlags().BoolP("dry-run", "d", false, "")
+	root.PersistentFlags().BoolP("json", "j", false, "")
+	sub := &cobra.Command{Use: "sub"}
+	sub.Flags().StringP("file", "f", "", "")
+	root.AddCommand(sub)
+
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "short bare", args: []string{"-d"}, want: true},
+		{name: "short equals false", args: []string{"-d=false"}, want: false},
+		{name: "short equals true", args: []string{"-d=true"}, want: true},
+		{name: "short last false", args: []string{"-d=true", "-d=false"}, want: false},
+		{name: "short last true", args: []string{"-d=false", "-d"}, want: true},
+		{name: "file consumes next", args: []string{"sub", "-f", "--dry-run"}, want: false},
+		{name: "file consumes short", args: []string{"sub", "-f", "-d"}, want: false},
+		{name: "file equals does not consume", args: []string{"sub", "-f=--dry-run", "--dry-run"}, want: true},
+		{name: "file attached value", args: []string{"sub", "-f--dry-run"}, want: false},
+		{name: "bool cluster does not consume", args: []string{"-jj", "--dry-run"}, want: true},
+		{name: "bool then dry-run in cluster", args: []string{"-jd"}, want: true},
+		{name: "dry-run then value in cluster", args: []string{"sub", "-df", "--dry-run=false"}, want: true},
+		{name: "bool then value in cluster", args: []string{"sub", "-jf", "--dry-run"}, want: false},
+		{name: "child sees persistent short", args: []string{"sub", "-d"}, want: true},
+		{name: "unknown short does not consume", args: []string{"-z", "--dry-run"}, want: true},
+		{name: "earlier short survives consumed token", args: []string{"-d", "sub", "-f", "--dry-run"}, want: true},
+		{name: "missing short value", args: []string{"sub", "-f"}, want: false},
+		{name: "short unrecognized does not clear", args: []string{"-d", "-d=yes"}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := argsRequestDryRun(root, tc.args); got != tc.want {
+				t.Fatalf("argsRequestDryRun(%q) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
