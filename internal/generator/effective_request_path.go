@@ -38,9 +38,9 @@ func effectiveRequestPath(api *spec.APISpec, resourceName, path, method string) 
 
 func effectivePathOf(resolved resolvedRequestEndpoint) string {
 	if resolved.isSub {
-		return effectiveSubEndpointPath(resolved.parent, resolved.resource, resolved.endpoint)
+		return spec.EffectiveSubEndpointPath(resolved.parent, resolved.resource, resolved.endpoint)
 	}
-	return effectiveEndpointPath(resolved.resource, resolved.endpoint)
+	return spec.EffectiveEndpointPath(resolved.resource, resolved.endpoint)
 }
 
 func requestOverrideIsUnambiguous(api *spec.APISpec, path, method, candidate string) bool {

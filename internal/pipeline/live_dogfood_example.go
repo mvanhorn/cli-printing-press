@@ -48,7 +48,7 @@ func appendLiveDogfoodSpecEndpoints(out []liveDogfoodSpecEndpoint, parentBase st
 	for subName, sub := range resource.SubResources {
 		// pp:endpoint is the subresource map key plus the endpoint, not a
 		// parent-qualified name. The path base passed down is this resource
-		// only, matching effectiveSubEndpointPath.
+		// only, matching spec.EffectiveSubEndpointPath.
 		out = appendLiveDogfoodSpecEndpoints(out, strings.TrimSpace(resource.BaseURL), sub, subName)
 	}
 	return out

@@ -168,15 +168,15 @@ func TestEndpointPathWithBaseLeavesAbsolutePathAlone(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, "https://clob.example.com/book",
-		endpointPathWithBase("https://gamma.example.com", "https://clob.example.com/book"))
+		spec.EndpointPathWithBase("https://gamma.example.com", "https://clob.example.com/book"))
 	assert.Equal(t, "http://clob.example.com/book",
-		endpointPathWithBase("https://gamma.example.com", "http://clob.example.com/book"))
+		spec.EndpointPathWithBase("https://gamma.example.com", "http://clob.example.com/book"))
 	assert.Equal(t, "https://gamma.example.com/v1/book",
-		endpointPathWithBase("https://gamma.example.com/v1/", "/book"))
+		spec.EndpointPathWithBase("https://gamma.example.com/v1/", "/book"))
 	// Protocol-relative URLs remain relative paths for this fix. Only
 	// explicit http:// and https:// endpoint paths select another host.
 	assert.Equal(t, "https://gamma.example.com//cdn.example.com/book",
-		endpointPathWithBase("https://gamma.example.com", "//cdn.example.com/book"))
+		spec.EndpointPathWithBase("https://gamma.example.com", "//cdn.example.com/book"))
 }
 
 // TestClientAbsoluteEndpointPathLiveRequest proves internal YAML specs can

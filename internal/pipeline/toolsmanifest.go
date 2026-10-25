@@ -120,15 +120,21 @@ type ManifestTier struct {
 
 // ManifestTool describes a single MCP tool derived from an API endpoint.
 type ManifestTool struct {
-	Name              string           `json:"name"`
-	Description       string           `json:"description"`
-	DescriptionSource string           `json:"description_source,omitempty"`
-	Method            string           `json:"method"`
-	Path              string           `json:"path"`
-	Tier              string           `json:"tier,omitempty"`
-	NoAuth            bool             `json:"no_auth,omitempty"`
-	Params            []ManifestParam  `json:"params"`
-	HeaderOverrides   []ManifestHeader `json:"header_overrides,omitempty"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	DescriptionSource string `json:"description_source,omitempty"`
+	Method            string `json:"method"`
+	Path              string `json:"path"`
+	// BaseURL is the override origin when a resource, sub-resource, or
+	// endpoint base (including an OpenAPI operation server) changes the
+	// request target. Empty means Path is already that target. Catalog
+	// consumers keep Path as the spec path; join BaseURL in front of Path
+	// for the URL the CLI calls.
+	BaseURL         string           `json:"base_url,omitempty"`
+	Tier            string           `json:"tier,omitempty"`
+	NoAuth          bool             `json:"no_auth,omitempty"`
+	Params          []ManifestParam  `json:"params"`
+	HeaderOverrides []ManifestHeader `json:"header_overrides,omitempty"`
 }
 
 // ManifestParam describes a tool parameter with an explicit location
@@ -237,6 +243,7 @@ func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifes
 		tool := buildManifestTool(endpoint.ToolName, desc.Description, desc.Source, endpoint.Endpoint, paramDescriptions.Description)
 		tool.Tier = endpoint.Tier
 		tool.NoAuth = endpoint.NoAuth
+		tool.BaseURL = endpoint.RequestBaseURL
 		manifest.Tools = append(manifest.Tools, tool)
 	}
 
@@ -329,6 +336,8 @@ type manifestEndpointRecord struct {
 	Tier     string
 	NoAuth   bool
 	AuthType string
+	// RequestBaseURL is empty when joining a base would leave the spec path unchanged.
+	RequestBaseURL string
 }
 
 func manifestEndpointRecords(parsed *spec.APISpec) []manifestEndpointRecord {
@@ -347,11 +356,12 @@ func manifestEndpointRecords(parsed *spec.APISpec) []manifestEndpointRecord {
 				continue
 			}
 			records = append(records, manifestEndpointRecord{
-				ToolName: mcpoverrides.ToolName(rName, "", eName),
-				Endpoint: endpoint,
-				Tier:     parsed.EffectiveTier(resource, endpoint),
-				NoAuth:   noAuth,
-				AuthType: authType,
+				ToolName:       mcpoverrides.ToolName(rName, "", eName),
+				Endpoint:       endpoint,
+				Tier:           parsed.EffectiveTier(resource, endpoint),
+				NoAuth:         noAuth,
+				AuthType:       authType,
+				RequestBaseURL: manifestRequestBaseURL(spec.Resource{}, resource, endpoint, false),
 			})
 		}
 		subNames := sortedResourceKeys(resource.SubResources)
@@ -369,11 +379,12 @@ func manifestEndpointRecords(parsed *spec.APISpec) []manifestEndpointRecord {
 					continue
 				}
 				records = append(records, manifestEndpointRecord{
-					ToolName: mcpoverrides.ToolName(rName, subName, eName),
-					Endpoint: endpoint,
-					Tier:     parsed.EffectiveTier(effectiveSub, endpoint),
-					NoAuth:   noAuth,
-					AuthType: authType,
+					ToolName:       mcpoverrides.ToolName(rName, subName, eName),
+					Endpoint:       endpoint,
+					Tier:           parsed.EffectiveTier(effectiveSub, endpoint),
+					NoAuth:         noAuth,
+					AuthType:       authType,
+					RequestBaseURL: manifestRequestBaseURL(resource, subResource, endpoint, true),
 				})
 			}
 		}
@@ -389,6 +400,20 @@ func manifestToolCounts(records []manifestEndpointRecord) (total, public int) {
 		}
 	}
 	return total, public
+}
+
+// manifestRequestBaseURL returns the base the generated client bakes into
+// an absolute request path. It is empty when that join leaves the spec path
+// unchanged, so a CLI without overrides keeps a byte-identical manifest.
+func manifestRequestBaseURL(parent, resource spec.Resource, endpoint spec.Endpoint, isSub bool) string {
+	base := spec.EffectiveEndpointBaseURL(resource, endpoint)
+	if isSub {
+		base = spec.EffectiveSubEndpointBaseURL(parent, resource, endpoint)
+	}
+	if spec.EndpointPathWithBase(base, endpoint.Path) == endpoint.Path {
+		return ""
+	}
+	return base
 }
 
 func effectiveManifestEndpointAuth(parsed *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) (noAuth bool, authType string, include bool) {
