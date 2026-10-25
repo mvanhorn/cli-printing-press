@@ -132,8 +132,11 @@ func TestSpecEmitsReadDryRunBranch(t *testing.T) {
 	deleteGen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
 	require.NoError(t, deleteGen.Generate())
 	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "helpers.go"), "func printNoStoreReadDryRun(")
-	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go"), "printNoStoreReadDryRun(")
-	assert.Contains(t, readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go"), `"delete"`)
+	cleanups := readGeneratedFile(t, deleteDir, "internal", "cli", "promoted_cleanups.go")
+	assert.Contains(t, cleanups, "printNoStoreReadDryRun(")
+	assert.Contains(t, cleanups, `"delete"`)
+	assert.Contains(t, cleanups, "return classifyDeleteError(cmd.OutOrStdout(), err, flags)")
+	assert.NotContains(t, cleanups, "return classifyAPIError(cmd.OutOrStdout(), err, flags)")
 	requireGeneratedCompiles(t, deleteDir)
 }
 
