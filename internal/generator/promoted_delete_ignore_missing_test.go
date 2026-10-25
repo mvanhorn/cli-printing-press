@@ -26,12 +26,15 @@ func TestPromotedDeleteIgnoreMissing(t *testing.T) {
 	fx := buildPromotedDeleteCLI(t)
 
 	approvals := readGeneratedFile(t, fx.dir, "internal", "cli", "promoted_approvals.go")
+	grants := readGeneratedFile(t, fx.dir, "internal", "cli", "promoted_grants.go")
 	widgets := readGeneratedFile(t, fx.dir, "internal", "cli", "promoted_widgets.go")
 	itemsDelete := readGeneratedFile(t, fx.dir, "internal", "cli", "items_delete.go")
 	helpers := readGeneratedFile(t, fx.dir, "internal", "cli", "helpers.go")
 
 	require.Contains(t, approvals, "return classifyDeleteError(cmd.OutOrStdout(), err, flags)")
 	require.NotContains(t, approvals, "return classifyAPIError(cmd.OutOrStdout(), err, flags)")
+	require.Contains(t, grants, "return classifyDeleteError(cmd.OutOrStdout(), err, flags)")
+	require.NotContains(t, grants, "return classifyAPIError(cmd.OutOrStdout(), err, flags)")
 	require.Contains(t, widgets, "return classifyAPIError(cmd.OutOrStdout(), err, flags)")
 	require.NotContains(t, widgets, "classifyDeleteError")
 	require.Contains(t, itemsDelete, "return classifyDeleteError(cmd.OutOrStdout(), err, flags)")
@@ -77,6 +80,22 @@ func TestPromotedDeleteIgnoreMissing(t *testing.T) {
 		require.Equal(t, 3, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		assertCLIError(t, stdout, 3, notFound(http.MethodDelete, "/approvals/missing"))
 		assertDeleteHits(t, hits, http.MethodDelete, "/approvals/missing", 1)
+		require.Contains(t, stderr, notFoundHint)
+	})
+
+	t.Run("promoted lowercase delete 404 with ignore-missing", func(t *testing.T) {
+		code, stdout, stderr, hits := fx.run(t, "grants", "missing", "--ignore-missing", "--yes", "--json")
+		require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assertAlreadyDeleted(t, stdout)
+		assertDeleteHits(t, hits, http.MethodDelete, "/grants/missing", 1)
+		require.NotContains(t, stderr, "Error:")
+	})
+
+	t.Run("promoted lowercase delete 404 without ignore-missing", func(t *testing.T) {
+		code, stdout, stderr, hits := fx.run(t, "grants", "missing", "--yes", "--json")
+		require.Equal(t, 3, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		assertCLIError(t, stdout, 3, notFound(http.MethodDelete, "/grants/missing"))
+		assertDeleteHits(t, hits, http.MethodDelete, "/grants/missing", 1)
 		require.Contains(t, stderr, notFoundHint)
 	})
 
@@ -175,6 +194,19 @@ func buildPromotedDeleteCLI(t *testing.T) *promotedDeleteCLI {
 					Method:      "DELETE",
 					Path:        "/approvals/{id}",
 					Description: "Remove an approval",
+					Params: []spec.Param{{
+						Name: "id", Type: "string", Required: true, Positional: true, PathParam: true,
+					}},
+				},
+			},
+		},
+		"grants": {
+			Description: "Grants",
+			Endpoints: map[string]spec.Endpoint{
+				"revoke": {
+					Method:      "delete",
+					Path:        "/grants/{id}",
+					Description: "Revoke a grant",
 					Params: []spec.Param{{
 						Name: "id", Type: "string", Required: true, Positional: true, PathParam: true,
 					}},

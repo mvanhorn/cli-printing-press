@@ -447,7 +447,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- end}}
-{{- if eq .Endpoint.Method "DELETE"}}
+{{- if eq (upper .Endpoint.Method) "DELETE"}}
 			if err != nil {
 				return classifyDeleteError(cmd.OutOrStdout(), err, flags)
 			}
