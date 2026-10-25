@@ -9,14 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-{{- if .Learn.Enabled}}
-	"context"
 	"{{modulePath}}/internal/cliutil"
-{{- end}}
 )
 
 // captureStderr returns the bytes written to os.Stderr while fn runs. Used
@@ -125,3 +124,57 @@ func TestAutoRefreshNoLearnDoesNotOpenStore(t *testing.T) {
 	}
 }
 {{- end}}
+
+func TestAutoRefreshDryRunDoesNotOpenStore(t *testing.T) {
+	home := t.TempDir()
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	defer restore()
+
+	for _, flags := range []rootFlags{
+		{dataSource: "auto", dryRun: true},
+		{dataSource: "live", dryRun: true},
+	} {
+		meta := autoRefreshIfStale(context.Background(), &flags, []string{"items"})
+		if meta.Decision != "skipped" || meta.Reason != "dry_run" {
+			t.Fatalf("flags=%+v freshness=%+v, want skipped/dry_run", flags, meta)
+		}
+	}
+	// A preview returns before the empty-resources skip, so the reason
+	// stays dry_run rather than no_resources.
+	meta := autoRefreshIfStale(context.Background(), &rootFlags{dataSource: "auto", dryRun: true}, nil)
+	if meta.Decision != "skipped" || meta.Reason != "dry_run" {
+		t.Fatalf("empty resources freshness=%+v, want skipped/dry_run", meta)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("--dry-run created local-store files: %v", entries)
+	}
+}
+
+func TestAutoRefreshWithoutDryRunStillOpensStore(t *testing.T) {
+	home := t.TempDir()
+	restore, err := cliutil.SetHomeOverride(home)
+	if err != nil {
+		t.Fatalf("set home override: %v", err)
+	}
+	defer restore()
+	if name := cachePolicy().EnvOptOut; name != "" {
+		t.Setenv(name, "")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	meta := autoRefreshIfStale(ctx, &rootFlags{dataSource: "auto"}, []string{"items"})
+	if meta.Reason == "dry_run" {
+		t.Fatalf("non-dry-run reported dry_run: %+v", meta)
+	}
+	if _, err := os.Stat(filepath.Join(home, "data")); err != nil {
+		t.Fatalf("non-dry-run did not open the store: %v meta=%+v", err, meta)
+	}
+}

@@ -195,8 +195,10 @@ func TestGeneratedStoreBareIDQueryable(t *testing.T) {
 		"bare_id must be indexed for SQL lookups")
 	require.Contains(t, src, `{table: "verify", column: "bare_id", decl: "TEXT GENERATED ALWAYS AS (substr(id, 1, coalesce(nullif(instr(id, char(0)), 0) - 1, length(id)))) VIRTUAL"}`,
 		"existing databases must backfill bare_id on open")
-	require.Contains(t, src, `SELECT name FROM pragma_table_xinfo(?) WHERE name=?`,
-		"ensureColumn must see generated columns; table_info omits them")
+	require.Contains(t, src, `pragma_table_xinfo(m.name)`,
+		"backfill must see generated columns; table_info omits them")
+	require.NotContains(t, src, `SELECT name FROM pragma_table_xinfo(?) WHERE name=?`,
+		"backfill must not probe table_xinfo once per column")
 	require.Contains(t, src, `INSERT INTO "verify" ("id", "domains_id", "data", "synced_at")`,
 		"generated bare_id must not appear in INSERT")
 	require.NotContains(t, src, `lookupFieldValue(obj, "bare_id")`,

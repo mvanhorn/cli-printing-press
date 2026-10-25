@@ -172,6 +172,9 @@ func Execute() (retErr error) {
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 	defer finalizePlatformInvocation(&flags, &retErr)
+	// A previous Execute in this process may have reached PreRun. Reset
+	// before parse so a failure that never gets there still consults argv.
+	preRunReached = false
 
 	executedCmd, err := rootCmd.ExecuteC()
 	var journalFailedFlag, journalSuggestedFlag string
@@ -360,6 +363,10 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Flag parse succeeded. A preview is the parsed flag from here on,
+		// including a profile applied below. Argv is the wrong signal: the
+		// token "--dry-run" may be a flag value on a real write.
+		preRunReached = true
 		resetProfileAppliedFlags()
 		if err := enforceMCPBoundProfile(cmd, flags); err != nil {
 			return err
@@ -456,9 +463,12 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 		// process. Skipped for framework commands that should never
 		// touch the local store (auth, doctor, help, etc.), for
 		// --no-learn invocations so deterministic agent flows don't
-		// race a background seed, and for read-only commands so a GET
-		// never runs the one-way schema migration.
-		if !noLearnActive(flags) && !shouldSkipLearnHook(cmd.CommandPath()) && commandMayWriteStore(cmd) {
+		// race a background seed, for --dry-run so a preview cannot
+		// create or migrate the store, and for read-only commands so a
+		// GET never runs the one-way schema migration. The sync.Once is
+		// not consumed on a skip, so a later real call in this process
+		// still seeds.
+		if !noLearnActive(flags) && !dryRunActive(flags, cmd.Root()) && !shouldSkipLearnHook(cmd.CommandPath()) && commandMayWriteStore(cmd) {
 			runLearnInitOnce(cmd.Context())
 			runPlaybookInitOnce(cmd.Context())
 		}
@@ -604,8 +614,9 @@ func commandMayWriteStore(cmd *cobra.Command) bool {
 func journalInvocation(flags *rootFlags, rootCmd, executed *cobra.Command, err error, failedFlag, suggestedFlag string) {
 	// The master --no-learn switch kills journaling too. On the
 	// parse-failure path the flag was never parsed into rootFlags, so
-	// the raw args are consulted as well.
-	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || isLocalDataInvocation(rootCmd, executed) {
+	// the raw args are consulted as well. --dry-run is the same shape:
+	// a preview must not create the learn journal.
+	if noLearnActive(flags) || dryRunActive(flags, rootCmd) || argsDisableLearn(os.Args[1:]) || isLocalDataInvocation(rootCmd, executed) {
 		return
 	}
 	exitCode := 0
@@ -694,6 +705,163 @@ func findSubcommand(cmd *cobra.Command, name string) *cobra.Command {
 	return nil
 }
 
+// preRunReached is true once flag parse has succeeded and PersistentPreRunE
+// has started. Until then a preview is visible only on argv, because a
+// parse failure never fills rootFlags.
+var preRunReached bool
+
+// dryRunActive reports whether this invocation is a preview. After parse,
+// only the flag counts: a profile may have set it, and argv can contain
+// the token "--dry-run" as a value on a real write. Before parse, argv
+// is the only signal.
+func dryRunActive(flags *rootFlags, root *cobra.Command) bool {
+	if flags != nil && flags.dryRun {
+		return true
+	}
+	if preRunReached {
+		return false
+	}
+	return argsRequestDryRun(root, os.Args[1:])
+}
+
+// Bool parsing matches pflag, so --dry-run=false is not a preview. A token
+// consumed as another flag's value is not itself a flag, and the last
+// --dry-run wins. Tokens after -- are positionals.
+func argsRequestDryRun(root *cobra.Command, args []string) bool {
+	cmd := root
+	dry := false
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if tok == "--" {
+			break
+		}
+		if strings.HasPrefix(tok, "--") {
+			name, value, hasValue := splitLongArg(tok)
+			if name == "" {
+				continue
+			}
+			if !hasValue && flagConsumesArg(cmd, name) && i+1 < len(args) {
+				i++
+				continue
+			}
+			if name != "dry-run" {
+				continue
+			}
+			if !hasValue {
+				dry = true
+				continue
+			}
+			if v, ok := dryRunFlagValue(value); ok {
+				dry = v
+			}
+			continue
+		}
+		if len(tok) > 1 && tok[0] == '-' {
+			dry, i = applyDryRunShort(cmd, args, i, dry)
+			continue
+		}
+		if cmd == nil {
+			continue
+		}
+		if next := findSubcommand(cmd, tok); next != nil {
+			cmd = next
+		}
+	}
+	return dry
+}
+
+func splitLongArg(tok string) (name, value string, hasValue bool) {
+	body := tok[2:]
+	if body == "" || body[0] == '-' || body[0] == '=' {
+		return "", "", false
+	}
+	name, value, hasValue = strings.Cut(body, "=")
+	return name, value, hasValue
+}
+
+// Unknown names and bool flags (NoOptDefVal set) do not take the next
+// token, so a following --dry-run is still a flag.
+func flagConsumesArg(cmd *cobra.Command, name string) bool {
+	flag := lookupCommandFlag(cmd, name)
+	return flag != nil && flag.NoOptDefVal == ""
+}
+
+// Persistent flags stay on ancestors until ParseFlags merges them onto the leaf.
+func lookupCommandFlag(cmd *cobra.Command, name string) *pflag.Flag {
+	for cur := cmd; cur != nil; cur = cur.Parent() {
+		if flag := cur.Flags().Lookup(name); flag != nil {
+			return flag
+		}
+		if flag := cur.PersistentFlags().Lookup(name); flag != nil {
+			return flag
+		}
+	}
+	return nil
+}
+
+func lookupCommandShorthand(cmd *cobra.Command, letter string) *pflag.Flag {
+	for cur := cmd; cur != nil; cur = cur.Parent() {
+		if flag := cur.Flags().ShorthandLookup(letter); flag != nil {
+			return flag
+		}
+		if flag := cur.PersistentFlags().ShorthandLookup(letter); flag != nil {
+			return flag
+		}
+	}
+	return nil
+}
+
+func dryRunFlagValue(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "t", "true":
+		return true, true
+	case "0", "f", "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// The returned index is the last argv token the cluster consumed; the
+// caller increments past it.
+func applyDryRunShort(cmd *cobra.Command, args []string, i int, dry bool) (bool, int) {
+	cluster := args[i][1:]
+	for len(cluster) > 0 {
+		letter := cluster[:1]
+		rest := cluster[1:]
+		flag := lookupCommandShorthand(cmd, letter)
+		name := ""
+		consumes := false
+		if flag != nil {
+			name = flag.Name
+			consumes = flag.NoOptDefVal == ""
+		}
+		if strings.HasPrefix(rest, "=") {
+			if name == "dry-run" {
+				if v, ok := dryRunFlagValue(rest[1:]); ok {
+					dry = v
+				}
+			}
+			return dry, i
+		}
+		if !consumes {
+			if name == "dry-run" {
+				dry = true
+			}
+			cluster = rest
+			continue
+		}
+		if rest != "" {
+			return dry, i
+		}
+		if i+1 < len(args) {
+			return dry, i + 1
+		}
+		return dry, i
+	}
+	return dry, i
+}
+
 // argsDisableLearn reports whether the raw args carry the master
 // --no-learn switch. Needed on the parse-failure journal path where
 // pflag never populated rootFlags; an explicit --no-learn=false does
@@ -737,7 +905,9 @@ var learnFamilyCommands = map[string]struct{}{
 // appended may wait out the peer still holding the offset lock so that
 // line is not left unpaired when the process exits.
 func deriveFlagCorrections(flags *rootFlags, rootCmd, executed *cobra.Command) {
-	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() || isLocalDataInvocation(rootCmd, executed) {
+	// Derivation opens the store once it pairs a correction and creates
+	// the journal directory on the way in. A preview must do neither.
+	if noLearnActive(flags) || dryRunActive(flags, rootCmd) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() || isLocalDataInvocation(rootCmd, executed) {
 		return
 	}
 	chain := journalVerbChain(rootCmd, executed)
