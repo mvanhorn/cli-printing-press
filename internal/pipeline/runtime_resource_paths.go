@@ -117,8 +117,12 @@ func resourcePathContractApplies(source, resolver string) bool {
 	return resourceCommandCallsAPI(source)
 }
 
+// hasClientSignal counts every non-reserved internal import, so a SQLite
+// helper such as internal/localstore would force the resolver contract.
 func resourceCommandCallsAPI(source string) bool {
-	return clientCallDirectiveRe.MatchString(source) || hasClientSignal(source)
+	return clientCallDirectiveRe.MatchString(source) ||
+		clientImportRe.MatchString(source) ||
+		clientCallRe.MatchString(source)
 }
 
 func resourceCommandResolvesAPIPaths(source string) bool {

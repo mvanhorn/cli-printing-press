@@ -207,6 +207,41 @@ func tail(dbPath string) error {
 `,
 		},
 		{
+			name:    "hand-written localstore helper",
+			command: "export.go",
+			source: `package cli
+
+import (
+	"database/sql"
+
+	"example.com/cli/internal/localstore"
+)
+
+func export(dbPath string) error {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = localstore.Dump(db)
+	return err
+}
+`,
+		},
+		{
+			name:    "hand-written helper package",
+			command: "import.go",
+			source: `package cli
+
+import "example.com/cli/internal/catalog"
+
+func run(dbPath string) error {
+	_, err := catalog.Listings(dbPath)
+	return err
+}
+`,
+		},
+		{
 			name:    "unsupported import",
 			command: "import.go",
 			source: `package cli
@@ -241,10 +276,10 @@ func TestResourcePathContractCheckExemptsLocalStoreDumperWithoutManifest(t *test
 			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
 			writeTestFile(t, filepath.Join(dir, "internal", "cli", "export.go"), `package cli
 
-import "example.com/cli/internal/store"
+import "example.com/cli/internal/localstore"
 
 func export(dbPath string) error {
-	_, err := store.Open(dbPath)
+	_, err := localstore.Dump(dbPath)
 	return err
 }
 `)
@@ -307,13 +342,44 @@ func tail() error {
 `,
 		},
 		{
-			name:    "sibling client package",
-			command: "import.go",
+			name:    "generated client import",
+			command: "tail.go",
 			source: `package cli
 
-import "example.com/cli/internal/algolia"
+import "example.com/cli/internal/client"
 
-func run() error { return algolia.Save() }
+func tail() (*client.Client, error) {
+	return client.New(cfg)
+}
+`,
+		},
+		{
+			name:    "client call beside a localstore helper",
+			command: "export.go",
+			source: `package cli
+
+import (
+	"database/sql"
+
+	"example.com/cli/internal/localstore"
+)
+
+func export(dbPath string) error {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, dumpErr := localstore.Dump(db); dumpErr != nil {
+		return dumpErr
+	}
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	_, err = c.Get(ctx, "/items", nil)
+	return err
+}
 `,
 		},
 	} {
