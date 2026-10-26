@@ -144,12 +144,12 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 4. Start mock server if needed
 	var mockServer *httptest.Server
 	var baseURLOverride string
-	apiName := naming.TrimCLISuffix(filepath.Base(cfg.Dir))
+	envPrefix := verifyEnvPrefix(cfg.Dir)
 	envVarName := cfg.EnvVar
 	if envVarName == "" {
-		envVarName = strings.ToUpper(strings.ReplaceAll(apiName, "-", "_")) + "_TOKEN"
+		envVarName = envPrefix + "_TOKEN"
 	}
-	baseURLEnvVar := strings.ToUpper(strings.ReplaceAll(apiName, "-", "_")) + "_BASE_URL"
+	baseURLEnvVar := envPrefix + "_BASE_URL"
 
 	if report.Mode == "mock" {
 		mockServer, baseURLOverride = startMockServer(spec)
@@ -1169,3 +1169,15 @@ func discoverCLITemplateVarEnvs(dir string) []string {
 }
 
 // camelToKebab is defined in verify.go
+
+// verifyEnvPrefix returns the prefix of the environment variables (for example
+// "<PREFIX>_BASE_URL") that the printed CLI in dir reads. It comes from the
+// API name in the CLI's manifest, as the generated config does, so a copy
+// under any folder name gets the right variables. Without a manifest it falls
+// back to the folder name.
+func verifyEnvPrefix(dir string) string {
+	if m, err := ReadCLIManifest(dir); err == nil && strings.TrimSpace(m.APIName) != "" {
+		return naming.EnvPrefix(m.APIName)
+	}
+	return strings.ToUpper(strings.ReplaceAll(naming.TrimCLISuffix(filepath.Base(dir)), "-", "_"))
+}
