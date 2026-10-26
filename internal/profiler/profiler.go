@@ -4612,7 +4612,9 @@ func mostCommon(counts map[string]int, fallback string) string {
 	best := fallback
 	bestCount := 0
 	for k, v := range counts {
-		if v > bestCount {
+		// Equal counts resolve to the smallest key so the result does not
+		// depend on map iteration order.
+		if v > bestCount || (v == bestCount && v > 0 && k < best) {
 			best = k
 			bestCount = v
 		}

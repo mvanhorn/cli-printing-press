@@ -5844,3 +5844,47 @@ func TestProfileResourceLevelIDFieldAndSyncable(t *testing.T) {
 	assert.False(t, byName["forced"].SkipDefaultSync, "resource syncable true opts into the default set")
 	assert.False(t, byName["forced"].SkipAutoRefresh)
 }
+
+// A spec whose pagination parameter names tie on count must profile to the
+// same answer every time; map iteration order must not decide it.
+func TestProfilePaginationTieIsDeterministic(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "tie-demo",
+		Resources: map[string]spec.Resource{
+			"alpha": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/alpha",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"beta": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/beta",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "page_size"},
+					},
+				},
+			},
+		},
+	}
+
+	for range 100 {
+		p := Profile(s)
+		require.Equal(t, "after", p.Pagination.CursorParam)
+		require.Equal(t, "limit", p.Pagination.PageSizeParam)
+	}
+}
+
+func TestMostCommonTieBreaksByKeyAndKeepsCountWinner(t *testing.T) {
+	for range 100 {
+		assert.Equal(t, "a", mostCommon(map[string]int{"b": 2, "a": 2, "c": 1}, "x"))
+		assert.Equal(t, "c", mostCommon(map[string]int{"b": 2, "a": 2, "c": 3}, "x"))
+	}
+	assert.Equal(t, "x", mostCommon(map[string]int{}, "x"))
+}
