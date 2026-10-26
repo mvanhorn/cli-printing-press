@@ -146,7 +146,7 @@ func unverifiedNovelHosts(in NovelHostInput) []ReimplementationFinding {
 	seen := map[string]bool{}
 	dnsErr := map[string]error{}
 	for _, decl := range declared {
-		if _, ok := observed[decl.host]; !ok {
+		if !novelHostObserved(decl.host, observed) {
 			key := decl.feature + "\x00" + decl.file + "\x00" + strconv.Itoa(decl.line) + "\x00" + decl.host
 			if !seen[key] {
 				seen[key] = true
@@ -311,10 +311,10 @@ func hostsInGoSource(filename, content, feature string) []novelHostDecl {
 	if err != nil {
 		return nil
 	}
-	return hostsInAST(fset, filename, file, feature)
+	return hostsInAST(fset, filename, file, feature, vocabularyAffixLiterals(file))
 }
 
-func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature string) []novelHostDecl {
+func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature string, affixLits map[token.Pos]struct{}) []novelHostDecl {
 	if node == nil {
 		return nil
 	}
@@ -327,6 +327,9 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		}
 		val, unquoteErr := strconv.Unquote(lit.Value)
 		if unquoteErr != nil {
+			return true
+		}
+		if _, ok := affixLits[lit.Pos()]; ok && vocabularyNamespaceLiteral(val) {
 			return true
 		}
 		line := fset.Position(lit.Pos()).Line
@@ -344,6 +347,213 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		return true
 	})
 	return declared
+}
+
+// schema.org publishes JSON-LD type IRIs. Matching or stripping that
+// namespace is not a request. A fetch of the same host still counts.
+var vocabularyNamespaceHosts = map[string]bool{
+	"schema.org":     true,
+	"www.schema.org": true,
+}
+
+type nameUses struct {
+	affix int
+	other int
+}
+
+func vocabularyAffixLiterals(file *ast.File) map[token.Pos]struct{} {
+	lits := map[token.Pos]struct{}{}
+	if file == nil {
+		return lits
+	}
+	parents := astParents(file)
+	affixIdents := map[*ast.Ident]struct{}{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		affix, ok := stringsAffixExpr(call)
+		if !ok {
+			return true
+		}
+		collectAffixPieces(affix, lits, affixIdents)
+		return true
+	})
+	uses := map[string]nameUses{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if !ok || ident.Name == "" || ident.Name == "_" {
+			return true
+		}
+		if _, ok := affixIdents[ident]; ok {
+			u := uses[ident.Name]
+			u.affix++
+			uses[ident.Name] = u
+			return true
+		}
+		if isDefiningIdent(ident, parents) {
+			return true
+		}
+		u := uses[ident.Name]
+		u.other++
+		uses[ident.Name] = u
+		return true
+	})
+	affixOnly := func(name string) bool {
+		u := uses[name]
+		return u.affix > 0 && u.other == 0
+	}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			if d.Tok != token.CONST && d.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+					continue
+				}
+				if affixOnly(vs.Names[0].Name) {
+					collectAffixPieces(vs.Values[0], lits, nil)
+				}
+			}
+		case *ast.FuncDecl:
+			if d.Body == nil {
+				continue
+			}
+			ast.Inspect(d.Body, func(n ast.Node) bool {
+				as, ok := n.(*ast.AssignStmt)
+				if !ok || as.Tok != token.DEFINE || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+					return true
+				}
+				ident, ok := as.Lhs[0].(*ast.Ident)
+				if !ok || !affixOnly(ident.Name) {
+					return true
+				}
+				collectAffixPieces(as.Rhs[0], lits, nil)
+				return true
+			})
+		}
+	}
+	return lits
+}
+
+func vocabularyNamespaceLiteral(val string) bool {
+	hosts := hostsInLiteral(val)
+	if len(hosts) == 0 {
+		return false
+	}
+	for _, host := range hosts {
+		if !vocabularyNamespaceHosts[host] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringsAffixExpr(call *ast.CallExpr) (ast.Expr, bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return nil, false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Name != "strings" {
+		return nil, false
+	}
+	switch sel.Sel.Name {
+	case "Contains", "CutPrefix", "CutSuffix", "HasPrefix", "HasSuffix", "Replace", "ReplaceAll", "TrimPrefix", "TrimSuffix":
+		if len(call.Args) < 2 {
+			return nil, false
+		}
+		return call.Args[1], true
+	default:
+		return nil, false
+	}
+}
+
+func collectAffixPieces(expr ast.Expr, lits map[token.Pos]struct{}, idents map[*ast.Ident]struct{}) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING && lits != nil {
+			lits[e.Pos()] = struct{}{}
+		}
+	case *ast.Ident:
+		if idents != nil {
+			idents[e] = struct{}{}
+		}
+	case *ast.ParenExpr:
+		collectAffixPieces(e.X, lits, idents)
+	case *ast.BinaryExpr:
+		if e.Op == token.ADD {
+			collectAffixPieces(e.X, lits, idents)
+			collectAffixPieces(e.Y, lits, idents)
+		}
+	}
+}
+
+func astParents(root ast.Node) map[ast.Node]ast.Node {
+	parents := map[ast.Node]ast.Node{}
+	var stack []ast.Node
+	ast.Inspect(root, func(n ast.Node) bool {
+		if n == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return false
+		}
+		if len(stack) > 0 {
+			parents[n] = stack[len(stack)-1]
+		}
+		stack = append(stack, n)
+		return true
+	})
+	return parents
+}
+
+func isDefiningIdent(ident *ast.Ident, parents map[ast.Node]ast.Node) bool {
+	switch parent := parents[ident].(type) {
+	case *ast.ValueSpec:
+		return slices.Contains(parent.Names, ident)
+	case *ast.AssignStmt:
+		if parent.Tok != token.DEFINE {
+			return false
+		}
+		return slices.Contains(parent.Lhs, ast.Expr(ident))
+	}
+	return false
+}
+
+func novelHostObserved(host string, observed map[string]struct{}) bool {
+	if _, ok := observed[host]; ok {
+		return true
+	}
+	return registrableDomainObserved(host, observed)
+}
+
+// The apex is the same site as an observed subdomain. A lookalike label
+// or a host that only contains the apex as a suffix is a different domain.
+func registrableDomainObserved(host string, observed map[string]struct{}) bool {
+	if !isRegistrableDomain(host) {
+		return false
+	}
+	for candidate := range observed {
+		if candidate == host {
+			continue
+		}
+		reg, err := publicsuffix.EffectiveTLDPlusOne(candidate)
+		if err != nil || reg != host {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isRegistrableDomain(host string) bool {
+	reg, err := publicsuffix.EffectiveTLDPlusOne(host)
+	return err == nil && reg == host
 }
 
 type tokenSpan struct {

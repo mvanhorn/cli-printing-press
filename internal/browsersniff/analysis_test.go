@@ -786,6 +786,275 @@ func TestAnalyzeTraffic_InfersProtectionSiteFromAPIHostWhenTargetIsHostless(t *t
 	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
 }
 
+func TestAnalyzeTraffic_StaticAssetMarkersDoNotOutvoteCleanResponses(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.subito.it/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><title>Subito</title><body>annunci</body></html>`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://hades.subito.it/v1/search",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ads":[]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://dd.subito.it/tags.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* datadome recaptcha challenge turnstile cf_chl cloudflare */`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/_next/static/chunks/app.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* akamai perimeterx _px captcha challenge */`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/_next/static/css/app.css",
+				ResponseStatus:      200,
+				ResponseContentType: "text/css",
+				ResponseBody:        `/* cloudflare akamai datadome perimeterx */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "standard_http", analysis.Reachability.Mode)
+	assert.Empty(t, analysis.Protections)
+	assert.NotContains(t, analysis.GenerationHints, "requires_page_context")
+	assert.NotContains(t, analysis.GenerationHints, "requires_protected_client")
+}
+
+func TestAnalyzeTraffic_CleanDocumentKeepsFirstPartyWAFScript(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html",
+				ResponseBody:        `<html><title>Example</title></html>`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/challenge.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `window.awsWafCookieDomainList = ["example.com"];`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/_next/static/chunks/app.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* datadome akamai perimeterx cloudflare captcha challenge */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_clearance_http", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "aws_waf")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "datadome")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.NotContains(t, analysis.GenerationHints, "requires_page_context")
+}
+
+func TestAnalyzeTraffic_StaticAssetCaptchaWordsDoNotRequireBrowser(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.subito.it/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://dd.subito.it/tags.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* datadome recaptcha challenge turnstile */`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/_next/static/css/app.css",
+				ResponseStatus:      200,
+				ResponseContentType: "text/css",
+				ResponseBody:        `/* captcha challenge perimeterx */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_http", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "datadome")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.NotContains(t, analysis.GenerationHints, "requires_page_context")
+}
+
+func TestAnalyzeTraffic_DocumentChallengeStillRequiresBrowser(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.subito.it/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/",
+				ResponseStatus:      403,
+				ResponseContentType: "text/html",
+				ResponseBody:        `<html><title>Access denied</title><p>captcha challenge</p></html>`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://hades.subito.it/v1/search",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ads":[]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://dd.subito.it/tags.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* datadome recaptcha challenge akamai perimeterx cloudflare */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_required", analysis.Reachability.Mode)
+	assert.Contains(t, analysis.Reachability.Reasons, "CAPTCHA challenge observed")
+	assert.Contains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "datadome")
+	assert.Contains(t, analysis.GenerationHints, "requires_page_context")
+}
+
+func TestAnalyzeTraffic_HTMLChallengeAtScriptURLStillRequiresBrowser(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.subito.it/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/challenge.js",
+				ResponseStatus:      403,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><title>Access denied</title><p>captcha challenge</p></html>`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_required", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.Contains(t, analysis.GenerationHints, "requires_page_context")
+}
+
+func TestAnalyzeTraffic_AssetChallengeHeaderStillCounts(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.subito.it/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://hades.subito.it/v1/search",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ads":[]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://dd.subito.it/tags.js",
+				ResponseStatus:      403,
+				ResponseContentType: "application/javascript",
+				ResponseHeaders:     map[string]string{"CF-Mitigated": "challenge"},
+				ResponseBody:        `/* datadome recaptcha challenge */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_clearance_http", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "bot_challenge")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "datadome")
+	assert.NotContains(t, analysis.GenerationHints, "requires_page_context")
+}
+
+func TestAnalyzeTraffic_XHRCaptchaChallengeStillRequiresBrowser(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.subito.it/",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html",
+				ResponseBody:        `<html><title>Subito</title></html>`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://hades.subito.it/v1/login",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"error":"captcha required"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.subito.it/_next/static/chunks/app.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* datadome captcha challenge */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_required", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "datadome")
+	assert.Contains(t, analysis.GenerationHints, "requires_page_context")
+}
+
 func TestAnalyzeTraffic_TreatsCaptchaPrecheckAsInformational(t *testing.T) {
 	t.Parallel()
 

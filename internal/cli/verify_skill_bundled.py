@@ -1937,44 +1937,72 @@ def go_block_body(text: str, open_brace: int) -> str:
     return ""
 
 
+# Nested flag helpers are a normal way to share flags across sibling
+# commands. Follow the chain far enough for real CLIs, then stop so a
+# cycle cannot walk the package forever.
+_HELPER_WALK_MAX_DEPTH = 8
+
+
+def _helper_names_called_with_cmd(text: str) -> set[str]:
+    names: set[str] = set()
+    for m in HELPER_CALL_RE.finditer(text):
+        name = m.group(1)
+        if name not in _HELPER_CALL_IGNORE:
+            names.add(name)
+    return names
+
+
+def _cli_go_sources(cli_dir: Path) -> list[str]:
+    src = cli_dir / "internal/cli"
+    if not src.exists():
+        return []
+    texts: list[str] = []
+    for go_file in sorted(src.glob("*.go")):
+        if go_file.name.endswith("_test.go"):
+            continue
+        try:
+            texts.append(read_utf8(go_file))
+        except Exception:
+            continue
+    return texts
+
+
 def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name: str) -> bool:
-    """Return True if any helper called from cmd_files (with cmd as first arg)
-    declares flag_name in its body. One level of indirection only — no recursive
-    resolution."""
-    helper_names: set[str] = set()
+    """Return True if a helper called from cmd_files (with cmd as first arg)
+    declares flag_name, following nested helpers that also receive cmd.
+
+    A visited set and _HELPER_WALK_MAX_DEPTH bound cycles and deep chains.
+    """
+    texts = _cli_go_sources(cli_dir)
+    if not texts:
+        return False
+
+    frontier: set[str] = set()
     for f in cmd_files:
         try:
             text = read_utf8(f)
         except Exception:
             continue
-        for m in HELPER_CALL_RE.finditer(text):
-            name = m.group(1)
-            if name not in _HELPER_CALL_IGNORE:
-                helper_names.add(name)
-    if not helper_names:
-        return False
-
-    src = cli_dir / "internal/cli"
-    if not src.exists():
-        return False
-
-    func_re = re.compile(
-        r"func\s+("
-        + "|".join(re.escape(n) for n in helper_names)
-        + r")\s*\([^)]*\)\s*(?:\w+\s*)?\{"
-    )
-    for go_file in src.glob("*.go"):
-        if go_file.name.endswith("_test.go"):
-            continue
-        try:
-            text = read_utf8(go_file)
-        except Exception:
-            continue
-        for m in func_re.finditer(text):
-            body = go_block_body(text, m.end() - 1)
-            for _, name in iter_flag_declarations(body):
-                if name == flag_name:
-                    return True
+        frontier |= _helper_names_called_with_cmd(text)
+    seen: set[str] = set()
+    for _ in range(_HELPER_WALK_MAX_DEPTH):
+        names = {n for n in frontier if n not in seen}
+        if not names:
+            return False
+        seen |= names
+        frontier = set()
+        func_re = re.compile(
+            r"func\s+("
+            + "|".join(re.escape(n) for n in sorted(names))
+            + r")\s*\([^)]*\)\s*(?:\w+\s*)?\{"
+        )
+        for text in texts:
+            for m in func_re.finditer(text):
+                body = go_block_body(text, m.end() - 1)
+                for _, name in iter_flag_declarations(body):
+                    if name == flag_name:
+                        return True
+                frontier |= _helper_names_called_with_cmd(body)
     return False
 
 

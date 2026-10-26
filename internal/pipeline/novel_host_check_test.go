@@ -1172,3 +1172,100 @@ func newPlayCmd(path string) *cobra.Command {
 	got := checkReimplementation(cliDir, researchDir)
 	assert.Empty(t, got.UnverifiedHosts)
 }
+
+func TestNovelHostApexAndVocabularyNamespace(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"deals.go": `package cli
+
+import "strings"
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	var host, itemCondition string
+	if host == "subito.it" || strings.HasSuffix(host, ".subito.it") {
+		_ = host
+	}
+	if host == "evilsubito.it" || host == "subito.it.evil.com" || host == "shop.subito.it" {
+		_ = host
+	}
+	_ = strings.TrimPrefix(itemCondition, schemaOrgPrefix)
+	_ = strings.TrimPrefix(itemCondition, "https://schema.org/")
+	_ = strings.TrimPrefix(itemCondition, "https://www.schema.org/")
+	_ = strings.TrimPrefix(itemCondition, "https://notschema.org/")
+	_ = strings.TrimPrefix(itemCondition, "https://evil.schema.org/")
+	_ = strings.TrimPrefix(itemCondition, "https://schema.org.evil.com/")
+	_ = "https://ghost.unverified.example-api.com/v1/items"
+	// Use: "deals"
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Deals",
+		Command: "deals",
+	}})
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "observed-urls.txt"), []byte("https://www.subito.it/annunci\nhttps://hades.subito.it/v1/search\n"), 0o644))
+
+	got := checkReimplementation(cliDir, researchDir)
+	hosts := map[string]bool{}
+	for _, finding := range got.UnverifiedHosts {
+		hosts[finding.Host] = true
+	}
+	assert.False(t, hosts["subito.it"], "apex of an observed subdomain must pass: %#v", got.UnverifiedHosts)
+	assert.False(t, hosts["schema.org"], "schema.org trim prefix must pass: %#v", got.UnverifiedHosts)
+	assert.False(t, hosts["www.schema.org"], "www.schema.org trim prefix must pass: %#v", got.UnverifiedHosts)
+	for _, host := range []string{
+		"evilsubito.it",
+		"subito.it.evil.com",
+		"shop.subito.it",
+		"notschema.org",
+		"evil.schema.org",
+		"schema.org.evil.com",
+		"ghost.unverified.example-api.com",
+	} {
+		assert.True(t, hosts[host], "host %s must still fail: %#v", host, got.UnverifiedHosts)
+	}
+}
+
+func TestNovelHostApexDoesNotMatchLookalikeObservedHosts(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"deals.go": `package cli
+
+func newDealsCmd() {
+	host := "subito.it"
+	_ = host
+	// Use: "deals"
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Deals",
+		Command: "deals",
+	}})
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "observed-urls.txt"), []byte("https://www.evilsubito.it/\nhttps://subito.it.evil.com/path\n"), 0o644))
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.NotEmpty(t, got.UnverifiedHosts)
+	assert.Equal(t, "subito.it", got.UnverifiedHosts[0].Host)
+}
+
+func TestVocabularyNamespaceFetchStillFailsNovelHostGate(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"deals.go": `package cli
+
+import "net/http"
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	_, _ = http.Get(schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+	}, []NovelFeature{{
+		Name:    "Deals",
+		Command: "deals",
+	}})
+
+	got := checkReimplementation(cliDir, researchDir)
+	require.NotEmpty(t, got.UnverifiedHosts)
+	assert.Equal(t, "schema.org", got.UnverifiedHosts[0].Host)
+}

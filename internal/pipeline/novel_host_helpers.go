@@ -155,15 +155,27 @@ func reachNovelHelpers(cliDir, module string, pkg *goSourcePkg, origin *goSource
 		}
 	}
 
+	affixCache := map[*ast.File]map[token.Pos]struct{}{}
+	affixOf := func(file *ast.File) map[token.Pos]struct{} {
+		if file == nil {
+			return nil
+		}
+		if set, ok := affixCache[file]; ok {
+			return set
+		}
+		set := vocabularyAffixLiterals(file)
+		affixCache[file] = set
+		return set
+	}
 	var declared []novelHostDecl
 	for i := 0; i < len(queue); i++ {
 		item := queue[i]
 		if item.sym == nil {
-			declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.file.file, label)...)
+			declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.file.file, label, affixOf(item.file.file))...)
 			follow(packageOf(cache, item.file, pkg), item.file, item.file.file, nil)
 			continue
 		}
-		declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.sym.node, label)...)
+		declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.sym.node, label, affixOf(item.file.file))...)
 		locals := map[string]bool{}
 		if fn, ok := item.sym.node.(*ast.FuncDecl); ok {
 			locals = localsInFunc(fn)
