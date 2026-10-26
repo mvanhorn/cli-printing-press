@@ -1512,6 +1512,102 @@ func newDealsCmd() {
 			present: []string{"schema.org"},
 		},
 		{
+			name: "grouped const inherited alias then fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import (
+	"net/http"
+	"strings"
+)
+
+const (
+	base = "https://schema.org/"
+	trim = base
+	fetch
+)
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, trim)
+	_, _ = http.Get(fetch)
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "grouped const inherited alias trim only",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+const (
+	base = "https://schema.org/"
+	trim = base
+	also
+)
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, trim)
+	_ = strings.TrimPrefix(item, also)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "local grouped const inherited alias then fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import (
+	"net/http"
+	"strings"
+)
+
+func newDealsCmd() {
+	const (
+		base = "https://schema.org/"
+		trim = base
+		fetch
+	)
+	var item string
+	_ = strings.TrimPrefix(item, trim)
+	_, _ = http.Get(fetch)
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "local grouped const inherited alias trim only",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+func newDealsCmd() {
+	const (
+		base = "https://schema.org/"
+		trim = base
+		also
+	)
+	var item string
+	_ = strings.TrimPrefix(item, trim)
+	_ = strings.TrimPrefix(item, also)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
 			name: "shadow fetch before local declaration",
 			files: map[string]string{
 				"deals.go": `package cli

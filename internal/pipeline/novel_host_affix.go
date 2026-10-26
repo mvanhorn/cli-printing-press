@@ -235,26 +235,37 @@ func (w *affixWalker) walkPackageValues(gd *ast.GenDecl, scope *affixScope) {
 	if gd.Tok != token.CONST && gd.Tok != token.VAR {
 		return
 	}
+	var prev []ast.Expr
 	for _, spec := range gd.Specs {
 		vs, ok := spec.(*ast.ValueSpec)
-		if !ok || len(vs.Values) == 0 {
+		if !ok {
 			continue
 		}
-		if len(vs.Names) == len(vs.Values) {
+		// A const spec with no expression list repeats the previous list.
+		values := vs.Values
+		if len(values) == 0 && gd.Tok == token.CONST && len(prev) == len(vs.Names) {
+			values = prev
+		} else if len(vs.Values) > 0 {
+			prev = vs.Values
+		}
+		if len(values) == 0 {
+			continue
+		}
+		if len(vs.Names) == len(values) {
 			for i, name := range vs.Names {
 				if name == nil {
 					continue
 				}
 				b := w.pkg.lookup(name.Name)
-				if b != nil && b.file == w.file && b.rhs == vs.Values[i] {
-					w.walkExpr(vs.Values[i], scope, modeAlias, b)
+				if b != nil && b.file == w.file && b.rhs == values[i] {
+					w.walkExpr(values[i], scope, modeAlias, b)
 					continue
 				}
-				w.walkExpr(vs.Values[i], scope, modeOther, nil)
+				w.walkExpr(values[i], scope, modeOther, nil)
 			}
 			continue
 		}
-		for _, val := range vs.Values {
+		for _, val := range values {
 			w.walkExpr(val, scope, modeOther, nil)
 		}
 	}
@@ -523,6 +534,8 @@ func (w *affixWalker) bindLocal(scope *affixScope, name *ast.Ident, rhs ast.Expr
 		return
 	}
 	b := &affixBinding{file: w.file, rhs: rhs}
+	// rhs is the previous const expression this spec omitted.
+	w.walkExpr(rhs, scope, modeAlias, b)
 	scope.names[name.Name] = b
 	*w.locals = append(*w.locals, b)
 }
