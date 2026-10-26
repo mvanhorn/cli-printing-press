@@ -146,7 +146,7 @@ func unverifiedNovelHosts(in NovelHostInput) []ReimplementationFinding {
 	seen := map[string]bool{}
 	dnsErr := map[string]error{}
 	for _, decl := range declared {
-		if _, ok := observed[decl.host]; !ok {
+		if !novelHostObserved(decl.host, observed) {
 			key := decl.feature + "\x00" + decl.file + "\x00" + strconv.Itoa(decl.line) + "\x00" + decl.host
 			if !seen[key] {
 				seen[key] = true
@@ -252,7 +252,6 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 	}
 	var declared []novelHostDecl
 	contents := make(map[string]string, len(entries))
-	var sources []novelSourceFile
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -262,13 +261,21 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		if err != nil {
 			continue
 		}
-		content := string(data)
-		contents[name] = content
+		contents[name] = string(data)
+	}
+	names := make([]string, 0, len(contents))
+	for name := range contents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var sources []novelSourceFile
+	for _, name := range names {
+		content := contents[name]
 		if !novelCommandSource(content, name, leaves) {
 			continue
 		}
 		label := novelSourceFeature(content, leaves)
-		declared = append(declared, hostsInGoSource(name, content, label)...)
+		declared = append(declared, hostsInGoPackage(name, content, label, contents)...)
 		sources = append(sources, novelSourceFile{name: name, content: content, label: label})
 	}
 	declared = append(declared, hostsFromNovelHelpers(cliDir, cliFilesDir, contents, sources, leaves)...)
@@ -306,15 +313,31 @@ func novelSourceFeature(content string, leaves map[string]string) string {
 }
 
 func hostsInGoSource(filename, content, feature string) []novelHostDecl {
+	return hostsInGoPackage(filename, content, feature, nil)
+}
+
+func hostsInGoPackage(filename, content, feature string, pkg map[string]string) []novelHostDecl {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, content, parser.SkipObjectResolution)
 	if err != nil {
 		return nil
 	}
-	return hostsInAST(fset, filename, file, feature)
+	var siblings []*ast.File
+	for name, src := range pkg {
+		if name == filename || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		// Own FileSet: token positions are not unique across files.
+		sib, err := parser.ParseFile(token.NewFileSet(), name, src, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		siblings = append(siblings, sib)
+	}
+	return hostsInAST(fset, filename, file, feature, vocabularyAffixLiterals(file, siblings))
 }
 
-func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature string) []novelHostDecl {
+func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature string, affixLits map[token.Pos]struct{}) []novelHostDecl {
 	if node == nil {
 		return nil
 	}
@@ -327,6 +350,9 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		}
 		val, unquoteErr := strconv.Unquote(lit.Value)
 		if unquoteErr != nil {
+			return true
+		}
+		if _, ok := affixLits[lit.Pos()]; ok && vocabularyNamespaceLiteral(val) {
 			return true
 		}
 		line := fset.Position(lit.Pos()).Line
@@ -344,6 +370,93 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		return true
 	})
 	return declared
+}
+
+// schema.org publishes JSON-LD type IRIs. Matching or stripping that
+// namespace is not a request. A fetch of the same host still counts.
+var vocabularyNamespaceHosts = map[string]bool{
+	"schema.org":     true,
+	"www.schema.org": true,
+}
+
+func vocabularyNamespaceLiteral(val string) bool {
+	hosts := hostsInLiteral(val)
+	if len(hosts) == 0 {
+		return false
+	}
+	for _, host := range hosts {
+		if !vocabularyNamespaceHosts[host] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringsAffixExpr(call *ast.CallExpr) (ast.Expr, bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil {
+		return nil, false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Name != "strings" {
+		return nil, false
+	}
+	switch sel.Sel.Name {
+	case "Contains", "CutPrefix", "CutSuffix", "HasPrefix", "HasSuffix", "Replace", "ReplaceAll", "TrimPrefix", "TrimSuffix":
+		if len(call.Args) < 2 {
+			return nil, false
+		}
+		return call.Args[1], true
+	default:
+		return nil, false
+	}
+}
+
+func collectAffixPieces(expr ast.Expr, lits map[token.Pos]struct{}) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING && lits != nil {
+			lits[e.Pos()] = struct{}{}
+		}
+	case *ast.ParenExpr:
+		collectAffixPieces(e.X, lits)
+	case *ast.BinaryExpr:
+		if e.Op == token.ADD {
+			collectAffixPieces(e.X, lits)
+			collectAffixPieces(e.Y, lits)
+		}
+	}
+}
+
+func novelHostObserved(host string, observed map[string]struct{}) bool {
+	if _, ok := observed[host]; ok {
+		return true
+	}
+	return registrableDomainObserved(host, observed)
+}
+
+// The apex is the same site as an observed subdomain. A lookalike label
+// or a host that only contains the apex as a suffix is a different domain.
+func registrableDomainObserved(host string, observed map[string]struct{}) bool {
+	if !isRegistrableDomain(host) {
+		return false
+	}
+	for candidate := range observed {
+		if candidate == host {
+			continue
+		}
+		reg, err := publicsuffix.EffectiveTLDPlusOne(candidate)
+		if err != nil || reg != host {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isRegistrableDomain(host string) bool {
+	reg, err := publicsuffix.EffectiveTLDPlusOne(host)
+	return err == nil && reg == host
 }
 
 type tokenSpan struct {

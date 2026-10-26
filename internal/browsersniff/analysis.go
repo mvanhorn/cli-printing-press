@@ -914,16 +914,15 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 
 	protectionSites := protectionSitesForEntries(entries, targetURL)
 	apiHosts := apiHostsForProtection(entries)
+	cleanSurface := hasCleanDocumentOrXHR(entries, protectionSites, apiHosts)
 	for index, entry := range entries {
-		entryHost := normalizedURLHost(entry.URL)
-		// If no real target or API host is known, keep the legacy broad scan
-		// instead of dropping possible protection evidence from a sparse capture.
-		if len(protectionSites) > 0 && !apiHosts[entryHost] && !protectionSites[registeredDomainOrHost(entryHost)] {
+		if !entryInProtectionScope(entry, protectionSites, apiHosts) {
 			continue
 		}
 		body := strings.ToLower(entry.ResponseBody)
 		headers := lowerHeaderMap(entry.ResponseHeaders)
 		server := headers["server"]
+		policy := bodyMarkerPolicy(entry, cleanSurface)
 		if headers["cf-mitigated"] == "challenge" {
 			add("bot_challenge", 0.97, entry, index, "Cloudflare managed challenge header", "requires browser clearance")
 		}
@@ -931,22 +930,20 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 			add("bot_challenge", 0.95, entry, index, "Vercel challenge header", "requires browser clearance")
 			add("vercel_challenge", 0.9, entry, index, "Vercel challenge header")
 		}
-		if headers["aws-waf-token"] != "" || anyHeaderPrefix(headers, "x-amzn-waf") || strings.Contains(body, "awswaf") || strings.Contains(body, "aws-waf") {
+		wafHeader := headers["aws-waf-token"] != "" || anyHeaderPrefix(headers, "x-amzn-waf")
+		wafBody := strings.Contains(body, "awswaf") || strings.Contains(body, "aws-waf")
+		if wafHeader || (policy.waf && wafBody) {
 			add("aws_waf", 0.9, entry, index, "AWS WAF challenge marker", "requires browser clearance")
 		}
 		switch {
-		case strings.Contains(server, "cloudflare") || headers["cf-ray"] != "" || strings.Contains(body, "cf-chl") || strings.Contains(body, "cloudflare"):
+		case strings.Contains(server, "cloudflare") || headers["cf-ray"] != "" || (policy.vendor && (strings.Contains(body, "cf-chl") || strings.Contains(body, "cloudflare"))):
 			add("cloudflare", 0.9, entry, index, "Cloudflare header or challenge marker")
-		case headers["x-akamai-transformed"] != "" || strings.Contains(body, "akamai"):
+		case headers["x-akamai-transformed"] != "" || (policy.vendor && strings.Contains(body, "akamai")):
 			add("akamai", 0.75, entry, index, "Akamai header or body marker")
-		case headers["x-datadome"] != "" || strings.Contains(body, "datadome"):
+		case headers["x-datadome"] != "" || (policy.vendor && strings.Contains(body, "datadome")):
 			add("datadome", 0.85, entry, index, "DataDome marker")
-		case strings.Contains(body, "perimeterx") || strings.Contains(body, "_px"):
+		case policy.vendor && (strings.Contains(body, "perimeterx") || strings.Contains(body, "_px")):
 			add("perimeterx", 0.8, entry, index, "PerimeterX marker")
-		}
-
-		if hasCaptchaChallengeMarker(entry, body) {
-			add("captcha", 0.85, entry, index, "CAPTCHA marker")
 		}
 		if entry.ResponseStatus == 403 || entry.ResponseStatus == 429 {
 			if strings.Contains(entry.ResponseContentType, "html") || strings.Contains(body, "access denied") || strings.Contains(body, "too many requests") {
@@ -958,6 +955,9 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 			if strings.Contains(strings.ToLower(location), "login") || strings.Contains(strings.ToLower(location), "signin") {
 				add("login_redirect", 0.8, entry, index, "redirect to login")
 			}
+		}
+		if policy.captcha && hasCaptchaChallengeMarker(entry, body) {
+			add("captcha", 0.85, entry, index, "CAPTCHA marker")
 		}
 	}
 
@@ -972,6 +972,84 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 		return out[i].Confidence > out[j].Confidence
 	})
 	return out
+}
+
+// JS and CSS quote anti-bot SDK names. Those body substrings are not a
+// challenge: they must not outvote a clean document or XHR, and captcha
+// words in an asset must not set browser_required on their own. Header
+// signals, denial and login responses, and a first-party challenge script
+// stay evidence even on a static asset.
+type protectionBodyPolicy struct {
+	vendor  bool
+	waf     bool
+	captcha bool
+}
+
+func bodyMarkerPolicy(entry EnrichedEntry, cleanSurface bool) protectionBodyPolicy {
+	if !isStaticAssetResponse(entry) {
+		return protectionBodyPolicy{vendor: true, waf: true, captcha: true}
+	}
+	if cleanSurface {
+		return protectionBodyPolicy{waf: true}
+	}
+	return protectionBodyPolicy{vendor: true, waf: true}
+}
+
+func isStaticAssetResponse(entry EnrichedEntry) bool {
+	media, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(entry.ResponseContentType)), ";")
+	media = strings.TrimSpace(media)
+	switch {
+	case strings.Contains(media, "html"), strings.Contains(media, "json"), strings.Contains(media, "xml"):
+		return false
+	case strings.Contains(media, "javascript"), strings.Contains(media, "ecmascript"), media == "text/css", media == "application/css":
+		return true
+	}
+	path := strings.ToLower(extractPath(entry.URL))
+	return strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs") || strings.HasSuffix(path, ".cjs") || strings.HasSuffix(path, ".css")
+}
+
+func hasCleanDocumentOrXHR(entries []EnrichedEntry, protectionSites, apiHosts map[string]bool) bool {
+	for _, entry := range entries {
+		if !entryInProtectionScope(entry, protectionSites, apiHosts) {
+			continue
+		}
+		if isCleanDocumentOrXHR(entry) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCleanDocumentOrXHR(entry EnrichedEntry) bool {
+	if isStaticAssetResponse(entry) || !isDocumentOrXHR(entry) {
+		return false
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return false
+	}
+	headers := lowerHeaderMap(entry.ResponseHeaders)
+	if headers["cf-mitigated"] == "challenge" || headers["x-vercel-mitigated"] == "challenge" || headers["x-vercel-challenge-token"] != "" {
+		return false
+	}
+	return !hasCaptchaChallengeMarker(entry, strings.ToLower(entry.ResponseBody))
+}
+
+func isDocumentOrXHR(entry EnrichedEntry) bool {
+	if entry.Classification == "api" {
+		return true
+	}
+	ct := strings.ToLower(entry.ResponseContentType)
+	return strings.Contains(ct, "html") || strings.Contains(ct, "json") || strings.Contains(ct, "xml")
+}
+
+// If no real target or API host is known, keep the legacy broad scan
+// instead of dropping possible protection evidence from a sparse capture.
+func entryInProtectionScope(entry EnrichedEntry, protectionSites, apiHosts map[string]bool) bool {
+	if len(protectionSites) == 0 {
+		return true
+	}
+	host := normalizedURLHost(entry.URL)
+	return apiHosts[host] || protectionSites[registeredDomainOrHost(host)]
 }
 
 func protectionSitesForEntries(entries []EnrichedEntry, targetURL string) map[string]bool {

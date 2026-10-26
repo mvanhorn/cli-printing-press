@@ -155,15 +155,36 @@ func reachNovelHelpers(cliDir, module string, pkg *goSourcePkg, origin *goSource
 		}
 	}
 
+	affixCache := map[*ast.File]map[token.Pos]struct{}{}
+	affixOf := func(gf *goSourceFile) map[token.Pos]struct{} {
+		if gf == nil || gf.file == nil {
+			return nil
+		}
+		if set, ok := affixCache[gf.file]; ok {
+			return set
+		}
+		owner := packageOf(cache, gf, pkg)
+		var siblings []*ast.File
+		if owner != nil {
+			for _, other := range owner.files {
+				if other != nil && other.file != nil && other.file != gf.file {
+					siblings = append(siblings, other.file)
+				}
+			}
+		}
+		set := vocabularyAffixLiterals(gf.file, siblings)
+		affixCache[gf.file] = set
+		return set
+	}
 	var declared []novelHostDecl
 	for i := 0; i < len(queue); i++ {
 		item := queue[i]
 		if item.sym == nil {
-			declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.file.file, label)...)
+			declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.file.file, label, affixOf(item.file))...)
 			follow(packageOf(cache, item.file, pkg), item.file, item.file.file, nil)
 			continue
 		}
-		declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.sym.node, label)...)
+		declared = append(declared, hostsInAST(item.file.fset, item.file.report, item.sym.node, label, affixOf(item.file))...)
 		locals := map[string]bool{}
 		if fn, ok := item.sym.node.(*ast.FuncDecl); ok {
 			locals = localsInFunc(fn)

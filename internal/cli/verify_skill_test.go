@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/require"
@@ -581,6 +583,220 @@ func Execute() error {
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
 	require.NoError(t, err, "verifier must accept flags declared via one level of helper indirection; got: %s", string(out))
 	require.Contains(t, string(out), "All checks passed")
+}
+
+// TestVerifySkill_FlagDeclaredViaNestedHelpers is the market-deals shape:
+// addCompsFlags(cmd) calls addSearchFlags(cmd), which calls addPagingFlags(cmd).
+func TestVerifySkill_FlagDeclaredViaNestedHelpers(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli market deals --query shoes --limit 5\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newMarketCmd())
+	rootCmd.AddCommand(newOtherCmd())
+	return rootCmd.Execute()
+}
+`,
+		"market.go": `package cli
+import "github.com/spf13/cobra"
+func newMarketCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "market"}
+	cmd.AddCommand(newDealsCmd())
+	return cmd
+}
+func newOtherCmd() *cobra.Command {
+	var region string
+	cmd := &cobra.Command{Use: "other"}
+	cmd.Flags().StringVar(&region, "region", "", "Region")
+	return cmd
+}
+`,
+		"deals.go": `package cli
+import "github.com/spf13/cobra"
+type compsOpts struct{ search searchOpts }
+func newDealsCmd() *cobra.Command {
+	var o compsOpts
+	cmd := &cobra.Command{Use: "deals"}
+	addCompsFlags(cmd, &o)
+	return cmd
+}
+`,
+		"flags.go": `package cli
+import "github.com/spf13/cobra"
+type searchOpts struct {
+	q string
+	limit int
+}
+func addCompsFlags(cmd *cobra.Command, o *compsOpts) {
+	addSearchFlags(cmd, &o.search)
+}
+func addSearchFlags(cmd *cobra.Command, s *searchOpts) {
+	cmd.Flags().StringVar(&s.q, "query", "", "Query")
+	addPagingFlags(cmd, s)
+}
+func addPagingFlags(cmd *cobra.Command, s *searchOpts) {
+	cmd.Flags().IntVar(&s.limit, "limit", 10, "Limit")
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.NoError(t, err, "nested helper flags must resolve; got: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
+func TestVerifySkill_FlagMissingFromNestedHelpersStillErrors(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli market deals --region eu --nope x\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newMarketCmd())
+	rootCmd.AddCommand(newOtherCmd())
+	return rootCmd.Execute()
+}
+`,
+		"market.go": `package cli
+import "github.com/spf13/cobra"
+func newMarketCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "market"}
+	cmd.AddCommand(newDealsCmd())
+	return cmd
+}
+func newOtherCmd() *cobra.Command {
+	var region string
+	cmd := &cobra.Command{Use: "other"}
+	cmd.Flags().StringVar(&region, "region", "", "Region")
+	return cmd
+}
+`,
+		"deals.go": `package cli
+import "github.com/spf13/cobra"
+func newDealsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "deals"}
+	addCompsFlags(cmd)
+	return cmd
+}
+`,
+		"flags.go": `package cli
+import "github.com/spf13/cobra"
+func addCompsFlags(cmd *cobra.Command) {
+	addSearchFlags(cmd)
+}
+func addSearchFlags(cmd *cobra.Command) {
+	var q string
+	cmd.Flags().StringVar(&q, "query", "", "Query")
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.Error(t, err, "a flag outside the helper chain must still fail: %s", string(out))
+	require.Contains(t, string(out), "--region is declared elsewhere but not on market deals")
+	require.Contains(t, string(out), "--nope is not declared anywhere")
+}
+
+func TestVerifySkill_FlagHelperCycleTerminates(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli deals --query shoes\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newDealsCmd())
+	return rootCmd.Execute()
+}
+`,
+		"deals.go": `package cli
+import "github.com/spf13/cobra"
+func newDealsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "deals"}
+	addCompsFlags(cmd)
+	return cmd
+}
+`,
+		"flags.go": `package cli
+import "github.com/spf13/cobra"
+func addCompsFlags(cmd *cobra.Command) { addSearchFlags(cmd) }
+func addSearchFlags(cmd *cobra.Command) { addCompsFlags(cmd) }
+`,
+	}, skill)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "verify-skill", "--dir", dir)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("verify-skill did not finish; helper walk may be unbounded: %s", out)
+	}
+	require.Error(t, err, "a cyclic helper chain must not invent a flag: %s", out)
+	require.Contains(t, string(out), "--query is not declared anywhere")
+}
+
+func TestVerifySkill_FlagHelperDepthGuard(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	var b strings.Builder
+	b.WriteString("package cli\nimport \"github.com/spf13/cobra\"\n")
+	for i := 1; i <= 9; i++ {
+		if i < 9 {
+			fmt.Fprintf(&b, "func addH%d(cmd *cobra.Command) { addH%d(cmd) }\n", i, i+1)
+			continue
+		}
+		b.WriteString("func addH9(cmd *cobra.Command) {\n\tvar v string\n\tcmd.Flags().StringVar(&v, \"deep\", \"\", \"Deep\")\n}\n")
+	}
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli deals --deep x\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newDealsCmd())
+	return rootCmd.Execute()
+}
+`,
+		"deals.go": `package cli
+import "github.com/spf13/cobra"
+func newDealsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "deals"}
+	addH1(cmd)
+	return cmd
+}
+`,
+		"flags.go": b.String(),
+	}, skill)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "verify-skill", "--dir", dir)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("verify-skill did not finish; helper walk may be unbounded: %s", out)
+	}
+	require.Error(t, err, "a helper past the depth guard must not count as declaring the flag: %s", out)
+	require.Contains(t, string(out), "--deep is declared elsewhere but not on deals")
 }
 
 // TestVerifySkill_FlagHelperDoesNotScanAdjacentFunctions confirms helper
