@@ -93,7 +93,7 @@ not touched. Stop other processes using the store first, such as an MCP server.`
 				}
 			}
 			if flags.asJSON {
-				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{"dry_run": !apply, "targets": targets, "total_bytes": total, "errors": failures}, flags); err != nil {
+				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{"action": "local-data purge", "dry_run": !apply, "targets": targets, "total_bytes": total, "errors": failures}, flags); err != nil {
 					return err
 				}
 			} else {

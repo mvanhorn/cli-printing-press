@@ -154,6 +154,25 @@ func TestLocalDataPurgeReportsUnreadableDir(t *testing.T) {
 	}
 }
 
+// The live dogfood contract requires a non-empty top-level "action" on every
+// --dry-run --json answer.
+func TestLocalDataPurgeDryRunJSONHasAction(t *testing.T) {
+	home := relocateLocalData(t)
+	seedLocalFiles(t, home, "data/data.db")
+
+	var payload struct {
+		DryRun bool   ` + "`json:\"dry_run\"`" + `
+		Action string ` + "`json:\"action\"`" + `
+	}
+	out := runLocalDataPurge(t, &rootFlags{asJSON: true})
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if !payload.DryRun || strings.TrimSpace(payload.Action) == "" {
+		t.Fatalf("dry-run payload = %+v, want dry_run true and a non-empty action", payload)
+	}
+}
+
 func TestLocalDataPurgeOnlyCache(t *testing.T) {
 	seeded := seedLocalFiles(t, relocateLocalData(t), "data/data.db", "cache/http/resources/items/k.json")
 	store, cached := seeded[0], seeded[1]
