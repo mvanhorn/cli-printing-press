@@ -2308,3 +2308,32 @@ func Load() *Config {
 	assert.ElementsMatch(t, []string{"SHOPIFY_SHOP", "SHOPIFY_API_VERSION"}, gotTemplate,
 		"discoverCLITemplateVarEnvs must return the template-var env names so mock mode can inject placeholder values")
 }
+
+func TestVerifyEnvPrefixUsesManifestAPIName(t *testing.T) {
+	t.Run("manifest wins over the folder name", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "renamed-copy")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{APIName: "petstore", CLIName: "petstore-pp-cli"}))
+		assert.Equal(t, "PETSTORE", verifyEnvPrefix(dir))
+	})
+
+	t.Run("hyphenated API name matches the generated config", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "anything")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{APIName: "cal-com", CLIName: "cal-com-pp-cli"}))
+		assert.Equal(t, "CAL_COM", verifyEnvPrefix(dir))
+	})
+
+	t.Run("no manifest falls back to the folder name", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "petstore-pp-cli")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		assert.Equal(t, "PETSTORE", verifyEnvPrefix(dir))
+	})
+
+	t.Run("manifest without an API name falls back to the folder name", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "my-api")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{CLIName: "other-pp-cli"}))
+		assert.Equal(t, "MY_API", verifyEnvPrefix(dir))
+	})
+}
