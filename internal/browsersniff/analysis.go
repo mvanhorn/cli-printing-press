@@ -935,27 +935,25 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 		if wafHeader || (policy.waf && wafBody) {
 			add("aws_waf", 0.9, entry, index, "AWS WAF challenge marker", "requires browser clearance")
 		}
-		if policy.vendor {
-			switch {
-			case strings.Contains(server, "cloudflare") || headers["cf-ray"] != "" || strings.Contains(body, "cf-chl") || strings.Contains(body, "cloudflare"):
-				add("cloudflare", 0.9, entry, index, "Cloudflare header or challenge marker")
-			case headers["x-akamai-transformed"] != "" || strings.Contains(body, "akamai"):
-				add("akamai", 0.75, entry, index, "Akamai header or body marker")
-			case headers["x-datadome"] != "" || strings.Contains(body, "datadome"):
-				add("datadome", 0.85, entry, index, "DataDome marker")
-			case strings.Contains(body, "perimeterx") || strings.Contains(body, "_px"):
-				add("perimeterx", 0.8, entry, index, "PerimeterX marker")
+		switch {
+		case strings.Contains(server, "cloudflare") || headers["cf-ray"] != "" || (policy.vendor && (strings.Contains(body, "cf-chl") || strings.Contains(body, "cloudflare"))):
+			add("cloudflare", 0.9, entry, index, "Cloudflare header or challenge marker")
+		case headers["x-akamai-transformed"] != "" || (policy.vendor && strings.Contains(body, "akamai")):
+			add("akamai", 0.75, entry, index, "Akamai header or body marker")
+		case headers["x-datadome"] != "" || (policy.vendor && strings.Contains(body, "datadome")):
+			add("datadome", 0.85, entry, index, "DataDome marker")
+		case policy.vendor && (strings.Contains(body, "perimeterx") || strings.Contains(body, "_px")):
+			add("perimeterx", 0.8, entry, index, "PerimeterX marker")
+		}
+		if entry.ResponseStatus == 403 || entry.ResponseStatus == 429 {
+			if strings.Contains(entry.ResponseContentType, "html") || strings.Contains(body, "access denied") || strings.Contains(body, "too many requests") {
+				add("protected_web", 0.75, entry, index, "403/429 HTML or access-denied response", "requires protected client handling")
 			}
-			if entry.ResponseStatus == 403 || entry.ResponseStatus == 429 {
-				if strings.Contains(entry.ResponseContentType, "html") || strings.Contains(body, "access denied") || strings.Contains(body, "too many requests") {
-					add("protected_web", 0.75, entry, index, "403/429 HTML or access-denied response", "requires protected client handling")
-				}
-			}
-			if entry.ResponseStatus >= 300 && entry.ResponseStatus < 400 {
-				location := getHeaderValue(entry.ResponseHeaders, "Location")
-				if strings.Contains(strings.ToLower(location), "login") || strings.Contains(strings.ToLower(location), "signin") {
-					add("login_redirect", 0.8, entry, index, "redirect to login")
-				}
+		}
+		if entry.ResponseStatus >= 300 && entry.ResponseStatus < 400 {
+			location := getHeaderValue(entry.ResponseHeaders, "Location")
+			if strings.Contains(strings.ToLower(location), "login") || strings.Contains(strings.ToLower(location), "signin") {
+				add("login_redirect", 0.8, entry, index, "redirect to login")
 			}
 		}
 		if policy.captcha && hasCaptchaChallengeMarker(entry, body) {
@@ -976,10 +974,11 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 	return out
 }
 
-// JS and CSS quote anti-bot SDK names. Those substrings are not a challenge:
-// they must not outvote a clean document or XHR, and captcha words in an
-// asset must not set browser_required on their own. A first-party challenge
-// script (AWS WAF) and header challenges stay evidence.
+// JS and CSS quote anti-bot SDK names. Those body substrings are not a
+// challenge: they must not outvote a clean document or XHR, and captcha
+// words in an asset must not set browser_required on their own. Header
+// signals, denial and login responses, and a first-party challenge script
+// stay evidence even on a static asset.
 type protectionBodyPolicy struct {
 	vendor  bool
 	waf     bool

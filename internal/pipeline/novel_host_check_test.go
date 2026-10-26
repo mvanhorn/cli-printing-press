@@ -1247,6 +1247,449 @@ func newDealsCmd() {
 	assert.Equal(t, "subito.it", got.UnverifiedHosts[0].Host)
 }
 
+func TestVocabularyNamespaceAffixExemptionScope(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		files   map[string]string
+		present []string
+		absent  []string
+	}{
+		{
+			name: "local const trim",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+func newDealsCmd() {
+	const prefix = "https://schema.org/"
+	var item string
+	_ = strings.TrimPrefix(item, prefix)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "local var trim",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+func newDealsCmd() {
+	var prefix = "https://schema.org/"
+	var item string
+	_ = strings.TrimPrefix(item, prefix)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "local const fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "net/http"
+
+func newDealsCmd() {
+	const prefix = "https://schema.org/"
+	_, _ = http.Get(prefix + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "local var fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "net/http"
+
+func newDealsCmd() {
+	var prefix = "https://schema.org/"
+	_, _ = http.Get(prefix + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "cross file fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, schemaOrgPrefix)
+	fetchSchema()
+	// Use: "deals"
+}
+`,
+				"schema_fetch.go": `package cli
+
+import "net/http"
+
+func fetchSchema() {
+	_, _ = http.Get(schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld")
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "const in other file fetched from command",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "net/http"
+
+func newDealsCmd() {
+	_, _ = http.Get(schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+				"schema_const.go": `package cli
+
+import "strings"
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func trimSchema(item string) string {
+	return strings.TrimPrefix(item, schemaOrgPrefix)
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "cross file trim only",
+			files: map[string]string{
+				"deals.go": `package cli
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	trimSchema("")
+	// Use: "deals"
+}
+`,
+				"schema_trim.go": `package cli
+
+import "strings"
+
+func trimSchema(item string) string {
+	return strings.TrimPrefix(item, schemaOrgPrefix)
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "alias const then fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	trimSchema("")
+	// Use: "deals"
+}
+`,
+				"schema_alias.go": `package cli
+
+import "net/http"
+
+const alias = schemaOrgPrefix
+const alias2 = alias
+
+func trimSchema(item string) string { return item }
+
+func fetchSchema() {
+	_, _ = http.Get(alias2 + "version/latest/schemaorg-current-https.jsonld")
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "alias const then trim",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+const schemaOrgPrefix = "https://schema.org/"
+const alias = schemaOrgPrefix
+const alias2 = alias
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, alias2)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "grouped const copy fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "net/http"
+
+const (
+	schemaOrgPrefix = "https://schema.org/"
+	alias
+)
+
+func newDealsCmd() {
+	_, _ = http.Get(alias + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "grouped const copy trim",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+const (
+	schemaOrgPrefix = "https://schema.org/"
+	alias
+)
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, alias)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "grouped const original fetch and copy trim",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import (
+	"net/http"
+	"strings"
+)
+
+const (
+	schemaOrgPrefix = "https://schema.org/"
+	alias
+)
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, alias)
+	_, _ = http.Get(schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "shadow fetch before local declaration",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import (
+	"net/http"
+	"strings"
+)
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func trimSchema(item string) string {
+	return strings.TrimPrefix(item, schemaOrgPrefix)
+}
+
+func newDealsCmd() {
+	_, _ = http.Get(schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld")
+	schemaOrgPrefix := "safe"
+	_ = strings.TrimPrefix("", schemaOrgPrefix)
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "param shadows package const",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import (
+	"net/http"
+	"strings"
+)
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, schemaOrgPrefix)
+	sneak("https://ghost.unverified.example-api.com/x")
+	// Use: "deals"
+}
+
+func sneak(schemaOrgPrefix string) {
+	_, _ = http.Get(schemaOrgPrefix)
+}
+`,
+			},
+			present: []string{"ghost.unverified.example-api.com"},
+			absent:  []string{"schema.org"},
+		},
+		{
+			name: "pass const into a fetch helper",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, schemaOrgPrefix)
+	fetchSchema(schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+				"schema_fetch.go": `package cli
+
+import "net/http"
+
+func fetchSchema(url string) {
+	_, _ = http.Get(url)
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "local alias then fetch",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import (
+	"net/http"
+	"strings"
+)
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	var item string
+	_ = strings.TrimPrefix(item, schemaOrgPrefix)
+	u := schemaOrgPrefix + "version/latest/schemaorg-current-https.jsonld"
+	_, _ = http.Get(u)
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "local const copied to var then trimmed",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "strings"
+
+func newDealsCmd() {
+	const prefix = "https://schema.org/"
+	var alias = prefix
+	var item string
+	_ = strings.TrimPrefix(item, alias)
+	// Use: "deals"
+}
+`,
+			},
+			absent: []string{"schema.org"},
+		},
+		{
+			name: "local const copied to var then fetched",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "net/http"
+
+func newDealsCmd() {
+	const prefix = "https://schema.org/"
+	var alias = prefix
+	_, _ = http.Get(alias + "version/latest/schemaorg-current-https.jsonld")
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+		{
+			name: "local shadow fetch does not hide package literal",
+			files: map[string]string{
+				"deals.go": `package cli
+
+import "net/http"
+
+const schemaOrgPrefix = "https://schema.org/"
+
+func newDealsCmd() {
+	schemaOrgPrefix := "https://schema.org/version/"
+	_, _ = http.Get(schemaOrgPrefix + "latest.jsonld")
+	// Use: "deals"
+}
+`,
+			},
+			present: []string{"schema.org"},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cliDir, researchDir := seedReimplementationFixture(t, tt.files, []NovelFeature{{
+				Name:    "Deals",
+				Command: "deals",
+			}})
+			got := checkReimplementation(cliDir, researchDir)
+			hosts := map[string]bool{}
+			for _, finding := range got.UnverifiedHosts {
+				hosts[finding.Host] = true
+			}
+			for _, host := range tt.present {
+				assert.True(t, hosts[host], "host %s must fail: %#v", host, got.UnverifiedHosts)
+			}
+			for _, host := range tt.absent {
+				assert.False(t, hosts[host], "host %s must pass: %#v", host, got.UnverifiedHosts)
+			}
+		})
+	}
+}
+
 func TestVocabularyNamespaceFetchStillFailsNovelHostGate(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"deals.go": `package cli

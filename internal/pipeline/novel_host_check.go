@@ -252,7 +252,6 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 	}
 	var declared []novelHostDecl
 	contents := make(map[string]string, len(entries))
-	var sources []novelSourceFile
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -262,13 +261,21 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		if err != nil {
 			continue
 		}
-		content := string(data)
-		contents[name] = content
+		contents[name] = string(data)
+	}
+	names := make([]string, 0, len(contents))
+	for name := range contents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var sources []novelSourceFile
+	for _, name := range names {
+		content := contents[name]
 		if !novelCommandSource(content, name, leaves) {
 			continue
 		}
 		label := novelSourceFeature(content, leaves)
-		declared = append(declared, hostsInGoSource(name, content, label)...)
+		declared = append(declared, hostsInGoPackage(name, content, label, contents)...)
 		sources = append(sources, novelSourceFile{name: name, content: content, label: label})
 	}
 	declared = append(declared, hostsFromNovelHelpers(cliDir, cliFilesDir, contents, sources, leaves)...)
@@ -306,12 +313,28 @@ func novelSourceFeature(content string, leaves map[string]string) string {
 }
 
 func hostsInGoSource(filename, content, feature string) []novelHostDecl {
+	return hostsInGoPackage(filename, content, feature, nil)
+}
+
+func hostsInGoPackage(filename, content, feature string, pkg map[string]string) []novelHostDecl {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, content, parser.SkipObjectResolution)
 	if err != nil {
 		return nil
 	}
-	return hostsInAST(fset, filename, file, feature, vocabularyAffixLiterals(file))
+	var siblings []*ast.File
+	for name, src := range pkg {
+		if name == filename || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		// Own FileSet: token positions are not unique across files.
+		sib, err := parser.ParseFile(token.NewFileSet(), name, src, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		siblings = append(siblings, sib)
+	}
+	return hostsInAST(fset, filename, file, feature, vocabularyAffixLiterals(file, siblings))
 }
 
 func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature string, affixLits map[token.Pos]struct{}) []novelHostDecl {
@@ -356,90 +379,6 @@ var vocabularyNamespaceHosts = map[string]bool{
 	"www.schema.org": true,
 }
 
-type nameUses struct {
-	affix int
-	other int
-}
-
-func vocabularyAffixLiterals(file *ast.File) map[token.Pos]struct{} {
-	lits := map[token.Pos]struct{}{}
-	if file == nil {
-		return lits
-	}
-	parents := astParents(file)
-	affixIdents := map[*ast.Ident]struct{}{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		affix, ok := stringsAffixExpr(call)
-		if !ok {
-			return true
-		}
-		collectAffixPieces(affix, lits, affixIdents)
-		return true
-	})
-	uses := map[string]nameUses{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		ident, ok := n.(*ast.Ident)
-		if !ok || ident.Name == "" || ident.Name == "_" {
-			return true
-		}
-		if _, ok := affixIdents[ident]; ok {
-			u := uses[ident.Name]
-			u.affix++
-			uses[ident.Name] = u
-			return true
-		}
-		if isDefiningIdent(ident, parents) {
-			return true
-		}
-		u := uses[ident.Name]
-		u.other++
-		uses[ident.Name] = u
-		return true
-	})
-	affixOnly := func(name string) bool {
-		u := uses[name]
-		return u.affix > 0 && u.other == 0
-	}
-	for _, decl := range file.Decls {
-		switch d := decl.(type) {
-		case *ast.GenDecl:
-			if d.Tok != token.CONST && d.Tok != token.VAR {
-				continue
-			}
-			for _, spec := range d.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
-					continue
-				}
-				if affixOnly(vs.Names[0].Name) {
-					collectAffixPieces(vs.Values[0], lits, nil)
-				}
-			}
-		case *ast.FuncDecl:
-			if d.Body == nil {
-				continue
-			}
-			ast.Inspect(d.Body, func(n ast.Node) bool {
-				as, ok := n.(*ast.AssignStmt)
-				if !ok || as.Tok != token.DEFINE || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
-					return true
-				}
-				ident, ok := as.Lhs[0].(*ast.Ident)
-				if !ok || !affixOnly(ident.Name) {
-					return true
-				}
-				collectAffixPieces(as.Rhs[0], lits, nil)
-				return true
-			})
-		}
-	}
-	return lits
-}
-
 func vocabularyNamespaceLiteral(val string) bool {
 	hosts := hostsInLiteral(val)
 	if len(hosts) == 0 {
@@ -473,56 +412,20 @@ func stringsAffixExpr(call *ast.CallExpr) (ast.Expr, bool) {
 	}
 }
 
-func collectAffixPieces(expr ast.Expr, lits map[token.Pos]struct{}, idents map[*ast.Ident]struct{}) {
+func collectAffixPieces(expr ast.Expr, lits map[token.Pos]struct{}) {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		if e.Kind == token.STRING && lits != nil {
 			lits[e.Pos()] = struct{}{}
 		}
-	case *ast.Ident:
-		if idents != nil {
-			idents[e] = struct{}{}
-		}
 	case *ast.ParenExpr:
-		collectAffixPieces(e.X, lits, idents)
+		collectAffixPieces(e.X, lits)
 	case *ast.BinaryExpr:
 		if e.Op == token.ADD {
-			collectAffixPieces(e.X, lits, idents)
-			collectAffixPieces(e.Y, lits, idents)
+			collectAffixPieces(e.X, lits)
+			collectAffixPieces(e.Y, lits)
 		}
 	}
-}
-
-func astParents(root ast.Node) map[ast.Node]ast.Node {
-	parents := map[ast.Node]ast.Node{}
-	var stack []ast.Node
-	ast.Inspect(root, func(n ast.Node) bool {
-		if n == nil {
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-			return false
-		}
-		if len(stack) > 0 {
-			parents[n] = stack[len(stack)-1]
-		}
-		stack = append(stack, n)
-		return true
-	})
-	return parents
-}
-
-func isDefiningIdent(ident *ast.Ident, parents map[ast.Node]ast.Node) bool {
-	switch parent := parents[ident].(type) {
-	case *ast.ValueSpec:
-		return slices.Contains(parent.Names, ident)
-	case *ast.AssignStmt:
-		if parent.Tok != token.DEFINE {
-			return false
-		}
-		return slices.Contains(parent.Lhs, ast.Expr(ident))
-	}
-	return false
 }
 
 func novelHostObserved(host string, observed map[string]struct{}) bool {
