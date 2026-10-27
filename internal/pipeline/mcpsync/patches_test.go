@@ -3,9 +3,12 @@ package mcpsync
 import (
 	"encoding/json"
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -175,6 +178,163 @@ func TestPreserveRecordedPatchSeamsAddsAliasImport(t *testing.T) {
 	assert.Contains(t, got, "metrics.Count() // PATCH(demo-seam")
 	assert.Contains(t, got, "fmt.Println(\"generated\")")
 	assert.Equal(t, 1, strings.Count(got, "example.com/metrics"))
+}
+
+func TestPreserveRecordedPatchSeamsRestoresEntrypointWhenHelperKeepsMarker(t *testing.T) {
+	t.Parallel()
+
+	mainRel := "cmd/app-pp-mcp/main.go"
+	helperRel := "internal/custom/setup.go"
+	helper := "package custom\n\nfunc Setup() {\n" + demoSeamLine + "\n}\n"
+	beforeMain := "package main\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n" + demoSeamLine + "\n}\n"
+	afterMain := "package main\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n}\n"
+	dir, mainPath := writeRelFile(t, mainRel, afterMain)
+	helperPath := filepath.Join(dir, filepath.FromSlash(helperRel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(helperPath), 0o755))
+	require.NoError(t, os.WriteFile(helperPath, []byte(helper), 0o644))
+
+	rec := demoRecord(mainRel)
+	rec.Files = []string{helperRel, mainRel}
+	require.NoError(t, preserveRecordedPatchSeams(dir, []pipeline.PatchRecord{rec}, map[string][]byte{
+		mainRel:   []byte(beforeMain),
+		helperRel: []byte(helper),
+	}))
+
+	got := string(mustRead(t, mainPath))
+	assert.Contains(t, got, demoSeamNeedle)
+	assert.Equal(t, helper, string(mustRead(t, helperPath)))
+	requireParses(t, got)
+}
+
+func TestPreserveRecordedPatchSeamsReportsDroppedEntrypointWhenHelperKeepsMarker(t *testing.T) {
+	t.Parallel()
+
+	mainRel := "cmd/app-pp-mcp/main.go"
+	helperRel := "internal/custom/setup.go"
+	helper := "package custom\n\nfunc Setup() {\n" + demoSeamLine + "\n}\n"
+	beforeMain := "package oldpkg\n\nfunc removed() {\n" + demoSeamLine + "\n}\n"
+	afterMain := "package main\n\nfunc main() {\n\tfmt.Println(\"one\")\n}\n\nfunc other() {\n\tfmt.Println(\"two\")\n}\n"
+	dir, mainPath := writeRelFile(t, mainRel, afterMain)
+	helperPath := filepath.Join(dir, filepath.FromSlash(helperRel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(helperPath), 0o755))
+	require.NoError(t, os.WriteFile(helperPath, []byte(helper), 0o644))
+
+	rec := demoRecord(mainRel)
+	rec.Files = []string{helperRel, mainRel}
+	err := preserveRecordedPatchSeams(dir, []pipeline.PatchRecord{rec}, map[string][]byte{
+		mainRel:   []byte(beforeMain),
+		helperRel: []byte(helper),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "demo-seam"`)
+	assert.Contains(t, err.Error(), mainRel)
+	assert.Equal(t, afterMain, string(mustRead(t, mainPath)))
+	assert.Equal(t, helper, string(mustRead(t, helperPath)))
+
+	writePatchFile(t, dir, "demo-seam.json", rec)
+	// The helper still satisfies the any-file needle check. Preservation
+	// has to report the dropped entrypoint on its own.
+	require.NoError(t, pipeline.ValidatePatchRecords(dir))
+}
+
+func TestPreserveRecordedPatchSeamsRenamesImplicitImport(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport (\n\tappcli \"example.com/cli\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tappcli.CustomSetup() // PATCH(demo-seam\n}\n"
+	after := "package main\n\nimport (\n\t\"example.com/cli\"\n\t\"fmt\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tcli.Keep()\n\tfn().Keep()\n\tfmt.Println(\"cli.Keep\")\n}\n"
+	rec := demoRecord("cmd/app-pp-mcp/main.go")
+	rec.Markers = []string{"appcli.CustomSetup() // PATCH(demo-seam"}
+	got := preserveSeam(t, "cmd/app-pp-mcp/main.go", before, after, rec)
+
+	assert.Contains(t, got, "\tappcli \"example.com/cli\"\n")
+	assert.NotContains(t, got, "\t\"example.com/cli\"\n")
+	assert.Contains(t, got, "appcli.Keep()")
+	assert.Contains(t, got, "appcli.CustomSetup() // PATCH(demo-seam")
+	assert.Contains(t, got, "fn().Keep()")
+	assert.Contains(t, got, "\"cli.Keep\"")
+	assert.NotContains(t, got, "\tcli.Keep()")
+	assert.Equal(t, 1, strings.Count(got, "example.com/cli"))
+	requireParses(t, got)
+}
+
+func TestPreserveRecordedPatchSeamsRenamesExplicitImport(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport (\n\tappcli \"example.com/cli\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tappcli.CustomSetup() // PATCH(demo-seam\n}\n"
+	after := "package main\n\nimport (\n\tcli \"example.com/cli\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tcli.Keep()\n}\n"
+	rec := demoRecord("cmd/app-pp-mcp/main.go")
+	rec.Markers = []string{"appcli.CustomSetup() // PATCH(demo-seam"}
+	got := preserveSeam(t, "cmd/app-pp-mcp/main.go", before, after, rec)
+
+	assert.Contains(t, got, "\tappcli \"example.com/cli\"\n")
+	assert.NotContains(t, got, "\tcli \"example.com/cli\"\n")
+	assert.Contains(t, got, "appcli.Keep()")
+	assert.Contains(t, got, "appcli.CustomSetup() // PATCH(demo-seam")
+	requireParses(t, got)
+}
+
+func TestPreserveRecordedPatchSeamsKeepsMatchingImportName(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport (\n\tappcli \"example.com/cli\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tappcli.CustomSetup() // PATCH(demo-seam\n}\n"
+	after := "package main\n\nimport (\n\t\"fmt\"\n\tappcli \"example.com/cli\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tappcli.Keep()\n\tfmt.Println(\"generated\")\n}\n"
+	rec := demoRecord("cmd/app-pp-mcp/main.go")
+	rec.Markers = []string{"appcli.CustomSetup() // PATCH(demo-seam"}
+	got := preserveSeam(t, "cmd/app-pp-mcp/main.go", before, after, rec)
+
+	assert.Equal(t, 1, strings.Count(got, "example.com/cli"))
+	assert.Contains(t, got, "appcli.Keep()")
+	assert.Contains(t, got, "appcli.CustomSetup() // PATCH(demo-seam")
+	assert.Contains(t, got, "fmt.Println(\"generated\")")
+	requireParses(t, got)
+}
+
+func TestPreserveRecordedPatchSeamsRejectsImportNameCollision(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport (\n\tappcli \"example.com/cli\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tappcli.CustomSetup() // PATCH(demo-seam\n}\n"
+	after := "package main\n\nimport (\n\t\"example.com/cli\"\n\tappcli \"example.com/other\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tcli.Keep()\n}\n"
+	dir, path := writeRelFile(t, "cmd/app-pp-mcp/main.go", after)
+	rec := demoRecord("cmd/app-pp-mcp/main.go")
+	rec.Markers = []string{"appcli.CustomSetup() // PATCH(demo-seam"}
+	err := preserveRecordedPatchSeams(dir, []pipeline.PatchRecord{rec}, map[string][]byte{
+		"cmd/app-pp-mcp/main.go": []byte(before),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `patch "demo-seam"`)
+	assert.Contains(t, err.Error(), "appcli")
+	assert.Contains(t, err.Error(), "example.com/other")
+	assert.Equal(t, after, string(mustRead(t, path)))
+}
+
+func TestPreserveRecordedPatchSeamsCopiesStandaloneImportSpec(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport \"log\"\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tlog.Print(\"seam\") // PATCH(demo-seam\n}\n"
+	after := "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tfmt.Println(\"generated\")\n}\n"
+	rec := demoRecord("cmd/app-pp-mcp/main.go")
+	rec.Markers = []string{"log.Print(\"seam\") // PATCH(demo-seam"}
+	got := preserveSeam(t, "cmd/app-pp-mcp/main.go", before, after, rec)
+
+	assert.Contains(t, got, "\t\"log\"\n")
+	assert.NotContains(t, got, "import \"log\"")
+	assert.Contains(t, got, "log.Print(\"seam\") // PATCH(demo-seam")
+	assert.Contains(t, got, "fmt.Println(\"generated\")")
+	requireParses(t, got)
+}
+
+func TestPreserveRecordedPatchSeamsCopiesStandaloneNamedImportSpec(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport metrics \"example.com/metrics\"\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tmetrics.Count() // PATCH(demo-seam\n}\n"
+	after := "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n\tmcptools.RegisterTools(s)\n\tfmt.Println(\"generated\")\n}\n"
+	rec := demoRecord("cmd/app-pp-mcp/main.go")
+	rec.Markers = []string{"metrics.Count() // PATCH(demo-seam"}
+	got := preserveSeam(t, "cmd/app-pp-mcp/main.go", before, after, rec)
+
+	assert.Contains(t, got, "\tmetrics \"example.com/metrics\"\n")
+	assert.NotContains(t, got, "import metrics")
+	requireParses(t, got)
 }
 
 func TestPreserveRecordedPatchSeamsIgnoresIdentPrefixOfImportName(t *testing.T) {
@@ -371,6 +531,19 @@ func TestAddImportLine(t *testing.T) {
 	added := addImportLine(blocked, "metrics \"example.com/metrics\"")
 	assert.Contains(t, added, "\tmetrics \"example.com/metrics\"\n")
 	assert.Contains(t, added, "\"os\"")
+
+	noBlock := "package main\n\nfunc main() {}\n"
+	aliased := addImportLine(noBlock, "appcli \"example.com/cli\"")
+	assert.Contains(t, aliased, "import appcli \"example.com/cli\"\n")
+	assert.NotContains(t, aliased, "import \"example.com/cli\"\n")
+
+	single := "package main\n\nimport \"fmt\"\n\nfunc main() {}\n"
+	second := addImportLine(single, `"log"`)
+	assert.Contains(t, second, "import \"fmt\"\n")
+	assert.Contains(t, second, "import \"log\"\n")
+	assert.NotContains(t, second, "import import")
+
+	assert.Equal(t, "no package\n", addImportLine("no package\n", `"fmt"`))
 }
 
 func TestMissingImportLinesParseFailure(t *testing.T) {
@@ -378,6 +551,60 @@ func TestMissingImportLinesParseFailure(t *testing.T) {
 
 	assert.Nil(t, missingImportLines("not go", "package main\n", "fmt.Println"))
 	assert.Nil(t, missingImportLines("package main\nimport \"fmt\"\n", "package", "fmt.Println"))
+}
+
+func TestMissingImportLinesUsesSpecNotDeclaration(t *testing.T) {
+	t.Parallel()
+
+	before := "package main\n\nimport \"log\"\nimport metrics \"example.com/metrics\"\n\nfunc main() {}\n"
+	after := "package main\n\nimport (\n\t\"fmt\"\n)\n"
+	inserted := "log.Print(\"x\")\nmetrics.Count()"
+	assert.Equal(t, []string{`"log"`, `metrics "example.com/metrics"`}, missingImportLines(before, after, inserted))
+}
+
+func TestReconcileImportAliases(t *testing.T) {
+	t.Parallel()
+
+	got, err := reconcileImportAliases("not go", "package main\n", "fmt.Println")
+	require.NoError(t, err)
+	assert.Equal(t, "package main\n", got)
+
+	same, err := renameImportIfNeeded("package main\nfunc (\n", "fmt", "f")
+	require.NoError(t, err)
+	assert.Equal(t, "package main\nfunc (\n", same)
+
+	missing := "package main\n\nimport \"fmt\"\n"
+	got, err = renameImportIfNeeded(missing, "example.com/cli", "appcli")
+	require.NoError(t, err)
+	assert.Equal(t, missing, got)
+
+	matched := "package main\n\nimport appcli \"example.com/cli\"\n"
+	got, err = renameImportIfNeeded(matched, "example.com/cli", "appcli")
+	require.NoError(t, err)
+	assert.Equal(t, matched, got)
+}
+
+func TestApplySourceEdits(t *testing.T) {
+	t.Parallel()
+
+	got, err := applySourceEdits("abcdefghijklmnopqrstuvwxyz", []sourceEdit{
+		{start: 20, end: 23, text: "U"},
+		{start: 5, end: 8, text: "F"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "abcdeFijklmnopqrstUxyz", got)
+
+	_, err = applySourceEdits("abc", []sourceEdit{{start: 5, end: 6, text: "z"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "out of range")
+
+	_, err = applySourceEdits("abcdef", []sourceEdit{{start: 0, end: 3, text: "X"}, {start: 2, end: 4, text: "Y"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "out of range")
+
+	got, err = applySourceEdits("abc", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "abc", got)
 }
 
 func TestPatchNeedlesDedupes(t *testing.T) {
@@ -462,6 +689,75 @@ func TestSyncPreservesRecordedMCPEntrypointSeam(t *testing.T) {
 	vet.Dir = cliDir
 	output, err := vet.CombinedOutput()
 	require.NoError(t, err, "preserved entrypoint must vet: %s", output)
+}
+
+func TestSyncRestoredEntrypointCompiles(t *testing.T) {
+	t.Parallel()
+
+	cliDir := generateSeamCLI(t)
+	mainRel := "cmd/seamcli-pp-mcp/main.go"
+	helperRel := "internal/custom/setup.go"
+	mainPath := filepath.Join(cliDir, filepath.FromSlash(mainRel))
+	original := string(mustRead(t, mainPath))
+	const anchor = "\tmcptools.RegisterTools(s)\n"
+	require.Contains(t, original, anchor)
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, mainPath, original, parser.ImportsOnly)
+	require.NoError(t, err)
+	var cliPath string
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if strings.HasSuffix(path, "/internal/cli") {
+			cliPath = path
+		}
+	}
+	require.NotEmpty(t, cliPath)
+	oldSpec := "\t\"" + cliPath + "\"\n"
+	require.Contains(t, original, oldSpec)
+
+	planted := strings.Replace(original, oldSpec, "\tappcli \""+cliPath+"\"\n", 1)
+	blockEnd := strings.Index(planted, ")\n")
+	require.GreaterOrEqual(t, blockEnd, 0)
+	insertAt := blockEnd + len(")\n")
+	planted = planted[:insertAt] + "\nimport \"log\"\n" + planted[insertAt:]
+	const logSeam = "\tlog.Print(\"demo seam\") // PATCH(log-seam"
+	const aliasSeam = "\t_ = appcli.BindMCPServerProfile // PATCH(alias-seam"
+	planted = strings.Replace(planted, anchor, anchor+demoSeamLine+"\n"+logSeam+"\n"+aliasSeam+"\n", 1)
+	require.NoError(t, os.WriteFile(mainPath, []byte(planted), 0o644))
+
+	helper := "package custom\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc Setup() {\n" + demoSeamLine + "\n}\n"
+	helperPath := filepath.Join(cliDir, filepath.FromSlash(helperRel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(helperPath), 0o755))
+	require.NoError(t, os.WriteFile(helperPath, []byte(helper), 0o644))
+
+	rec := demoRecord(mainRel)
+	rec.Files = []string{helperRel, mainRel}
+	rec.Markers = []string{demoSeamNeedle, logSeam, aliasSeam}
+	writePatchFile(t, cliDir, "demo-seam.json", rec)
+
+	_, err = Sync(cliDir, Options{})
+	require.NoError(t, err)
+
+	got := string(mustRead(t, mainPath))
+	assert.Contains(t, got, demoSeamNeedle)
+	assert.Contains(t, got, logSeam)
+	assert.Contains(t, got, aliasSeam)
+	assert.Contains(t, got, "appcli \""+cliPath+"\"")
+	assert.Contains(t, got, "\t\"log\"\n")
+	assert.NotContains(t, got, "import \"log\"")
+	assert.NotContains(t, got, ":= cli.BindMCPServerProfile")
+	assert.Contains(t, got, ":= appcli.BindMCPServerProfile")
+	assert.Equal(t, helper, string(mustRead(t, helperPath)))
+	require.NoError(t, pipeline.ValidatePatchRecords(cliDir))
+
+	build := exec.Command("go", "build", "-mod=mod", "-o", os.DevNull, "./cmd/seamcli-pp-mcp")
+	build.Dir = cliDir
+	buildOut, err := build.CombinedOutput()
+	require.NoError(t, err, "restored entrypoint must compile: %s", buildOut)
 }
 
 func TestSyncWithoutPatchRecordsLeavesEntrypointByteIdentical(t *testing.T) {
@@ -710,6 +1006,12 @@ func writeRelFile(t *testing.T, rel, contents string) (string, string) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o644))
 	return dir, path
+}
+
+func requireParses(t *testing.T, src string) {
+	t.Helper()
+	_, err := parser.ParseFile(token.NewFileSet(), "restored.go", src, parser.SkipObjectResolution)
+	require.NoError(t, err)
 }
 
 func mustRead(t *testing.T, path string) []byte {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -106,19 +107,21 @@ func collectRecordedSeams(cliDir string, records []pipeline.PatchRecord, before 
 			}
 			rels = append(rels, rel)
 		}
-		present := map[string]bool{}
-		needlePresent := func(needle string) bool {
-			if seen, ok := present[needle]; ok {
-				return seen
-			}
-			seen := recordedNeedlePresent(cliDir, rels, needle)
-			present[needle] = seen
-			return seen
-		}
 		for _, rel := range rels {
 			src, ok := before[rel]
 			if !ok {
 				continue
+			}
+			// A needle that survived in another recorded file is not
+			// evidence this file still has its own line.
+			present := map[string]bool{}
+			needlePresent := func(needle string) bool {
+				if seen, ok := present[needle]; ok {
+					return seen
+				}
+				seen := recordedNeedlePresent(cliDir, []string{rel}, needle)
+				present[needle] = seen
+				return seen
 			}
 			for _, hit := range linesCarryingNeedles(string(src), needles, needlePresent) {
 				key := rel + "\x00" + strconv.Itoa(hit.index)
@@ -248,6 +251,10 @@ func spliceRecordedLine(before, current []byte, seam seamLine) ([]byte, error) {
 	for _, importLine := range missingImportLines(beforeNorm, updated, seam.line) {
 		updated = addImportLine(updated, importLine)
 	}
+	updated, err := reconcileImportAliases(beforeNorm, updated, seam.line)
+	if err != nil {
+		return nil, fmt.Errorf("patch %q: could not preserve recorded line %q in %s: %w", seam.patchID, strings.TrimSpace(seam.line), seam.rel, err)
+	}
 	if !strings.Contains(updated, seam.needle) {
 		return nil, fmt.Errorf("patch %q: could not preserve recorded line %q in %s", seam.patchID, strings.TrimSpace(seam.line), seam.rel)
 	}
@@ -328,8 +335,7 @@ func insertSourceLine(src string, pos int, line string) string {
 }
 
 func missingImportLines(beforeSrc, afterSrc, inserted string) []string {
-	fset := token.NewFileSet()
-	beforeFile, err := parser.ParseFile(fset, "before.go", beforeSrc, parser.ImportsOnly)
+	beforeFile, err := parser.ParseFile(token.NewFileSet(), "before.go", beforeSrc, parser.ImportsOnly)
 	if err != nil {
 		return nil
 	}
@@ -344,7 +350,6 @@ func missingImportLines(beforeSrc, afterSrc, inserted string) []string {
 			have[path] = true
 		}
 	}
-	beforeLines := strings.Split(beforeSrc, "\n")
 	var lines []string
 	for _, imp := range beforeFile.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
@@ -355,13 +360,135 @@ func missingImportLines(beforeSrc, afterSrc, inserted string) []string {
 		if !referencesImport(inserted, name) {
 			continue
 		}
-		lineNo := fset.Position(imp.Pos()).Line
-		if lineNo <= 0 || lineNo > len(beforeLines) {
-			continue
-		}
-		lines = append(lines, beforeLines[lineNo-1])
+		// A standalone `import "log"` line is a whole declaration. Only the
+		// spec can be pasted into an existing import block.
+		lines = append(lines, importSpecText(imp))
 	}
 	return lines
+}
+
+func importSpecText(imp *ast.ImportSpec) string {
+	if imp.Name != nil {
+		return imp.Name.Name + " " + imp.Path.Value
+	}
+	return imp.Path.Value
+}
+
+// Duplicate import paths are illegal, and the recorded needle names the
+// call's local name, so that name replaces the generated one.
+func reconcileImportAliases(beforeSrc, afterSrc, inserted string) (string, error) {
+	beforeFile, err := parser.ParseFile(token.NewFileSet(), "before.go", beforeSrc, parser.ImportsOnly)
+	if err != nil {
+		return afterSrc, nil
+	}
+	updated := afterSrc
+	for _, imp := range beforeFile.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := importLocalName(imp, path)
+		if !referencesImport(inserted, name) {
+			continue
+		}
+		var renameErr error
+		updated, renameErr = renameImportIfNeeded(updated, path, name)
+		if renameErr != nil {
+			return "", renameErr
+		}
+	}
+	return updated, nil
+}
+
+func renameImportIfNeeded(src, path, want string) (string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "after.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		return src, nil
+	}
+	var target *ast.ImportSpec
+	for _, imp := range file.Imports {
+		got, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || got != path {
+			continue
+		}
+		target = imp
+		break
+	}
+	if target == nil {
+		return src, nil
+	}
+	have := importLocalName(target, path)
+	if have == want {
+		return src, nil
+	}
+	if other, ok := conflictingImport(file, want, path); ok {
+		return "", fmt.Errorf("import name %q is already used by %q", want, other)
+	}
+	var edits []sourceEdit
+	if target.Name != nil {
+		edits = append(edits, sourceEdit{
+			start: fset.Position(target.Name.Pos()).Offset,
+			end:   fset.Position(target.Name.End()).Offset,
+			text:  want,
+		})
+	} else {
+		edits = append(edits, sourceEdit{
+			start: fset.Position(target.Path.Pos()).Offset,
+			end:   fset.Position(target.Path.Pos()).Offset,
+			text:  want + " ",
+		})
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		id, ok := sel.X.(*ast.Ident)
+		if !ok || id.Name != have {
+			return true
+		}
+		edits = append(edits, sourceEdit{
+			start: fset.Position(id.Pos()).Offset,
+			end:   fset.Position(id.End()).Offset,
+			text:  want,
+		})
+		return true
+	})
+	return applySourceEdits(src, edits)
+}
+
+func conflictingImport(file *ast.File, name, path string) (string, bool) {
+	for _, imp := range file.Imports {
+		got, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || got == path {
+			continue
+		}
+		if importLocalName(imp, got) == name {
+			return got, true
+		}
+	}
+	return "", false
+}
+
+type sourceEdit struct {
+	start int
+	end   int
+	text  string
+}
+
+func applySourceEdits(src string, edits []sourceEdit) (string, error) {
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
+	b := []byte(src)
+	limit := len(b)
+	for _, edit := range edits {
+		if edit.start < 0 || edit.end > limit || edit.start > edit.end {
+			return "", errors.New("import edit out of range")
+		}
+		b = append(b[:edit.start], append([]byte(edit.text), b[edit.end:]...)...)
+		limit = edit.start
+	}
+	return string(b), nil
 }
 
 func importLocalName(imp *ast.ImportSpec, path string) string {
@@ -406,7 +533,20 @@ func addImportLine(src, importLine string) string {
 	if loc := patchImportBlockOpen.FindStringIndex(src); loc != nil {
 		return src[:loc[1]] + indented + src[loc[1]:]
 	}
-	return ensureImport(src, path)
+	return insertImportSpec(src, trimmed)
+}
+
+func insertImportSpec(src, spec string) string {
+	stmt := "import " + spec + "\n"
+	single := regexp.MustCompile(`(?m)^import .+\n`)
+	if loc := single.FindStringIndex(src); loc != nil {
+		return src[:loc[1]] + stmt + src[loc[1]:]
+	}
+	pkg := regexp.MustCompile(`(?m)^package \w+\n`)
+	if loc := pkg.FindStringIndex(src); loc != nil {
+		return src[:loc[1]] + "\n" + stmt + src[loc[1]:]
+	}
+	return src
 }
 
 func quotedImportPath(line string) string {
