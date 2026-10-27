@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -53,7 +54,9 @@ func newScorecardCmd() *cobra.Command {
 			}
 			defer func() { _ = os.RemoveAll(pipelineDir) }()
 
-			verifyReport, err := pipeline.LoadVerifyReportFromManifest(writeManifest)
+			// Verify evidence lives in the tree manifest. --write-manifest only
+			// persists the score computed from that tree.
+			verifyReport, err := pipeline.LoadVerifyReportFromManifest(filepath.Join(dir, pipeline.CLIManifestFilename))
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("loading verify evidence: %w", err)}
 			}
@@ -116,7 +119,7 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&liveCheck, "live-check", false, "Sample novel-feature examples against real targets and cap Insight when flagships return broken output")
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
-	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with scorecard summary and built novel features")
+	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with the scorecard summary and built novel features; does not change the score")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Allow live-check to execute mutating generated and research-authored examples (default skips them)")
 
 	return cmd
@@ -225,10 +228,15 @@ func renderHumanScorecard(w io.Writer, sc *pipeline.Scorecard) {
 	fmt.Fprintf(w, "  Type Fidelity           %d/5\n", s.TypeFidelity)
 	fmt.Fprintf(w, "  Dead Code               %d/5\n", s.DeadCode)
 	fmt.Fprintf(w, "\n  Total: %d/100 - Grade %s\n", s.Total, sc.OverallGrade)
+	infraMax, domainMax := pipeline.ScorecardTierDenominators(sc)
+	fmt.Fprintf(w, "  Denominator: infrastructure %d, domain %d\n", infraMax, domainMax)
 	if len(sc.UnscoredDimensions) > 0 {
 		fmt.Fprintf(w, "  Note: omitted from denominator: %s\n", strings.Join(sc.UnscoredDimensions, ", "))
 	}
 	if len(sc.UnverifiedDimensions) > 0 {
 		fmt.Fprintf(w, "  Hold: unverified dimensions: %s\n", strings.Join(sc.UnverifiedDimensions, ", "))
+	}
+	if s.CalibrationNote != "" {
+		fmt.Fprintf(w, "  Calibration: %s\n", s.CalibrationNote)
 	}
 }

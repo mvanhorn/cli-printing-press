@@ -24,6 +24,8 @@ The umbrella defaults to `verify --fix` (auto-repair common failures), `validate
 
 During shipcheck, the verify and scorecard legs persist their summaries back into `$CLI_WORK_DIR/.printing-press.json`: `verify.pass_rate`, `verify.verdict`, `scorecard.steinberger.percentage`, `scorecard.steinberger.grade`, and `novel_features_built` from the run's `research.json`. Do not hand-edit those fields; rerun shipcheck (or the standalone leg with `--write-manifest`) when they are stale. [Phase 0](03-resolve-and-reuse.md)'s sub-60 reprint gate relies on this persisted score on the next run.
 
+`scorecard` reads that persisted `verify` summary from the CLI directory manifest on every run, including a bare `scorecard --dir`. `--write-manifest` only writes the scorecard summary; it does not change `total`, `percentage`, or grade, so shipcheck's scorecard leg and a standalone scorecard agree on a fixed tree when their other inputs match. `path_validity` and `auth_protocol` stay unverified and drop out of the domain denominator only when neither an embedded `spec.json` in the CLI directory nor `--spec` supplies the evidence. When `spec.json` is present, scorecard uses that file before `--spec`. Human output prints `Denominator: infrastructure N, domain M` beside the total, and a `Calibration:` line when the persisted verify summary raised the total. `--live-check` remains a separate input and can cap Insight.
+
 If a leg fails, re-run that one leg standalone (e.g., `cli-printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 
 Interpretation:
