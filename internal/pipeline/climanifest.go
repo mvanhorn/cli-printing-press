@@ -706,9 +706,9 @@ func PersistVerifyToManifest(manifestPath string, report *VerifyReport) (bool, e
 	})
 }
 
-// LoadVerifyReportFromManifest restores the verification evidence that a
-// preceding shipcheck verify leg persisted. Older manifests simply return no
-// report, preserving standalone scorecard behavior.
+// LoadVerifyReportFromManifest restores verification evidence persisted in a
+// CLI manifest. A missing file or a manifest with no verify section returns
+// a nil report.
 func LoadVerifyReportFromManifest(manifestPath string) (*VerifyReport, error) {
 	if strings.TrimSpace(manifestPath) == "" {
 		return nil, nil

@@ -1400,7 +1400,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.AgentWorkflow,
 	)
 
-	tier1Max := scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy, DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow)
+	tier1Max, tier2Max := ScorecardTierDenominators(sc)
 	tier1Normalized := 0
 	if tier1Max > 0 {
 		tier1Normalized = (tier1Raw * 50) / tier1Max
@@ -1416,13 +1416,23 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
 	}
 	sc.Steinberger.Total = tier1Normalized + tier2Normalized
 	sc.Steinberger.Percentage = sc.Steinberger.Total
+}
+
+// ScorecardTierDenominators is the pair recomputeScorecardTotals divides by,
+// so a renderer can print the same maxima the total used.
+func ScorecardTierDenominators(sc *Scorecard) (infrastructure, domain int) {
+	if sc == nil {
+		return 0, 0
+	}
+	infrastructure = scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy, DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow)
+	domain = scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+	return infrastructure, domain
 }
 
 func sumScorecardDimensions(scores ...int) (total int) {
@@ -4141,6 +4151,11 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Scorecard: %s\n\n", sc.APIName)
 	fmt.Fprintf(&b, "**Overall Grade: %s** (%d%%)\n\n", sc.OverallGrade, sc.Steinberger.Percentage)
+	infraMax, domainMax := ScorecardTierDenominators(sc)
+	fmt.Fprintf(&b, "Denominator: infrastructure %d, domain %d\n\n", infraMax, domainMax)
+	if sc.Steinberger.CalibrationNote != "" {
+		fmt.Fprintf(&b, "Calibration: %s\n\n", sc.Steinberger.CalibrationNote)
+	}
 	if len(sc.UnscoredDimensions) > 0 {
 		fmt.Fprintf(&b, "Unscored dimensions omitted from the total denominator: %s\n\n", strings.Join(sc.UnscoredDimensions, ", "))
 	}

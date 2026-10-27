@@ -466,6 +466,11 @@ fi
 # CLI lives under $PRESS_RUNSTATE/runs/<id>/working/<cli> (mid-pipeline
 # polish). Without it, scorecard looks adjacent to the binary, doesn't
 # find research.json, and reports `unable: true`.
+# A bare scorecard and scorecard --write-manifest report the same total.
+# A verify summary already in .printing-press.json is included either way;
+# a Calibration line means that summary raised the total. --spec changes
+# the domain denominator, which human output prints beside the total —
+# compare runs that passed the same spec.
 "$PRINTING_PRESS_BIN" scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 "$PRINTING_PRESS_BIN" scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 "$PRINTING_PRESS_BIN" tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
