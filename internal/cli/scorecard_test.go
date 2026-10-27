@@ -502,7 +502,7 @@ func runScorecardHuman(t *testing.T, args ...string) string {
 
 func denominatorLine(t *testing.T, out string) string {
 	t.Helper()
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, "Denominator:") {
 			return strings.TrimSpace(line)
 		}
