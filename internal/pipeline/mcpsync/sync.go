@@ -175,6 +175,10 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err := ensureMCPClientSurfaceCompatible(cliDir); err != nil {
 		return Result{}, err
 	}
+	patchRecords, err := pipeline.LoadPatchRecords(cliDir)
+	if err != nil {
+		return Result{}, fmt.Errorf("reading patch records: %w", err)
+	}
 	// MCPSurfaceRuntime means the MCP source is already on the new walker
 	// template and we don't need to migrate that. But we still refresh
 	// metadata files (manifest.json, tools-manifest.json) because their
@@ -335,6 +339,13 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		}
 		preserveLegacyIntentFile = preserveLegacyFile
 	}
+	var patchBefore map[string][]byte
+	if len(patchRecords) > 0 {
+		patchBefore, err = snapshotRecordedFiles(cliDir, patchRecords)
+		if err != nil {
+			return Result{}, fmt.Errorf("snapshotting recorded patch files: %w", err)
+		}
+	}
 	gen := generator.New(parsed, cliDir)
 	gen.NovelFeatures = features
 	gen.ModulePath = modulePath
@@ -345,6 +356,9 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	}
 	if err := restoreMCPRuntime(cliDir, runtimeSnap); err != nil {
 		return Result{}, fmt.Errorf("preserving hand-authored MCP behavior: %w", err)
+	}
+	if err := preserveRecordedPatchSeams(cliDir, patchRecords, patchBefore); err != nil {
+		return Result{}, fmt.Errorf("preserving recorded patch seams: %w", err)
 	}
 	// tools.go now calls Store.SearchContext. store.go is not part of the
 	// MCP surface, so an older print still has only Store.Search.
@@ -375,6 +389,9 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// install in Claude Desktop.
 	if err := pipeline.WriteMCPBManifest(cliDir); err != nil {
 		return Result{}, fmt.Errorf("regenerating manifest.json: %w", err)
+	}
+	if err := pipeline.ValidatePatchRecords(cliDir); err != nil {
+		return Result{}, fmt.Errorf("recorded patches no longer match after mcp-sync: %w", err)
 	}
 	detail := "migrated MCP surface to runtime Cobra-tree mirror"
 	if alreadyMigrated {
