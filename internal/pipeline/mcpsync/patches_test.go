@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -584,6 +585,141 @@ func TestReconcileImportAliases(t *testing.T) {
 	assert.Equal(t, matched, got)
 }
 
+func TestRenameImportIfNeededSkipsShadowingLocals(t *testing.T) {
+	t.Parallel()
+
+	src := `package main
+
+import (
+	"fmt"
+	"net/http"
+	cli "example.com/cli"
+)
+
+func main() {
+	_ = cli.Exported
+	_ = func(cli *http.Request) { fmt.Println(cli.Method); _ = func() { cli := cli.URL; fmt.Println(cli.Path) } }
+	for _, cli := range []struct{ Field int }{{}} {
+		_ = cli.Field
+	}
+	_ = func() {
+		cli := struct{ Field int }{}
+		_ = cli.Field
+	}
+	{
+		var cli *http.Request
+		_ = cli.Method
+		for _, cli = range []*http.Request(nil) {
+			_ = cli.Method
+		}
+	}
+	{
+		const cli = 1
+		_ = cli.Nope
+	}
+	if cli := (*http.Request)(nil); cli != nil {
+		_ = cli.Method
+	}
+	switch cli := (*http.Request)(nil); {
+	case cli != nil:
+		_ = cli.Method
+	}
+	req := &http.Request{}
+	cli := req
+	_ = (cli).Method
+	_ = cli.Host
+}
+
+func (cli *http.Request) onReq() { _ = cli.Method }
+
+func takes(cli *cli.T) { _ = cli.Method }
+
+func generic[cli any](v cli) { _ = cli.Nope }
+`
+	got, err := renameImportIfNeeded(src, "example.com/cli", "appcli")
+	require.NoError(t, err)
+	assert.Contains(t, got, "appcli \"example.com/cli\"")
+	assert.NotRegexp(t, `(?m)^\tcli "example.com/cli"`, got)
+	assert.Contains(t, got, "_ = appcli.Exported")
+	assert.NotRegexp(t, `(^|[^A-Za-z0-9_])cli\.Exported`, got)
+	assert.Contains(t, got, "func takes(cli *appcli.T)")
+	assert.NotContains(t, got, "*cli.T")
+	assert.NotContains(t, got, "appcli.Method")
+	assert.NotContains(t, got, "appcli.URL")
+	assert.NotContains(t, got, "appcli.Path")
+	assert.NotContains(t, got, "appcli.Field")
+	assert.NotContains(t, got, "appcli.Nope")
+	assert.NotContains(t, got, "appcli.Host")
+	assert.Contains(t, got, "fmt.Println(cli.Method)")
+	assert.Contains(t, got, "cli := cli.URL")
+	assert.Contains(t, got, "fmt.Println(cli.Path)")
+	assert.Contains(t, got, "_ = cli.Field")
+	assert.Contains(t, got, "_ = cli.Nope")
+	assert.Contains(t, got, "_ = (cli).Method")
+	assert.Contains(t, got, "_ = cli.Host")
+	assert.Contains(t, got, "func (cli *http.Request) onReq() { _ = cli.Method }")
+	assert.Contains(t, got, "func takes(cli *appcli.T) { _ = cli.Method }")
+	assert.Contains(t, got, "func generic[cli any](v cli) { _ = cli.Nope }")
+}
+
+func TestRenameImportIfNeededLeavesOtherPackageSelector(t *testing.T) {
+	t.Parallel()
+
+	src := `package main
+import (
+	cli "example.com/cli"
+	cli "example.com/other"
+)
+func main() { _ = cli.Exported }
+`
+	got, err := renameImportIfNeeded(src, "example.com/other", "appcli")
+	require.NoError(t, err)
+	assert.Contains(t, got, "cli \"example.com/cli\"")
+	assert.Contains(t, got, "appcli \"example.com/other\"")
+	assert.Contains(t, got, "_ = cli.Exported")
+	assert.NotContains(t, got, "appcli.Exported")
+
+	got, err = renameImportIfNeeded(src, "example.com/cli", "appcli")
+	require.NoError(t, err)
+	assert.Contains(t, got, "appcli \"example.com/cli\"")
+	assert.Contains(t, got, "cli \"example.com/other\"")
+	assert.Contains(t, got, "_ = appcli.Exported")
+	assert.NotContains(t, got, "_ = cli.Exported")
+}
+
+func TestImportRenameImporter(t *testing.T) {
+	t.Parallel()
+
+	imp := importRenameImporter{}
+	first, err := imp.Import("example.com/cli")
+	require.NoError(t, err)
+	second, err := imp.Import("example.com/cli")
+	require.NoError(t, err)
+	assert.Same(t, first, second)
+	assert.Equal(t, "cli", first.Name())
+
+	plain, err := imp.Import("fmt")
+	require.NoError(t, err)
+	assert.Equal(t, "fmt", plain.Name())
+
+	unsafePkg, err := imp.Import("unsafe")
+	require.NoError(t, err)
+	assert.Equal(t, types.Unsafe, unsafePkg)
+}
+
+func TestRenameImportSelectorsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	src := "package main\nimport cli \"example.com/cli\"\nfunc main() { _ = cli.Foo }\n"
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "after.go", src, parser.SkipObjectResolution)
+	require.NoError(t, err)
+	_, err = renameImportSelectors(fset, file, map[*ast.Ident]types.Object{}, "example.com/cli", "cli", "appcli")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not resolve")
+	assert.Contains(t, err.Error(), "refusing to rename \"cli\" to \"appcli\"")
+}
+
 func TestApplySourceEdits(t *testing.T) {
 	t.Parallel()
 
@@ -723,10 +859,11 @@ func TestSyncRestoredEntrypointCompiles(t *testing.T) {
 	blockEnd := strings.Index(planted, ")\n")
 	require.GreaterOrEqual(t, blockEnd, 0)
 	insertAt := blockEnd + len(")\n")
-	planted = planted[:insertAt] + "\nimport \"log\"\n" + planted[insertAt:]
+	planted = planted[:insertAt] + "\nimport \"log\"\nimport \"net/http\"\n" + planted[insertAt:]
 	const logSeam = "\tlog.Print(\"demo seam\") // PATCH(log-seam"
 	const aliasSeam = "\t_ = appcli.BindMCPServerProfile // PATCH(alias-seam"
-	planted = strings.Replace(planted, anchor, anchor+demoSeamLine+"\n"+logSeam+"\n"+aliasSeam+"\n", 1)
+	const shadowSeam = "\t_ = appcli.BindMCPServerProfile; _ = func(cli *http.Request) { fmt.Println(cli.Method); _ = func() { cli := cli.URL; fmt.Println(cli.Path) } }; cli := &http.Request{}; fmt.Println(cli.Method) // PATCH(shadow-seam"
+	planted = strings.Replace(planted, anchor, anchor+demoSeamLine+"\n"+logSeam+"\n"+shadowSeam+"\n"+aliasSeam+"\n", 1)
 	require.NoError(t, os.WriteFile(mainPath, []byte(planted), 0o644))
 
 	helper := "package custom\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc Setup() {\n" + demoSeamLine + "\n}\n"
@@ -736,7 +873,7 @@ func TestSyncRestoredEntrypointCompiles(t *testing.T) {
 
 	rec := demoRecord(mainRel)
 	rec.Files = []string{helperRel, mainRel}
-	rec.Markers = []string{demoSeamNeedle, logSeam, aliasSeam}
+	rec.Markers = []string{demoSeamNeedle, logSeam, shadowSeam, aliasSeam}
 	writePatchFile(t, cliDir, "demo-seam.json", rec)
 
 	_, err = Sync(cliDir, Options{})
@@ -746,9 +883,19 @@ func TestSyncRestoredEntrypointCompiles(t *testing.T) {
 	assert.Contains(t, got, demoSeamNeedle)
 	assert.Contains(t, got, logSeam)
 	assert.Contains(t, got, aliasSeam)
+	assert.Contains(t, got, shadowSeam)
+	assert.Contains(t, got, "func(cli *http.Request)")
+	assert.Contains(t, got, "fmt.Println(cli.Method)")
+	assert.Contains(t, got, "cli := cli.URL")
+	assert.Contains(t, got, "fmt.Println(cli.Path)")
+	assert.NotContains(t, got, "appcli.Method")
+	assert.NotContains(t, got, "appcli.URL")
+	assert.NotContains(t, got, "appcli.Path")
 	assert.Contains(t, got, "appcli \""+cliPath+"\"")
 	assert.Contains(t, got, "\t\"log\"\n")
+	assert.Contains(t, got, "\t\"net/http\"\n")
 	assert.NotContains(t, got, "import \"log\"")
+	assert.NotContains(t, got, "import \"net/http\"")
 	assert.NotContains(t, got, ":= cli.BindMCPServerProfile")
 	assert.Contains(t, got, ":= appcli.BindMCPServerProfile")
 	assert.Equal(t, helper, string(mustRead(t, helperPath)))

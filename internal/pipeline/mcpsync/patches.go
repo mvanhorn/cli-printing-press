@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -439,13 +440,72 @@ func renameImportIfNeeded(src, path, want string) (string, error) {
 			text:  want + " ",
 		})
 	}
+	// Locals that shadow the import are not renamed. An unresolved qualifier
+	// aborts the rename so sync does not keep a file that parses and does not compile.
+	selectorEdits, err := renameImportSelectors(fset, file, importRenameUses(fset, file), path, have, want)
+	if err != nil {
+		return "", err
+	}
+	edits = append(edits, selectorEdits...)
+	return applySourceEdits(src, edits)
+}
+
+// Printed CLIs do not import this path, so Check does not treat a source import as a self-import.
+const importRenamePkgPath = "mcpsync.local/import-rename"
+
+// Empty packages are enough: rename only needs to know which identifier is the import.
+type importRenameImporter map[string]*types.Package
+
+func (m importRenameImporter) Import(path string) (*types.Package, error) {
+	if path == "unsafe" {
+		return types.Unsafe, nil
+	}
+	if pkg := m[path]; pkg != nil {
+		return pkg, nil
+	}
+	name := path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		name = path[i+1:]
+	}
+	pkg := types.NewPackage(path, name)
+	pkg.MarkComplete()
+	m[path] = pkg
+	return pkg, nil
+}
+
+func importRenameUses(fset *token.FileSet, file *ast.File) map[*ast.Ident]types.Object {
+	info := &types.Info{Uses: make(map[*ast.Ident]types.Object)}
+	conf := types.Config{
+		Importer: importRenameImporter{},
+		// A nil Error stops at the first missing export and drops later selectors from Uses.
+		Error: func(error) {},
+	}
+	_, _ = conf.Check(importRenamePkgPath, fset, []*ast.File{file}, info)
+	return info.Uses
+}
+
+func renameImportSelectors(fset *token.FileSet, file *ast.File, uses map[*ast.Ident]types.Object, path, have, want string) ([]sourceEdit, error) {
+	var edits []sourceEdit
+	var unresolved error
 	ast.Inspect(file, func(n ast.Node) bool {
+		if unresolved != nil {
+			return false
+		}
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
 			return true
 		}
 		id, ok := sel.X.(*ast.Ident)
 		if !ok || id.Name != have {
+			return true
+		}
+		obj := uses[id]
+		if obj == nil {
+			unresolved = fmt.Errorf("import %s: %s does not resolve; refusing to rename %q to %q", path, fset.Position(id.Pos()), have, want)
+			return false
+		}
+		pkg, ok := obj.(*types.PkgName)
+		if !ok || pkg.Imported().Path() != path {
 			return true
 		}
 		edits = append(edits, sourceEdit{
@@ -455,7 +515,10 @@ func renameImportIfNeeded(src, path, want string) (string, error) {
 		})
 		return true
 	})
-	return applySourceEdits(src, edits)
+	if unresolved != nil {
+		return nil, unresolved
+	}
+	return edits, nil
 }
 
 func conflictingImport(file *ast.File, name, path string) (string, bool) {
