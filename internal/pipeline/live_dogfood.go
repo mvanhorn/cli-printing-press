@@ -139,9 +139,11 @@ type LiveDogfoodReport struct {
 	PassRate       float64  `json:"pass_rate"`
 	CoverageHollow bool     `json:"coverage_hollow,omitempty"`
 	HollowFeatures []string `json:"hollow_features,omitempty"`
-	// HollowReasons is the happy_path skip reason for each hollow feature,
-	// keyed by the feature command string. Empty when the feature was not
-	// built, so publish can name a missing fixture without inventing one.
+	// HollowReasons explains each hollow feature, keyed by the feature
+	// command string. A skipped happy path contributes its skip reason. A
+	// happy path that passed only as a dry-run names the argv and whether
+	// --dry-run came from the Example or from pp:happy-args. Empty when
+	// the feature was not built.
 	HollowReasons map[string]string `json:"hollow_reasons,omitempty"`
 	// ProofCoveredFeatures are novel features with no live happy-path pass
 	// that an operator-written proof file backs instead.
@@ -160,6 +162,11 @@ type LiveDogfoodTestResult struct {
 	Reason        string              `json:"reason,omitempty"`
 	FixtureSource string              `json:"fixture_source,omitempty"`
 	OutputSample  string              `json:"output_sample,omitempty"`
+	// Set by the runner after help-aware parsing. Coverage then ignores a
+	// --dry-run token that is another flag's value or sits after "--".
+	dryRunChecked      bool   `json:"-"`
+	requestsDryRun     bool   `json:"-"`
+	dryRunHollowReason string `json:"-"`
 }
 
 type liveDogfoodCommand struct {
@@ -2179,19 +2186,25 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 		runArgs := happyArgs
 		realOptIn := (annotationIsTrueValue(command.Annotations[liveHappyPathAnnotation]) && !useDryRun) || previewHappy
+		declaredHappyArgs := strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != ""
+		// pp:happy-args is the author's happy path. A --dry-run copied from
+		// the Example is not part of that path, so a read and an approved
+		// live run must not inherit it. Putting --dry-run in pp:happy-args
+		// keeps the preview. The mutating dry-run path forces an enabled
+		// flag so --dry-run=false or an unrecognized value cannot run it.
 		if useDryRun {
-			runArgs = appendDryRunArg(happyArgs)
-		} else if realOptIn {
-			// Examples on paid or side-effecting commands usually show
-			// --dry-run; the approved live run must not inherit it.
-			runArgs = removeDryRunArgs(happyArgs)
-			// Ask for JSON on the one live run so json_fidelity can be judged
-			// from it instead of from a second paid run. The approved args
-			// are never stripped: --output can be a file destination, so an
-			// explicit output mode leaves json_fidelity skipped instead.
-			if commandSupportsJSON(command.Help) && !hasExplicitNonJSONOutputMode(runArgs) {
-				runArgs = appendJSONArg(runArgs)
-			}
+			runArgs = ensureLiveDogfoodDryRunArg(happyArgs, command.Help)
+		} else if !happyArgsMentionDryRun(parsedHappyArgs) && (realOptIn || declaredHappyArgs) {
+			runArgs = stripLiveDogfoodDryRunFlags(happyArgs, command.Help)
+		}
+		// Ask for JSON on the one live run so json_fidelity can be judged
+		// from it instead of from a second paid run. The approved args
+		// are never stripped: --output can be a file destination, so an
+		// explicit output mode leaves json_fidelity skipped instead.
+		// An author-requested --dry-run is not that live run.
+		liveOnce := realOptIn && !liveDogfoodEffectiveDryRun(runArgs, command.Help)
+		if liveOnce && commandSupportsJSON(command.Help) && !hasExplicitNonJSONOutputMode(runArgs) {
+			runArgs = appendJSONArg(runArgs)
 		}
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
@@ -2199,6 +2212,10 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		happyRun := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, runArgs, len(command.Path), ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
+		happyResult = annotateLiveDogfoodDryRun(happyResult, command.Help)
+		if happyResult.requestsDryRun {
+			happyResult.dryRunHollowReason = formatDryRunHollowReason(happyResult.Args, liveDogfoodDryRunTokenSource(command, parsedHappyArgs, useDryRun))
+		}
 		if happyRun.exitCode == 0 {
 			happyResult.Status = LiveDogfoodStatusPass
 			happyResult.Reason = ""
@@ -2231,7 +2248,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
-		} else if realOptIn && commandSupportsJSON(command.Help) && hasExplicitNonJSONOutputMode(runArgs) {
+		} else if liveOnce && commandSupportsJSON(command.Help) && hasExplicitNonJSONOutputMode(runArgs) {
 			// The approved args chose a non-JSON output mode and are never
 			// rewritten, and the side effect never runs twice, so there is no
 			// JSON run to judge.
@@ -2243,7 +2260,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 			jsonArgs = appendJSONArg(jsonArgs)
 			var jsonRun liveDogfoodRun
-			if realOptIn {
+			if liveOnce {
 				// Never repeat an opted-in real run: a second paid generation
 				// would bill twice. Judge JSON fidelity from the happy run,
 				// which already requested --json when supported.
@@ -2254,8 +2271,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			}
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun, ctx.authEnvValue)
 			jsonResult.FixtureSource = fixtureSource
+			jsonResult = annotateLiveDogfoodDryRun(jsonResult, command.Help)
 			if jsonRun.exitCode == 0 {
-				if liveDogfoodArgsContainDryRun(jsonArgs) {
+				if jsonResult.requestsDryRun {
 					status, reason := liveDogfoodDryRunJSONContract(jsonRun, true)
 					jsonResult.Status = status
 					jsonResult.Reason = reason
@@ -3834,7 +3852,7 @@ func probeLiveDogfoodDryRunJSON(command liveDogfoodCommand, ctx resolveCtx, muta
 	}
 	args = protectLiveDogfoodNegativeNumericPositionals(args, command.Path,
 		len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
-	args = appendDryRunArg(appendJSONArg(args))
+	args = ensureLiveDogfoodDryRunArg(appendJSONArg(args), command.Help)
 	run := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, args, len(command.Path), ctx.timeout, stdinPayload)
 	result := applyLiveDogfoodDryRunJSONVerdict(
 		liveDogfoodResult(commandName, LiveDogfoodTestDryRunJSON, args, run, ctx.authEnvValue),
@@ -4110,19 +4128,7 @@ func liveDogfoodArgsContainDryRun(args []string) bool {
 // safe; an approved live run must not inherit it. Values after "--" are
 // positional data, not flags, so they are left alone.
 func removeDryRunArgs(args []string) []string {
-	out := make([]string, 0, len(args))
-	terminated := false
-	for _, arg := range args {
-		if !terminated {
-			if arg == "--" {
-				terminated = true
-			} else if arg == "--dry-run" || strings.HasPrefix(arg, "--dry-run=") {
-				continue
-			}
-		}
-		out = append(out, arg)
-	}
-	return out
+	return stripLiveDogfoodDryRunFlags(args, "")
 }
 
 func appendDryRunArg(args []string) []string {
@@ -4171,7 +4177,7 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 		case LiveDogfoodStatusPass:
 			report.Passed++
 			report.MatrixSize++
-			if (result.Kind == LiveDogfoodTestHappy || result.Kind == LiveDogfoodTestJSON) && !liveDogfoodArgsContainDryRun(result.Args) {
+			if (result.Kind == LiveDogfoodTestHappy || result.Kind == LiveDogfoodTestJSON) && !liveDogfoodResultRequestsDryRun(result) {
 				hasLiveHappyOrJSONPass = true
 			}
 		case LiveDogfoodStatusFail:
@@ -4299,7 +4305,7 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 		}
 		featurePassed := false
 		for _, result := range report.Tests {
-			if result.Kind != LiveDogfoodTestHappy || result.Status != LiveDogfoodStatusPass || liveDogfoodArgsContainDryRun(result.Args) {
+			if result.Kind != LiveDogfoodTestHappy || result.Status != LiveDogfoodStatusPass || liveDogfoodResultRequestsDryRun(result) {
 				continue
 			}
 			candidate := map[string]bool{commandPath(result.Command): true}
@@ -4318,7 +4324,11 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 		if liveDogfoodHollowExempt(feature, paths) {
 			continue
 		}
-		addHollowFeature(report, feature.Command, liveDogfoodHappySkipReason(feature, report.Tests))
+		reason := liveDogfoodHappySkipReason(feature, report.Tests)
+		if reason == "" {
+			reason = liveDogfoodDryRunPassHollowReason(feature, report.Tests)
+		}
+		addHollowFeature(report, feature.Command, reason)
 	}
 	sort.Strings(report.HollowFeatures)
 	sort.Slice(report.ProofCoveredFeatures, func(i, j int) bool {
