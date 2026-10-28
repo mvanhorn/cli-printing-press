@@ -141,13 +141,24 @@ func applyLiveDogfoodDryRunShort(cluster string, args []string, i int, enabled b
 // stripLiveDogfoodDryRunFlags removes dry-run flags. Values of other flags
 // and tokens after "--" stay, including when that value is the string "--dry-run".
 func stripLiveDogfoodDryRunFlags(args []string, help string) []string {
+	stripped, _ := walkLiveDogfoodDryRunArgv(args, help)
+	return stripped
+}
+
+// walkLiveDogfoodDryRunArgv strips dry-run flags and reports where a rebuilt
+// --dry-run is still parsed as that flag. insertAt points at a real "--"
+// separator, or at a trailing value-taking flag that would consume an
+// appended token. A "--" taken as another flag's value is not the separator.
+func walkLiveDogfoodDryRunArgv(args []string, help string) (out []string, insertAt int) {
 	info := liveDogfoodDryRunInfo(help)
-	out := make([]string, 0, len(args))
+	out = make([]string, 0, len(args)+1)
+	insertAt = -1
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
+			insertAt = len(out)
 			out = append(out, args[i:]...)
-			break
+			return out, insertAt
 		}
 		if name, _, hasValue, ok := splitLiveDogfoodLongFlag(arg); ok {
 			if name == "dry-run" {
@@ -155,6 +166,9 @@ func stripLiveDogfoodDryRunFlags(args []string, help string) []string {
 					i++
 				}
 				continue
+			}
+			if !hasValue && info.longTakesValue(name) && i+1 >= len(args) {
+				insertAt = len(out)
 			}
 			out = append(out, arg)
 			if !hasValue && info.longTakesValue(name) && i+1 < len(args) {
@@ -165,6 +179,9 @@ func stripLiveDogfoodDryRunFlags(args []string, help string) []string {
 		}
 		if cluster, ok := liveDogfoodShortCluster(arg); ok {
 			rewritten, takeNext, keepNext := rewriteDryRunCluster(cluster, info)
+			if takeNext && i+1 >= len(args) {
+				insertAt = len(out)
+			}
 			if rewritten != "" {
 				out = append(out, rewritten)
 			}
@@ -178,7 +195,10 @@ func stripLiveDogfoodDryRunFlags(args []string, help string) []string {
 		}
 		out = append(out, arg)
 	}
-	return out
+	if insertAt < 0 {
+		insertAt = len(out)
+	}
+	return out, insertAt
 }
 
 // rewriteDryRunCluster drops a dry-run shorthand from a single-dash cluster.
@@ -230,17 +250,12 @@ func rewriteDryRunCluster(cluster string, info dryRunFlagInfo) (rewritten string
 // --dry-run=false, an unrecognized value, a shorthand, or a lookalike value
 // of another flag from running the mutation.
 func ensureLiveDogfoodDryRunArg(args []string, help string) []string {
-	stripped := stripLiveDogfoodDryRunFlags(args, help)
-	for i, arg := range stripped {
-		if arg == "--" {
-			out := make([]string, 0, len(stripped)+1)
-			out = append(out, stripped[:i]...)
-			out = append(out, "--dry-run")
-			out = append(out, stripped[i:]...)
-			return out
-		}
-	}
-	return append(stripped, "--dry-run")
+	stripped, insertAt := walkLiveDogfoodDryRunArgv(args, help)
+	out := make([]string, 0, len(stripped)+1)
+	out = append(out, stripped[:insertAt]...)
+	out = append(out, "--dry-run")
+	out = append(out, stripped[insertAt:]...)
+	return out
 }
 
 func happyArgsMentionDryRun(parsed happyArgs) bool {

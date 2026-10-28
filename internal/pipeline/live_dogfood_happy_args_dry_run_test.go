@@ -1,12 +1,14 @@
 package pipeline
 
 import (
+	"io"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -266,6 +268,16 @@ Flags:
 	}
 	ensured := ensureLiveDogfoodDryRunArg([]string{"cmd", "--output", "--dry-run", "--", "--dry-run"}, help)
 	assert.Equal(t, []string{"cmd", "--output", "--dry-run", "--dry-run", "--", "--dry-run"}, ensured)
+	// -n is the dry-run shorthand here, so "--" is a real separator.
+	assert.Equal(t, []string{"cmd", "--dry-run", "--"}, ensureLiveDogfoodDryRunArg([]string{"cmd", "-n", "--"}, help))
+	assert.Equal(t, []string{"cmd", "-v", "--dry-run", "--"}, ensureLiveDogfoodDryRunArg([]string{"cmd", "-vn", "--"}, help))
+	// -o takes the "--" value; inserting between them would make -o consume --dry-run.
+	assert.Equal(t, []string{"cmd", "-o", "--", "--dry-run"}, ensureLiveDogfoodDryRunArg([]string{"cmd", "-o", "--"}, help))
+	assert.Equal(t, []string{"cmd", "-o", "--", "--dry-run"}, ensureLiveDogfoodDryRunArg([]string{"cmd", "-no", "--"}, help))
+	assert.Equal(t, []string{"cmd", "-on", "--dry-run", "--"}, ensureLiveDogfoodDryRunArg([]string{"cmd", "-on", "--"}, help))
+	assert.Equal(t, []string{"cmd", "--dry-run", "-o"}, ensureLiveDogfoodDryRunArg([]string{"cmd", "-o"}, help))
+	assert.True(t, liveDogfoodEffectiveDryRun(ensureLiveDogfoodDryRunArg([]string{"cmd", "-o"}, help), help))
+	assert.True(t, liveDogfoodEffectiveDryRun(ensureLiveDogfoodDryRunArg([]string{"cmd", "-o", "--"}, help), help))
 
 	parsed := parseHappyArgsAnnotation("--region=nyc;--dry-run=false")
 	assert.True(t, happyArgsMentionDryRun(parsed))
@@ -274,4 +286,187 @@ Flags:
 	assert.True(t, happyArgsEnableDryRun(parseHappyArgsAnnotation("--dry-run=true")))
 	assert.False(t, happyArgsEnableDryRun(parseHappyArgsAnnotation("--dry-run=maybe")))
 	assert.False(t, happyArgsMentionDryRun(parseHappyArgsAnnotation("--region=nyc")))
+}
+
+func TestEnsureLiveDogfoodDryRunArgHonorsFlagValues(t *testing.T) {
+	t.Parallel()
+
+	const help = `
+Flags:
+  -n, --name string     Name
+  -o, --output string   Output file
+  -v, --verbose         Verbose
+      --dry-run         Show request without sending
+`
+
+	assert.Equal(t, []string{"publish", "--name", "--"}, stripLiveDogfoodDryRunFlags([]string{"publish", "--dry-run", "--name", "--"}, help))
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "long flag value double dash",
+			args: []string{"publish", "--dry-run", "--name", "--"},
+			want: []string{"publish", "--name", "--", "--dry-run"},
+		},
+		{
+			name: "real separator still precedes positionals",
+			args: []string{"publish", "--verbose", "--", "keep"},
+			want: []string{"publish", "--verbose", "--dry-run", "--", "keep"},
+		},
+		{
+			name: "bool flag does not consume separator",
+			args: []string{"publish", "--verbose", "--"},
+			want: []string{"publish", "--verbose", "--dry-run", "--"},
+		},
+		{
+			name: "shorthand value double dash",
+			args: []string{"publish", "-n", "--"},
+			want: []string{"publish", "-n", "--", "--dry-run"},
+		},
+		{
+			name: "bool shorthand does not consume separator",
+			args: []string{"publish", "-v", "--"},
+			want: []string{"publish", "-v", "--dry-run", "--"},
+		},
+		{
+			name: "cluster value double dash",
+			args: []string{"publish", "-vn", "--"},
+			want: []string{"publish", "-vn", "--", "--dry-run"},
+		},
+		{
+			name: "attached shorthand value leaves the separator",
+			args: []string{"publish", "-nv", "--"},
+			want: []string{"publish", "-nv", "--dry-run", "--"},
+		},
+		{
+			name: "cluster attached double dash value",
+			args: []string{"publish", "-vn--"},
+			want: []string{"publish", "-vn--", "--dry-run"},
+		},
+		{
+			name: "shorthand with separate value appends",
+			args: []string{"publish", "-n", "ada"},
+			want: []string{"publish", "-n", "ada", "--dry-run"},
+		},
+		{
+			name: "equals double dash then disabled dry-run",
+			args: []string{"publish", "--name=--", "--dry-run=false"},
+			want: []string{"publish", "--name=--", "--dry-run"},
+		},
+		{
+			name: "disabled then enabled dry-run then name value",
+			args: []string{"publish", "--dry-run=false", "--dry-run=true", "--name", "--"},
+			want: []string{"publish", "--name", "--", "--dry-run"},
+		},
+		{
+			name: "disabled dry-run after a real separator stays positional",
+			args: []string{"publish", "--verbose", "--", "--dry-run=false"},
+			want: []string{"publish", "--verbose", "--dry-run", "--", "--dry-run=false"},
+		},
+		{
+			name: "equals value double dash",
+			args: []string{"publish", "--name=--"},
+			want: []string{"publish", "--name=--", "--dry-run"},
+		},
+		{
+			name: "shorthand equals value double dash",
+			args: []string{"publish", "-n=--"},
+			want: []string{"publish", "-n=--", "--dry-run"},
+		},
+		{
+			name: "dangling long flag",
+			args: []string{"publish", "--name"},
+			want: []string{"publish", "--dry-run", "--name"},
+		},
+		{
+			name: "valued long flag appends",
+			args: []string{"publish", "--name", "ada"},
+			want: []string{"publish", "--name", "ada", "--dry-run"},
+		},
+		{
+			name: "dangling shorthand",
+			args: []string{"publish", "-n"},
+			want: []string{"publish", "--dry-run", "-n"},
+		},
+		{
+			name: "dangling cluster",
+			args: []string{"publish", "-vn"},
+			want: []string{"publish", "--dry-run", "-vn"},
+		},
+		{
+			name: "bool shorthand appends",
+			args: []string{"publish", "-v"},
+			want: []string{"publish", "-v", "--dry-run"},
+		},
+		{
+			name: "repeated separator after consumed double dash",
+			args: []string{"publish", "--name", "--", "--", "pos"},
+			want: []string{"publish", "--name", "--", "--dry-run", "--", "pos"},
+		},
+		{
+			name: "repeated separator without a value flag",
+			args: []string{"publish", "--", "--"},
+			want: []string{"publish", "--dry-run", "--", "--"},
+		},
+		{
+			name: "disabled dry-run then name value double dash",
+			args: []string{"publish", "--dry-run=false", "--name", "--"},
+			want: []string{"publish", "--name", "--", "--dry-run"},
+		},
+		{
+			name: "disabled dry-run after consumed double dash",
+			args: []string{"publish", "--name", "--", "--dry-run=false"},
+			want: []string{"publish", "--name", "--", "--dry-run"},
+		},
+		{
+			name: "name value is dry-run false token",
+			args: []string{"publish", "--name", "--dry-run=false"},
+			want: []string{"publish", "--name", "--dry-run=false", "--dry-run"},
+		},
+		{
+			name: "output value is dry-run token then name consumes separator",
+			args: []string{"publish", "--output", "--dry-run", "--name", "--"},
+			want: []string{"publish", "--output", "--dry-run", "--name", "--", "--dry-run"},
+		},
+		{
+			name: "separator before a value-looking flag",
+			args: []string{"publish", "--", "--name", "--"},
+			want: []string{"publish", "--dry-run", "--", "--name", "--"},
+		},
+		{
+			name: "dangling flag after a consumed double dash",
+			args: []string{"publish", "--name", "--", "--dry-run=false", "--output"},
+			want: []string{"publish", "--name", "--", "--dry-run", "--output"},
+		},
+		{
+			name: "two value flags where the second is the first value",
+			args: []string{"publish", "--output", "--name"},
+			want: []string{"publish", "--output", "--name", "--dry-run"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ensureLiveDogfoodDryRunArg(tt.args, help)
+			assert.Equal(t, tt.want, got)
+			assert.True(t, liveDogfoodEffectiveDryRun(got, help), "argv %v", got)
+			assert.True(t, pflagHonorsDryRun(got), "pflag argv %v", got)
+		})
+	}
+}
+
+// pflagHonorsDryRun parses argv the way a printed CLI does. args[0] is the
+// command name. A missing value still counts when --dry-run was already set.
+func pflagHonorsDryRun(args []string) bool {
+	fs := pflag.NewFlagSet("publish", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dry := fs.Bool("dry-run", false, "")
+	_ = fs.StringP("name", "n", "", "")
+	_ = fs.StringP("output", "o", "", "")
+	_ = fs.BoolP("verbose", "v", false, "")
+	_ = fs.Parse(args[1:])
+	return *dry
 }
