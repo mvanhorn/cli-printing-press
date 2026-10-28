@@ -45,7 +45,7 @@ def parse_list(text: str) -> list[str]:
 def weight_for(name: str, weights: dict[str, float]) -> float:
     if name in weights:
         return weights[name]
-    return statistics.median(sorted(weights.values())) if weights else 1.0
+    return statistics.median(weights.values()) if weights else 1.0
 
 
 def plan(names: list[str], weights: dict[str, float], total: int) -> list[list[str]]:
@@ -71,7 +71,6 @@ def load_weights(path: Path) -> dict[str, float]:
 
 
 def json_events(lines):
-    """Yield go test -json events, skipping build output and job-log prefixes."""
     for line in lines:
         start = line.find('{"Time"')
         if start < 0:
