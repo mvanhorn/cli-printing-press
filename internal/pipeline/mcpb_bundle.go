@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // BundleParams describes one MCPB bundle build. CLIDir must contain a
@@ -215,15 +216,62 @@ func StagedMCPBinaryPath(cliDir, mcpBinary string) string {
 	return filepath.Join(cliDir, "build", "stage", "bin", mcpBinary)
 }
 
+// ResolveGoModuleDir returns the directory that holds the Go module for the
+// CLI at cliDir: cliDir itself when it has go.mod, otherwise the single
+// immediate subdirectory with both go.mod and cmd/<binary>. Published CLIs
+// nest the module when the catalog slug is not a legal module path suffix
+// (Go rejects a module path ending in /v0), so manifest.json stays at cliDir.
+func ResolveGoModuleDir(cliDir, binary string) (string, error) {
+	if _, err := os.Stat(filepath.Join(cliDir, "go.mod")); err == nil {
+		return cliDir, nil
+	}
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving Go module dir: %w", err)
+	}
+	var candidates []string
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		dir := filepath.Join(cliDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(dir, "cmd", binary)); err != nil || !info.IsDir() {
+			continue
+		}
+		candidates = append(candidates, dir)
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], nil
+	case 0:
+		return "", fmt.Errorf("no go.mod in %s or in an immediate subdirectory containing cmd/%s", cliDir, binary)
+	default:
+		return "", fmt.Errorf("ambiguous Go module dir for cmd/%s under %s: %s", binary, cliDir, strings.Join(candidates, ", "))
+	}
+}
+
 // BuildMCPBBinary centralizes build flags so direct bundle builds and promote
 // refreshes produce interchangeable staged binaries.
 func BuildMCPBBinary(cliDir, name, outputPath, goos, goarch string) error {
+	moduleDir, err := ResolveGoModuleDir(cliDir, name)
+	if err != nil {
+		return err
+	}
+	// go build resolves a relative -o against cmd.Dir, which may now be a
+	// subdirectory of cliDir.
+	outputPath, err = filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("resolving output path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return fmt.Errorf("creating bin dir: %w", err)
 	}
 	pkg := "./cmd/" + name
 	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", outputPath, pkg)
-	cmd.Dir = cliDir
+	cmd.Dir = moduleDir
 	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go build %s: %w\n%s", pkg, err, string(out))

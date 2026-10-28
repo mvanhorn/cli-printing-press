@@ -368,3 +368,59 @@ func readZipEntryBytes(t *testing.T, path, entry string) []byte {
 	t.Fatalf("entry %q not found in %s", entry, path)
 	return nil
 }
+
+func writeGoModule(t *testing.T, dir string, binaries ...string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/demo\n\ngo 1.21\n"), 0o644))
+	for _, name := range binaries {
+		cmdDir := filepath.Join(dir, "cmd", name)
+		require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644))
+	}
+}
+
+func TestResolveGoModuleDir(t *testing.T) {
+	t.Run("root module", func(t *testing.T) {
+		cliDir := t.TempDir()
+		writeGoModule(t, cliDir, "demo-pp-mcp")
+		writeGoModule(t, filepath.Join(cliDir, "tools"), "demo-pp-mcp")
+
+		got, err := ResolveGoModuleDir(cliDir, "demo-pp-mcp")
+		require.NoError(t, err)
+		assert.Equal(t, cliDir, got)
+	})
+
+	t.Run("nested module", func(t *testing.T) {
+		cliDir := t.TempDir()
+		writeGoModule(t, filepath.Join(cliDir, "vzero"), "demo-pp-mcp", "demo-pp-cli")
+		writeGoModule(t, filepath.Join(cliDir, "unrelated"), "other-pp-mcp")
+		writeGoModule(t, filepath.Join(cliDir, ".snapshot"), "demo-pp-mcp")
+
+		got, err := ResolveGoModuleDir(cliDir, "demo-pp-mcp")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(cliDir, "vzero"), got)
+	})
+
+	t.Run("no module", func(t *testing.T) {
+		cliDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "cmd", "demo-pp-mcp"), 0o755))
+
+		_, err := ResolveGoModuleDir(cliDir, "demo-pp-mcp")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no go.mod")
+		assert.Contains(t, err.Error(), "cmd/demo-pp-mcp")
+	})
+
+	t.Run("ambiguous nested modules", func(t *testing.T) {
+		cliDir := t.TempDir()
+		writeGoModule(t, filepath.Join(cliDir, "a"), "demo-pp-mcp")
+		writeGoModule(t, filepath.Join(cliDir, "b"), "demo-pp-mcp")
+
+		_, err := ResolveGoModuleDir(cliDir, "demo-pp-mcp")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ambiguous")
+		assert.Contains(t, err.Error(), filepath.Join(cliDir, "a"))
+		assert.Contains(t, err.Error(), filepath.Join(cliDir, "b"))
+	})
+}

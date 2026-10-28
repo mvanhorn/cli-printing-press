@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -245,6 +246,7 @@ func TestNewBundleCmdWindowsPlatformBuildsToExeStagingPaths(t *testing.T) {
 		},
 	})
 	writeCLIManifest(t, dir, pipeline.CLIManifest{CLIName: "demo-pp-cli"})
+	writeGoMod(t, dir)
 	installFakeGo(t)
 
 	outPath := filepath.Join(dir, "out.mcpb")
@@ -268,12 +270,48 @@ func TestNewBundleCmdWindowsPlatformBuildsToExeStagingPaths(t *testing.T) {
 	assert.Contains(t, entries, "bin/demo-pp-cli.exe")
 }
 
+func TestNewBundleCmdBuildsFromNestedModuleDir(t *testing.T) {
+	cliDir := t.TempDir()
+	writeBundleManifest(t, cliDir, pipeline.MCPBManifest{
+		ManifestVersion: pipeline.MCPBManifestVersion,
+		Name:            "demo-pp-mcp",
+		Server: pipeline.MCPBServer{
+			Type:       "binary",
+			EntryPoint: "bin/demo-pp-mcp",
+			MCPConfig:  pipeline.MCPBLaunchSpec{Command: "${__dirname}/bin/demo-pp-mcp"},
+		},
+	})
+	writeCLIManifest(t, cliDir, pipeline.CLIManifest{CLIName: "demo-pp-cli"})
+	moduleDir := filepath.Join(cliDir, "vzero")
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+	writeGoMod(t, moduleDir)
+	for _, name := range []string{"demo-pp-mcp", "demo-pp-cli"} {
+		mainDir := filepath.Join(moduleDir, "cmd", name)
+		require.NoError(t, os.MkdirAll(mainDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(mainDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644))
+	}
+
+	outPath := filepath.Join(cliDir, "out.mcpb")
+	cmd := newBundleCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{cliDir, "--platform", runtime.GOOS + "/" + runtime.GOARCH, "--output", outPath})
+
+	require.NoError(t, cmd.Execute(), out.String())
+	entries := readBundleZipEntries(t, outPath)
+	assert.Contains(t, entries, "bin/"+platform.ExecutablePathForGOOS("demo-pp-mcp", runtime.GOOS))
+	assert.Contains(t, entries, "bin/"+platform.ExecutablePathForGOOS("demo-pp-cli", runtime.GOOS))
+}
+
 func TestBuildMCPBBinaryUsesReproducibleBuildFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake go shim uses POSIX shell")
 	}
 
 	dir := t.TempDir()
+	writeGoMod(t, dir)
 	fakeBin := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
 	fakeGo := filepath.Join(fakeBin, "go")
@@ -321,6 +359,7 @@ func TestAutoBundleForHostSuccessPath(t *testing.T) {
 		},
 	})
 	writeCLIManifest(t, dir, pipeline.CLIManifest{CLIName: "demo-pp-cli"})
+	writeGoMod(t, dir)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"), []byte(""), 0o644))
 	installFakeGo(t)
 
@@ -383,6 +422,11 @@ func readBundleZipManifest(t *testing.T, path string) pipeline.MCPBManifest {
 	}
 	t.Fatalf("%s not found in %s", pipeline.MCPBManifestFilename, path)
 	return pipeline.MCPBManifest{}
+}
+
+func writeGoMod(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/demo\n\ngo 1.21\n"), 0o644))
 }
 
 func installFakeGo(t *testing.T) {
