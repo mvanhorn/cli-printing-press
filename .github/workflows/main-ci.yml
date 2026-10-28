@@ -130,6 +130,9 @@ jobs:
           python3 scripts/verify_go_floor_test.py
           python3 scripts/govulncheck_stdlib_test.py
 
+      - name: Test generator shard planner
+        run: python3 scripts/generator_test_shards_test.py
+
       - name: Verify Go floor surfaces
         run: python3 scripts/verify-go-floor.py
 
@@ -163,9 +166,11 @@ jobs:
     # Must outlast the 25m go-test timeout plus setup-go.
     timeout-minutes: 30
     # Shard the full (non-short) suite across package partitions, then split
-    # the slow single-package generator shard by top-level test name. The
-    # aggregate result feeds `build-and-test` via needs.full-test.result, so
-    # the required check name is unchanged.
+    # the slow single-package generator suite by measured cost: the planner
+    # bin-packs top-level tests using scripts/generator-test-weights.json.
+    # The aggregate result feeds `build-and-test` via needs.full-test.result,
+    # so the required check name is unchanged. Keep the generator-N entries
+    # in step with shard_total below; the planner's unit test enforces it.
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +179,12 @@ jobs:
           - shard: generator-1
           - shard: generator-2
           - shard: generator-3
+          - shard: generator-4
+          - shard: generator-5
+          - shard: generator-6
+          - shard: generator-7
+          - shard: generator-8
+          - shard: generator-9
           - shard: pipeline
           - shard: cli
           - shard: rest
@@ -195,7 +206,6 @@ jobs:
 
           run_partition=false
           shard_index=0
-          shard_total=1
 
           case "${{ matrix.shard }}" in
             generator-*)
@@ -203,7 +213,7 @@ jobs:
               run_partition=true
               shard_index="${{ matrix.shard }}"
               shard_index="${shard_index#generator-}"
-              shard_total=4
+              shard_total=10
               ;;
             pipeline)
               packages=(./internal/pipeline/...)
@@ -224,9 +234,9 @@ jobs:
           printf '  %s\n' "${packages[@]}"
 
           # No -short: main-ci is the full-coverage gate, unlike lint.yml's
-          # fast -short shards. Generator shards need 25m: idle generator-0
-          # heads already take ~13–15m; speculative drafts tip over 15m.
-          # pipeline/cli/rest stay at 15m so a stall fails fast.
+          # fast -short shards. Balanced generator shards run well under 15m;
+          # 25m is a stall backstop for speculative drafts under runner
+          # contention. pipeline/cli/rest stay at 15m so a stall fails fast.
           go_test_timeout=15m
           if [[ "${{ matrix.shard }}" == generator-* ]]; then
             go_test_timeout=25m
@@ -234,13 +244,9 @@ jobs:
           if [[ "$run_partition" == "true" ]]; then
             test_list=/tmp/go-test-list.txt
             selected_list=/tmp/go-test-selected.txt
-            go test -list '^(Test|Example)' "${packages[0]}" > "$test_list"
-            python3 -c 'import hashlib, sys; idx = int(sys.argv[1]); total = int(sys.argv[2]); [print(name) for name in (line.strip() for line in sys.stdin) if name.startswith(("Test", "Example")) and int(hashlib.sha256(name.encode()).hexdigest(), 16) % total == idx]' "$shard_index" "$shard_total" < "$test_list" > "$selected_list"
+            go test -list '^(Test|Example|Fuzz)' "${packages[0]}" > "$test_list"
+            python3 scripts/generator_test_shards.py select --total "$shard_total" --index "$shard_index" < "$test_list" > "$selected_list"
             selected_count="$(awk 'NF { count++ } END { print count + 0 }' "$selected_list")"
-            if [[ "$selected_count" -eq 0 ]]; then
-              echo "No tests selected for shard ${{ matrix.shard }}."
-              exit 0
-            fi
             pattern="$(
               python3 -c 'import re, sys; names = [line.strip() for line in sys.stdin if line.strip()]; print("^(" + "|".join(re.escape(name) for name in names) + ")$")' < "$selected_list"
             )"
@@ -249,6 +255,10 @@ jobs:
             go test -json -timeout "$go_test_timeout" -run "$pattern" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
             status=${PIPESTATUS[0]}
             set -e
+            # Only a green run can prove coverage; a failed run keeps its own exit status.
+            if [[ "$status" -eq 0 ]]; then
+              python3 scripts/generator_test_shards.py verify --selected "$selected_list" --events /tmp/go-test.json || status=$?
+            fi
           else
             set +e
             go test -json -timeout "$go_test_timeout" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
