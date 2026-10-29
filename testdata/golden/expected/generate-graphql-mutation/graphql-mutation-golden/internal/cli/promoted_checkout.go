@@ -41,7 +41,7 @@ func newCheckoutPromotedCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if !cmd.Flags().Changed("cart-id") && bodyCartId == "" && !requiredInputWaived() {
-				return fmt.Errorf("required flag \"%s\" not set", "cart-id")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "cart-id"))
 			}
 			c, err := flags.newClient()
 			if err != nil {

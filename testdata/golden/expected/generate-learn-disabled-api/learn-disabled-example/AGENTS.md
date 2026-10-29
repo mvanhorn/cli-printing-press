@@ -31,6 +31,8 @@ learn-disabled-example-pp-cli <command> --help
 learn-disabled-example-pp-cli <command> --dry-run --agent
 ```
 
+A completed `--dry-run` reports `"success": true` and `"dry_run": true` and omits HTTP `status`. Hand-written commands should call `writeDryRun` for that shape. A dry run that fails validation exits non-zero with `"success": false`.
+
 When a command requires confirmation, pass `--yes` explicitly only after the target, arguments, and side effects are clear. `--agent` does not imply `--yes`.
 
 ## Novel Command Data Sources

@@ -404,8 +404,11 @@ func assertKeepsDryRunFields(t *testing.T, flags *rootFlags, sentinel json.RawMe
 	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
 		t.Fatalf("parse %s: %v", buf.String(), err)
 	}
-	if payload["dry_run"] != true || payload["action"] != "get" || payload["resource"] != "items" || payload["path"] != "/items" {
+	if payload["dry_run"] != true || payload["success"] != true || payload["action"] != "get" || payload["resource"] != "items" || payload["path"] != "/items" {
 		t.Fatalf("dry-run fields not top-level: %s", buf.String())
+	}
+	if _, ok := payload["status"]; ok {
+		t.Fatalf("dry-run envelope must not carry status: %s", buf.String())
 	}
 	meta, _ := payload["meta"].(map[string]any)
 	if meta["source"] != "dry-run" {

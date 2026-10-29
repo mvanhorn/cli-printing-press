@@ -241,8 +241,9 @@ func assertReadDryRunEnvelope(t *testing.T, stdout, action, resource, path strin
 	require.Equal(t, action, payload["action"], "stdout: %s", stdout)
 	require.Equal(t, resource, payload["resource"], "stdout: %s", stdout)
 	require.Equal(t, path, payload["path"], "stdout: %s", stdout)
-	require.Equal(t, false, payload["success"], "stdout: %s", stdout)
-	require.Equal(t, float64(0), payload["status"], "stdout: %s", stdout)
+	require.Equal(t, true, payload["success"], "stdout: %s", stdout)
+	_, hasStatus := payload["status"]
+	require.False(t, hasStatus, "dry-run envelope must not carry an HTTP status: %s", stdout)
 }
 
 func decodeDryRunContractJSON(t *testing.T, stdout string) map[string]any {

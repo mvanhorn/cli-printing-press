@@ -396,9 +396,36 @@ func requiredInputWaived() bool {
 }
 
 type dryRunResult struct {
-	DryRun bool   `json:"dry_run"`
-	Action string `json:"action"`
-	Would  string `json:"would"`
+	DryRun  bool   `json:"dry_run"`
+	Success bool   `json:"success"`
+	Action  string `json:"action"`
+	Would   string `json:"would"`
+}
+
+// markCompletedDryRun records that a dry run built a valid request and sent
+// nothing. success means the command did what was asked. status is removed
+// so 0 cannot be read as an HTTP result.
+func markCompletedDryRun(envelope map[string]any) {
+	envelope["dry_run"] = true
+	delete(envelope, "status")
+	envelope["success"] = true
+}
+
+// dryRunValidationErr is a dry run that never built a request. Machine output
+// reports success:false so it cannot be read as a completed plan. The error
+// itself is unchanged, including its exit code.
+func dryRunValidationErr(cmd *cobra.Command, flags *rootFlags, err error) error {
+	if err == nil {
+		return nil
+	}
+	if cmd != nil && flags != nil && flags.dryRun && flags.asJSON {
+		_ = writeEncodedJSON(cmd.OutOrStdout(), map[string]any{
+			"success": false,
+			"dry_run": true,
+			"error":   err.Error(),
+		}, "", "")
+	}
+	return err
 }
 
 type harnessRefusalResult struct {
@@ -410,13 +437,15 @@ type harnessRefusalResult struct {
 }
 
 // writeDryRun ends a --dry-run short-circuit by reporting the action that was
-// skipped. Returning silently leaves a --json caller with empty stdout, which
-// is indistinguishable from a broken command rather than a deliberate no-op.
-// Callers pass cmd.OutOrStdout() so the report follows any redirected writer.
+// skipped. A completed dry run reports success:true with dry_run:true and no
+// HTTP status. Returning silently leaves a --json caller with empty stdout,
+// which is indistinguishable from a broken command rather than a deliberate
+// no-op. Callers pass cmd.OutOrStdout() so the report follows any redirected
+// writer. Hand-written commands should call this instead of emitting success:false.
 func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
 	would := "run " + action + "; no changes made"
 	if flags != nil && flags.asJSON {
-		return writeEncodedJSON(w, dryRunResult{DryRun: true, Action: action, Would: would}, "", "")
+		return writeEncodedJSON(w, dryRunResult{DryRun: true, Success: true, Action: action, Would: would}, "", "")
 	}
 	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
 	return err

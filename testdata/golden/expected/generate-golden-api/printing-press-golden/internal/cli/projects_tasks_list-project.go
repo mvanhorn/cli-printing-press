@@ -53,7 +53,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if !validPriority {
-					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flagPriority, "priority", allowedPriority)
+					return dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v", flagPriority, "priority", allowedPriority))
 				}
 			}
 			path := "/projects/{projectId}/tasks"

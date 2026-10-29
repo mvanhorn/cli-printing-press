@@ -174,14 +174,14 @@ func TestGeneratedOutput_RequiredFlagGuardHonorsResolvedValue(t *testing.T) {
 	guard := `!cmd.Flags().Changed("instance-key") && flagInstanceKey == "" && !requiredInputWaived()`
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "tenants_list.go")
 	assert.Contains(t, endpointSrc, guard)
-	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "instance-key")`)
-	assert.NotContains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "label")`)
+	assert.Contains(t, endpointSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "instance-key"))`)
+	assert.NotContains(t, endpointSrc, `fmt.Errorf("required flag \"%s\" not set", "label")`)
 	assert.NotContains(t, endpointSrc, `.MarkFlagRequired("`)
 
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_whoami.go")
 	assert.Contains(t, promotedSrc, guard)
-	assert.Contains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "instance-key")`)
-	assert.NotContains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "label")`)
+	assert.Contains(t, promotedSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "instance-key"))`)
+	assert.NotContains(t, promotedSrc, `fmt.Errorf("required flag \"%s\" not set", "label")`)
 
 	requireGeneratedCompiles(t, outputDir)
 

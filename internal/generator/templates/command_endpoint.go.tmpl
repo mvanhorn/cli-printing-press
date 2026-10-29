@@ -131,7 +131,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
 			if {{flagRequiredUnsatisfiedExpr .}} {
-				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}"))
 			}
 {{- end}}
 {{- end}}
@@ -147,7 +147,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 					}
 				}
 				if !valid{{camel (paramIdent .)}} {
-					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}})
+					return dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}}))
 				}
 			}
 {{- end}}
@@ -180,7 +180,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if and $isRaw .Endpoint.BodyRequired}}
 			if rawBodyFile == "" && !stdinBody && !requiredInputWaived() {
-				return fmt.Errorf("raw request body required: pass --file <path> or --stdin")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("raw request body required: pass --file <path> or --stdin"))
 			}
 {{- end}}
 {{- end}}
@@ -1055,16 +1055,13 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 					envelope["partial_failure"] = partialFailure
 				}
 				if flags.dryRun {
-					envelope["dry_run"] = true
-					envelope["status"] = 0
-					envelope["success"] = false
+					markCompletedDryRun(envelope)
 				}
 				// Verify-mode synthetic envelope detection runs against RAW data
 				// (before --compact/--select filtering) so the sentinel field is
 				// guaranteed to be visible even if the operator passes a filter
-				// flag that would otherwise strip it. Surfaces a top-level
-				// verify_noop signal + flips success to false. Mirrors the dry_run
-				// shape above.
+				// flag that would otherwise strip it. A synthetic noop did not
+				// mutate, so it forces success false after a completed dry-run mark.
 				if len(data) > 0 {
 					var rawParsed any
 					if err := json.Unmarshal(data, &rawParsed); err == nil {

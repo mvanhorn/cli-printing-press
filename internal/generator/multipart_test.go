@@ -67,8 +67,8 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, clientSrc, `req.Header.Set("Content-Type", contentType)`)
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "assets_upload.go")
-	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "asset-data")`)
-	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "filename")`)
+	assert.Contains(t, endpointSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "asset-data"))`)
+	assert.Contains(t, endpointSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "filename"))`)
 	assert.Contains(t, endpointSrc, `fileFields["assetData"] = bodyAssetData`)
 	assert.Contains(t, endpointSrc, `fields["filename"] = bodyFilename`)
 	assert.Contains(t, endpointSrc, `fields["metadata"] = bodyMetadata`)
@@ -76,7 +76,7 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.NotContains(t, endpointSrc, `"stdin"`)
 
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_avatars.go")
-	assert.Contains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "image")`)
+	assert.Contains(t, promotedSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "image"))`)
 	assert.Contains(t, promotedSrc, `fileFields["image"] = bodyImage`)
 	assert.Contains(t, promotedSrc, `fields["label"] = bodyLabel`)
 	assert.Contains(t, promotedSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
@@ -327,8 +327,8 @@ paths:
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	uploadSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
-	assert.Contains(t, uploadSrc, `return fmt.Errorf("required flag \"%s\" not set", "asset-data")`)
-	assert.Contains(t, uploadSrc, `return fmt.Errorf("required flag \"%s\" not set", "filename")`)
+	assert.Contains(t, uploadSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "asset-data"))`)
+	assert.Contains(t, uploadSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "filename"))`)
 	assert.Contains(t, uploadSrc, `fileFields["assetData"] = bodyAssetData`)
 	assert.Contains(t, uploadSrc, `fields["filename"] = bodyFilename`)
 	assert.Contains(t, uploadSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
@@ -337,7 +337,7 @@ paths:
 
 	attachmentsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_attachments.go")
 	assert.Contains(t, attachmentsSrc, `cmd.Flags().StringVar(&bodyFile, "file", "", "Path to the file to upload.")`)
-	assert.Contains(t, attachmentsSrc, `return fmt.Errorf("required flag \"%s\" not set", "file")`)
+	assert.Contains(t, attachmentsSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "file"))`)
 	assert.Contains(t, attachmentsSrc, `fileFields["file"] = bodyFile`)
 	assert.Contains(t, attachmentsSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
 	assert.NotContains(t, attachmentsSrc, `"stdin"`)
