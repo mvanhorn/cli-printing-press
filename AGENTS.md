@@ -151,7 +151,7 @@ The same lockstep applies to the learn-loop templates under `internal/generator/
 - `internal/generator/` - Template engine + quality gates
 - `skills/` - Claude Code skill definitions
 - `testdata/` - Test fixtures (internal + OpenAPI specs)
-- `docs/PIPELINE.md` - Portable contract for the 9-phase generation pipeline. Update it when `internal/pipeline/state.go` or `internal/pipeline/seeds.go` changes
+- `docs/PIPELINE.md` - Portable contract for the 9-phase generation pipeline. Update it when `internal/pipeline/state.go`, `internal/pipeline/seeds.go`, or `internal/pipeline/source_fingerprint.go` changes
 - `docs/SPEC-EXTENSIONS.md` - Canonical reference for Printing Press-specific OpenAPI `x-*` extensions. Update it when `internal/openapi/parser.go` adds or changes an `Extensions["x-*"]` lookup
 - `docs/SKILLS.md` - Skill authoring conventions: workflow parity, reference-file pattern, frontmatter fields
 - `docs/PATTERNS.md` - Cross-cutting design patterns
