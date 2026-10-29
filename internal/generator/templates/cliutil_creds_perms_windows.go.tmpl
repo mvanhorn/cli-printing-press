@@ -146,3 +146,18 @@ func readCredentialFromRoot(root *os.Root, name, path string) ([]byte, error) {
 	}
 	return io.ReadAll(f)
 }
+
+func verifyPrivateCredentialDir(f *os.File, path string) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
+}
+
+func verifyPrivateCredentialFile(f *os.File, path string) error {
+	return verifyWindowsHandle(f, path)
+}
