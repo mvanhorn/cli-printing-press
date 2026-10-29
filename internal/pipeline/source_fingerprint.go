@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -48,7 +49,10 @@ func CaptureSourceFingerprint(root string) (SourceFingerprint, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if path != root && sourceFingerprintSkipDir(entry.Name()) {
+			// Exclusions are structural. A tree with no nested checkout or
+			// module keeps the same digest, so markers recorded before the
+			// rule still match. Lookalike names and symlinks are not markers.
+			if sourceFingerprintSkipWalkDir(root, path, entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -243,6 +247,94 @@ func sourceFingerprintSkipDir(name string) bool {
 	default:
 		return false
 	}
+}
+
+// The walk root is this CLI even when it has a go.mod and a worktree .git
+// file. A nested directory is a different tree when it is its own git
+// checkout or its own module.
+func sourceFingerprintSkipWalkDir(root, path, name string) bool {
+	if path == root {
+		return false
+	}
+	if sourceFingerprintSkipDir(name) {
+		return true
+	}
+	return sourceFingerprintSeparateTree(path)
+}
+
+func sourceFingerprintSeparateTree(dir string) bool {
+	return sourceFingerprintModuleRoot(dir) || sourceFingerprintGitCheckout(dir)
+}
+
+func sourceFingerprintModuleRoot(dir string) bool {
+	info, err := os.Lstat(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
+}
+
+func sourceFingerprintGitCheckout(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if info.Mode().IsRegular() {
+		return sourceFingerprintGitdirFile(gitPath)
+	}
+	if !info.IsDir() {
+		return false
+	}
+	return sourceFingerprintGitHEAD(filepath.Join(gitPath, "HEAD"))
+}
+
+func sourceFingerprintGitdirFile(path string) bool {
+	data, err := readFilePrefix(path, 128)
+	if err != nil {
+		return false
+	}
+	content := strings.TrimLeft(string(data), " \t\r\n")
+	return strings.HasPrefix(content, "gitdir:")
+}
+
+func sourceFingerprintGitHEAD(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false
+	}
+	data, err := readFilePrefix(path, 128)
+	if err != nil {
+		return false
+	}
+	return sourceFingerprintGitHEADText(string(data))
+}
+
+func sourceFingerprintGitHEADText(text string) bool {
+	text = strings.TrimSpace(text)
+	if rest, ok := strings.CutPrefix(text, "ref: "); ok {
+		return strings.TrimSpace(rest) != ""
+	}
+	if len(text) != 40 && len(text) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(text)
+	return err == nil
+}
+
+func readFilePrefix(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit))
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return data, err
 }
 
 func isSourceFingerprintFile(path string) bool {
