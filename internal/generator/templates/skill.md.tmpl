@@ -382,7 +382,7 @@ Global format flags share one contract on promoted, novel, sync, and `--deliver`
   {{.Name}}-pp-cli --help
   {{- end}}
   ```
-- **Previewable** — `--dry-run` shows the request without sending
+- **Previewable** — `--dry-run` shows the request without sending. A completed dry run exits 0 with `"success": true` and `"dry_run": true` and no HTTP `status`; validation failures still exit non-zero with `"success": false`.
 {{- if .HasDataLayer}}
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
 {{- end}}

@@ -1108,6 +1108,76 @@ func specEmitsReadDryRunBranch(apiSpec *spec.APISpec, promoted []PromotedCommand
 	return false
 }
 
+// specEmitsDryRunValidation reports whether a generated command returns
+// dryRunValidationErr. The helper is omitted otherwise so dead-code scoring
+// does not strip a function nothing calls. The predicate mirrors the
+// command templates: required non-positional flags, string enums, raw bodies,
+// and body checks (always on promoted commands; on endpoint files only for
+// the verbs that emit them).
+func specEmitsDryRunValidation(apiSpec *spec.APISpec, promoted []PromotedCommand, promotedNames map[string]string) bool {
+	if apiSpec == nil {
+		return false
+	}
+	var walk func(spec.Resource, string) bool
+	walk = func(original spec.Resource, promotedEndpoint string) bool {
+		resource := withoutOptionsEndpoints(original)
+		for name, endpoint := range resource.Endpoints {
+			if promotedEndpoint != "" && name == promotedEndpoint {
+				continue
+			}
+			if endpointEmitsDryRunValidation(endpoint, false) {
+				return true
+			}
+		}
+		for _, sub := range resource.SubResources {
+			if walk(sub, "") {
+				return true
+			}
+		}
+		return false
+	}
+	for name, resource := range apiSpec.Resources {
+		promotedEndpoint := ""
+		if promotedNames != nil {
+			promotedEndpoint = promotedNames[name]
+		}
+		if walk(resource, promotedEndpoint) {
+			return true
+		}
+	}
+	for _, command := range promoted {
+		if endpointEmitsDryRunValidation(command.Endpoint, true) {
+			return true
+		}
+	}
+	return false
+}
+
+// bodyChecksAlways is true for promoted commands, which emit body checks for
+// every verb. Endpoint files emit them only for raw bodies and the write verbs.
+func endpointEmitsDryRunValidation(endpoint spec.Endpoint, bodyChecksAlways bool) bool {
+	for _, p := range endpoint.Params {
+		if p.Required && !p.Positional {
+			if truth, _ := template.IsTrue(p.Default); !truth {
+				return true
+			}
+		}
+		if len(p.Enum) > 0 && !p.Positional && p.Type == "string" {
+			return true
+		}
+	}
+	emitsBody := bodyChecksAlways || endpointUsesRawRequest(endpoint) ||
+		endpoint.Method == "POST" || endpoint.Method == "PUT" || endpoint.Method == "PATCH" ||
+		(endpoint.Method == "DELETE" && endpointHasJSONBody(endpoint))
+	if emitsBody && strings.Contains(bodyRequiredChecks(endpoint, ""), "dryRunValidationErr") {
+		return true
+	}
+	if endpointUsesRawRequest(endpoint) && endpoint.BodyRequired {
+		return true
+	}
+	return false
+}
+
 func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bool) bool {
 	if !hasStore || command.Endpoint.UsesBinaryResponse() || command.Endpoint.UsesTextResponse() || endpointIsReadCommand(command.Endpoint, command.EndpointName) {
 		return false
@@ -1134,8 +1204,9 @@ func isMutationMethod(method string) bool {
 type helpersTemplateData struct {
 	*spec.APISpec
 	HelperFlags
-	HasAuthCommand   bool
-	EmitsStdinSecret bool
+	HasAuthCommand        bool
+	EmitsStdinSecret      bool
+	EmitsDryRunValidation bool
 }
 
 // doctorTemplateData wraps APISpec with flags for store-aware credential
@@ -3531,10 +3602,11 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasStampedDryRun = hFlags.HasPromotedMutations && !g.hasDataLayer()
 			hFlags.HasNoStoreReadDryRun = !g.hasDataLayer() && specEmitsReadDryRunBranch(g.Spec, g.PromotedCommands)
 			data = &helpersTemplateData{
-				APISpec:          g.Spec,
-				HelperFlags:      hFlags,
-				HasAuthCommand:   g.shouldEmitAuth(),
-				EmitsStdinSecret: g.emitsStdinSecretReader(),
+				APISpec:               g.Spec,
+				HelperFlags:           hFlags,
+				HasAuthCommand:        g.shouldEmitAuth(),
+				EmitsStdinSecret:      g.emitsStdinSecretReader(),
+				EmitsDryRunValidation: specEmitsDryRunValidation(g.Spec, g.PromotedCommands, g.PromotedEndpointNames),
 			}
 		case "root_test.go.tmpl":
 			data = &rootTestTemplateData{
@@ -9213,7 +9285,7 @@ func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent 
 	if endpoint.BodyJSONFallback {
 		if endpoint.BodyRequired {
 			fmt.Fprintf(b, "\n%sif !cmd.Flags().Changed(\"body-json\") && flagBodyJSON == \"\" && !requiredInputWaived() {", indent)
-			fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
+			fmt.Fprintf(b, "\n%s\treturn dryRunValidationErr(cmd, flags, fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\"))", indent)
 			fmt.Fprintf(b, "\n%s}", indent)
 		}
 		return
@@ -9259,7 +9331,7 @@ func renderFlatBodyEnumCheck(b *strings.Builder, p spec.Param, indent, flagPrefi
 		changedExpr = flagChangedExpr(p)
 	}
 	fmt.Fprintf(b, "\n%sif %s {", indent, changedExpr)
-	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"invalid value %%q for --%%s: schema permits no value\", body%s, %q)", indent, ident, flag)
+	fmt.Fprintf(b, "\n%s\treturn dryRunValidationErr(cmd, flags, fmt.Errorf(\"invalid value %%q for --%%s: schema permits no value\", body%s, %q))", indent, ident, flag)
 	fmt.Fprintf(b, "\n%s}", indent)
 }
 
@@ -9427,7 +9499,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 		changedExpr = fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
 	}
 	fmt.Fprintf(b, "\n%sif !%s && body%s == %s && !requiredInputWaived() {", indent, changedExpr, ident, zeroValForBodyParam(p))
-	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\")", indent, flag)
+	fmt.Fprintf(b, "\n%s\treturn dryRunValidationErr(cmd, flags, fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\"))", indent, flag)
 	fmt.Fprintf(b, "\n%s}", indent)
 }
 

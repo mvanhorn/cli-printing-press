@@ -233,7 +233,8 @@ func assertPromotedDryRunSources(t *testing.T, outputDir string, withStore bool)
 	}
 
 	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "items_create.go")
-	require.Contains(t, createSrc, `envelope["dry_run"] = true`)
+	require.Contains(t, createSrc, `markCompletedDryRun(envelope)`)
+	require.NotContains(t, createSrc, `envelope["status"] = 0`)
 	require.NotContains(t, createSrc, "stampDryRunEnvelope(")
 	require.NotContains(t, createSrc, "printNoStoreReadDryRun(")
 }
@@ -296,8 +297,9 @@ func assertPromotedDryRunRuntime(t *testing.T, cli promotedDryRunCLI, withStore 
 		assertTopLevelDryRun(t, stdout, "get")
 		require.Equal(t, "pings", readPayload["resource"], "stdout: %s", stdout)
 		require.Equal(t, "/pings", readPayload["path"], "stdout: %s", stdout)
-		require.Equal(t, false, readPayload["success"], "stdout: %s", stdout)
-		require.Equal(t, float64(0), readPayload["status"], "stdout: %s", stdout)
+		require.Equal(t, true, readPayload["success"], "stdout: %s", stdout)
+		_, hasStatus := readPayload["status"]
+		require.False(t, hasStatus, "dry-run envelope must not carry an HTTP status: %s", stdout)
 
 		stdout, _ = runPromotedDryRun(t, cli, "pings", "--dry-run", "--json", "--agent")
 		agentRead := decodeJSONObject(t, stdout)

@@ -115,7 +115,7 @@ Global format flags share one contract on promoted, novel, sync, and `--deliver`
   ```bash
   printing-press-golden-pp-cli currencies --x-api-version 2026-04-01 --agent --select code,decimals,symbol
   ```
-- **Previewable** — `--dry-run` shows the request without sending
+- **Previewable** — `--dry-run` shows the request without sending. A completed dry run exits 0 with `"success": true` and `"dry_run": true` and no HTTP `status`; validation failures still exit non-zero with `"success": false`.
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
 - **Non-interactive** — never prompts, every input is a flag
 - **Explicit confirmation** — `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear

@@ -266,7 +266,10 @@ func assertDryRunEnvelope(t *testing.T, stdout, action string) {
 	t.Helper()
 	payload := decodeJSONObject(t, stdout)
 	require.Equal(t, true, payload["dry_run"], "stdout: %s", stdout)
+	require.Equal(t, true, payload["success"], "stdout: %s", stdout)
 	require.Equal(t, action, payload["action"], "stdout: %s", stdout)
+	_, hasStatus := payload["status"]
+	require.False(t, hasStatus, "dry-run envelope must not carry an HTTP status: %s", stdout)
 	would, _ := payload["would"].(string)
 	require.NotEmpty(t, would, "stdout: %s", stdout)
 }

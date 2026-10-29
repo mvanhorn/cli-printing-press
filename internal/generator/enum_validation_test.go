@@ -59,7 +59,7 @@ func TestEnumParamEmitsValidation(t *testing.T) {
 	// Runtime validation block emitted.
 	require.Contains(t, code, `allowedStatus := []string{"active", "archived", "pending"}`,
 		"runtime validation must declare the allowed set")
-	require.Contains(t, code, `return fmt.Errorf("invalid value %q for --%s: must be one of %v"`,
+	require.Contains(t, code, `dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v"`,
 		"runtime validation must REJECT (return error) on unknown value, not warn")
 	require.NotContains(t, code, `"warning: --%s %q not in allowed set`,
 		"the old warn-and-continue enum behavior must be gone")
@@ -103,7 +103,7 @@ func TestEnumParamPromotedCommandRejects(t *testing.T) {
 
 	require.Contains(t, code, `allowedMode := []string{"light", "dark"}`,
 		"promoted command must declare the allowed enum set")
-	require.Contains(t, code, `return fmt.Errorf("invalid value %q for --%s: must be one of %v"`,
+	require.Contains(t, code, `dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v"`,
 		"promoted command must reject unknown enum values, not warn")
 }
 

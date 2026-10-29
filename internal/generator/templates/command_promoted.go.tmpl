@@ -105,14 +105,14 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
 			if {{flagRequiredUnsatisfiedExpr .}} {
-				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}"))
 			}
 {{- end}}
 {{- end}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- if and $isRaw .Endpoint.BodyRequired}}
 			if rawBodyFile == "" && !stdinBody && !requiredInputWaived() {
-				return fmt.Errorf("raw request body required: pass --file <path> or --stdin")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("raw request body required: pass --file <path> or --stdin"))
 			}
 {{- end}}
 {{- range .Endpoint.Params}}
@@ -127,7 +127,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if !valid{{camel (paramIdent .)}} {
-					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}})
+					return dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}}))
 				}
 			}
 {{- end}}

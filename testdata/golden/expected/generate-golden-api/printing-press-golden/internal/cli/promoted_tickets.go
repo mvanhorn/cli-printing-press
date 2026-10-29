@@ -43,7 +43,7 @@ func newTicketsPromotedCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if !cmd.Flags().Changed("filter") && bodyFilter == "" && !requiredInputWaived() {
-				return fmt.Errorf("required flag \"%s\" not set", "filter")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "filter"))
 			}
 			c, err := flags.newClient()
 			if err != nil {
