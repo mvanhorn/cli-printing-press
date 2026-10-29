@@ -756,27 +756,97 @@ type credentialsSnapshot struct {
 	missing       bool
 }
 
+// credentialSaveBeforeLockHook runs after the lock path is chosen and before
+// it is acquired. Tests move a symlink in that window.
+var credentialSaveBeforeLockHook func()
+
 // Credentials and config are separate files. Publishing tokens first would
 // otherwise leave a new credentials.toml if the config write fails.
 func (c *Config) saveCredentialsThenConfig() error {
-	credsPath, err := c.credentialsFilePath()
+	requested := c.Path
+	if c.explicitConfig {
+		resolved, err := cliutil.ResolveConfigFilePath(requested)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(resolved), 0o700); err != nil {
+			return err
+		}
+	}
+	// Resolve again now that the profile directory exists so the lock matches
+	// a reload through the same path.
+	_, _, lockPath, err := c.credentialSavePlan(requested)
 	if err != nil {
 		return err
 	}
-	// The profile lock sits beside the config file. Locking inside data/
-	// would create that file by following a symlinked data directory.
-	lockPath := credsPath
-	if c.explicitConfig {
-		if err := os.MkdirAll(filepath.Dir(c.Path), 0o700); err != nil {
+	if !c.explicitConfig {
+		if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 			return err
 		}
-		lockPath = c.Path
-	} else if err := os.MkdirAll(filepath.Dir(credsPath), 0o700); err != nil {
-		return err
+	}
+	if credentialSaveBeforeLockHook != nil {
+		credentialSaveBeforeLockHook()
 	}
 	return cliutil.WithFileLock(lockPath, func() error {
+		resolved, credsPath, lockedLock, err := c.credentialSavePlan(requested)
+		if err != nil {
+			return err
+		}
+		if lockedLock != lockPath {
+			return fmt.Errorf("profile changed while locking credentials")
+		}
+		if c.explicitConfig {
+			c.Path = resolved
+		}
 		return c.saveCredentialsThenConfigLocked(credsPath)
 	})
+}
+
+func (c *Config) retargetExplicitConfig() error {
+	if !c.explicitConfig {
+		return nil
+	}
+	resolved, err := cliutil.ResolveConfigFilePath(c.Path)
+	if err != nil {
+		return err
+	}
+	c.Path = resolved
+	return nil
+}
+
+func (c *Config) credentialSavePlan(requested string) (configPath, credsPath, lockPath string, err error) {
+	configPath = requested
+	if c.explicitConfig {
+		configPath, err = cliutil.ResolveConfigFilePath(requested)
+		if err != nil {
+			return "", "", "", err
+		}
+		credsPath, err = cliutil.CredentialsFilePathForConfig(configPath)
+	} else {
+		credsPath, err = cliutil.CredentialsFilePath()
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if !c.explicitConfig {
+		return configPath, credsPath, credsPath, nil
+	}
+	lockPath, err = explicitProfileLockPath(credsPath)
+	if err != nil {
+		return "", "", "", err
+	}
+	return configPath, credsPath, lockPath, nil
+}
+
+// Every config that shares one credentials file has to take the same lock.
+// The lock file sits in the profile directory: a lock under data/ is created
+// by following a symlinked data directory.
+func explicitProfileLockPath(credsPath string) (string, error) {
+	dataDir := filepath.Dir(credsPath)
+	if filepath.Base(dataDir) != "data" {
+		return "", fmt.Errorf("unexpected credentials path %s", credsPath)
+	}
+	return filepath.Join(filepath.Dir(dataDir), ".credentials"), nil
 }
 
 func (c *Config) saveCredentialsThenConfigLocked(credsPath string) error {
@@ -1105,6 +1175,11 @@ func (c *Config) updateFileConfigField(field string) {
 }
 
 func (c *Config) save() error {
+	// A symlink --config must stay a symlink. Replacing it would make the next
+	// load look for credentials beside the link instead of the resolved profile.
+	if err := c.retargetExplicitConfig(); err != nil {
+		return err
+	}
 	persisted := c.configForSave()
 	var persist any = persisted
 	if !c.AgentcookieManagedByExternalStore() {
