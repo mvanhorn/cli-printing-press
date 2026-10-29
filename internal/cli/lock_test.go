@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/stretchr/testify/assert"
@@ -225,6 +227,78 @@ func writeLockPhase5Pass(t *testing.T, state *pipeline.PipelineState) {
 		SourceFiles:       source.Files,
 		AuthContext:       pipeline.Phase5AuthContext{Type: "none"},
 	})
+}
+
+func TestLockPromote_UsesCurrentRunAndSkipsNestedTrees(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "internal", "cli", "root.go"), []byte("package cli\n"), 0o644))
+
+	// The oldest run id sorts first in the runstate glob.
+	oldRunID := "20200101T000000Z-old"
+	old := pipeline.NewStateWithRun("test", workDir, oldRunID, "test-scope")
+	old.StartedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, old.Save())
+	oldProofs := filepath.Join(workDir, ".manuscripts", oldRunID, "proofs")
+	require.NoError(t, os.MkdirAll(oldProofs, 0o755))
+	oldMarker := fmt.Sprintf(`{"schema_version":1,"api_name":"test","run_id":%q,"status":"pass","level":"full","matrix_size":1,"tests_passed":1}`+"\n", oldRunID)
+	require.NoError(t, os.WriteFile(filepath.Join(oldProofs, pipeline.Phase5AcceptanceFilename), []byte(oldMarker), 0o644))
+
+	newRunID := "20261029T000000Z-new"
+	current := pipeline.NewStateWithRun("test", workDir, newRunID, "test-scope")
+	current.StartedAt = time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, current.Save())
+	writeLockPhase5Pass(t, current)
+
+	worktree := filepath.Join(workDir, ".claude", "worktrees", "reprint")
+	require.NoError(t, os.MkdirAll(filepath.Join(worktree, "cmd", "reprint"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: ../repo.git/worktrees/reprint\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(worktree, "cmd", "reprint", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "tools"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "tools", "go.mod"), []byte("module tools\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "tools", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	_, code := runLockCmd("acquire", "--cli", "test-pp-cli", "--scope", "test-scope")
+	require.Equal(t, 0, code)
+
+	stdout, code := runLockCmd("promote", "--cli", "test-pp-cli", "--dir", workDir)
+	assert.Equal(t, 0, code, stdout)
+	_, err := os.Stat(filepath.Join(pipeline.PublishedLibraryRoot(), "test", "go.mod"))
+	assert.NoError(t, err)
+}
+
+func TestLockPromote_RejectsRealSourceDrift(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "internal", "cli", "root.go"), []byte("package cli\n"), 0o644))
+
+	state := pipeline.NewStateWithRun("test", workDir, "20261029T000000Z-new", "test-scope")
+	require.NoError(t, state.Save())
+	writeLockPhase5Pass(t, state)
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "internal", "cli", "root.go"), []byte("package cli\n\nvar changed = 1\n"), 0o644))
+
+	cmd := newLockCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"promote", "--cli", "test-pp-cli", "--dir", workDir})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source fingerprint")
+	assert.Contains(t, err.Error(), "internal/cli/root.go")
 }
 
 func TestLockHelpOutput(t *testing.T) {

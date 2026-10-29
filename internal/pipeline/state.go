@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -269,12 +270,34 @@ func LoadCurrentState(apiName string) (*PipelineState, error) {
 	return LoadState(apiName)
 }
 
+type workingDirMatch struct {
+	state   PipelineState
+	path    string
+	modTime time.Time
+}
+
+// FindStateByWorkingDir returns the runstate whose working directory is dir.
+// When several runs share that directory, the current scope's current-run
+// pointer wins if it names one of them; otherwise the newest run is used.
 func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving working dir: %w", err)
 	}
 
+	matches := runstatesForWorkingDir(absDir)
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no runstate entry for working dir %s", absDir)
+	}
+	if state, ok := stateFromCurrentRunPointer(matches); ok {
+		return state, nil
+	}
+	chosen := newestWorkingDirMatch(matches)
+	return &chosen, nil
+}
+
+func runstatesForWorkingDir(absDir string) []workingDirMatch {
+	var matches []workingDirMatch
 	for _, candidate := range runstateStatePathCandidates() {
 		data, err := os.ReadFile(candidate)
 		if err != nil {
@@ -285,18 +308,110 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 		if err := json.Unmarshal(data, &state); err != nil {
 			continue
 		}
-		if state.EffectiveWorkingDir() == absDir {
-			if state.RunID == "" {
-				state.RunID = filepath.Base(filepath.Dir(candidate))
-			}
-			if state.Scope == "" {
-				state.Scope = scopeFromStatePath(candidate)
-			}
-			return &state, nil
+		if state.EffectiveWorkingDir() != absDir {
+			continue
 		}
+		applyRunIdentityFromStatePath(candidate, &state)
+		match := workingDirMatch{state: state, path: candidate}
+		if info, err := os.Stat(candidate); err == nil {
+			match.modTime = info.ModTime()
+		}
+		matches = append(matches, match)
+	}
+	return matches
+}
+
+func applyRunIdentityFromStatePath(candidate string, state *PipelineState) {
+	if state.RunID == "" {
+		state.RunID = filepath.Base(filepath.Dir(candidate))
+	}
+	if state.Scope == "" {
+		state.Scope = scopeFromStatePath(candidate)
+	}
+}
+
+// stateFromCurrentRunPointer returns the matching run named by a current-scope
+// pointer. Pointer files that do not parse, or that name a run for a different
+// directory, are ignored so a stale or corrupt pointer falls through to recency.
+func stateFromCurrentRunPointer(matches []workingDirMatch) (*PipelineState, bool) {
+	pointers := currentRunPointers()
+	if len(pointers) == 0 || len(matches) == 0 {
+		return nil, false
 	}
 
-	return nil, fmt.Errorf("no runstate entry for working dir %s", absDir)
+	found := false
+	var best workingDirMatch
+	var bestUpdated time.Time
+	for i := range pointers {
+		for j := range matches {
+			if filepath.Clean(pointers[i].StatePath) != filepath.Clean(matches[j].path) {
+				continue
+			}
+			if !found || pointerMatchOutranks(pointers[i].UpdatedAt, matches[j], bestUpdated, best) {
+				best = matches[j]
+				bestUpdated = pointers[i].UpdatedAt
+				found = true
+			}
+		}
+	}
+	if !found {
+		return nil, false
+	}
+	state := best.state
+	return &state, true
+}
+
+func pointerMatchOutranks(updated time.Time, match workingDirMatch, bestUpdated time.Time, best workingDirMatch) bool {
+	if !updated.Equal(bestUpdated) {
+		return updated.After(bestUpdated)
+	}
+	return newerWorkingDirMatch(match, best)
+}
+
+func currentRunPointers() []CurrentRunPointer {
+	entries, err := os.ReadDir(CurrentRunDir())
+	if err != nil {
+		return nil
+	}
+	var out []CurrentRunPointer
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(CurrentRunDir(), entry.Name()))
+		if err != nil {
+			continue
+		}
+		var pointer CurrentRunPointer
+		if err := json.Unmarshal(data, &pointer); err != nil || strings.TrimSpace(pointer.StatePath) == "" {
+			continue
+		}
+		out = append(out, pointer)
+	}
+	return out
+}
+
+func newestWorkingDirMatch(matches []workingDirMatch) PipelineState {
+	best := matches[0]
+	for _, match := range matches[1:] {
+		if newerWorkingDirMatch(match, best) {
+			best = match
+		}
+	}
+	return best.state
+}
+
+func newerWorkingDirMatch(a, b workingDirMatch) bool {
+	if !a.state.StartedAt.Equal(b.state.StartedAt) {
+		return a.state.StartedAt.After(b.state.StartedAt)
+	}
+	if !a.modTime.Equal(b.modTime) {
+		return a.modTime.After(b.modTime)
+	}
+	if a.state.RunID != b.state.RunID {
+		return a.state.RunID > b.state.RunID
+	}
+	return a.path > b.path
 }
 
 func runstateStatePathCandidates() []string {
