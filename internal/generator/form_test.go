@@ -84,8 +84,8 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 	assert.NotContains(t, endpointSrc, `var stdinBody bool`)
 	assert.NotContains(t, endpointSrc, `c.Post(path, body)`)
 	// Required-flag check should fire at top-level, not inside `if !stdinBody`.
-	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "grant-type")`)
-	assert.Contains(t, endpointSrc, `return fmt.Errorf("required flag \"%s\" not set", "client-id")`)
+	assert.Contains(t, endpointSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "grant-type"))`)
+	assert.Contains(t, endpointSrc, `dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "client-id"))`)
 
 	// JSON-string body field validates as JSON before sending. Single-endpoint
 	// resource collapses to the promoted form rather than a per-endpoint file.

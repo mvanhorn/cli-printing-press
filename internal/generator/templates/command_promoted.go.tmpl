@@ -105,14 +105,14 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
 			if {{flagRequiredUnsatisfiedExpr .}} {
-				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}"))
 			}
 {{- end}}
 {{- end}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- if and $isRaw .Endpoint.BodyRequired}}
 			if rawBodyFile == "" && !stdinBody && !requiredInputWaived() {
-				return fmt.Errorf("raw request body required: pass --file <path> or --stdin")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("raw request body required: pass --file <path> or --stdin"))
 			}
 {{- end}}
 {{- range .Endpoint.Params}}
@@ -127,7 +127,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if !valid{{camel (paramIdent .)}} {
-					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}})
+					return dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}}))
 				}
 			}
 {{- end}}
@@ -680,6 +680,11 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// opt out of the auto-JSON path so piped consumers that asked for a
 			// non-JSON format reach the standard pipeline below.
 			if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
+{{- if $isMutationOutput}}
+				// --select and --compact can drop the transport sentinel.
+				// Read it before those filters so a verify noop is not stamped as a completed preview.
+				verifyNoop := isVerifySyntheticResponse(data)
+{{- end}}
 				var selectErr error
 				filtered := data
 				if flags.selectFields != "" {
@@ -700,7 +705,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				// Stamp after provenance and platform wrapping so those wrappers
 				// cannot hide dry_run and action under results.
 				if flags.dryRun {
-					stamped, stampErr := stampDryRunEnvelope(wrapped, "{{lower .Endpoint.Method}}")
+					stamped, stampErr := stampDryRunEnvelope(wrapped, "{{lower .Endpoint.Method}}", verifyNoop)
 					if stampErr != nil {
 						return stampErr
 					}

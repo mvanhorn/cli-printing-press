@@ -462,9 +462,36 @@ func requiredInputWaived() bool {
 }
 
 type dryRunResult struct {
-	DryRun bool   `json:"dry_run"`
-	Action string `json:"action"`
-	Would  string `json:"would"`
+	DryRun  bool   `json:"dry_run"`
+	Success bool   `json:"success"`
+	Action  string `json:"action"`
+	Would   string `json:"would"`
+}
+
+// markCompletedDryRun records that a dry run built a valid request and sent
+// nothing. success means the command did what was asked. status is removed
+// so 0 cannot be read as an HTTP result.
+func markCompletedDryRun(envelope map[string]any) {
+	envelope["dry_run"] = true
+	delete(envelope, "status")
+	envelope["success"] = true
+}
+
+// dryRunValidationErr is a dry run that never built a request. Machine output
+// reports success:false so it cannot be read as a completed plan. The error
+// itself is unchanged, including its exit code.
+func dryRunValidationErr(cmd *cobra.Command, flags *rootFlags, err error) error {
+	if err == nil {
+		return nil
+	}
+	if cmd != nil && flags != nil && flags.dryRun && flags.asJSON {
+		_ = writeEncodedJSON(cmd.OutOrStdout(), map[string]any{
+			"success": false,
+			"dry_run": true,
+			"error":   err.Error(),
+		}, "", "")
+	}
+	return err
 }
 
 type harnessRefusalResult struct {
@@ -476,13 +503,15 @@ type harnessRefusalResult struct {
 }
 
 // writeDryRun ends a --dry-run short-circuit by reporting the action that was
-// skipped. Returning silently leaves a --json caller with empty stdout, which
-// is indistinguishable from a broken command rather than a deliberate no-op.
-// Callers pass cmd.OutOrStdout() so the report follows any redirected writer.
+// skipped. A completed dry run reports success:true with dry_run:true and no
+// HTTP status. Returning silently leaves a --json caller with empty stdout,
+// which is indistinguishable from a broken command rather than a deliberate
+// no-op. Callers pass cmd.OutOrStdout() so the report follows any redirected
+// writer. Hand-written commands should call this instead of emitting success:false.
 func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
 	would := "run " + action + "; no changes made"
 	if flags != nil && flags.asJSON {
-		return writeEncodedJSON(w, dryRunResult{DryRun: true, Action: action, Would: would}, "", "")
+		return writeEncodedJSON(w, dryRunResult{DryRun: true, Success: true, Action: action, Would: would}, "", "")
 	}
 	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
 	return err
@@ -2993,10 +3022,28 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": resolveAgentOutputSource(flags, data)})
 }
 
+// The transport verify gate returns this body in place of a dry-run preview.
+func isVerifySyntheticResponse(data json.RawMessage) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var rawParsed any
+	if err := json.Unmarshal(data, &rawParsed); err != nil {
+		return false
+	}
+	m, ok := rawParsed.(map[string]any)
+	if !ok {
+		return false
+	}
+	v, ok := m["__pp_verify_synthetic__"].(bool)
+	return ok && v
+}
+
 // Provenance and platform wrappers nest the client sentinel under results.
 // The dry-run JSON contract reads only top-level keys, so stamping has to
 // happen after those wrappers or dry_run and action never surface.
-func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, error) {
+// verifyNoop was decided from the raw response: formatting can drop the sentinel.
+func stampDryRunEnvelope(data json.RawMessage, action string, verifyNoop bool) (json.RawMessage, error) {
 	var envelope map[string]any
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &envelope); err != nil {
@@ -3006,8 +3053,12 @@ func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, 
 	if envelope == nil {
 		envelope = map[string]any{}
 	}
-	envelope["dry_run"] = true
 	envelope["action"] = action
+	markCompletedDryRun(envelope)
+	if verifyNoop {
+		envelope["verify_noop"] = true
+		envelope["success"] = false
+	}
 	stamped, err := json.Marshal(envelope)
 	if err != nil {
 		return nil, err
@@ -3016,15 +3067,17 @@ func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, 
 }
 
 // --agent, --select, and --compact wrap or filter before the dry-run contract
-// can see top-level keys. Stamp after that formatting so the keys stay on the
-// envelope the contract reads.
+// can see top-level keys. The verify sentinel is read first because those
+// flags can drop it; stamping still happens after formatting so dry_run and
+// action stay on the envelope. A verify noop did not build a preview.
 func printStampedDryRunOutput(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, action string, documentedFields ...map[string]bool) error {
+	verifyNoop := isVerifySyntheticResponse(data)
 	var buf bytes.Buffer
 	formatErr := printOutputWithFlagsMeta(&buf, data, flags, agentMeta, documentedFields...)
 	if formatErr != nil && buf.Len() == 0 {
 		return formatErr
 	}
-	stamped, err := stampDryRunEnvelope(bytes.TrimSpace(buf.Bytes()), action)
+	stamped, err := stampDryRunEnvelope(bytes.TrimSpace(buf.Bytes()), action, verifyNoop)
 	if err != nil {
 		return err
 	}

@@ -36,7 +36,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if !validStatus {
-					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flagStatus, "status", allowedStatus)
+					return dryRunValidationErr(cmd, flags, fmt.Errorf("invalid value %q for --%s: must be one of %v", flagStatus, "status", allowedStatus))
 				}
 			}
 			path := "/projects"

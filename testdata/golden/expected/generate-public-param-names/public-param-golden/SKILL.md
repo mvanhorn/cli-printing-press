@@ -74,7 +74,7 @@ Global format flags share one contract on promoted, novel, sync, and `--deliver`
   ```bash
   public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000 --agent --select id,name
   ```
-- **Previewable** — `--dry-run` shows the request without sending
+- **Previewable** — `--dry-run` shows the request without sending. A completed dry run exits 0 with `"success": true` and `"dry_run": true` and no HTTP `status`; validation failures still exit non-zero with `"success": false`.
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
 - **Non-interactive** — never prompts, every input is a flag
 - **Explicit confirmation** — `--agent` does not imply `--yes`; pass `--yes` separately only after the target, arguments, and side effects are clear

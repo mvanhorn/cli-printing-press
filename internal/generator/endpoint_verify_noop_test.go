@@ -47,10 +47,12 @@ func TestEndpoint_VerifyNoopPropagation(t *testing.T) {
 	assert.Contains(t, emitted, `envelope["verify_noop"] = true`,
 		"endpoint handler should set top-level verify_noop=true on synthetic envelope detection")
 
-	// Success-flip: a noop did not actually mutate. Mirrors the dry_run
-	// shape that lives in the same envelope block.
+	// Success-flip: a synthetic noop did not mutate. A completed dry run
+	// reports success true; this assignment must still force false.
 	assert.Contains(t, emitted, `envelope["success"] = false`,
 		"endpoint handler should flip success=false on synthetic envelope detection")
+	assert.Contains(t, emitted, `markCompletedDryRun(envelope)`,
+		"a completed dry run must report success via markCompletedDryRun")
 
 	// Ordering invariant: detection MUST run against RAW data (before the
 	// `filtered := unwrapSingleKeyArray(data)` assignment) so the sentinel

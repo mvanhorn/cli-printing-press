@@ -51,12 +51,14 @@ func TestLearnDryRunEmitsJSONEnvelope(t *testing.T) {
 			stdout := requireLearnDryRunOutput(t, binaryPath, args)
 
 			var envelope struct {
-				DryRun bool   `json:"dry_run"`
-				Action string `json:"action"`
-				Would  string `json:"would"`
+				DryRun  bool   `json:"dry_run"`
+				Success bool   `json:"success"`
+				Action  string `json:"action"`
+				Would   string `json:"would"`
 			}
 			require.NoError(t, json.Unmarshal([]byte(stdout), &envelope), "stdout: %q", stdout)
 			require.True(t, envelope.DryRun)
+			require.True(t, envelope.Success)
 			require.Equal(t, tc.action, envelope.Action)
 			require.NotEmpty(t, envelope.Would)
 		})

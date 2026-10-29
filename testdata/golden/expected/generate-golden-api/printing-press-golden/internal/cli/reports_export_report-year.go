@@ -42,7 +42,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			if !cmd.Flags().Changed("year") && flagYear == 0 && !requiredInputWaived() {
-				return fmt.Errorf("required flag \"%s\" not set", "year")
+				return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set", "year"))
 			}
 			path := "/reports/{year}/export"
 			c, err := flags.newClient()

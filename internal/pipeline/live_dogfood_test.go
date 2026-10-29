@@ -6353,7 +6353,7 @@ if [ "$1" = "widgets" ] && [ "$2" = "create" ]; then
   fi
   if [ "$has_dry_run" = "1" ]; then
     # Dry-run preview envelope shape mirrors what the generated CLI emits.
-    echo '{"action":"post","resource":"widgets","path":"/widgets","status":0,"success":false,"dry_run":true}'
+    echo '{"action":"post","resource":"widgets","path":"/widgets","dry_run":true,"success":true}'
     exit 0
   fi
   if [ "${PRINTING_PRESS_TEST_PERMISSIVE_API:-0}" = "1" ]; then

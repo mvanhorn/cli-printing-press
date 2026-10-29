@@ -8185,11 +8185,13 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	require.GreaterOrEqual(t, fallPrintErr, 0, "mutate fall-through must return printErr")
 	assert.Less(t, fallPartial, fallPrintErr, "partialFailure (exit 6) must precede printErr/selectErr on fall-through")
 
-	// Dry-run is flagged honestly in the envelope
+	// A completed dry run reports success and does not invent an HTTP status.
+	// verify_noop still forces success false; that assignment must not be the
+	// dry-run override.
 	assert.Contains(t, content, `flags.dryRun`)
-	assert.Contains(t, content, `envelope["dry_run"] = true`)
-	assert.Contains(t, content, `envelope["status"] = 0`)
-	assert.Contains(t, content, `envelope["success"] = false`)
+	assert.Contains(t, content, `markCompletedDryRun(envelope)`)
+	assert.NotContains(t, content, `envelope["status"] = 0`)
+	assert.NotContains(t, content, "envelope[\"dry_run\"] = true\n\t\t\t\t\tenvelope[\"status\"] = 0\n\t\t\t\t\tenvelope[\"success\"] = false")
 
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -8879,7 +8881,7 @@ func TestRequiredFlagCommands_HelpFallbackOnEmptyInvocation(t *testing.T) {
 		require.GreaterOrEqual(t, guardIdx, 0,
 			"%s must guard empty invocation by returning cmd.Help() before required-flag checks", path)
 
-		requireIdx := strings.Index(body, `return fmt.Errorf("required flag \"%s\" not set",`)
+		requireIdx := strings.Index(body, `return dryRunValidationErr(cmd, flags, fmt.Errorf("required flag \"%s\" not set",`)
 		require.GreaterOrEqual(t, requireIdx, 0,
 			"%s must continue emitting required-flag validation", path)
 

@@ -387,9 +387,10 @@ func requiredInputWaived() bool {
 }
 
 type dryRunResult struct {
-	DryRun bool   `json:"dry_run"`
-	Action string `json:"action"`
-	Would  string `json:"would"`
+	DryRun  bool   `json:"dry_run"`
+	Success bool   `json:"success"`
+	Action  string `json:"action"`
+	Would   string `json:"would"`
 }
 
 type harnessRefusalResult struct {
@@ -401,13 +402,15 @@ type harnessRefusalResult struct {
 }
 
 // writeDryRun ends a --dry-run short-circuit by reporting the action that was
-// skipped. Returning silently leaves a --json caller with empty stdout, which
-// is indistinguishable from a broken command rather than a deliberate no-op.
-// Callers pass cmd.OutOrStdout() so the report follows any redirected writer.
+// skipped. A completed dry run reports success:true with dry_run:true and no
+// HTTP status. Returning silently leaves a --json caller with empty stdout,
+// which is indistinguishable from a broken command rather than a deliberate
+// no-op. Callers pass cmd.OutOrStdout() so the report follows any redirected
+// writer. Hand-written commands should call this instead of emitting success:false.
 func writeDryRun(w io.Writer, flags *rootFlags, action string) error {
 	would := "run " + action + "; no changes made"
 	if flags != nil && flags.asJSON {
-		return writeEncodedJSON(w, dryRunResult{DryRun: true, Action: action, Would: would}, "", "")
+		return writeEncodedJSON(w, dryRunResult{DryRun: true, Success: true, Action: action, Would: would}, "", "")
 	}
 	_, err := fmt.Fprintf(w, "dry-run: would %s\n", would)
 	return err
