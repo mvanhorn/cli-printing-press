@@ -11,7 +11,7 @@
       "agent_workflow_readiness": 9,
       "auth": 10,
       "auth_protocol": 0,
-      "breadth": 9,
+      "breadth": 10,
       "cache_freshness": 10,
       "data_pipeline_integrity": 10,
       "dead_code": 5,

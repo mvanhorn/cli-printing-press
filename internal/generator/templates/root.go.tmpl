@@ -469,7 +469,7 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
 			flag.Hidden = true
 		}
 	}
-	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
+	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>, spacefast:<name> (live web page)")
 {{- /* --rate-limit default precedence: an explicit spec default_rate_limit
        ("auto" or a number) wins; otherwise the documented client.RateLimitAuto
        sentinel. "auto" and the empty fallback both select the header-driven

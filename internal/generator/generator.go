@@ -3416,6 +3416,8 @@ func (g *Generator) renderSingleFiles() error {
 		"agent_context.go.tmpl":                    filepath.Join("internal", "cli", "agent_context.go"),
 		"profile.go.tmpl":                          filepath.Join("internal", "cli", "profile.go"),
 		"deliver.go.tmpl":                          filepath.Join("internal", "cli", "deliver.go"),
+		"deliver_spacefast.go.tmpl":                filepath.Join("internal", "cli", "deliver_spacefast.go"),
+		"deliver_spacefast_test.go.tmpl":           filepath.Join("internal", "cli", "deliver_spacefast_test.go"),
 		"deliver_download_test.go.tmpl":            filepath.Join("internal", "cli", "deliver_download_test.go"),
 		"feedback.go.tmpl":                         filepath.Join("internal", "cli", "feedback.go"),
 		"which.go.tmpl":                            filepath.Join("internal", "cli", "which.go"),

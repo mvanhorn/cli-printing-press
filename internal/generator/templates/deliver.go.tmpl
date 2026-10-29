@@ -36,6 +36,7 @@ type DeliverSink struct {
 //   stdout          -> default, no redirection
 //   file:<path>     -> write output atomically to a private file at <path>
 //   webhook:<url>   -> POST output body to <url> (redirects are not followed)
+//   spacefast:<name> -> publish output as a live web page on Spacefast
 //
 // Returns an error for unknown schemes with a message naming the
 // supported set, so agents see a structured refusal rather than a
@@ -46,7 +47,7 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 	}
 	idx := strings.Index(spec, ":")
 	if idx == -1 {
-		return DeliverSink{}, fmt.Errorf("unknown --deliver sink %q: expected scheme:target (supported: stdout, file:<path>, webhook:<url>)", spec)
+		return DeliverSink{}, fmt.Errorf("unknown --deliver sink %q: expected scheme:target (supported: stdout, file:<path>, webhook:<url>, spacefast:<name>)", spec)
 	}
 	scheme := spec[:idx]
 	target := spec[idx+1:]
@@ -59,8 +60,12 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 		if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
 			return DeliverSink{}, fmt.Errorf("--deliver webhook:<url> requires an http:// or https:// URL, got %q", target)
 		}
+	case "spacefast":
+		if _, err := parseSpacefastTarget(target); err != nil {
+			return DeliverSink{}, err
+		}
 	default:
-		return DeliverSink{}, fmt.Errorf("unknown --deliver scheme %q (supported: stdout, file, webhook)", scheme)
+		return DeliverSink{}, fmt.Errorf("unknown --deliver scheme %q (supported: stdout, file, webhook, spacefast)", scheme)
 	}
 	return DeliverSink{Scheme: scheme, Target: target}, nil
 }
@@ -77,6 +82,8 @@ func Deliver(sink DeliverSink, body []byte, compact bool) error {
 		return deliverFile(sink.Target, body)
 	case "webhook":
 		return deliverWebhook(sink.Target, body, compact)
+	case "spacefast":
+		return deliverSpacefast(sink.Target, body)
 	default:
 		return fmt.Errorf("unsupported deliver sink %q", sink.Scheme)
 	}

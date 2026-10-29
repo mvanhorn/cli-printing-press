@@ -844,6 +844,9 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .Endpoint.UsesTextResponse}}
 			_ = os.Stderr
+{{- if not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+			_ = statusCode // text bodies print verbatim; status is surfaced via err
+{{- end}}
 {{- if and .HasStore (not $isMutationOutput)}}
 			_ = prov
 {{- end}}

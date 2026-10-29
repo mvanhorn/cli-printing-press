@@ -65,6 +65,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/platform_window_test.go",
 		"internal/cli/feedback.go",
 		"internal/cli/deliver_download_test.go",
+		"internal/cli/deliver_spacefast.go",
+		"internal/cli/deliver_spacefast_test.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
 		"internal/cli/sync_hint.go",
@@ -182,9 +184,11 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1: cliutil/windows_account.go, the shared Windows SID helpers.
 		// +1: internal/cli/local_data.go, the always-emitted local-data purge.
 		// +2: cliutil.EnvAssignHint and its GOOS test.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 196},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 200},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 197},
+		// +2: internal/cli/deliver_spacefast.go and its test, the always-emitted
+		// spacefast:<name> deliver sink.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 198},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 202},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 199},
 	}
 
 	for _, tt := range tests {
