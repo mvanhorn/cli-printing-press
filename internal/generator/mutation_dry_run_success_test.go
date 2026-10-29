@@ -185,7 +185,11 @@ func assertDryRunValidationFailure(t *testing.T, stdout string) {
 func mutationDryRunEnv(t *testing.T, prefix, baseURL string) []string {
 	t.Helper()
 	env := frameworkDryRunEnv(t, t.TempDir(), prefix)
-	filtered := make([]string, 0, len(env)+1)
+	return append(withoutVerifyEnv(env), prefix+"_BASE_URL="+baseURL)
+}
+
+func withoutVerifyEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
@@ -194,7 +198,7 @@ func mutationDryRunEnv(t *testing.T, prefix, baseURL string) []string {
 		}
 		filtered = append(filtered, entry)
 	}
-	return append(filtered, prefix+"_BASE_URL="+baseURL)
+	return filtered
 }
 
 func TestSpecEmitsDryRunValidation(t *testing.T) {
@@ -320,6 +324,7 @@ func TestDryRunHelpersFollowCallSites(t *testing.T) {
 	readGen := New(readOnly, readDir)
 	readGen.VisionSet = VisionTemplateSet{Export: true, MCP: true}
 	require.NoError(t, readGen.Generate())
+	requireGeneratedCompiles(t, readDir)
 	readHelpers := readGeneratedFile(t, readDir, "internal", "cli", "helpers.go")
 	require.Contains(t, readHelpers, "func markCompletedDryRun(")
 	require.NotContains(t, readHelpers, "func dryRunValidationErr(")
@@ -329,8 +334,11 @@ func TestDryRunHelpersFollowCallSites(t *testing.T) {
 	stored.Auth = spec.AuthConfig{Type: "none"}
 	storeDir := filepath.Join(t.TempDir(), naming.CLI(stored.Name))
 	storeGen := New(stored, storeDir)
-	storeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	// The generated server imports internal/mcp. Store-only emission leaves
+	// that package test-only, so ./... cannot compile.
+	storeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, storeGen.Generate())
+	requireGeneratedCompiles(t, storeDir)
 	storeHelpers := readGeneratedFile(t, storeDir, "internal", "cli", "helpers.go")
 	require.NotContains(t, storeHelpers, "func markCompletedDryRun(")
 	require.NotContains(t, storeHelpers, "func dryRunValidationErr(")

@@ -3757,10 +3757,28 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 
 {{- if or .HasPromotedMutations .HasBinaryResponse}}
 
+// The transport verify gate returns this body in place of a dry-run preview.
+func isVerifySyntheticResponse(data json.RawMessage) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var rawParsed any
+	if err := json.Unmarshal(data, &rawParsed); err != nil {
+		return false
+	}
+	m, ok := rawParsed.(map[string]any)
+	if !ok {
+		return false
+	}
+	v, ok := m["__pp_verify_synthetic__"].(bool)
+	return ok && v
+}
+
 // Provenance and platform wrappers nest the client sentinel under results.
 // The dry-run JSON contract reads only top-level keys, so stamping has to
 // happen after those wrappers or dry_run and action never surface.
-func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, error) {
+// verifyNoop was decided from the raw response: formatting can drop the sentinel.
+func stampDryRunEnvelope(data json.RawMessage, action string, verifyNoop bool) (json.RawMessage, error) {
 	var envelope map[string]any
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &envelope); err != nil {
@@ -3772,6 +3790,10 @@ func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, 
 	}
 	envelope["action"] = action
 	markCompletedDryRun(envelope)
+	if verifyNoop {
+		envelope["verify_noop"] = true
+		envelope["success"] = false
+	}
 	stamped, err := json.Marshal(envelope)
 	if err != nil {
 		return nil, err
@@ -3783,15 +3805,17 @@ func stampDryRunEnvelope(data json.RawMessage, action string) (json.RawMessage, 
 {{- if or .HasStampedDryRun .HasBinaryResponse}}
 
 // --agent, --select, and --compact wrap or filter before the dry-run contract
-// can see top-level keys. Stamp after that formatting so the keys stay on the
-// envelope the contract reads.
+// can see top-level keys. The verify sentinel is read first because those
+// flags can drop it; stamping still happens after formatting so dry_run and
+// action stay on the envelope. A verify noop did not build a preview.
 func printStampedDryRunOutput(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any, action string, documentedFields ...map[string]bool) error {
+	verifyNoop := isVerifySyntheticResponse(data)
 	var buf bytes.Buffer
 	formatErr := printOutputWithFlagsMeta(&buf, data, flags, agentMeta, documentedFields...)
 	if formatErr != nil && buf.Len() == 0 {
 		return formatErr
 	}
-	stamped, err := stampDryRunEnvelope(bytes.TrimSpace(buf.Bytes()), action)
+	stamped, err := stampDryRunEnvelope(bytes.TrimSpace(buf.Bytes()), action, verifyNoop)
 	if err != nil {
 		return err
 	}
