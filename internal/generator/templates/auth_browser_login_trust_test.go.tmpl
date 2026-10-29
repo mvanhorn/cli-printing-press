@@ -135,16 +135,24 @@ func TestBrowserLoginKeepsFreshCredentialOnLooseConfig(t *testing.T) {
 		t.Fatalf("login probe hits=%d sawOld=%t sawFresh=%t, want the fresh credential and not the old global one", hits.Load(), sawOld.Load(), sawFresh.Load())
 	}
 
-	creds, ok, err := cliutil.LoadCredentials()
-	if err != nil || !ok || creds == nil || creds.AccessToken != fresh {
+	globalCreds, ok, err := cliutil.LoadCredentials()
+	if err != nil || !ok || globalCreds == nil || globalCreds.AccessToken != old {
 		got := ""
-		if creds != nil {
-			got = creds.AccessToken
+		if globalCreds != nil {
+			got = globalCreds.AccessToken
 		}
-		t.Fatalf("credentials after login = ok %v token %q err %v, want %q", ok, got, err, fresh)
+		t.Fatalf("global credentials after profile login = ok %v token %q err %v, want the previous login %q", ok, got, err, old)
 	}
-	if !cliutil.CredentialOriginsMatch(creds.BaseURL, srv.URL) {
-		t.Fatalf("credential base = %q, want %s", creds.BaseURL, srv.URL)
+	profileCreds, ok, err := cliutil.LoadCredentialsForConfig(path)
+	if err != nil || !ok || profileCreds == nil || profileCreds.AccessToken != fresh {
+		got := ""
+		if profileCreds != nil {
+			got = profileCreds.AccessToken
+		}
+		t.Fatalf("profile credentials after login = ok %v token %q err %v, want %q", ok, got, err, fresh)
+	}
+	if !cliutil.CredentialOriginsMatch(profileCreds.BaseURL, srv.URL) {
+		t.Fatalf("credential base = %q, want %s", profileCreds.BaseURL, srv.URL)
 	}
 
 	trusted, err := config.Load(path)

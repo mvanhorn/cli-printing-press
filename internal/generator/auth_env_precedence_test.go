@@ -257,9 +257,7 @@ func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
 	t.Setenv("GOOGLE_ADS_ACCESS_TOKEN", "env-access-token")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	dataDir := filepath.Join(t.TempDir(), "data")
-	t.Setenv("OAUTH_ENV_SAVE_DATA_DIR", dataDir)
-	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	credentialsPath := filepath.Join(filepath.Dir(configPath), "data", "credentials.toml")
 	initial := strings.Join([]string{
 		"client_id = \"disk-client-id\"",
 		"client_secret = \"disk-client-secret\"",
@@ -496,12 +494,12 @@ func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
 	if text := string(after); strings.Contains(text, "new-refresh-token") || strings.Contains(text, "new-access-token") {
 		t.Fatalf("config file should not retain rotated OAuth secrets after credentials split:\n%s", text)
 	}
-	creds, ok, err := cliutil.LoadCredentials()
+	creds, ok, err := cliutil.LoadCredentialsForConfig(configPath)
 	if err != nil {
-		t.Fatalf("LoadCredentials() error = %v", err)
+		t.Fatalf("LoadCredentialsForConfig() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("LoadCredentials() ok = false, want true")
+		t.Fatal("LoadCredentialsForConfig() ok = false, want true")
 	}
 	if creds.RefreshToken != "new-refresh-token" {
 		t.Fatalf("credentials refresh token = %q, want new-refresh-token", creds.RefreshToken)
@@ -549,9 +547,7 @@ func TestSaveBearerTokenPersistsOverBuiltinEnvOverride(t *testing.T) {
 	t.Setenv("REFRESH_ACCESS_TOKEN", "env-access-token")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	dataDir := filepath.Join(t.TempDir(), "data")
-	t.Setenv("BEARER_REFRESH_COLLISION_DATA_DIR", dataDir)
-	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	credentialsPath := filepath.Join(filepath.Dir(configPath), "data", "credentials.toml")
 	if err := os.WriteFile(configPath, []byte("access_token = \"disk-access-token\"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -803,9 +799,7 @@ func TestClearTokensClearsBuiltinEnvOverridesOnDisk(t *testing.T) {
 	t.Setenv("CLEAR_CLIENT_ID", "env-client-id")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	dataDir := filepath.Join(t.TempDir(), "data")
-	t.Setenv("CLEAR_BUILTIN_COLLISION_DATA_DIR", dataDir)
-	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	credentialsPath := filepath.Join(filepath.Dir(configPath), "data", "credentials.toml")
 	initial := strings.Join([]string{
 		"client_id = \"disk-client-id\"",
 		"client_secret = \"disk-client-secret\"",
@@ -911,8 +905,6 @@ func loadCollisionConfig(t *testing.T) *Config {
 	t.Setenv("SAVE_CLIENT_ID", "env-client-id")
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	dataDir := filepath.Join(t.TempDir(), "data")
-	t.Setenv("OAUTH_CLIENT_ID_COLLISION_DATA_DIR", dataDir)
 	initial := strings.Join([]string{
 		"client_id = \"disk-client-id\"",
 		"client_secret = \"disk-client-secret\"",
@@ -934,12 +926,9 @@ func loadCollisionConfig(t *testing.T) *Config {
 	return cfg
 }
 
-func credentialsText(t *testing.T) string {
+func credentialsText(t *testing.T, configPath string) string {
 	t.Helper()
-	path, err := filepath.Abs(filepath.Join(os.Getenv("OAUTH_CLIENT_ID_COLLISION_DATA_DIR"), "credentials.toml"))
-	if err != nil {
-		t.Fatalf("Abs(credentials.toml) error = %v", err)
-	}
+	path := filepath.Join(filepath.Dir(configPath), "data", "credentials.toml")
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(credentials.toml) error = %v", err)
@@ -953,7 +942,7 @@ func TestSaveTokensKeepsEnvClientIDOutOfCredentials(t *testing.T) {
 	if err := cfg.SaveTokens("new-client-id", cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
 		t.Fatalf("SaveTokens() error = %v", err)
 	}
-	text := credentialsText(t)
+	text := credentialsText(t, cfg.Path)
 	for _, want := range []string{"disk-client-id", "disk-client-secret", "new-access-token", "new-refresh-token"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("credentials.toml missing %q:\n%s", want, text)
@@ -973,7 +962,7 @@ func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
 	if err := cfg.SaveTokens("new-client-id", cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
 		t.Fatalf("SaveTokens() error = %v", err)
 	}
-	text := credentialsText(t)
+	text := credentialsText(t, cfg.Path)
 	for _, want := range []string{"new-client-id", "disk-client-secret", "new-access-token", "new-refresh-token"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("credentials.toml missing %q:\n%s", want, text)

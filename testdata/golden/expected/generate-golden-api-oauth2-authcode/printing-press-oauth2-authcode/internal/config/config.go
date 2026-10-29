@@ -40,11 +40,14 @@ type Config struct {
 	// back to it. Used by save() to scrub credential fields from the
 	// old location after relocation. Unexported: never persisted.
 	legacySourcePath string
-	AccessToken      string    `toml:"access_token"`
-	RefreshToken     string    `toml:"refresh_token"`
-	TokenExpiry      time.Time `toml:"token_expiry"`
-	ClientID         string    `toml:"client_id"`
-	ClientSecret     string    `toml:"client_secret"`
+	// explicitConfig keeps save and logout on the credentials file Load
+	// reads for a profile. Unexported so a save cannot persist the flag.
+	explicitConfig bool
+	AccessToken    string    `toml:"access_token"`
+	RefreshToken   string    `toml:"refresh_token"`
+	TokenExpiry    time.Time `toml:"token_expiry"`
+	ClientID       string    `toml:"client_id"`
+	ClientSecret   string    `toml:"client_secret"`
 	// AuthorizationURL overrides the spec-baked OAuth2 authorization endpoint.
 	// Falls back to the generator default at the call site when empty so a
 	// user pointing the CLI at a non-default deployment can override without
@@ -89,6 +92,7 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 	cfg.Path = path
+	cfg.explicitConfig = explicitConfigFile
 	if err := cfg.applyStoredCredentials(explicitConfigFile, path); err != nil {
 		return nil, err
 	}
@@ -831,13 +835,26 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	}
 }
 
-func (c *Config) saveCredentialsFirst() error {
+func (c *Config) credentialsFilePath() (string, error) {
+	if c.explicitConfig {
+		return cliutil.CredentialsFilePathForConfig(c.Path)
+	}
+	return cliutil.CredentialsFilePath()
+}
+
+func (c *Config) saveCredentialsFirst(credsPath string) error {
 	if c.AgentcookieManagedByExternalStore() {
 		c.markAgentcookieManaged()
 		return nil
 	}
 	persisted := c.configForSave()
-	if err := cliutil.SaveCredentials(persisted.credentials()); err != nil {
+	var err error
+	if c.explicitConfig {
+		err = cliutil.SaveExplicitCredentials(credsPath, persisted.credentials())
+	} else {
+		err = cliutil.SaveCredentials(persisted.credentials())
+	}
+	if err != nil {
 		return err
 	}
 	c.CredentialSource = "credentials file"
@@ -855,24 +872,35 @@ type credentialsSnapshot struct {
 // Credentials and config are separate files. Publishing tokens first would
 // otherwise leave a new credentials.toml if the config write fails.
 func (c *Config) saveCredentialsThenConfig() error {
-	credsPath, err := cliutil.CredentialsFilePath()
+	credsPath, err := c.credentialsFilePath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(credsPath), 0o700); err != nil {
+	// The profile lock sits beside the config file. Locking inside data/
+	// would create that file by following a symlinked data directory.
+	lockPath := credsPath
+	if c.explicitConfig {
+		if err := os.MkdirAll(filepath.Dir(c.Path), 0o700); err != nil {
+			return err
+		}
+		lockPath = c.Path
+	} else if err := os.MkdirAll(filepath.Dir(credsPath), 0o700); err != nil {
 		return err
 	}
-	return cliutil.WithFileLock(credsPath, func() error {
+	return cliutil.WithFileLock(lockPath, func() error {
 		return c.saveCredentialsThenConfigLocked(credsPath)
 	})
 }
 
 func (c *Config) saveCredentialsThenConfigLocked(credsPath string) error {
+	if c.explicitConfig {
+		return c.saveExplicitCredentialsThenConfig(credsPath)
+	}
 	snap, err := snapshotCredentialsFile(credsPath)
 	if err != nil {
 		return err
 	}
-	if err := c.saveCredentialsFirst(); err != nil {
+	if err := c.saveCredentialsFirst(credsPath); err != nil {
 		return err
 	}
 	if err := c.save(); err != nil {
@@ -882,6 +910,44 @@ func (c *Config) saveCredentialsThenConfigLocked(credsPath string) error {
 		return err
 	}
 	return nil
+}
+
+func (c *Config) saveExplicitCredentialsThenConfig(credsPath string) error {
+	snap, err := snapshotExplicitCredentials(credsPath)
+	if err != nil {
+		return err
+	}
+	if err := c.saveCredentialsFirst(credsPath); err != nil {
+		return err
+	}
+	if err := c.save(); err != nil {
+		if restoreErr := restoreExplicitCredentials(snap); restoreErr != nil {
+			return fmt.Errorf("%w (credentials file %s was replaced; restore failed: %v)", err, credsPath, restoreErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func snapshotExplicitCredentials(path string) (credentialsSnapshot, error) {
+	data, err := cliutil.ReadExplicitCredentialBytes(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return credentialsSnapshot{path: path, missing: true}, nil
+		}
+		return credentialsSnapshot{}, err
+	}
+	return credentialsSnapshot{path: path, data: data, perm: 0o600}, nil
+}
+
+func restoreExplicitCredentials(snap credentialsSnapshot) error {
+	if snap.path == "" {
+		return fmt.Errorf("credentials path unknown")
+	}
+	if snap.missing {
+		return cliutil.RemoveExplicitCredentials(snap.path)
+	}
+	return cliutil.WriteExplicitCredentialBytes(snap.path, snap.data)
 }
 
 func snapshotCredentialsFile(path string) (credentialsSnapshot, error) {
@@ -1014,7 +1080,15 @@ func (c *Config) ClearTokens() error {
 		// back; returning early would leave the secrets on disk.
 		return c.save()
 	}
-	if err := cliutil.RemoveCredentials(); err != nil {
+	if c.explicitConfig {
+		credsPath, err := c.credentialsFilePath()
+		if err != nil {
+			return err
+		}
+		if err := cliutil.RemoveExplicitCredentials(credsPath); err != nil {
+			return err
+		}
+	} else if err := cliutil.RemoveCredentials(); err != nil {
 		return err
 	}
 	return c.save()
