@@ -30,6 +30,21 @@ The working CLI tree lives separately under the API's output directory until `sh
 
 `pipeline/state.json` records run identity (`api_name`, `run_id`, working-directory pointers) and optional operator inputs that later phases cannot recover from the archived spec. `category` is the public-library slug from `generate --category`. Ship/promote copies it into `.printing-press.json`. A missing category still promotes, with a warning. The research-directory `state.json` may carry the same `category` so generate can persist it before a runstate working dir exists.
 
+### Which run `lock promote` uses
+
+In-place `lock promote --dir <working-dir>` loads the run that supplies promotion proofs with `FindStateByWorkingDir` (`internal/pipeline/state.go`). The path is made absolute. Candidates are readable `state.json` files under `.runstate/<scope>/runs/` in the current scope and in every scope, limited to runs whose effective working directory equals that path (`working_dir`, otherwise `output_dir`). Unreadable or unparsable state files are ignored. An empty `run_id` or `scope` is filled from the state file's path.
+
+When several runs share the directory:
+
+1. A current-run pointer in the current scope (`current/<api>.json`) whose `state_path` is one of those candidates wins. Pointers that do not parse, have an empty `state_path`, or name a run for another directory are ignored. Pointers stored under a different scope are not consulted. If several current-scope pointers match, the latest `updated_at` wins; equal timestamps use the recency order below.
+2. Otherwise the newest candidate wins: later `started_at`, then later `state.json` modification time, then the lexicographically greater `run_id`, then the lexicographically greater state path. A zero `started_at` loses to any timestamp.
+
+That run's id is the one promote checks. Phase 5 markers are read, in order, from `<working-dir>/.manuscripts/<run_id>/proofs`, the published manuscripts tree for the API name, the published manuscripts tree for the CLI name, and that run's runstate `proofs/` directory. Missing directories are skipped, and a failing marker does not block a later candidate; the first passing marker satisfies the gate. The same run's runstate `proofs/`, `research/`, and `discovery/` are copied into the promoted tree's `.manuscripts/<run_id>/` where the working tree does not already have them.
+
+If no candidate matches, promote uses a minimal state. A run for the CLI's API name is borrowed when one can be loaded: the current scope's pointer for that name when its state file exists, otherwise the current-scope run for that name with the latest `state.json` modification time (runs excluded from current resolution are skipped), otherwise a legacy state file. The borrowed run's id and scope select the proofs; the caller's directory stays the copy source. With no recoverable run id, the Phase 5 gate and the manuscript copy are skipped.
+
+The source fingerprint on the Phase 5 marker hashes Go sources, `go.mod`, `go.sum`, and spec files in the working tree (`internal/pipeline/source_fingerprint.go`). The tree root stays in the fingerprint when it is itself a module or a git checkout. A nested directory is omitted when it is a separate tree: a regular `go.mod` file, or a `.git` checkout (a `gitdir:` file, or a `.git` directory whose `HEAD` is a regular file containing a ref or a 40- or 64-character commit id). Directories named `.git`, `.manuscripts`, and `.printing-press` are always omitted. A symlink `.git`, or a `go.mod` that is not a regular file, does not mark a separate tree.
+
 ## Phase status model
 
 Every phase has two orthogonal status fields:
@@ -276,4 +291,4 @@ The `review` phase is where the shipcheck block runs - dogfood, verify, and scor
 
 ## Keeping this document in sync
 
-Phase names, ordering, and numbering are authoritative in `internal/pipeline/state.go`. Per-phase intent, inputs, outputs, and pointers are authoritative in `internal/pipeline/seeds.go`. When those files change, update this document in the same PR. A future follow-up may generate this document from those sources automatically.
+Phase names, ordering, and numbering are authoritative in `internal/pipeline/state.go`. Per-phase intent, inputs, outputs, and pointers are authoritative in `internal/pipeline/seeds.go`. Working-directory run selection for `lock promote` is `FindStateByWorkingDir` in the same file. The source-fingerprint walk those proofs compare against is `CaptureSourceFingerprint` in `internal/pipeline/source_fingerprint.go`. When those files change, update this document in the same PR. A future follow-up may generate this document from those sources automatically.
