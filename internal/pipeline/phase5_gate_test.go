@@ -74,7 +74,9 @@ func TestPhase5AcceptancePassed_HollowReasonNamesHappyArgs(t *testing.T) {
 		TestsPassed:    1,
 	})
 	require.False(t, passed)
-	assert.Equal(t, "phase5 acceptance has hollow coverage for: bare ("+reason+"), widgets list", detail)
+	assert.Equal(t, "phase5 acceptance has hollow coverage for: bare ("+reason+"), widgets list. "+HollowCoverageRemedy, detail)
+	assert.Contains(t, detail, "pp:live-happy-path")
+	assert.Contains(t, detail, "pp:verified-by-proof")
 	assert.Contains(t, detail, "pp:happy-args")
 	assert.Equal(t, "bare", FormatHollowCoverage([]string{"bare"}, map[string]string{"bare": "  "}))
 	assert.Equal(t, "widgets list", FormatHollowCoverage([]string{"widgets list"}, nil))
