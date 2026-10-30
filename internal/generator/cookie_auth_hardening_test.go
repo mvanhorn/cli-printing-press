@@ -47,7 +47,7 @@ func TestGeneratedCookieAuthHardening(t *testing.T) {
 	require.Contains(t, deliverGo, "f.Chmod(0o600)")
 	require.NotContains(t, deliverGo, "os.WriteFile(tmp, body, 0o600)")
 	require.NotContains(t, deliverGo, "os.Chmod(path, 0o600)")
-	require.Contains(t, deliverGo, "http.ErrUseLastResponse")
+	require.Contains(t, deliverGo, "http.DefaultTransport.RoundTrip")
 	require.Contains(t, deliverGo, "redirects are not followed")
 	require.Contains(t, deliverGo, "os.MkdirAll(dir, 0o700)")
 

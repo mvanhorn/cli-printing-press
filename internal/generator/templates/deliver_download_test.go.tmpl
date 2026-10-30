@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -317,19 +318,87 @@ func TestDeliverWebhookDoesNotFollowRedirect(t *testing.T) {
 }
 
 func TestDeliverWebhookRejectsUnvalidatedLocation(t *testing.T) {
-	const loc = "http://example.invalid/taken"
-	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", loc)
-		w.WriteHeader(http.StatusTemporaryRedirect)
-	}))
-	t.Cleanup(src.Close)
-	err := deliverWebhook(src.URL, []byte("{\"k\":\"v\"}"), true)
-	if err == nil {
-		t.Fatal("expected redirect to fail")
+	tests := []struct {
+		name   string
+		loc    string
+		want   string
+		absent []string
+	}{
+		{
+			name:   "path",
+			loc:    "http://example.invalid/taken",
+			want:   `Location: "http://example.invalid"`,
+			absent: []string{"/taken"},
+		},
+		{
+			name:   "userinfo",
+			loc:    "https://hookuser:s3cret-token@hooks.example/deliver",
+			want:   `Location: "https://hooks.example"`,
+			absent: []string{"hookuser", "s3cret-token", "/deliver"},
+		},
+		{
+			name:   "query",
+			loc:    "https://example.invalid/hook?access_token=supersecret&x=1",
+			want:   `Location: "https://example.invalid"`,
+			absent: []string{"/hook", "access_token", "supersecret"},
+		},
+		{
+			name:   "relative",
+			loc:    "/callback?token=relative-secret",
+			want:   `Location: "(redacted)"`,
+			absent: []string{"/callback", "relative-secret"},
+		},
+		{
+			name:   "scheme-relative",
+			loc:    "//hooks.example/secret-path?token=abc",
+			want:   `Location: "(redacted)"`,
+			absent: []string{"hooks.example", "secret-path", "token=abc"},
+		},
+		{
+			name:   "malformed",
+			loc:    "http://[::1",
+			want:   `Location: "(redacted)"`,
+			absent: []string{"[::1"},
+		},
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, loc) || !strings.Contains(msg, "307") || !strings.Contains(msg, "redirects are not followed") {
-		t.Fatalf("error = %q", msg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", tt.loc)
+				w.WriteHeader(http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(src.Close)
+			err := deliverWebhook(src.URL, []byte("{\"k\":\"v\"}"), true)
+			if err == nil {
+				t.Fatal("expected redirect to fail")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tt.want) || !strings.Contains(msg, "307") || !strings.Contains(msg, "redirects are not followed") {
+				t.Fatalf("error = %q, want substring %q", msg, tt.want)
+			}
+			for _, secret := range tt.absent {
+				if strings.Contains(msg, secret) {
+					t.Fatalf("error contains %q: %q", secret, msg)
+				}
+			}
+		})
+	}
+}
+
+func TestDeliverWebhookSendsURLUserinfoAsBasicAuth(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	endpoint := strings.Replace(srv.URL, "://", "://hookuser:s3cret-token@", 1)
+	if err := deliverWebhook(endpoint, []byte("{}"), false); err != nil {
+		t.Fatal(err)
+	}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("hookuser:s3cret-token"))
+	if gotAuth != want {
+		t.Fatalf("Authorization = %q, want %q", gotAuth, want)
 	}
 }
 

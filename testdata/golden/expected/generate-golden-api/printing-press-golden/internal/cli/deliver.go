@@ -6,10 +6,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,10 +191,10 @@ func writeDownloadUnder(dir, name string, body []byte) error {
 	return nil
 }
 
-func deliverWebhook(url string, body []byte, compact bool) error {
+func deliverWebhook(webhookURL string, body []byte, compact bool) error {
 	_ = compact
 	contentType := "application/json"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building webhook request: %w", err)
 	}
@@ -203,21 +205,33 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 		req.Header.Set("User-Agent", "printing-press-golden-pp-cli/deliver")
 	}
 
-	// One POST. A followed 3xx would replay the body at a Location the
-	// operator did not name, including another host or an http downgrade.
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	// RoundTrip performs one POST and returns a 3xx as-is. Client.Do parses
+	// Location before ErrUseLastResponse and puts the raw header in that error.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	// Client.Do copies URL userinfo into Authorization before RoundTrip.
+	// Transport.RoundTrip does not, so do that copy here.
+	if user := req.URL.User; user != nil && req.Header.Get("Authorization") == "" {
+		password, _ := user.Password()
+		req.SetBasicAuth(user.Username(), password)
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
 		return fmt.Errorf("posting to webhook: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return fmt.Errorf("webhook returned %s (Location: %q); redirects are not followed", resp.Status, resp.Header.Get("Location"))
+		loc := resp.Header.Get("Location")
+		var locDisplay string
+		if loc == "" {
+			locDisplay = `""`
+		} else if u, err := url.Parse(loc); err == nil && u.Scheme != "" && u.Host != "" {
+			locDisplay = fmt.Sprintf("%q", u.Scheme+"://"+u.Host)
+		} else {
+			locDisplay = `"(redacted)"`
+		}
+		return fmt.Errorf("webhook returned %s (Location: %s); redirects are not followed", resp.Status, locDisplay)
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook returned %s", resp.Status)
