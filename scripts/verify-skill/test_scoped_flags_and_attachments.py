@@ -1,4 +1,4 @@
-"""Regressions for the concrete command shapes reported by catalog PR #1978."""
+"""Regression tests for scoped flags and command attachments."""
 from pathlib import Path
 import sys
 import tempfile
@@ -203,6 +203,162 @@ func newBuildCmd() *cobra.Command {
         # Only the bare invocation is wrong; Cobra handles --help before Args.
         self.assertEqual(len(report.findings), 1)
         self.assertEqual(report.findings[0].evidence, "SKILL.md: (none)")
+
+    def test_help_disabled_by_value_still_checks_positional_args(self):
+        self.write('''package cli
+func Execute() {
+ rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+ rootCmd.AddCommand(newBuildCmd())
+}
+func newBuildCmd() *cobra.Command {
+ return &cobra.Command{Use: "build <cart-id>", Args: cobra.ExactArgs(1)}
+}
+''')
+        skill = self.cli / "SKILL.md"
+        skill.write_text(
+            "```bash\n"
+            "demo-pp-cli build --help=true\n"
+            "demo-pp-cli build --help=false\n"
+            "demo-pp-cli build --help --help=0\n"
+            "demo-pp-cli build --help=false --help\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_positional_args(self.cli, [skill], "demo-pp-cli", report)
+        # Enabled help skips the check; disabled help does not, and the last
+        # occurrence decides.
+        self.assertEqual(len(report.findings), 2)
+        self.assertTrue(all(f.severity == "error" for f in report.findings))
+
+    def test_nested_inline_group_keeps_its_children(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newParentCmd()) }
+func newParentCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "parent"}
+ group := &cobra.Command{Use: "group", Args: cobra.NoArgs()}
+ leaf := &cobra.Command{Use: "leaf <id>", Args: cobra.ExactArgs(1)}
+ orphan := &cobra.Command{Use: "orphan"}
+ group.AddCommand(leaf, newBuiltCmd())
+ leaf.AddCommand(group)
+ other.AddCommand(orphan)
+ cmd.AddCommand(group)
+ return cmd
+}
+func newBuiltCmd() *cobra.Command { return &cobra.Command{Use: "built"} }
+''')
+        path, positional, _ = verify_skill._cli_invocation_from_tokens(
+            ["parent", "group", "leaf", "42"], self.cli)
+        self.assertEqual(path, ["parent", "group", "leaf"])
+        self.assertEqual(positional, ["42"])
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["parent", "group", "built"], self.cli)[0], ["parent", "group", "built"])
+        self.assertEqual(verify_skill.resolve_command_path(
+            self.cli, ["parent", "group", "leaf"])[1], "leaf <id>")
+        # An inline command only counts when it is reachable from the parent.
+        self.assertIsNone(verify_skill.resolve_command_path(
+            self.cli, ["parent", "orphan"])[0])
+
+        skill = self.cli / "SKILL.md"
+        skill.write_text("```bash\ndemo-pp-cli parent group leaf 42\n```\n", encoding="utf-8")
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_positional_args(self.cli, [skill], "demo-pp-cli", report)
+        self.assertEqual(report.findings, [])
+
+    def test_inline_child_flags_do_not_change_the_parent(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newBatchCmd()) }
+func newBatchCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "batch <id>", Args: cobra.ExactArgs(1)}
+ cmd.Flags().BoolVar(&asJSON, "json", false, "JSON output")
+ cmd.Flags().StringVar(&mode, "mode", "", "Mode")
+ child := &cobra.Command{Use: "child <id>", Args: cobra.ExactArgs(1)}
+ child.Flags().StringVar(&body, "json", "", "JSON body")
+ child.Flags().BoolVar(&fast, "mode", false, "Fast mode")
+ cmd.AddCommand(child)
+ return cmd
+}
+''')
+        # The parent keeps its own flag types.
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["batch", "--json", "42"], self.cli)[1], ["42"])
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["batch", "--mode", "fast", "42"], self.cli)[1], ["42"])
+        # The inline child reads its own declarations from the shared body.
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["batch", "child", "--json", "{}", "42"], self.cli)[1], ["42"])
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["batch", "child", "--mode", "42"], self.cli)[1], ["42"])
+
+    def test_flag_fallback_needs_a_real_child_edge_for_graph_parents(self):
+        self.write('''package cli
+func Execute() {
+ rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+ rootCmd.AddCommand(newExportCmd())
+ rootCmd.AddCommand(newMessagesCmd())
+ rootCmd.AddCommand(newChatCmd())
+}
+func newExportCmd() *cobra.Command { return &cobra.Command{Use: "export <resource>"} }
+func newChatCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "chat"}
+ cmd.AddCommand(newPostMessageCmd())
+ return cmd
+}
+func newPostMessageCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "post_message"}
+ cmd.Flags().StringVar(&text, "text", "", "Text")
+ return cmd
+}
+''')
+        # Flag lookup is per file, so the unrelated command needs its own file.
+        (self.source / "messages.go").write_text('''package cli
+func newMessagesCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "messages"}
+ cmd.Flags().StringVar(&interval, "interval", "", "Poll interval")
+ return cmd
+}
+''', encoding="utf-8")
+        skill = self.cli / "SKILL.md"
+        skill.write_text(
+            "```bash\n"
+            "demo-pp-cli export messages --interval 5s\n"
+            "demo-pp-cli chat post_message --text hello\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
+        # The unrelated messages command cannot excuse --interval on export,
+        # while a real snake_case child still supplies its own flag.
+        self.assertEqual(len(report.findings), 1)
+        self.assertEqual(report.findings[0].command, "demo-pp-cli export")
+        self.assertIn("--interval", report.findings[0].detail)
+
+    def test_flag_fallback_accepts_a_child_wired_outside_the_graph(self):
+        self.write('''package cli
+func Execute() {
+ rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+ rootCmd.AddCommand(newExportCmd())
+ rootCmd.AddCommand(newParkingCmd())
+ if parent := findCommand(rootCmd, "parking"); parent != nil {
+  parent.AddCommand(newNearbyCmd())
+ }
+}
+func newExportCmd() *cobra.Command { return &cobra.Command{Use: "export <resource>"} }
+func newParkingCmd() *cobra.Command { return &cobra.Command{Use: "parking"} }
+''')
+        (self.source / "nearby.go").write_text('''package cli
+func newNearbyCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "nearby"}
+ cmd.Flags().StringVar(&lat, "lat", "", "Latitude")
+ return cmd
+}
+''', encoding="utf-8")
+        skill = self.cli / "SKILL.md"
+        skill.write_text("```bash\ndemo-pp-cli parking nearby --lat 1\n```\n", encoding="utf-8")
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
+        self.assertEqual(report.findings, [])
 
     def test_hook_addcommand_attaches_every_argument(self):
         self.write('''package cli
