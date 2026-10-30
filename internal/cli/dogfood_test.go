@@ -343,6 +343,16 @@ exit 99
 	return dir
 }
 
+func TestDogfoodReuseLiveHappyPathRequiresLive(t *testing.T) {
+	cmd := newDogfoodCmd()
+	cmd.SetArgs([]string{"--dir", t.TempDir(), "--reuse-live-happy-path", "marker.json"})
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	var exit *ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, ExitInputError, exit.Code)
+	assert.ErrorContains(t, err, "requires --live")
+}
+
 func TestDogfoodFailureExitAfterReport(t *testing.T) {
 	assert.Equal(t, "0", newDogfoodCmd().Annotations["pp:typed-exit-codes"])
 	for _, asJSON := range []bool{false, true} {

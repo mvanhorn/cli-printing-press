@@ -84,11 +84,13 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 	// that do not document newer binary capabilities stay on the major
 	// baseline. printing-press moves when its phase text depends on a newer
 	// release; frontmatter, the setup comment, and _min_binary_version= must
-	// match. Skill frontmatter `version` is the reverse contract (see
+	// match. printing-press-publish moves when its text does: Step 4.5 passes
+	// --reuse-live-happy-path. Skill frontmatter `version` is the reverse contract (see
 	// TestPrintingPressSkillVersionMatchesBinaryFloor).
 	majorFloor := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
 	const liveHappyPathFloor = "4.33.0"
 	const dogfoodHoldReceiptFloor = "4.33.5"
+	const reuseLiveHappyPathFloor = "4.34.3"
 	paths := []struct {
 		frontmatter string
 		setup       string
@@ -126,6 +128,11 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 				assign := assignRe.FindStringSubmatch(string(setupData))
 				require.Len(t, assign, 2, "setup contract must assign _min_binary_version")
 				assert.Equal(t, frontmatter[1], assign[1])
+				return
+			}
+			if paths.frontmatter == "../../skills/printing-press-publish/SKILL.md" {
+				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+reuseLiveHappyPathFloor) < 0,
+					"printing-press-publish min-binary-version must cover --reuse-live-happy-path (%s)", reuseLiveHappyPathFloor)
 				return
 			}
 			assert.Equal(t, majorFloor, frontmatter[1])

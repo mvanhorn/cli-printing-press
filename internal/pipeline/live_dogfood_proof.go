@@ -28,6 +28,9 @@ type ProofCoveredFeature struct {
 type liveDogfoodProofContext struct {
 	commands  []liveDogfoodCommand
 	proofsDir string
+	// liveHappyRejection is why a supplied marker offered no reusable live
+	// happy path runs; it becomes the hollow reason for annotated features.
+	liveHappyRejection string
 }
 
 // Proof files must survive the manuscript copy into the published proofs
