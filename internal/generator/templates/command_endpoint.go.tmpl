@@ -172,9 +172,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if or $isRaw (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH") (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
 {{- if or $isMultipart $isForm}}
+{{- bodyPathParamDefaults .Endpoint "\t\t\t"}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- else}}
 			if !stdinBody {
+{{- bodyPathParamDefaults .Endpoint "\t\t\t\t"}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t\t"}}
 			}
 {{- end}}

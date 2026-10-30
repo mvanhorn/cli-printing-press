@@ -109,6 +109,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- end}}
+{{- bodyPathParamDefaults .Endpoint "\t\t\t"}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- if and $isRaw .Endpoint.BodyRequired}}
 			if rawBodyFile == "" && !stdinBody && !requiredInputWaived() {

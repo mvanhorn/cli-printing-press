@@ -458,6 +458,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyVarDecls":                        bodyVarDecls,
 		"bodyFlagRegs":                        bodyFlagRegs,
 		"bodyRequiredChecks":                  bodyRequiredChecks,
+		"bodyPathParamDefaults":               bodyPathParamDefaults,
 		"bodyHasStringBackedBool":             bodyHasStringBackedBool,
 		"multipartBodyMaps":                   multipartBodyMaps,
 		"endpointUsesMultipart":               endpointUsesMultipart,
