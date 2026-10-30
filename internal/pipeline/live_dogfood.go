@@ -124,6 +124,10 @@ type LiveDogfoodOptions struct {
 	// that do not advertise --dry-run. Default skips both so the matrix
 	// cannot rotate runner credentials or create leftover resources.
 	AllowDestructive bool
+	// ReuseLiveHappyPath names an earlier phase5 acceptance marker. Commands
+	// annotated pp:live-happy-path that it records for this exact source are
+	// not executed again. Mutually exclusive with AllowDestructive.
+	ReuseLiveHappyPath string
 }
 
 type LiveDogfoodReport struct {
@@ -147,10 +151,13 @@ type LiveDogfoodReport struct {
 	HollowReasons map[string]string `json:"hollow_reasons,omitempty"`
 	// ProofCoveredFeatures are novel features with no live happy-path pass
 	// that an operator-written proof file backs instead.
-	ProofCoveredFeatures []ProofCoveredFeature   `json:"proof_covered_features,omitempty"`
-	Commands             []string                `json:"commands"`
-	Tests                []LiveDogfoodTestResult `json:"tests"`
-	RanAt                time.Time               `json:"ran_at"`
+	ProofCoveredFeatures []ProofCoveredFeature `json:"proof_covered_features,omitempty"`
+	// LiveHappyPathRuns lists pp:live-happy-path commands that really ran and
+	// passed, including runs reused from an earlier marker for this source.
+	LiveHappyPathRuns []LiveHappyPathRun      `json:"live_happy_path_runs,omitempty"`
+	Commands          []string                `json:"commands"`
+	Tests             []LiveDogfoodTestResult `json:"tests"`
+	RanAt             time.Time               `json:"ran_at"`
 }
 
 type LiveDogfoodTestResult struct {
@@ -194,6 +201,9 @@ type liveDogfoodRun struct {
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
+	}
+	if opts.AllowDestructive && strings.TrimSpace(opts.ReuseLiveHappyPath) != "" {
+		return nil, errors.New("--reuse-live-happy-path cannot be combined with --allow-destructive")
 	}
 	source, err := CaptureSourceFingerprint(opts.CLIDir)
 	if err != nil {
@@ -261,6 +271,12 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		RanAt:   time.Now().UTC(),
 	}
 
+	reuseAPIName, reuseRunID, _ := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
+	reuse, err := loadLiveHappyReuse(opts.ReuseLiveHappyPath, source, reuseAPIName, reuseRunID)
+	if err != nil {
+		return nil, err
+	}
+
 	parsedSpec := loadLiveDogfoodParsedSpec(opts.CLIDir)
 	ctx := resolveCtx{
 		binaryPath:       binaryPath,
@@ -271,6 +287,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		timeout:          timeout,
 		authTier:         resolveLiveDogfoodAuthTier(opts.AuthTier),
 		allowDestructive: opts.AllowDestructive,
+		liveHappyReuse:   reuse,
 		storeDBPath:      liveDogfoodDefaultDBPath(liveDogfoodCLINameForStore(binaryPath, opts.BinaryName)),
 		bodyFixtures:     liveDogfoodBodyFixturesFromSpec(parsedSpec),
 		specEndpoints:    liveDogfoodSpecEndpoints(parsedSpec),
@@ -303,9 +320,11 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		reportLiveDogfoodStrayCLIFiles(report, opts.CLIDir, cliTreeBefore)
 	}
 	finalizeLiveDogfoodReport(report, authType)
+	recordLiveHappyPathRuns(report, commands, ctx, source)
 	finalizeLiveDogfoodCoverage(report, opts.ResearchDir, liveDogfoodProofContext{
-		commands:  commands,
-		proofsDir: liveDogfoodAcceptanceProofsDir(opts.WriteAcceptancePath),
+		commands:           commands,
+		proofsDir:          liveDogfoodAcceptanceProofsDir(opts.WriteAcceptancePath),
+		liveHappyRejection: reuse.rejection,
 	})
 	// Persist rotated credentials before the acceptance marker: a marker-write
 	// failure must not discard the sandbox that holds the replacement token.
@@ -825,6 +844,7 @@ type resolveCtx struct {
 	timeout          time.Duration
 	authTier         string
 	allowDestructive bool
+	liveHappyReuse   liveHappyReuse
 	storeDBPath      string
 	bodyFixtures     []liveDogfoodBodyFixture
 	specEndpoints    []liveDogfoodSpecEndpoint
@@ -874,6 +894,9 @@ func runLiveDogfoodPreSync(commands []liveDogfoodCommand, ctx resolveCtx) {
 	}
 	for _, command := range commands {
 		if len(command.Path) == 1 && command.Path[0] == "sync" {
+			if _, heldBack := ctx.holdsBackLiveHappyPath(command); heldBack {
+				return
+			}
 			_ = runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, 1, liveDogfoodPreSyncTimeout(ctx.timeout), nil)
 			return
 		}
@@ -983,6 +1006,21 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, positionalFixtureSkipReason(fmt.Sprintf("no list companion at depth %d for %q", i, name)), ""
+		}
+
+		// A held-back companion is a real call like any other, so resolving
+		// an ID through it would repeat the paid run this flag exists to
+		// avoid. Fall back the way a failed companion does.
+		if _, heldBack := ctx.holdsBackLiveHappyPath(*listCmd); heldBack {
+			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
+				storeResolved++
+				resolved = append(resolved, id)
+				continue
+			} else if storeAvailable {
+				return nil, true, reasonRequiredParamFixture, ""
+			}
+			return nil, true, positionalFixtureSkipReason(fmt.Sprintf(
+				"list companion %q is a held-back live happy path at depth %d", strings.Join(listCmd.Path, " "), i)), ""
 		}
 
 		listArgs := append([]string{}, listCmd.Path...)
@@ -2024,6 +2062,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	previewHappy := mutating && !liveHappy && annotationIsTrueValue(command.Annotations[previewHappyPathAnnotation])
 	if liveHappy || previewHappy {
 		useDryRun = false
+	}
+	if reason, heldBack := ctx.holdsBackLiveHappyPath(command); heldBack && !useDryRun && !previewHappy {
+		// Return before anything can execute it: this command opted in to a
+		// real run, so even an error probe could reach the paid upstream.
+		return append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reason),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reason),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reason),
+		)
 	}
 	appendDryRunJSON := func(args []string, argsOK bool, stdin []byte, skipReason string) {
 		if dryRunJSON := probeLiveDogfoodDryRunJSON(command, ctx, mutation, args, stdin, argsOK, skipReason); dryRunJSON != nil {
@@ -4321,10 +4368,16 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 			report.ProofCoveredFeatures = append(report.ProofCoveredFeatures, covered)
 			continue
 		}
+		if liveDogfoodReusedHappyCoverage(feature, report.LiveHappyPathRuns) {
+			continue
+		}
 		if liveDogfoodHollowExempt(feature, paths) {
 			continue
 		}
-		reason := liveDogfoodHappySkipReason(feature, report.Tests)
+		reason := liveHappyRejectionReason(feature, proofs)
+		if reason == "" {
+			reason = liveDogfoodHappySkipReason(feature, report.Tests)
+		}
 		if reason == "" {
 			reason = liveDogfoodDryRunPassHollowReason(feature, report.Tests)
 		}
@@ -4409,6 +4462,7 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		HollowFeatures:       append([]string(nil), report.HollowFeatures...),
 		HollowReasons:        maps.Clone(report.HollowReasons),
 		ProofCoveredFeatures: append([]ProofCoveredFeature(nil), report.ProofCoveredFeatures...),
+		LiveHappyPathRuns:    append([]LiveHappyPathRun(nil), report.LiveHappyPathRuns...),
 		SourceFingerprint:    source.Digest,
 		SourceFiles:          source.Files,
 		AuthContext: Phase5AuthContext{

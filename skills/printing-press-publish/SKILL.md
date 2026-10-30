@@ -2,7 +2,7 @@
 name: printing-press-publish
 description: Publish a generated CLI to the printing-press-library repo
 version: 0.1.0
-min-binary-version: "4.0.0"
+min-binary-version: "4.34.3"
 allowed-tools:
   - Bash
   - Read
@@ -177,7 +177,7 @@ Before doing anything else:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 4.0.0
+# min-binary-version: 4.34.3
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -499,6 +499,15 @@ works against the real upstream API. Do not rely on an older
 `phase5-acceptance.json` from generation or polish because the CLI may have
 been hand-edited since that marker was written.
 
+The one thing this step reuses is a recorded `pp:live-happy-path` run. Those
+commands were approved for one real run in Phase 5, so this step never runs
+them again and never passes `--allow-destructive`, which would apply to every
+mutating command in the run. `--reuse-live-happy-path` counts a recorded run
+only when the marker's `source_fingerprint`, API, and run match the current
+tree. If the source changed, or the run was never recorded, the feature reports
+hollow with that reason. Stop and ask the operator to approve a new
+`dogfood --live --allow-destructive` run; do not add the flag here.
+
 **Marker invalidation and sync.** The acceptance marker carries a source
 fingerprint; any `.go` edit after it was written makes `publish package` fail
 with "phase5 marker source fingerprint does not match". Re-run this live gate
@@ -578,6 +587,7 @@ LIVE_GATE_ARGS=(
   --timeout 120s
   --research-dir "$RESEARCH_DIR"
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
+  --reuse-live-happy-path "$PROOFS_DIR/phase5-acceptance.json"
   --json
 )
 if [ -n "$AUTH_ENV" ]; then

@@ -144,6 +144,7 @@ func TestPhase5Marker_SchemaDeclaresNoPhantomProperties(t *testing.T) {
 		HollowFeatures:       []string{"x"},
 		HollowReasons:        map[string]string{"x": "non-id positional \"dimension\" at depth 0; set pp:happy-args"},
 		ProofCoveredFeatures: []pipeline.ProofCoveredFeature{{Command: "x", Proof: "x.md"}},
+		LiveHappyPathRuns:    []pipeline.LiveHappyPathRun{{Command: "x", SourceFingerprint: "x"}},
 		SkipReason:           "x",
 		SourceFingerprint:    "x",
 		SourceFiles:          map[string]string{"a": "b"},

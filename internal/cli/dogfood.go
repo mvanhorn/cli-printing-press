@@ -25,6 +25,7 @@ func newDogfoodCmd() *cobra.Command {
 	var authEnv string
 	var authTier string
 	var allowDestructive bool
+	var reuseLiveHappyPath string
 	var overwriteCommandMirror bool
 
 	cmd := &cobra.Command{
@@ -45,6 +46,9 @@ func newDogfoodCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
 			dir = canonicalDir
+			if reuseLiveHappyPath != "" && !live {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--reuse-live-happy-path requires --live")}
+			}
 			if live {
 				report, err := pipeline.RunLiveDogfood(pipeline.LiveDogfoodOptions{
 					CLIDir:              dir,
@@ -55,6 +59,7 @@ func newDogfoodCmd() *cobra.Command {
 					AuthEnv:             authEnv,
 					AuthTier:            authTier,
 					AllowDestructive:    allowDestructive,
+					ReuseLiveHappyPath:  reuseLiveHappyPath,
 				})
 				if err != nil {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running live dogfood: %w", err)}
@@ -119,6 +124,7 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker. For oauth2_refresh, a refresh-token-shaped env var is copied into a shared sandbox credential file so rotation persists across subprocesses")
 	cmd.Flags().StringVar(&authTier, "auth-tier", "", "Credential tier for live dogfood; falls back to PP_AUTH_TIER and skips commands annotated pp:requires-tier on mismatch")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable destructive-at-auth endpoints and live mutating Example probes that do not advertise --dry-run. Default skips both.")
+	cmd.Flags().StringVar(&reuseLiveHappyPath, "reuse-live-happy-path", "", "Path to a phase5-acceptance.json whose recorded pp:live-happy-path runs cover this exact source; those commands are not run again (with --live; cannot be combined with --allow-destructive)")
 	cmd.Flags().BoolVar(&overwriteCommandMirror, "overwrite-command-mirror", false, "Overwrite a differing command_mirror_capabilities block in internal/mcp/tools.go from research.json")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
@@ -140,6 +146,11 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 		fmt.Printf("            %s\n", pipeline.HollowCoverageRemedy)
 	} else {
 		fmt.Println("Coverage:   headline novel features executed")
+	}
+	for _, run := range report.LiveHappyPathRuns {
+		if run.Reused {
+			fmt.Printf("Reused:     %s live happy path from %s (same source)\n", run.Command, run.RanAt.Format(time.RFC3339))
+		}
 	}
 	fmt.Println()
 	for _, result := range report.Tests {
