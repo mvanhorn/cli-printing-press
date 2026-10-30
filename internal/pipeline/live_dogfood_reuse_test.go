@@ -284,6 +284,71 @@ func TestReuseLiveHappyPathRejectsCorruptMarker(t *testing.T) {
 	require.ErrorContains(t, err, "parsing recorded live happy path marker")
 }
 
+// A paid list command also runs as the ID resolver for its siblings, and a
+// paid sync also runs as the pre-matrix store refresh. Neither path goes
+// through the command's own matrix row, so each needs its own hold-back.
+func TestPublishGateHoldsBackCompanionAndPreSyncCalls(t *testing.T) {
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `set -u
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{"commands":[
+  {"name":"sync","annotations":{"pp:live-happy-path":"true"}},
+  {"name":"items","subcommands":[
+    {"name":"list","annotations":{"mcp:read-only":"true","pp:live-happy-path":"true"}},
+    {"name":"get","annotations":{"mcp:read-only":"true"}}
+  ]}
+]}
+JSON
+  exit 0
+fi
+last=""
+for a in "$@"; do last="$a"; done
+if [ "$last" = "--help" ]; then
+  usage="fixture-pp-cli $*"
+  example="fixture-pp-cli $*"
+  if [ "${2:-}" = "get" ]; then usage="fixture-pp-cli items get <id>"; example="fixture-pp-cli items get 123"; fi
+  cat <<HELP
+Do the thing.
+
+Usage:
+  $usage [flags]
+
+Examples:
+  ${example% --help}
+
+Global Flags:
+      --json      Output as JSON
+HELP
+  exit 0
+fi
+printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+echo '[{"id":"123"}]'
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:             dir,
+		BinaryName:         binaryName,
+		Level:              "full",
+		Timeout:            2 * time.Second,
+		ReuseLiveHappyPath: filepath.Join(t.TempDir(), Phase5AcceptanceFilename),
+	})
+	require.NoError(t, err)
+
+	for _, line := range liveHappyArgvLines(t, argvLog) {
+		assert.False(t, strings.HasPrefix(line, "items list") || strings.HasPrefix(line, "sync"),
+			"a held-back command must not run as a companion or pre-sync: %s", line)
+	}
+	get := findResultByCommandKind(report, "items get", LiveDogfoodTestHappy)
+	require.NotNil(t, get)
+	assert.Equal(t, LiveDogfoodStatusSkip, get.Status)
+	assert.Contains(t, get.Reason, "held-back live happy path")
+}
+
 func TestValidatePhase5LiveHappyRuns(t *testing.T) {
 	marker := Phase5GateMarker{SourceFingerprint: "current"}
 	assert.Empty(t, validatePhase5LiveHappyRuns(marker))

@@ -894,6 +894,9 @@ func runLiveDogfoodPreSync(commands []liveDogfoodCommand, ctx resolveCtx) {
 	}
 	for _, command := range commands {
 		if len(command.Path) == 1 && command.Path[0] == "sync" {
+			if _, heldBack := ctx.holdsBackLiveHappyPath(command); heldBack {
+				return
+			}
 			_ = runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, 1, liveDogfoodPreSyncTimeout(ctx.timeout), nil)
 			return
 		}
@@ -1003,6 +1006,21 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, positionalFixtureSkipReason(fmt.Sprintf("no list companion at depth %d for %q", i, name)), ""
+		}
+
+		// A held-back companion is a real call like any other, so resolving
+		// an ID through it would repeat the paid run this flag exists to
+		// avoid. Fall back the way a failed companion does.
+		if _, heldBack := ctx.holdsBackLiveHappyPath(*listCmd); heldBack {
+			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
+				storeResolved++
+				resolved = append(resolved, id)
+				continue
+			} else if storeAvailable {
+				return nil, true, reasonRequiredParamFixture, ""
+			}
+			return nil, true, positionalFixtureSkipReason(fmt.Sprintf(
+				"list companion %q is a held-back live happy path at depth %d", strings.Join(listCmd.Path, " "), i)), ""
 		}
 
 		listArgs := append([]string{}, listCmd.Path...)

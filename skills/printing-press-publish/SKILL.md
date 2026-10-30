@@ -2,7 +2,7 @@
 name: printing-press-publish
 description: Publish a generated CLI to the printing-press-library repo
 version: 0.1.0
-min-binary-version: "4.0.0"
+min-binary-version: "4.34.3"
 allowed-tools:
   - Bash
   - Read
@@ -177,7 +177,7 @@ Before doing anything else:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 4.0.0
+# min-binary-version: 4.34.3
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
