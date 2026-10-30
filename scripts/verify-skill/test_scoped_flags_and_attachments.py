@@ -414,6 +414,58 @@ func addCritFlags(cmd *cobra.Command, crit *criteria) {
         self.assertEqual([f.command for f in report.findings], ["demo-pp-cli saved"])
         self.assertIn("--deal", report.findings[0].detail)
 
+    def test_returned_alias_keeps_the_command_helpers_flags_and_children(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newTargetCmd()) }
+func newTargetCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "target <id>", Args: cobra.ExactArgs(1)}
+ addTargetFlags(cmd, &opts)
+ cmd.Flags().BoolVar(&asJSON, "json", false, "JSON output")
+ leaf := &cobra.Command{Use: "leaf"}
+ leaf.Flags().StringVar(&body, "json", "", "JSON body")
+ result := cmd
+ result.AddCommand(leaf)
+ return result
+}
+''')
+        (self.source / "flags.go").write_text('''package cli
+func addTargetFlags(cmd *cobra.Command, opts *options) {
+ cmd.Flags().StringVar(&opts.region, "region", "", "Region")
+}
+''', encoding="utf-8")
+        skill = self.cli / "SKILL.md"
+        skill.write_text("```bash\ndemo-pp-cli target --region us 42\n```\n", encoding="utf-8")
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
+        self.assertEqual(report.findings, [])
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["target", "--json", "42"], self.cli)[1], ["42"])
+        self.assertEqual(verify_skill.resolve_command_path(
+            self.cli, ["target", "leaf"])[1], "leaf")
+
+    def test_returned_wrapper_falls_back_to_the_file_scan(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newTargetCmd()) }
+func newTargetCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "target", RunE: func(c *cobra.Command, args []string) error {
+  err := run()
+  return err
+ }}
+ addTargetFlags(cmd, &opts)
+ return wrap(cmd)
+}
+''')
+        (self.source / "flags.go").write_text('''package cli
+func addTargetFlags(cmd *cobra.Command, opts *options) {
+ cmd.Flags().StringVar(&opts.region, "region", "", "Region")
+}
+''', encoding="utf-8")
+        skill = self.cli / "SKILL.md"
+        skill.write_text("```bash\ndemo-pp-cli target --region us\n```\n", encoding="utf-8")
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
+        self.assertEqual(report.findings, [])
+
     def test_hook_addcommand_attaches_every_argument(self):
         self.write('''package cli
 func init() {

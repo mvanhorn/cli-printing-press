@@ -207,6 +207,7 @@ FIND_FIELDS_RE = re.compile(
 LOCAL_COMMAND_RE = re.compile(r'(?m)^\s*(\w+)\s*:=\s*&cobra\.Command\s*\{')
 RETURN_VARIABLE_RE = re.compile(r'(?m)^\s*return\s+(\w+)\s*$')
 CONSTRUCTOR_VARIABLE_RE = re.compile(r'\b(\w+)\s*:=\s*(new[A-Z]\w*Cmd)\s*\(')
+VARIABLE_ALIAS_RE = re.compile(r'(?m)^\s*(\w+)\s*:?=\s*(\w+)\s*$')
 FIND_ATTACHMENT_RE = re.compile(
     r'if\s+(\w+),\s*_,\s*(\w+)\s*:=\s*rootCmd\.Find\(\[\]string\{'
     r'((?:\s*"[a-z][a-z0-9-]*"\s*,?)+)\}\);\s*\2\s*==\s*nil[^{}]*\{'
@@ -334,12 +335,36 @@ def _local_command_variables(body: str) -> dict[str, tuple[str, tuple | None]]:
     return variables
 
 
+def _command_aliases(body: str, variable: str) -> set[str]:
+    """Return variable plus every name joined to it by `a := b` or `a = b`."""
+    assignments = VARIABLE_ALIAS_RE.findall(body)
+    aliases = {variable}
+    while True:
+        joined = {
+            name
+            for left, right in assignments
+            if left in aliases or right in aliases
+            for name in (left, right)
+        }
+        if joined <= aliases:
+            return aliases
+        aliases |= joined
+
+
 def _returned_command_variable(body: str, local_commands: dict) -> str | None:
-    """Return the variable a constructor returns, preferring a local command
-    over a later `return err` from a closure."""
+    """Return the variable holding the command a constructor returns.
+
+    `result := cmd; return result` resolves to cmd. A `return err` from a
+    closure is not a command, so a constructor that ends in `return wrap(cmd)`
+    resolves to None and callers fall back to their wider scans.
+    """
     returned = RETURN_VARIABLE_RE.findall(body)
-    fallback = returned[-1] if returned else None
-    return next((name for name in reversed(returned) if name in local_commands), fallback)
+    for name in reversed(returned):
+        for alias in sorted(_command_aliases(body, name)):
+            if alias in local_commands:
+                return alias
+    constructed = dict(CONSTRUCTOR_VARIABLE_RE.findall(body))
+    return next((name for name in reversed(returned) if name in constructed), None)
 
 
 def _receiver_constructors(scan: str, receiver: str | None) -> Iterable[str]:
@@ -385,8 +410,11 @@ def _inline_command_children(
         return [], {}
 
     scan = _mask_go_strings(body)
+    parent_aliases = _command_aliases(body, parent_variable)
     edges: dict[str, list[str]] = {}
     for receiver, arguments in _addcommand_calls(scan):
+        if receiver in parent_aliases:
+            receiver = parent_variable
         if receiver in variables:
             edges.setdefault(receiver, []).extend(
                 argument for argument in arguments if argument in variables
@@ -2046,10 +2074,11 @@ def _command_boolean_flag_names(cli_dir: Path, cmd_path: tuple[str, ...]) -> fro
     # this command's own declarations. A constructor body can also declare
     # flags on inline children, and those must not change this command.
     names = set(_boolean_flag_names(cli_dir))
+    own = _command_aliases(command.body, command.variable) if command.variable else None
     for match in FLAG_DECL_RE.finditer(command.body):
         _, method, name = match.groups()
         receiver = re.search(r"(\w+)\s*\.\s*$", command.body[:match.start()])
-        if command.variable and (receiver is None or receiver.group(1) != command.variable):
+        if own and (receiver is None or receiver.group(1) not in own):
             continue
         if method == "BoolVar":
             names.add(name)
@@ -2170,13 +2199,13 @@ def go_block_body(text: str, open_brace: int) -> str:
 _HELPER_WALK_MAX_DEPTH = 8
 
 
-def _helper_names_called_with_cmd(text: str, receiver: str | None = None) -> set[str]:
+def _helper_names_called_with_cmd(text: str, receivers: set[str] | None = None) -> set[str]:
     names: set[str] = set()
     # Inline subcommands reach helpers through their own variable, e.g.
-    # addCritFlags(add, &crit). Without a known receiver, any local
+    # addCritFlags(add, &crit). Without known receivers, any local
     # cobra.Command in the text counts.
-    receivers = [receiver] if receiver else sorted({"cmd", *LOCAL_COMMAND_RE.findall(text)})
-    for m in re.finditer(HELPER_CALL_RE.format(receivers="|".join(receivers)), text):
+    candidates = sorted(receivers or {"cmd", *LOCAL_COMMAND_RE.findall(text)})
+    for m in re.finditer(HELPER_CALL_RE.format(receivers="|".join(candidates)), text):
         name = m.group(1)
         if name not in _HELPER_CALL_IGNORE:
             names.add(name)
@@ -2219,7 +2248,9 @@ def flag_declared_via_helper(
 
     frontier: set[str] = set()
     if command is not None and command.body and command.variable:
-        frontier = _helper_names_called_with_cmd(command.body, command.variable)
+        frontier = _helper_names_called_with_cmd(
+            command.body, _command_aliases(command.body, command.variable)
+        )
     else:
         for f in cmd_files:
             try:
