@@ -61,11 +61,15 @@ type Phase5GateMarker struct {
 	// operator proof file in the same proofs directory instead of a live
 	// happy-path pass.
 	ProofCoveredFeatures []ProofCoveredFeature `json:"proof_covered_features,omitempty"`
-	AuthContext          Phase5AuthContext     `json:"auth_context,omitzero"`
-	SkipReason           string                `json:"skip_reason,omitempty"`
-	FailureSummary       *Phase5FailureSummary `json:"failure_summary,omitempty"`
-	SourceFingerprint    string                `json:"source_fingerprint,omitempty"`
-	SourceFiles          map[string]string     `json:"source_files,omitempty"`
+	// LiveHappyPathRuns lists pp:live-happy-path commands that really ran and
+	// passed, each bound to the source fingerprint it ran against. A later
+	// run of the same source reuses them instead of running them again.
+	LiveHappyPathRuns []LiveHappyPathRun    `json:"live_happy_path_runs,omitempty"`
+	AuthContext       Phase5AuthContext     `json:"auth_context,omitzero"`
+	SkipReason        string                `json:"skip_reason,omitempty"`
+	FailureSummary    *Phase5FailureSummary `json:"failure_summary,omitempty"`
+	SourceFingerprint string                `json:"source_fingerprint,omitempty"`
+	SourceFiles       map[string]string     `json:"source_files,omitempty"`
 }
 
 // Phase5FailureSummary groups failed tests by category so a human reviewing
@@ -315,7 +319,7 @@ func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 	if marker.TestsPassed <= 0 {
 		issues = append(issues, "phase5 acceptance marker missing tests_passed")
 	}
-	return issues
+	return append(issues, validatePhase5LiveHappyRuns(marker)...)
 }
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
