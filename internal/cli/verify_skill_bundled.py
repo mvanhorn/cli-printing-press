@@ -172,6 +172,7 @@ CONSTRUCTOR_RE = re.compile(
 )
 ADDCMD_CALL_RE = re.compile(r'(?:\b(\w+))?\.AddCommand\s*\(')
 CONSTRUCTOR_ARGUMENT_RE = re.compile(r'(new[A-Z]\w*Cmd)\s*\(')
+CONSTRUCTOR_CALL_RE = re.compile(r'(?<![\w.])(?<!func )(new[A-Z]\w*Cmd)\s*\(')
 # Parent is one identifier (cmd, root, rootCmd, accountCmd). The candidate
 # constructor is the second argument, same role as AddCommand's argument.
 NOVEL_ATTACH_RE = re.compile(
@@ -2169,11 +2170,12 @@ def go_block_body(text: str, open_brace: int) -> str:
 _HELPER_WALK_MAX_DEPTH = 8
 
 
-def _helper_names_called_with_cmd(text: str) -> set[str]:
+def _helper_names_called_with_cmd(text: str, receiver: str | None = None) -> set[str]:
     names: set[str] = set()
     # Inline subcommands reach helpers through their own variable, e.g.
-    # addCritFlags(add, &crit), so any local cobra.Command is a receiver.
-    receivers = sorted({"cmd", *LOCAL_COMMAND_RE.findall(text)})
+    # addCritFlags(add, &crit). Without a known receiver, any local
+    # cobra.Command in the text counts.
+    receivers = [receiver] if receiver else sorted({"cmd", *LOCAL_COMMAND_RE.findall(text)})
     for m in re.finditer(HELPER_CALL_RE.format(receivers="|".join(receivers)), text):
         name = m.group(1)
         if name not in _HELPER_CALL_IGNORE:
@@ -2196,9 +2198,18 @@ def _cli_go_sources(cli_dir: Path) -> list[str]:
     return texts
 
 
-def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name: str) -> bool:
+def flag_declared_via_helper(
+    cli_dir: Path,
+    cmd_files: Iterable[Path],
+    flag_name: str,
+    command: CommandConstructor | None = None,
+) -> bool:
     """Return True if a helper called from cmd_files (with cmd as first arg)
     declares flag_name, following nested helpers that also receive cmd.
+
+    When the graph resolved the command, only helpers called on that command
+    count. A file-wide scan would credit a parent with flags a helper added to
+    its inline child.
 
     A visited set and _HELPER_WALK_MAX_DEPTH bound cycles and deep chains.
     """
@@ -2207,12 +2218,15 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
         return False
 
     frontier: set[str] = set()
-    for f in cmd_files:
-        try:
-            text = read_utf8(f)
-        except Exception:
-            continue
-        frontier |= _helper_names_called_with_cmd(text)
+    if command is not None and command.body and command.variable:
+        frontier = _helper_names_called_with_cmd(command.body, command.variable)
+    else:
+        for f in cmd_files:
+            try:
+                text = read_utf8(f)
+            except Exception:
+                continue
+            frontier |= _helper_names_called_with_cmd(text)
     seen: set[str] = set()
     for _ in range(_HELPER_WALK_MAX_DEPTH):
         names = {n for n in frontier if n not in seen}
@@ -2690,13 +2704,20 @@ def _unattached_leaf_files(cli_dir: Path, leaf: str) -> tuple[Path, ...]:
     not prove a missing child. A declaration already placed elsewhere in the
     graph is accounted for, though, and says nothing about this parent.
     Declarations are counted because one file can hold several `list` commands
-    with only some of them attached.
+    with only some of them attached. Each constructor call builds a separate
+    command, so a constructor called more often than the graph has edges for it
+    has an attachment the graph did not see, and stays unaccounted for.
     """
     constructors, root_children = _command_tree(cli_dir)
+    sources = _read_cli_go_files(cli_dir)
+    call_sites: Counter[str] = Counter()
+    for _go_file, text in sources:
+        call_sites.update(CONSTRUCTOR_CALL_RE.findall(_mask_go_strings(_mask_go_comments(text))))
     attached: Counter[tuple[Path, str]] = Counter()
     for info in constructors.values():
         if info.scaffold:
             attached[(info.file, info.use)] += 1
+    edges = Counter(root_children)
     pending = list(root_children)
     seen: set[str] = set()
     while pending:
@@ -2705,11 +2726,15 @@ def _unattached_leaf_files(cli_dir: Path, leaf: str) -> tuple[Path, ...]:
         if name in seen or info is None:
             continue
         seen.add(name)
-        attached[(info.file, info.use)] += 1
+        edges.update(info.children)
         pending.extend(info.children)
+    for name in seen:
+        if call_sites[name] <= edges[name]:
+            info = constructors[name]
+            attached[(info.file, info.use)] += 1
 
     files: list[Path] = []
-    for go_file, text in _read_cli_go_files(cli_dir):
+    for go_file, text in sources:
         declared = Counter(
             use for use in USE_RE.findall(_mask_go_comments(text))
             if parse_use(use)[0] == leaf
@@ -2717,6 +2742,12 @@ def _unattached_leaf_files(cli_dir: Path, leaf: str) -> tuple[Path, ...]:
         if any(count > attached[(go_file, use)] for use, count in declared.items()):
             files.append(go_file)
     return tuple(files)
+
+
+def _graph_command(cli_dir: Path, cmd_path: list[str]) -> CommandConstructor | None:
+    return _constructor_at_path(
+        collect_command_constructors(cli_dir), find_root_children(cli_dir), cmd_path
+    )
 
 
 def _subcommand_fallback_files(cli_dir: Path, candidate: list[str]) -> list[Path]:
@@ -2760,9 +2791,13 @@ def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, rep
             # ["export", "messages"] to a messages source file, which does not
             # declare --format or --interval, turning working docs into errors.
             #
+            command = _graph_command(cli_dir, cmd_path)
             fallback_files: list[Path] = []
+            fallback_command: CommandConstructor | None = None
             if len(cmd_path) == 1 and _positional and re.match(r"^[a-z][a-z0-9_-]+$", _positional[0]):
-                fallback_files = _subcommand_fallback_files(cli_dir, cmd_path + [_positional[0]])
+                candidate = cmd_path + [_positional[0]]
+                fallback_files = _subcommand_fallback_files(cli_dir, candidate)
+                fallback_command = _graph_command(cli_dir, candidate)
             for raw_flag in flags:
                 flag = raw_flag.lstrip("-")
                 key = (path_str, flag)
@@ -2773,13 +2808,13 @@ def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, rep
                     continue
                 if persistent_flag_declared(cli_dir, flag):
                     continue
-                if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag):
+                if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag, command):
                     continue
                 # Parent ruled out — the flag may belong to an under-resolved
                 # subcommand left in the positionals (see fallback_files above).
                 if fallback_files and (
                     flag_declared_in(fallback_files, flag)
-                    or flag_declared_via_helper(cli_dir, fallback_files, flag)
+                    or flag_declared_via_helper(cli_dir, fallback_files, flag, fallback_command)
                 ):
                     continue
                 seen.add(key)

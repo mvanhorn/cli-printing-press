@@ -360,6 +360,60 @@ func newNearbyCmd() *cobra.Command {
         verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
         self.assertEqual(report.findings, [])
 
+    def test_flag_fallback_keeps_a_constructor_attached_in_two_places(self):
+        self.write('''package cli
+func Execute() {
+ rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+ rootCmd.AddCommand(newExportCmd())
+ rootCmd.AddCommand(newParkingCmd())
+ rootCmd.AddCommand(newNearbyCmd())
+ if parent := findCommand(rootCmd, "parking"); parent != nil {
+  parent.AddCommand(newNearbyCmd())
+ }
+}
+func newExportCmd() *cobra.Command { return &cobra.Command{Use: "export <resource>"} }
+func newParkingCmd() *cobra.Command { return &cobra.Command{Use: "parking"} }
+''')
+        (self.source / "nearby.go").write_text('''package cli
+func newNearbyCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "nearby"}
+ cmd.Flags().StringVar(&lat, "lat", "", "Latitude")
+ return cmd
+}
+''', encoding="utf-8")
+        skill = self.cli / "SKILL.md"
+        skill.write_text("```bash\ndemo-pp-cli parking nearby --lat 1\n```\n", encoding="utf-8")
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
+        self.assertEqual(report.findings, [])
+
+    def test_helper_flags_stay_on_the_command_that_received_them(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newSavedCmd()) }
+func newSavedCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "saved"}
+ add := &cobra.Command{Use: "add"}
+ addCritFlags(add, &crit)
+ cmd.AddCommand(add)
+ return cmd
+}
+''')
+        (self.source / "flags.go").write_text('''package cli
+func addCritFlags(cmd *cobra.Command, crit *criteria) {
+ cmd.Flags().StringVar(&crit.deal, "deal", "", "Deal")
+}
+''', encoding="utf-8")
+        skill = self.cli / "SKILL.md"
+        skill.write_text(
+            "```bash\ndemo-pp-cli saved add --deal x\ndemo-pp-cli saved --deal x\n```\n",
+            encoding="utf-8",
+        )
+        report = verify_skill.Report(cli_dir=str(self.cli), skill_path=str(skill))
+        verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
+        # Only the parent recipe is wrong; the inline child got the flag.
+        self.assertEqual([f.command for f in report.findings], ["demo-pp-cli saved"])
+        self.assertIn("--deal", report.findings[0].detail)
+
     def test_hook_addcommand_attaches_every_argument(self):
         self.write('''package cli
 func init() {
