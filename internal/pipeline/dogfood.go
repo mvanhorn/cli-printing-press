@@ -255,7 +255,11 @@ type openAPISpec struct {
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport          string
 	OAuthScopeRequirements []oauthScopeRequirement
-	NestedDataEnvelopes    map[string]nestedDataEnvelopeFixture
+	NestedDataEnvelopes    map[responseFixtureKey]nestedDataEnvelopeFixture
+	// SyncRequests are the method and path pairs bare sync issues. The mock
+	// row check uses these so a fixture for a different operation cannot
+	// raise the expected count.
+	SyncRequests []responseFixtureKey
 	// ParamDefaults maps a positional placeholder name (lowercase) to its
 	// spec-declared default value, when one is set. Verify mock-mode uses
 	// this as the first step in its lookup chain so spec authors can name
@@ -278,8 +282,23 @@ type openAPISpec struct {
 	CLIDescription string
 }
 
+type responseFixtureKind string
+
+const (
+	responseFixtureNestedDataObject responseFixtureKind = "nested-data-object"
+	responseFixtureTopLevel         responseFixtureKind = "top-level"
+	responseFixtureDataArray        responseFixtureKind = "data-array"
+)
+
+type responseFixtureKey struct {
+	Method string
+	Path   string
+}
+
 type nestedDataEnvelopeFixture struct {
+	Kind     responseFixtureKind
 	ArrayKey string
+	Scalars  map[string]any
 }
 
 func (s *openAPISpec) IsSynthetic() bool {
@@ -1262,6 +1281,7 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 			Auth:                   parsed.Auth,
 			OAuthScopeRequirements: scopeRequirements,
 			NestedDataEnvelopes:    nestedDataEnvelopes,
+			SyncRequests:           defaultSyncRequestKeys(parsed, nestedDataEnvelopes),
 		}, nil
 	}
 
