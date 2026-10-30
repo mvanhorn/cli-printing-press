@@ -317,8 +317,8 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	}
 
 	expectedMockRows := 0
-	if report.Mode == "mock" && spec != nil && len(spec.NestedDataEnvelopes) > 0 {
-		expectedMockRows = 2
+	if report.Mode == "mock" {
+		expectedMockRows = expectedMockSyncRows(spec)
 	}
 	if isDeviceCLIDir(cfg.Dir) {
 		// Device CLIs (BLE) have no sync->sql->search data pipeline; running the
@@ -1018,8 +1018,8 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 		// Check if the path looks like a list endpoint
 		path := r.URL.Path
-		if fixture, ok := nestedDataEnvelopeForPath(spec, path); ok {
-			fmt.Fprint(w, renderNestedDataEnvelopeFixture(fixture))
+		if fixture, ok := responseFixtureForRequest(spec, r.Method, path); ok {
+			fmt.Fprint(w, renderResponseFixture(fixture))
 		} else if strings.HasSuffix(path, "s") || strings.Contains(path, "/search") {
 			// Return array
 			fmt.Fprint(w, `[{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"}]`)
@@ -1039,41 +1039,31 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 	return server, server.URL
 }
 
-func nestedDataEnvelopeForPath(spec *openAPISpec, path string) (nestedDataEnvelopeFixture, bool) {
+func responseFixtureForRequest(spec *openAPISpec, method, path string) (nestedDataEnvelopeFixture, bool) {
 	if spec == nil || len(spec.NestedDataEnvelopes) == 0 {
 		return nestedDataEnvelopeFixture{}, false
 	}
-	if fixture, ok := spec.NestedDataEnvelopes[path]; ok {
+	method = strings.ToUpper(method)
+	if fixture, ok := spec.NestedDataEnvelopes[responseFixtureKey{Method: method, Path: path}]; ok {
 		return fixture, true
 	}
-	for specPath, fixture := range spec.NestedDataEnvelopes {
-		if pathMatchesSpec(path, compileSpecPathPatterns([]string{specPath})) {
-			return fixture, true
+	var matchedPath string
+	var matched nestedDataEnvelopeFixture
+	found := false
+	for key, fixture := range spec.NestedDataEnvelopes {
+		if key.Method != method || !pathMatchesSpec(path, compileSpecPathPatterns([]string{key.Path})) {
+			continue
+		}
+		if !found || key.Path < matchedPath {
+			matchedPath = key.Path
+			matched = fixture
+			found = true
 		}
 	}
-	return nestedDataEnvelopeFixture{}, false
-}
-
-func renderNestedDataEnvelopeFixture(fixture nestedDataEnvelopeFixture) string {
-	arrayKey := fixture.ArrayKey
-	if arrayKey == "" {
-		arrayKey = "items"
+	if !found {
+		return nestedDataEnvelopeFixture{}, false
 	}
-	body := map[string]any{
-		"success": true,
-		"data": map[string]any{
-			arrayKey: []map[string]any{
-				{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
-				{"id": 2, "name": "mock-item-2", "state": "open", "title": "Mock Item 2", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
-			},
-			"pagination": map[string]any{"total": 2},
-		},
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return `{"success":true,"data":{"items":[{"id":1,"name":"mock-item-1"},{"id":2,"name":"mock-item-2"}],"pagination":{"total":2}}}`
-	}
-	return string(data)
+	return matched, true
 }
 
 // templateVarReadRe matches the shape config.go.tmpl emits for each

@@ -547,7 +547,7 @@ paths:
 	assert.Len(t, body, 1)
 }
 
-func TestDetectNestedDataEnvelopeFixturesSortsHTTPMethods(t *testing.T) {
+func TestDetectResponseFixturesKeepsEachMethod(t *testing.T) {
 	spec := []byte(`openapi: 3.0.0
 info:
   title: Method Order API
@@ -590,8 +590,13 @@ paths:
 
 	fixtures := detectNestedDataEnvelopeFixtures(spec)
 
-	require.Contains(t, fixtures, "/items")
-	assert.Equal(t, "items", fixtures["/items"].ArrayKey)
+	getKey := responseFixtureKey{Method: http.MethodGet, Path: "/items"}
+	patchKey := responseFixtureKey{Method: http.MethodPatch, Path: "/items"}
+	require.Contains(t, fixtures, getKey)
+	require.Contains(t, fixtures, patchKey)
+	assert.Equal(t, responseFixtureNestedDataObject, fixtures[getKey].Kind)
+	assert.Equal(t, "items", fixtures[getKey].ArrayKey)
+	assert.Equal(t, "results", fixtures[patchKey].ArrayKey)
 }
 
 func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
