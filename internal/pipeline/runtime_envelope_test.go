@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -225,15 +227,16 @@ func TestStartMockServerRendersDeclaredListEnvelopes(t *testing.T) {
 }
 
 func TestStartMockServerKeepsMethodSpecificEnvelope(t *testing.T) {
-	t.Parallel()
-
-	spec := loadEnvelopeSpec(t, `openapi: 3.0.3
+	specYAML := `openapi: 3.0.3
 info:
   title: Mixed Method Envelope
   version: "1.0.0"
+servers:
+  - url: https://api.example.com
 paths:
   /items:
     get:
+      operationId: listItems
       responses:
         "200":
           description: ok
@@ -243,7 +246,13 @@ paths:
                 type: array
                 items:
                   type: object
+                  properties:
+                    id:
+                      type: integer
+                    name:
+                      type: string
     post:
+      operationId: createItem
       responses:
         "200":
           description: ok
@@ -258,12 +267,21 @@ paths:
                     type: array
                     items:
                       type: object
-`)
+                      properties:
+                        id:
+                          type: integer
+                        name:
+                          type: string
+`
+	spec := loadEnvelopeSpec(t, specYAML)
 	_, getFixture := spec.NestedDataEnvelopes[responseFixtureKey{Method: http.MethodGet, Path: "/items"}]
 	postFixture, postOK := spec.NestedDataEnvelopes[responseFixtureKey{Method: http.MethodPost, Path: "/items"}]
 	assert.False(t, getFixture)
 	require.True(t, postOK)
 	assert.Equal(t, "items", postFixture.ArrayKey)
+	assert.Contains(t, spec.SyncRequests, responseFixtureKey{Method: http.MethodGet, Path: "/items"})
+	assert.NotContains(t, spec.SyncRequests, responseFixtureKey{Method: http.MethodPost, Path: "/items"})
+	assert.Equal(t, 0, expectedMockSyncRows(spec))
 
 	server, baseURL := startMockServer(spec)
 	t.Cleanup(server.Close)
@@ -272,6 +290,32 @@ paths:
 	posted := asObject(t, fetchMock(t, baseURL, http.MethodPost, "/items"))
 	assert.Equal(t, float64(2), posted["total"])
 	assert.Len(t, asArray(t, posted["items"]), 2)
+
+	apiSpec, err := openapi.Parse([]byte(specYAML))
+	require.NoError(t, err)
+	dir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, generator.New(apiSpec, dir).Generate())
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	if out, err := tidy.CombinedOutput(); err != nil {
+		t.Fatalf("go mod tidy failed:\n%s", out)
+	}
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, specYAML)
+
+	report, err := RunVerify(VerifyConfig{Dir: dir, SpecPath: specPath})
+	require.NoError(t, err)
+	require.Equal(t, "mock", report.Mode)
+	result := commandResult(t, report, "items")
+	assert.Truef(t, result.Help && result.DryRun && result.Execute, "items score=%d err=%s", result.Score, result.Error)
+	assert.Equal(t, 3, result.Score)
+	require.Truef(t, report.DataPipeline, "data pipeline: %s", report.DataPipelineDetail)
+	assert.NotContains(t, report.DataPipelineDetail, "expected at least")
+
+	oneRow := buildDataPipelineProbeBinary(t, 1)
+	pass, detail := runDataPipelineTest(oneRow, "", "mock", os.Environ, expectedMockSyncRows(spec))
+	assert.Truef(t, pass, "detail: %s", detail)
+	assert.NotContains(t, detail, "expected at least")
 }
 
 func TestVerifyParsesDeclaredListEnvelopes(t *testing.T) {
@@ -290,12 +334,14 @@ func TestVerifyParsesDeclaredListEnvelopes(t *testing.T) {
 	report, err := RunVerify(VerifyConfig{Dir: dir, SpecPath: specPath})
 	require.NoError(t, err)
 	require.Equal(t, "mock", report.Mode)
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(loadEnvelopeSpec(t, envelopeListSpec)))
 	for _, name := range []string{"bounces", "deals", "widgets", "tags", "feeds", "blobs", "account"} {
 		result := commandResult(t, report, name)
 		assert.Truef(t, result.Help && result.DryRun && result.Execute, "%s score=%d err=%s", name, result.Score, result.Error)
 		assert.Equal(t, 3, result.Score, name)
 	}
 	require.Truef(t, report.DataPipeline, "data pipeline: %s", report.DataPipelineDetail)
+	assert.NotContains(t, report.DataPipelineDetail, "expected at least")
 
 	spec := loadEnvelopeSpec(t, envelopeListSpec)
 	server, baseURL := startMockServer(spec)
@@ -324,6 +370,58 @@ func TestVerifyParsesDeclaredListEnvelopes(t *testing.T) {
 
 	account := asObject(t, cliResults(t, report.Binary, env, "account"))
 	assert.Equal(t, "mock-item", account["name"])
+}
+
+func TestExpectedMockSyncRowsRaisesForSyncList(t *testing.T) {
+	t.Parallel()
+
+	spec := loadEnvelopeSpec(t, envelopeListSpec)
+	require.Contains(t, spec.SyncRequests, responseFixtureKey{Method: http.MethodGet, Path: "/bounces"})
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(spec))
+
+	oneRow := buildDataPipelineProbeBinary(t, 1)
+	pass, detail := runDataPipelineTest(oneRow, "", "mock", os.Environ, expectedMockSyncRows(spec))
+	assert.False(t, pass)
+	assert.Contains(t, detail, "expected at least 2")
+
+	twoRows := buildDataPipelineProbeBinary(t, len(mockListItems()))
+	pass, detail = runDataPipelineTest(twoRows, "", "mock", os.Environ, expectedMockSyncRows(spec))
+	assert.True(t, pass)
+	assert.Contains(t, detail, "has 2 rows")
+
+	postList := &apispec.APISpec{
+		Resources: map[string]apispec.Resource{
+			"widgets": {
+				Endpoints: map[string]apispec.Endpoint{
+					"list": {
+						Method:   "POST",
+						Path:     "/widgets",
+						IDField:  "id",
+						Response: apispec.ResponseDef{Type: "object", Item: "widgetPage"},
+						Pagination: &apispec.Pagination{
+							Type:       "offset",
+							LimitParam: "limit",
+						},
+					},
+				},
+			},
+		},
+		Types: map[string]apispec.TypeDef{
+			"widgetPage": {Fields: []apispec.TypeField{
+				{Name: "total", Type: "integer"},
+				{Name: "items", Type: "array"},
+			}},
+		},
+	}
+	envelopes := map[responseFixtureKey]nestedDataEnvelopeFixture{
+		{Method: http.MethodPost, Path: "/widgets"}: {Kind: responseFixtureTopLevel, ArrayKey: "items", Scalars: map[string]any{"total": 2}},
+	}
+	keys := defaultSyncRequestKeys(postList, envelopes)
+	require.Contains(t, keys, responseFixtureKey{Method: http.MethodPost, Path: "/widgets"})
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(&openAPISpec{
+		NestedDataEnvelopes: envelopes,
+		SyncRequests:        keys,
+	}))
 }
 
 func loadEnvelopeSpec(t *testing.T, specYAML string) *openAPISpec {

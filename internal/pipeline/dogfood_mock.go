@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
+	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -440,9 +442,7 @@ func renderResponseFixture(fixture nestedDataEnvelopeFixture) string {
 
 func renderScalarSiblingEnvelope(fixture nestedDataEnvelopeFixture) string {
 	body := make(map[string]any, len(fixture.Scalars)+1)
-	for key, value := range fixture.Scalars {
-		body[key] = value
-	}
+	maps.Copy(body, fixture.Scalars)
 	key := fixture.ArrayKey
 	if key == "" {
 		key = "items"
@@ -546,6 +546,64 @@ func resolveRawPointer(ref string, root map[string]any) map[string]any {
 		return nil
 	}
 	return resolved
+}
+
+// expectedMockSyncRows is the stored-row floor for a mock data-pipeline
+// check. Only an envelope fixture that bare sync will request can raise
+// it; another method's fixture on the same path cannot.
+func expectedMockSyncRows(spec *openAPISpec) int {
+	if spec == nil || len(spec.NestedDataEnvelopes) == 0 {
+		return 0
+	}
+	for _, request := range spec.SyncRequests {
+		if _, ok := responseFixtureForRequest(spec, request.Method, request.Path); ok {
+			return len(mockListItems())
+		}
+	}
+	return 0
+}
+
+// defaultSyncRequestKeys records flat default-sync calls. Dependent paths
+// run only after a parent row exists, so they do not set the floor alone.
+func defaultSyncRequestKeys(api *apispec.APISpec, envelopes map[responseFixtureKey]nestedDataEnvelopeFixture) []responseFixtureKey {
+	if api == nil || len(envelopes) == 0 {
+		return nil
+	}
+	profile := profiler.Profile(api)
+	keys := make([]responseFixtureKey, 0, len(profile.SyncableResources))
+	seen := make(map[responseFixtureKey]struct{}, len(profile.SyncableResources))
+	for _, resource := range profile.SyncableResources {
+		if resource.SkipDefaultSync {
+			continue
+		}
+		key := responseFixtureKey{
+			Method: strings.ToUpper(strings.TrimSpace(resource.Method)),
+			Path:   syncFixturePath(resource.Path),
+		}
+		if key.Method == "" || key.Path == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b responseFixtureKey) int {
+		if c := strings.Compare(a.Method, b.Method); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Path, b.Path)
+	})
+	return keys
+}
+
+func syncFixturePath(path string) string {
+	path = strings.TrimSpace(path)
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	return path
 }
 
 func singleCompositionSchema(schema map[string]any) map[string]any {

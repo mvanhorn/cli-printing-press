@@ -317,8 +317,8 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	}
 
 	expectedMockRows := 0
-	if report.Mode == "mock" && spec != nil && len(spec.NestedDataEnvelopes) > 0 {
-		expectedMockRows = 2
+	if report.Mode == "mock" {
+		expectedMockRows = expectedMockSyncRows(spec)
 	}
 	if isDeviceCLIDir(cfg.Dir) {
 		// Device CLIs (BLE) have no sync->sql->search data pipeline; running the

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"testing"
 
+	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -339,7 +340,7 @@ func TestResponseFixtureAllOfDepthLimit(t *testing.T) {
 	}
 	wrap := func(depth int) map[string]any {
 		schema := leaf
-		for i := 0; i < depth; i++ {
+		for range depth {
 			schema = map[string]any{"allOf": []any{
 				map[string]any{"type": "object", "properties": map[string]any{}},
 				schema,
@@ -449,4 +450,81 @@ func TestResponseFixtureForRequestMatchesMethodAndPath(t *testing.T) {
 	got, ok = responseFixtureForRequest(spec, "post", "/widgets")
 	require.True(t, ok)
 	assert.Equal(t, "items", got.ArrayKey)
+}
+
+func TestExpectedMockSyncRowsUsesSyncRequests(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 0, expectedMockSyncRows(nil))
+	assert.Equal(t, 0, expectedMockSyncRows(&openAPISpec{}))
+
+	envelope := nestedDataEnvelopeFixture{Kind: responseFixtureTopLevel, ArrayKey: "items", Scalars: map[string]any{"total": 2}}
+	spec := &openAPISpec{
+		NestedDataEnvelopes: map[responseFixtureKey]nestedDataEnvelopeFixture{
+			{Method: "POST", Path: "/items"}: envelope,
+		},
+		SyncRequests: []responseFixtureKey{{Method: "GET", Path: "/items"}},
+	}
+	assert.Equal(t, 0, expectedMockSyncRows(spec))
+
+	spec.NestedDataEnvelopes[responseFixtureKey{Method: "GET", Path: "/items"}] = envelope
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(spec))
+
+	postOnly := &openAPISpec{
+		NestedDataEnvelopes: map[responseFixtureKey]nestedDataEnvelopeFixture{
+			{Method: "POST", Path: "/widgets"}: envelope,
+		},
+		SyncRequests: []responseFixtureKey{{Method: "POST", Path: "/widgets?kind=open"}},
+	}
+	assert.Equal(t, 0, expectedMockSyncRows(postOnly), "query string is not part of the mock path")
+
+	postOnly.SyncRequests = []responseFixtureKey{{Method: "POST", Path: "/widgets"}}
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(postOnly))
+}
+
+func TestSyncFixturePathDropsQuery(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "/items", syncFixturePath(" /items?entityType=widget "))
+	assert.Equal(t, "/items", syncFixturePath("/items"))
+	assert.Empty(t, syncFixturePath("   "))
+}
+
+func TestDefaultSyncRequestKeysStripsQueryAndSkipsUnrelatedFixtures(t *testing.T) {
+	t.Parallel()
+
+	api := &apispec.APISpec{
+		Resources: map[string]apispec.Resource{
+			"items": {
+				Endpoints: map[string]apispec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/items?entityType=widget",
+						Response: apispec.ResponseDef{Type: "array", Item: "item"},
+					},
+				},
+			},
+		},
+		Types: map[string]apispec.TypeDef{
+			"item": {Fields: []apispec.TypeField{{Name: "id", Type: "integer"}}},
+		},
+	}
+	envelopes := map[responseFixtureKey]nestedDataEnvelopeFixture{
+		{Method: "GET", Path: "/items"}: {Kind: responseFixtureTopLevel, ArrayKey: "items", Scalars: map[string]any{"total": 2}},
+	}
+	assert.Nil(t, defaultSyncRequestKeys(nil, envelopes))
+	assert.Nil(t, defaultSyncRequestKeys(api, nil))
+
+	keys := defaultSyncRequestKeys(api, envelopes)
+	require.Equal(t, []responseFixtureKey{{Method: "GET", Path: "/items"}}, keys)
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(&openAPISpec{
+		NestedDataEnvelopes: envelopes,
+		SyncRequests:        keys,
+	}))
+
+	resource := api.Resources["items"]
+	off := false
+	resource.Syncable = &off
+	api.Resources["items"] = resource
+	assert.Empty(t, defaultSyncRequestKeys(api, envelopes))
 }
