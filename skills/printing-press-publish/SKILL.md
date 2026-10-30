@@ -583,12 +583,6 @@ LIVE_GATE_ARGS=(
 if [ -n "$AUTH_ENV" ]; then
   LIVE_GATE_ARGS+=(--auth-env "$AUTH_ENV")
 fi
-# A command annotated pp:live-happy-path was approved for one real run in
-# Phase 5 (dogfood --live --allow-destructive). Without the flag here it falls
-# back to a dry run and the publish gate reports it as hollow coverage.
-if grep -rqs --include='*.go' 'pp:live-happy-path' "$CLI_DIR"; then
-  LIVE_GATE_ARGS+=(--allow-destructive)
-fi
 
 rm -f "$PROOFS_DIR/phase5-skip.json"
 if ! (
