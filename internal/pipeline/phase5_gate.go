@@ -320,7 +320,7 @@ func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 	if marker.CoverageHollow {
-		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s", FormatHollowCoverage(marker.HollowFeatures, marker.HollowReasons))
+		return false, fmt.Sprintf("phase5 acceptance has hollow coverage for: %s. %s", FormatHollowCoverage(marker.HollowFeatures, marker.HollowReasons), HollowCoverageRemedy)
 	}
 	level := phase5Level(marker)
 	switch level {
@@ -360,6 +360,13 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		return false, unknownPhase5AcceptanceLevelDetail(marker.Level)
 	}
 }
+
+// HollowCoverageRemedy names the two annotations that can clear hollow
+// coverage, so a hollow verdict points at the fix instead of only the symptom.
+var HollowCoverageRemedy = fmt.Sprintf(
+	"To cover a command that writes files or spends money, annotate it %s and rerun dogfood --live --allow-destructive; for a state-dependent feature that cannot run a real happy path, annotate it %s and add the named proof file",
+	liveHappyPathAnnotation, verifiedByProofAnnotation,
+)
 
 func FormatHollowCoverage(features []string, reasons map[string]string) string {
 	parts := make([]string, 0, len(features))
