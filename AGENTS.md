@@ -253,6 +253,7 @@ python3 .github/scripts/pr-review-state/greptile_feedback.py <PR_NUMBER>
 
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.
+- A release is complete only after GoReleaser succeeds and the release job confirms all six platform archives and `checksums.txt` are non-empty. Recover a failed artifact build by re-running only the failed GoReleaser job from its original run; do not re-run successful Release Please jobs. Do not raise the supported-version floor to an incomplete release.
 - Normal feature/fix PRs land through the Mergify queue: add the `ready-to-merge` label when the PR is ready to merge, and let Mergify rebase/test/merge it. Do not use the GitHub merge button for normal PRs once `Mergify Merge Protections` is required on `main`.
 - release-please PRs are the release control point: they collect already-merged conventional commits, so merge one only when you intend to cut a release. Mergify lets release-please PRs satisfy merge protection without `ready-to-merge`, so maintainers can merge them manually after CI passes.
 - When enabling branch protection for the Mergify queue, require the `Mergify Merge Protections` status check and set `required_status_checks.strict=false`; Mergify owns latest-`main` validation through the queue, and GitHub's strict up-to-date requirement recreates the manual rebase loop.
