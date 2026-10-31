@@ -4,8 +4,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
-	"unicode"
-	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 )
 
 // NormalizeHomepage returns raw trimmed when it is a plausible public product
@@ -20,7 +20,12 @@ func NormalizeHomepage(raw string) string {
 	if err != nil || u.Scheme != "https" {
 		return ""
 	}
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	// Map the host the way browsers do, so lookalikes such as fullwidth
+	// "ｌｏｃａｌｈｏｓｔ" are checked in the form they resolve to.
+	host, err := idna.Lookup.ToASCII(strings.TrimSuffix(u.Hostname(), "."))
+	if err != nil {
+		return ""
+	}
 	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return ""
 	}
@@ -32,8 +37,8 @@ func NormalizeHomepage(raw string) string {
 	}
 	// Browsers resolve shortened, decimal, and hex IPv4 forms such as 127.1 or
 	// 2130706433. A real domain's top-level label starts with a letter.
-	tld, _ := utf8.DecodeRuneInString(host[strings.LastIndex(host, ".")+1:])
-	if !unicode.IsLetter(tld) {
+	tld := host[strings.LastIndex(host, ".")+1:]
+	if tld == "" || tld[0] < 'a' || tld[0] > 'z' {
 		return ""
 	}
 	return raw
