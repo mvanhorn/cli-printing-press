@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // NormalizeHomepage returns raw trimmed when it is a plausible public product
@@ -30,8 +32,8 @@ func NormalizeHomepage(raw string) string {
 	}
 	// Browsers resolve shortened, decimal, and hex IPv4 forms such as 127.1 or
 	// 2130706433. A real domain's top-level label starts with a letter.
-	tld := host[strings.LastIndex(host, ".")+1:]
-	if tld == "" || tld[0] < 'a' || tld[0] > 'z' {
+	tld, _ := utf8.DecodeRuneInString(host[strings.LastIndex(host, ".")+1:])
+	if !unicode.IsLetter(tld) {
 		return ""
 	}
 	return raw

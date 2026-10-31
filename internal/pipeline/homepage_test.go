@@ -36,6 +36,8 @@ func TestNormalizeHomepage(t *testing.T) {
 		{name: "decimal ipv4", raw: "https://2130706433", want: ""},
 		{name: "hex ipv4", raw: "https://0x7f.0.0.1", want: ""},
 		{name: "fully qualified public host", raw: "https://example.com.", want: "https://example.com."},
+		{name: "internationalized domain", raw: "https://пример.рф", want: "https://пример.рф"},
+		{name: "punycode domain", raw: "https://xn--e1afmkfd.xn--p1ai", want: "https://xn--e1afmkfd.xn--p1ai"},
 		{name: "template placeholder host", raw: "https://{tenant}.example.com", want: ""},
 		{name: "angle placeholder", raw: "https://<your-domain>.com", want: ""},
 	}
