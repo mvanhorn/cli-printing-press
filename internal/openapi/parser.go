@@ -9061,6 +9061,10 @@ func cleanSpecName(title string) string {
 	return cleanSpecNameInternal(title, true)
 }
 
+func SpecNameSlug(title string) string {
+	return cleanSpecName(title)
+}
+
 // cleanSpecNameUnicode is cleanSpecName without the ASCII fold, so display_name
 // keeps accents the slug must drop for filesystem and shell safety.
 func cleanSpecNameUnicode(title string) string {
