@@ -1226,6 +1226,54 @@ func TestPublishPackageStampsRuntimeVersionFromBaseDir(t *testing.T) {
 	assert.Contains(t, string(version), "func newVersionCmd()")
 }
 
+func TestPublishPackageKeepsBaseDirHomepage(t *testing.T) {
+	tests := []struct {
+		name   string
+		base   string
+		source string
+		want   string
+	}{
+		{name: "base entry homepage wins", base: "https://test.com", source: "https://test.io", want: "https://test.com"},
+		{name: "base entry homepage fills an empty source", base: "https://test.com", want: "https://test.com"},
+		{name: "source homepage kept when base has none", source: "https://test.io", want: "https://test.io"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := setLibraryTestEnv(t)
+			cliDir := filepath.Join(home, "library", "test-pp-cli")
+			writePublishableTestCLI(t, cliDir)
+			stubPublishPackageValidation(t)
+			if tt.source != "" {
+				manifest, err := pipeline.ReadCLIManifest(cliDir)
+				require.NoError(t, err)
+				manifest.Homepage = tt.source
+				writeTestManifest(t, cliDir, manifest)
+			}
+
+			base := t.TempDir()
+			writeTestManifest(t, base, pipeline.CLIManifest{
+				SchemaVersion: pipeline.CurrentCLIManifestSchemaVersion,
+				APIName:       "test",
+				CLIName:       "test-pp-cli",
+				Homepage:      tt.base,
+			})
+
+			target := filepath.Join(t.TempDir(), "staging")
+			cmd := newPublishCmd()
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--base-dir", base, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+			output, err := runWithCapturedStdout(t, cmd.Execute)
+			require.NoError(t, err)
+			var result PackageResult
+			require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+			staged, err := pipeline.ReadCLIManifest(result.StagedDir)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, staged.Homepage)
+		})
+	}
+}
+
 func TestPublishPackageStampsRuntimeVersionFromDestStash(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")

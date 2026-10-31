@@ -343,6 +343,10 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		_ = os.RemoveAll(stagingDir)
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("restoring permanent creator: %w", err))
 	}
+	if err := RestoreLibraryHomepage(stagingDir, libraryDir, state.APIName); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("restoring library homepage: %w", err))
+	}
 
 	// Refresh the MCPB manifest.json in the staging dir so the lock-and-promote
 	// flow keeps it in sync with the post-publish CLIManifest fields. The

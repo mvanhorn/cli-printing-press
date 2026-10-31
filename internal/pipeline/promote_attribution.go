@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -125,6 +126,53 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	}
 	if err := writeCLIManifestPreservingRaw(stagingDir, staged, stagedRaw); err != nil {
 		return err
+	}
+	return nil
+}
+
+// RestoreLibraryHomepage keeps a homepage the library copy already carries.
+// Library homepages may be hand-checked or backfilled outside a print, so a
+// reprint's research guess must not replace them. Only the manifest file is
+// rewritten; release-ledger skeletons are left alone.
+func RestoreLibraryHomepage(stagingDir, libraryDir, apiName string) error {
+	existing, err := ReadCLIManifest(libraryDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading existing library manifest: %w", err)
+	}
+	if existing.APIName != "" && apiName != "" && existing.APIName != apiName {
+		return nil
+	}
+	homepage := strings.TrimSpace(existing.Homepage)
+	if homepage == "" {
+		return nil
+	}
+
+	manifestPath := filepath.Join(stagingDir, CLIManifestFilename)
+	stagedData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("reading staged manifest: %w", err)
+	}
+	var stagedRaw map[string]json.RawMessage
+	if err := json.Unmarshal(stagedData, &stagedRaw); err != nil {
+		return fmt.Errorf("parsing staged manifest: %w", err)
+	}
+	encoded, err := json.Marshal(homepage)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(stagedRaw["homepage"], encoded) {
+		return nil
+	}
+	stagedRaw["homepage"] = encoded
+	data, err := marshalCLIManifestObject(stagedRaw)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(manifestPath, data, 0o644); err != nil {
+		return fmt.Errorf("writing staged manifest: %w", err)
 	}
 	return nil
 }
