@@ -1,5 +1,38 @@
 # Changelog
 
+## [4.35.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.34.2...v4.35.0) (2026-10-31)
+
+
+### Features
+
+* **cli:** add --deliver spacefast:&lt;name&gt; sink to publish output as a live page ([#5267](https://github.com/mvanhorn/cli-printing-press/issues/5267)) ([9b69754](https://github.com/mvanhorn/cli-printing-press/commit/9b69754ae2bc86c4a7c6ee9ab05453c8096a7011))
+* **cli:** record the product homepage in the printed CLI manifest ([#5304](https://github.com/mvanhorn/cli-printing-press/issues/5304)) ([38764d8](https://github.com/mvanhorn/cli-printing-press/commit/38764d86297bccb5415066d83432eb52bd267abe))
+
+
+### Bug Fixes
+
+* **cli:** add action to local-data purge JSON output ([#5253](https://github.com/mvanhorn/cli-printing-press/issues/5253)) ([65a8989](https://github.com/mvanhorn/cli-printing-press/commit/65a8989cbed574100eadb09f848700eb761dce27))
+* **cli:** build bundle binaries from a nested Go module dir ([5a462c3](https://github.com/mvanhorn/cli-printing-press/commit/5a462c30752bbf2c19100b4472412e7de57ba0a6))
+* **cli:** build bundle binaries from a nested Go module dir ([042a9e9](https://github.com/mvanhorn/cli-printing-press/commit/042a9e949b3b2ee9709214cf71b7f04df44d8079)), closes [#5273](https://github.com/mvanhorn/cli-printing-press/issues/5273)
+* **cli:** default body fields from same-named positional path params ([#5295](https://github.com/mvanhorn/cli-printing-press/issues/5295)) ([002c4a1](https://github.com/mvanhorn/cli-printing-press/commit/002c4a1e04346e6025e7ca526c3355a54d4c7341))
+* **cli:** drop Example --dry-run when happy-args omit it ([#5268](https://github.com/mvanhorn/cli-printing-press/issues/5268)) ([1938241](https://github.com/mvanhorn/cli-printing-press/commit/1938241fa0d57947440a9ef933fb4a50fdcaed1c))
+* **cli:** flag account identifiers in pii-audit ([#5314](https://github.com/mvanhorn/cli-printing-press/issues/5314)) ([9268bf9](https://github.com/mvanhorn/cli-printing-press/commit/9268bf91cb64955bbb1de649d74b828ae7ba925e))
+* **cli:** ignore research.json written for a different API in generate ([#5309](https://github.com/mvanhorn/cli-printing-press/issues/5309)) ([cbe54e0](https://github.com/mvanhorn/cli-printing-press/commit/cbe54e0a340e5e1d91390e86e47386b5e153eb5e))
+* **cli:** keep backslashes inside double quotes in the example tokenizer ([#5284](https://github.com/mvanhorn/cli-printing-press/issues/5284)) ([902d8c4](https://github.com/mvanhorn/cli-printing-press/commit/902d8c45624fc87e022e8500d01dcaf31b73e7d3))
+* **cli:** make pagination profile deterministic when parameter names tie ([#5252](https://github.com/mvanhorn/cli-printing-press/issues/5252)) ([719b772](https://github.com/mvanhorn/cli-printing-press/commit/719b77265ce947f5a7b0a3b4b7dd297d779034c5))
+* **cli:** merge library verify-skill fixes into the canonical script ([#5298](https://github.com/mvanhorn/cli-printing-press/issues/5298)) ([faa6532](https://github.com/mvanhorn/cli-printing-press/commit/faa6532e9537fd8d54de02d106aa0c5a543d3f1a))
+* **cli:** name hollow coverage fixes in dogfood and gate output ([#5296](https://github.com/mvanhorn/cli-printing-press/issues/5296)) ([9b1f80a](https://github.com/mvanhorn/cli-printing-press/commit/9b1f80a45f210bc2df10fa15a2f2fa6a4bc1acf7)), closes [#4539](https://github.com/mvanhorn/cli-printing-press/issues/4539)
+* **cli:** preserve recorded PATCH seams across mcp-sync ([#5263](https://github.com/mvanhorn/cli-printing-press/issues/5263)) ([02dd419](https://github.com/mvanhorn/cli-printing-press/commit/02dd419f0b1bf4fe4cf2ba274e53d68eac02c12f))
+* **cli:** promote the current run and ignore nested trees ([#5288](https://github.com/mvanhorn/cli-printing-press/issues/5288)) ([449ec18](https://github.com/mvanhorn/cli-printing-press/commit/449ec18c323cff8026cd7ae858cd8a19d1f18e34))
+* **cli:** redact Location header in webhook redirect refusal ([#5282](https://github.com/mvanhorn/cli-printing-press/issues/5282)) ([42fde00](https://github.com/mvanhorn/cli-printing-press/commit/42fde00926b399f7bd1f3211a2ad034f7f6c063d))
+* **cli:** render single-array list envelopes in verify mocks ([#5294](https://github.com/mvanhorn/cli-printing-press/issues/5294)) ([6b62311](https://github.com/mvanhorn/cli-printing-press/commit/6b6231186ab2ce8cfa96933068bca833fc73f5ba))
+* **cli:** report success on a completed dry run ([#5285](https://github.com/mvanhorn/cli-printing-press/issues/5285)) ([e79cc9d](https://github.com/mvanhorn/cli-printing-press/commit/e79cc9daa5a0f73a0763565b3897043fd0bbe7c3))
+* **cli:** reuse the recorded live happy path at publish ([#5300](https://github.com/mvanhorn/cli-printing-press/issues/5300)) ([b59d287](https://github.com/mvanhorn/cli-printing-press/commit/b59d28721deee3b36734b5124b5986e9f09bb519))
+* **cli:** save profile logins beside the profile config ([#5289](https://github.com/mvanhorn/cli-printing-press/issues/5289)) ([77eab66](https://github.com/mvanhorn/cli-printing-press/commit/77eab665135031787494d5df20830a9bc1c55559))
+* **cli:** stop --write-manifest from changing the scorecard total ([#5264](https://github.com/mvanhorn/cli-printing-press/issues/5264)) ([aaca879](https://github.com/mvanhorn/cli-printing-press/commit/aaca8795c986b02e4f7b453f46958a16dd8b3e3c))
+* **cli:** stop verification false positives on website-backed CLIs ([#5256](https://github.com/mvanhorn/cli-printing-press/issues/5256)) ([bfcdf3c](https://github.com/mvanhorn/cli-printing-press/commit/bfcdf3cd7d5c8eb7d6fe75952bf036d33b34df26))
+* **cli:** take verify env-var prefix from the CLI manifest ([#5254](https://github.com/mvanhorn/cli-printing-press/issues/5254)) ([2c6d738](https://github.com/mvanhorn/cli-printing-press/commit/2c6d7387884e3d5dd5211d35f50c8b9ef0f474dc))
+
 ## [4.34.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.34.1...v4.34.2) (2026-10-25)
 
 
