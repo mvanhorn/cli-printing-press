@@ -208,6 +208,7 @@ LOCAL_COMMAND_RE = re.compile(r'(?m)^\s*(\w+)\s*:=\s*&cobra\.Command\s*\{')
 RETURN_VARIABLE_RE = re.compile(r'(?m)^\s*return\s+(\w+)\s*$')
 CONSTRUCTOR_VARIABLE_RE = re.compile(r'\b(\w+)\s*:=\s*(new[A-Z]\w*Cmd)\s*\(')
 VARIABLE_ALIAS_RE = re.compile(r'(?m)^\s*(\w+)\s*:?=\s*(\w+)\s*$')
+RETURN_CALL_RE = re.compile(r'(?:^|\n)\s*return\s+[\w.]+\(([^\n]*)\)$')
 FIND_ATTACHMENT_RE = re.compile(
     r'if\s+(\w+),\s*_,\s*(\w+)\s*:=\s*rootCmd\.Find\(\[\]string\{'
     r'((?:\s*"[a-z][a-z0-9-]*"\s*,?)+)\}\);\s*\2\s*==\s*nil[^{}]*\{'
@@ -336,8 +337,15 @@ def _local_command_variables(body: str) -> dict[str, tuple[str, tuple | None]]:
 
 
 def _command_aliases(body: str, variable: str) -> set[str]:
-    """Return variable plus every name joined to it by `a := b` or `a = b`."""
+    """Return variable plus every name joined to it by `a := b` or `a = b`.
+
+    A name assigned more than once can hold different commands at different
+    points, so it joins nothing.
+    """
     assignments = VARIABLE_ALIAS_RE.findall(body)
+    bindings = Counter(left for left, _ in assignments)
+    bindings.update(_local_command_variables(body).keys())
+    assignments = [pair for pair in assignments if bindings[pair[0]] == 1]
     aliases = {variable}
     while True:
         joined = {
@@ -354,10 +362,14 @@ def _command_aliases(body: str, variable: str) -> set[str]:
 def _returned_command_variable(body: str, local_commands: dict) -> str | None:
     """Return the variable holding the command a constructor returns.
 
-    `result := cmd; return result` resolves to cmd. A `return err` from a
-    closure is not a command, so a constructor that ends in `return wrap(cmd)`
-    resolves to None and callers fall back to their wider scans.
+    `result := cmd; return result` resolves to cmd, and so does a final
+    `return wrap(cmd)`. A `return err` from a closure is not a command.
     """
+    final_call = RETURN_CALL_RE.search(body.rstrip())
+    if final_call:
+        for argument in re.findall(r'\w+', final_call.group(1)):
+            if argument in local_commands:
+                return argument
     returned = RETURN_VARIABLE_RE.findall(body)
     for name in reversed(returned):
         for alias in sorted(_command_aliases(body, name)):

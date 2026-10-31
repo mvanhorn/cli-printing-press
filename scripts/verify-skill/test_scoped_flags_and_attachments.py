@@ -466,6 +466,52 @@ func addTargetFlags(cmd *cobra.Command, opts *options) {
         verify_skill.check_flag_commands(self.cli, [skill], "demo-pp-cli", report)
         self.assertEqual(report.findings, [])
 
+    def test_rebound_variable_does_not_merge_command_flags(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newTargetCmd()) }
+func newTargetCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "target <id>", Args: cobra.ExactArgs(1)}
+ cmd.Flags().BoolVar(&asJSON, "json", false, "JSON output")
+ child := &cobra.Command{Use: "leaf"}
+ child.Flags().StringVar(&body, "json", "", "JSON body")
+ selected := cmd
+ selected = child
+ cmd.AddCommand(selected)
+ return cmd
+}
+''')
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["target", "--json", "42"], self.cli)[1], ["42"])
+
+    def test_returned_wrapper_keeps_the_commands_flag_types(self):
+        self.write('''package cli
+func Execute() { rootCmd.AddCommand(newTargetCmd()) }
+func newTargetCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "target <id>", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
+  err := run()
+  return err
+ }}
+ cmd.Flags().BoolVar(&asJSON, "json", false, "JSON output")
+ leaf := &cobra.Command{Use: "leaf"}
+ leaf.Flags().StringVar(&body, "json", "", "JSON body")
+ cmd.AddCommand(leaf)
+ return wrap(cmd)
+}
+''')
+        self.assertEqual(verify_skill._cli_invocation_from_tokens(
+            ["target", "--json", "42"], self.cli)[1], ["42"])
+
+    def test_closure_call_is_not_the_returned_command(self):
+        body = '''
+ cmd := &cobra.Command{Use: "target", RunE: func(c *cobra.Command, args []string) error {
+  return run(cmd, args)
+ }}
+ other := &cobra.Command{Use: "other"}
+ return other
+'''
+        self.assertEqual(verify_skill._returned_command_variable(
+            body, verify_skill._local_command_variables(body)), "other")
+
     def test_hook_addcommand_attaches_every_argument(self):
         self.write('''package cli
 func init() {
