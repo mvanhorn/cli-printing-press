@@ -4,7 +4,7 @@ These rules cover `AGENTS.md` and the extracted developer docs it points to.
 
 ## Editing `AGENTS.md`
 
-The "Code & Comment Hygiene" rules apply to docs too:
+The comment rules in [`CODING_STANDARDS.md`](../CODING_STANDARDS.md) apply to docs too:
 
 - No dates, incidents, or ticket numbers in rules. Justification belongs in the PR introducing the rule, not embedded in it.
 - Do not defend the doc's structure inside the doc. Write the rule and the pointer; skip narration about why the file is arranged that way.
