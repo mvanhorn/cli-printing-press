@@ -11,5 +11,5 @@
 # every install. Below the skill's `min-binary-version` (the compatibility
 # floor embedded in the skill; preflight enforces it every run without this
 # file) it has no effect — that floor always wins.
-min_supported=4.28.0
-reason=Releases below this version generate CLIs with since-fixed bugs; upgrade to regenerate cleanly.
+min_supported=4.35.0
+reason=Upgrade for profile credential isolation, PATCH preservation during MCP sync, and corrected generation and verification behavior.
