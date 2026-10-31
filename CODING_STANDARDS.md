@@ -32,7 +32,7 @@ Rules that code in this repository follows. Each rule names a defect class that 
 ## Printed-CLI runtime
 
 - **A safety gate covers every path that does the same thing.** A guard on the main request path also covers multipart bodies, token mint and refresh, sibling commands, recipe tools, aliases, inherited persistent flags, and wrapped output sinks.
-- **Dry-run and preview paths have no side effects and report their real status.** They do not open or rename stores, write files, or report `success: true` for a noop. Suppression decisions run after every source that can set dry-run.
+- **Dry-run and preview paths have no side effects and report their real status.** They do not open or rename stores or write files. A completed dry run reports `success: true` with `dry_run: true`; a failed dry run or a synthetic harness noop (`verify_noop`) reports `success: false`. Suppression decisions run after every source that can set dry-run.
 - **A wrapper calls the real API or reads the local store.** It never returns canned payloads, `"OK"` stubs, locally synthesized reference data, or in-process aggregations of something the API already aggregates. The carve-outs are the annotated ones in AGENTS.md.
 - **Side-effect commands print by default.** They act only with an explicit opt-in flag, refuse under `cliutil.IsAnyHarness()`, and emit structured JSON in machine modes.
 - **Expensive read paths curtail their work under `cliutil.IsDogfoodEnv()`** while still calling the real API.
