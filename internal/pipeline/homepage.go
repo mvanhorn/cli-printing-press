@@ -18,11 +18,20 @@ func NormalizeHomepage(raw string) string {
 	if err != nil || u.Scheme != "https" {
 		return ""
 	}
-	host := u.Hostname()
-	if host == "" || strings.EqualFold(host, "localhost") {
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return ""
 	}
-	if ip := net.ParseIP(host); ip != nil && (!ip.IsGlobalUnicast() || ip.IsPrivate()) {
+	if ip := net.ParseIP(host); ip != nil {
+		if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+			return ""
+		}
+		return raw
+	}
+	// Browsers resolve shortened, decimal, and hex IPv4 forms such as 127.1 or
+	// 2130706433. A real domain's top-level label starts with a letter.
+	tld := host[strings.LastIndex(host, ".")+1:]
+	if tld == "" || tld[0] < 'a' || tld[0] > 'z' {
 		return ""
 	}
 	return raw

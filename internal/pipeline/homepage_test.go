@@ -30,6 +30,12 @@ func TestNormalizeHomepage(t *testing.T) {
 		{name: "link-local ipv4", raw: "https://169.254.1.10", want: ""},
 		{name: "unspecified address", raw: "https://0.0.0.0", want: ""},
 		{name: "public ip address", raw: "https://93.184.215.14", want: "https://93.184.215.14"},
+		{name: "localhost with trailing dot", raw: "https://localhost.", want: ""},
+		{name: "localhost subdomain", raw: "https://app.localhost", want: ""},
+		{name: "shortened ipv4", raw: "https://127.1", want: ""},
+		{name: "decimal ipv4", raw: "https://2130706433", want: ""},
+		{name: "hex ipv4", raw: "https://0x7f.0.0.1", want: ""},
+		{name: "fully qualified public host", raw: "https://example.com.", want: "https://example.com."},
 		{name: "template placeholder host", raw: "https://{tenant}.example.com", want: ""},
 		{name: "angle placeholder", raw: "https://<your-domain>.com", want: ""},
 	}
