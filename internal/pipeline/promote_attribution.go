@@ -129,6 +129,29 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	return nil
 }
 
+// RestoreLibraryHomepage keeps a homepage the library copy already carries.
+// Library homepages may be hand-checked or backfilled outside a print, so a
+// reprint's research guess must not replace them. Only the manifest file is
+// rewritten; release-ledger skeletons are left alone.
+func RestoreLibraryHomepage(stagingDir, libraryDir, apiName string) error {
+	existing, err := ReadCLIManifest(libraryDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading existing library manifest: %w", err)
+	}
+	if existing.APIName != "" && apiName != "" && existing.APIName != apiName {
+		return nil
+	}
+	homepage := strings.TrimSpace(existing.Homepage)
+	if homepage == "" {
+		return nil
+	}
+	_, err = mergeCLIManifestFields(filepath.Join(stagingDir, CLIManifestFilename), map[string]any{"homepage": homepage})
+	return err
+}
+
 func rewriteGeneratedAttribution(dir string, oldCreator, newCreator spec.Person, oldContributors, newContributors []spec.Person) error {
 	if err := RewriteOwner(dir, copyrightToken(oldCreator), copyrightToken(newCreator)); err != nil {
 		return err

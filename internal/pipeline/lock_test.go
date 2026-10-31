@@ -1244,6 +1244,81 @@ func TestPromoteWorkingCLI_PersistsCategoryAndCreator(t *testing.T) {
 	assert.Equal(t, "Trevin Chow", got.Creator.Name)
 }
 
+func TestRestoreLibraryHomepage(t *testing.T) {
+	tests := []struct {
+		name       string
+		libraryAPI string
+		library    string
+		staged     string
+		want       string
+	}{
+		{name: "library value wins over staged value", libraryAPI: "test", library: "https://test.com", staged: "https://test.io", want: "https://test.com"},
+		{name: "library value fills an empty staged manifest", libraryAPI: "test", library: "https://test.com", want: "https://test.com"},
+		{name: "staged value kept when library has none", libraryAPI: "test", staged: "https://test.io", want: "https://test.io"},
+		{name: "neither has one", libraryAPI: "test"},
+		{name: "different API in the library is ignored", libraryAPI: "other", library: "https://other.com", staged: "https://test.io", want: "https://test.io"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			libraryDir := t.TempDir()
+			stagingDir := t.TempDir()
+			require.NoError(t, WriteCLIManifest(libraryDir, CLIManifest{SchemaVersion: 1, APIName: tt.libraryAPI, CLIName: tt.libraryAPI + "-pp-cli", Homepage: tt.library}))
+			require.NoError(t, WriteCLIManifest(stagingDir, CLIManifest{SchemaVersion: 1, APIName: "test", CLIName: "test-pp-cli", Homepage: tt.staged}))
+
+			require.NoError(t, RestoreLibraryHomepage(stagingDir, libraryDir, "test"))
+
+			assert.Equal(t, tt.want, readManifest(t, stagingDir).Homepage)
+		})
+	}
+}
+
+func TestRestoreLibraryHomepageWithoutLibraryManifest(t *testing.T) {
+	stagingDir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(stagingDir, CLIManifest{SchemaVersion: 1, APIName: "test", CLIName: "test-pp-cli", Homepage: "https://test.io"}))
+
+	require.NoError(t, RestoreLibraryHomepage(stagingDir, t.TempDir(), "test"))
+
+	assert.Equal(t, "https://test.io", readManifest(t, stagingDir).Homepage)
+}
+
+func TestPromoteWorkingCLI_KeepsLibraryHomepageForSameCreatorReprint(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "tmchow", "Trevin Chow")
+
+	libraryDir := filepath.Join(PublishedLibraryRoot(), "test")
+	require.NoError(t, os.MkdirAll(libraryDir, 0o755))
+	require.NoError(t, WriteCLIManifest(libraryDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		Creator:       &spec.Person{Handle: "tmchow", Name: "Trevin Chow"},
+		Homepage:      "https://test.com",
+	}))
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, WriteCLIManifest(workDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         "run-homepage",
+		Creator:       &spec.Person{Handle: "tmchow", Name: "Trevin Chow"},
+		Homepage:      "https://test.io",
+	}))
+
+	state := NewStateWithRun("test", workDir, "run-homepage", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	require.NoError(t, PromoteWorkingCLI("test-pp-cli", workDir, state))
+
+	assert.Equal(t, "https://test.com", readManifest(t, libraryDir).Homepage)
+}
+
 func TestPromoteWorkingCLI_UsesCategoryFromPipelineState(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

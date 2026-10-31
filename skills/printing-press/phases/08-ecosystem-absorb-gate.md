@@ -203,6 +203,7 @@ cat > "$API_RUN_DIR/research.json" <<REOF
   "auth": {
     "canonical_env_var": "<CANONICAL_ENV_VAR, omit when unknown>"
   },
+  "homepage": "<https URL of the product's public website, omit when unconfirmed>",
   "novel_features": [
     {
       "name": "<Feature Name>",
@@ -260,6 +261,12 @@ For each tool, fill in what you know from the research. Stars and command_count 
 
 **Auth research rule**:
 1. `auth.canonical_env_var` is the single-token credential env var discovered from vendor docs, MCP/source analysis, or dominant SDK/CLI convention (for example `APIFY_TOKEN`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`). Omit it when no canonical name is known, when auth is HTTP Basic or another credential pair, or when the auth flow needs richer metadata. Fresh generation reads this env var first and keeps the parser-derived name as a fallback automatically.
+
+**Homepage rule**:
+1. `homepage` is the product's public website, copied from the brief's `Homepage` line. Catalog clients show it as the CLI's icon and "Open website" link, so a wrong URL is worse than none. Omit `homepage` when the brief says unknown or the evidence is thin.
+2. Confirm it from the brand's own pages or a reliable listing that names it. The API host, a spec server URL, or a URL found in spec examples is not evidence on its own: an API often lives on a different domain than the brand, and specs often cite unrelated sites.
+3. Use the brand's public site, not the docs site, developer portal, or a status page. It must be an `https` URL. Generate drops anything else with a warning.
+4. A homepage already in the library's `.printing-press.json` wins, so a reprint's value never overwrites it.
 
 **Narrative rules** (the `narrative` object drives README headline, Quick Start, Auth, Troubleshooting, and the entire SKILL.md):
 1. `display_name` is the canonical prose name, discovered during research, with exact brand casing and spacing. This is agentic/research-owned, not slug-inferred by Go code. Good: "Product Hunt", "GitHub", "YouTube", "Cal.com". Bad: "Producthunt", "Github", "Youtube", "Cal Com". Use the slug only for binary names, directories, module paths, config paths, and env-var prefixes.

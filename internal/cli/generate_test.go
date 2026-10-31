@@ -1535,6 +1535,69 @@ resources:
 	assert.Contains(t, string(stub), `TODO: implement novel feature %q", "items insight"`)
 }
 
+func TestGenerateCmdWritesResearchHomepageToManifest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		homepage string
+		want     string
+	}{
+		{name: "confirmed homepage is recorded", homepage: "https://www.homeapp.com", want: "https://www.homeapp.com"},
+		{name: "loopback homepage is dropped", homepage: "https://localhost:3000"},
+		{name: "no research homepage ignores spec website_url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			specPath := filepath.Join(dir, "spec.yaml")
+			researchDir := filepath.Join(dir, "research")
+			outputDir := filepath.Join(dir, "homeapp")
+			require.NoError(t, os.MkdirAll(researchDir, 0o755))
+			require.NoError(t, os.WriteFile(specPath, []byte(`name: homeapp
+description: Home app API
+version: 0.1.0
+base_url: https://api.homeapp.com
+website_url: https://docs.homeapp.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/homeapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+			research, err := json.Marshal(pipeline.ResearchResult{APIName: "homeapp", Homepage: tt.homepage})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), research, 0o644))
+
+			cmd := newGenerateCmd()
+			cmd.SetArgs([]string{
+				"--spec", specPath,
+				"--output", outputDir,
+				"--validate=false",
+				"--force",
+				"--research-dir", researchDir,
+			})
+			require.NoError(t, cmd.Execute())
+
+			data, err := os.ReadFile(filepath.Join(outputDir, pipeline.CLIManifestFilename))
+			require.NoError(t, err)
+			var manifest pipeline.CLIManifest
+			require.NoError(t, json.Unmarshal(data, &manifest))
+			assert.Equal(t, tt.want, manifest.Homepage)
+		})
+	}
+}
+
 func TestGenerateCmdForcePreservesImplementedNovelScaffoldAndStandaloneFiles(t *testing.T) {
 	t.Parallel()
 

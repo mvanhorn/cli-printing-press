@@ -433,6 +433,10 @@ func newPublishPackageCmd() *cobra.Command {
 					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("preserving runtime version layout: %w", err)}
 				}
+				if err := pipeline.RestoreLibraryHomepage(outCLIDir, resolvedBase, sourceManifest.APIName); err != nil {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("preserving library homepage: %w", err)}
+				}
 			}
 			if err := pipeline.EnsureMCPBManifest(outCLIDir); err != nil {
 				cleanupOnFailure()

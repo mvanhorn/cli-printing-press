@@ -41,6 +41,7 @@ type ResearchResult struct {
 	// Optional: templates fall back to generic content when absent. Populated
 	// during the absorb phase alongside NovelFeatures.
 	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
+	Homepage  string           `json:"homepage,omitempty"`
 }
 
 func (r *ResearchResult) UnmarshalJSON(data []byte) error {
