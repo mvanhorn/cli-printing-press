@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -439,6 +440,12 @@ func newGenerateCmd() *cobra.Command {
 
 				specs = append(specs, apiSpec)
 			}
+			// --name and the state.json slug rename the spec below; research
+			// written under the spec's own name must still match.
+			var parsedSpecNames []string
+			for _, s := range specs {
+				parsedSpecNames = append(parsedSpecNames, s.Name, s.EffectiveDisplayName())
+			}
 
 			var apiSpec *spec.APISpec
 			if len(specs) == 1 {
@@ -493,7 +500,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true, preservedCLIDir: snapshotDir})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, parsedSpecNames: parsedSpecNames, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true, preservedCLIDir: snapshotDir})
 			if err != nil {
 				return err
 			}
@@ -654,6 +661,7 @@ type generateProjectOptions struct {
 	validate                            bool
 	polish                              bool
 	researchDir                         string
+	parsedSpecNames                     []string
 	trafficAnalysisPath                 string
 	specFiles                           []string
 	rejectUnshippablePageContextTraffic bool
@@ -670,12 +678,11 @@ type generateProjectResult struct {
 }
 
 func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
-	if apiSpec != nil {
-		applyResearchAuthMetadata(apiSpec, opts.researchDir)
-	}
+	research := loadGenerateResearch(opts.researchDir, apiSpec, opts.parsedSpecNames)
+	applyResearchAuthMetadata(apiSpec, research)
 	gen := generator.New(apiSpec, absOut)
 	gen.PreservedCLIDir = opts.preservedCLIDir
-	novelFeatures := loadResearchSources(gen, opts.researchDir)
+	novelFeatures := loadResearchSources(gen, opts.researchDir, research)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
@@ -733,7 +740,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		NovelFeatures:       novelFeatures,
 		ManifestDescription: manifestDescription,
 		DisplayName:         gen.ManifestDisplayName(),
-		Homepage:            researchHomepage(opts.researchDir),
+		Homepage:            researchHomepage(research),
 		Polished:            runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
 		Validate:            validateGeneratedProject,
 	}, nil
@@ -3217,20 +3224,65 @@ func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, comm
 	return enc.Encode(summary)
 }
 
+func loadGenerateResearch(researchDir string, apiSpec *spec.APISpec, parsedSpecNames []string) *pipeline.ResearchResult {
+	if strings.TrimSpace(researchDir) == "" {
+		return nil
+	}
+	research, err := pipeline.LoadResearch(researchDir)
+	if err != nil {
+		return nil
+	}
+	if apiSpec == nil {
+		return research
+	}
+	names := append([]string{apiSpec.Name, apiSpec.EffectiveDisplayName()}, parsedSpecNames...)
+	if !researchMatchesSpec(research.APIName, names) {
+		fmt.Fprintf(os.Stderr, "warning: %s is for api_name %q, not %q; ignoring it for this run\n",
+			filepath.Join(researchDir, "research.json"), research.APIName, apiSpec.Name)
+		return nil
+	}
+	return research
+}
+
+// Matching is deliberately lenient (hyphenation, token prefix): a false
+// mismatch silently drops correct research.
+func researchMatchesSpec(researchAPIName string, specNames []string) bool {
+	if strings.TrimSpace(researchAPIName) == "" {
+		return true
+	}
+	want := apiIdentityTokens(researchAPIName)
+	wantJoined := strings.Join(want, "")
+	for _, candidate := range specNames {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		got := apiIdentityTokens(candidate)
+		if wantJoined == strings.Join(got, "") || isTokenPrefix(want, got) || isTokenPrefix(got, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func apiIdentityTokens(name string) []string {
+	return strings.Split(openapi.SpecNameSlug(naming.TrimCLISuffix(strings.TrimSpace(name))), "-")
+}
+
+func isTokenPrefix(prefix, tokens []string) bool {
+	return len(prefix) <= len(tokens) && slices.Equal(prefix, tokens[:len(prefix)])
+}
+
 // loadResearchSources populates the generator's Sources, DiscoveryPages, and
-// NovelFeatures from a pipeline research directory. Scaffolding always uses
-// novel_features: novel_features_built is a post-dogfood verification field,
-// not a generate input. The return value is the verified list in manifest
-// form (when present) so publish validation cannot be satisfied by
-// planned-but-unbuilt absorb ideas. Silently skips if researchDir is empty
-// or data is unavailable.
-func loadResearchSources(gen *generator.Generator, researchDir string) []pipeline.NovelFeatureManifest {
+// NovelFeatures. Scaffolding always uses novel_features: novel_features_built
+// is a post-dogfood verification field, not a generate input. The return
+// value is the verified list in manifest form (when present) so publish
+// validation cannot be satisfied by planned-but-unbuilt absorb ideas.
+func loadResearchSources(gen *generator.Generator, researchDir string, research *pipeline.ResearchResult) []pipeline.NovelFeatureManifest {
 	if researchDir == "" {
 		return nil
 	}
 	var manifestNovel []pipeline.NovelFeatureManifest
-	research, err := pipeline.LoadResearch(researchDir)
-	if err == nil {
+	if research != nil {
 		for _, s := range pipeline.SourcesForREADME(research) {
 			gen.Sources = append(gen.Sources, generator.ReadmeSource{
 				Name:     s.Name,
@@ -3312,12 +3364,8 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 	return out
 }
 
-func researchHomepage(researchDir string) string {
-	if strings.TrimSpace(researchDir) == "" {
-		return ""
-	}
-	research, err := pipeline.LoadResearch(researchDir)
-	if err != nil {
+func researchHomepage(research *pipeline.ResearchResult) string {
+	if research == nil {
 		return ""
 	}
 	homepage := pipeline.NormalizeHomepage(research.Homepage)
@@ -3327,12 +3375,8 @@ func researchHomepage(researchDir string) string {
 	return homepage
 }
 
-func applyResearchAuthMetadata(apiSpec *spec.APISpec, researchDir string) {
-	if apiSpec == nil || strings.TrimSpace(researchDir) == "" {
-		return
-	}
-	research, err := pipeline.LoadResearch(researchDir)
-	if err != nil {
+func applyResearchAuthMetadata(apiSpec *spec.APISpec, research *pipeline.ResearchResult) {
+	if apiSpec == nil || research == nil {
 		return
 	}
 	envVar := research.CanonicalAuthEnvVar()
