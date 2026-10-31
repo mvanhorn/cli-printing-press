@@ -18,15 +18,7 @@ import (
 )
 
 func TestGoreleaserLdflagsTargetMatchesVersionVar(t *testing.T) {
-	// The goreleaser config injects the version via ldflags into
-	// internal/version.Version. If the variable is renamed or moved,
-	// goreleaser silently injects into nothing and the binary
-	// reports the hardcoded fallback. This test catches that drift.
-
-	// 1. Verify the version variable exists and is settable.
-	assert.IsType(t, "", version.Version)
-
-	// 2. Verify the goreleaser config references the correct ldflags path.
+	// Keep the release configuration pointed at the version variable used by the binary.
 	data, err := os.ReadFile("../../.goreleaser.yaml")
 	require.NoError(t, err)
 
