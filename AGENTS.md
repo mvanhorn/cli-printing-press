@@ -1,5 +1,9 @@
 # CLI Printing Press - Development Conventions
 
+## Review docs
+- [`CODING_STANDARDS.md`](CODING_STANDARDS.md): the rules code in this repo follows. Read it before writing or reviewing code; update it when a change establishes or retires a rule.
+- [`REVIEW.md`](REVIEW.md): severity, what not to flag, and the evidence a finding needs. Read it before reviewing code or answering review findings; update it when review policy changes.
+
 ## Machine vs Printed CLI
 This repo is **the machine** (generator, templates, binary, skills) that produces **printed CLIs**. When fixing a bug or adding a feature, ask: machine change or printed-CLI change?
 - **Machine changes** (generator, templates, parser, skills) affect every future CLI and must generalize across APIs, spec formats, and auth patterns.
@@ -322,26 +326,8 @@ This copies the skills to `~/.claude/skills/`.
 When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` router and its phase files under `skills/printing-press/phases/` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.
 Detail in [`docs/SKILLS.md`](docs/SKILLS.md): install targets, workflow parity, the thin-spine plus `phases/` / `references/` pattern, the skill `version:` / `MinSkillVersion` bump rule, and the `context: fork` / `user-invocable` frontmatter fields.
 
-## Code & Comment Hygiene
-### Write-time defaults
-- No speculative future-proofing in comments.
-- No dates, incidents, or ticket numbers in code comments.
-- Exception for dependency-pin / floor comments: `GO-YYYY-NNNN` advisory IDs and CVE IDs are allowed so the floor stays tied to a named advisory (precedent: `internal/generator/xnet_guard.go` citing `GO-2026-5942`). Still forbidden: GitHub issue/PR numbers, incident tickets, dates.
-- Code comments must be self-contained; do not make them load-bearing on in-repo skills, plans, or reference prose.
-- Do not restate the field or function name in its comment; document why, not what.
-- Categorical strings -> typed const at introduction.
-- Single-case switch with default fallthrough -> `||`.
-- Parse command inputs once at the entry point.
-- Use UTF-8-safe string truncation.
-
-### Pre-commit: scan the diff
-- Near-identical loops or functions that should share a helper
-- A compound predicate inlined at 3+ sites that should be a named function
-- Parallel `hasX() bool` / `xCount() int` that drifted apart
-- The same string literal repeated across sites where the categorical-const rule should have applied
-
 ## Editing AGENTS.md
-The "Code & Comment Hygiene" rules apply here too. Keep inline `AGENTS.md` rules command-shaped: trigger, required action or prohibition, concrete values, then a pointer to any longer doc.
+The comment rules in [`CODING_STANDARDS.md`](CODING_STANDARDS.md) ("Comments and code shape") apply here too. Keep inline `AGENTS.md` rules command-shaped: trigger, required action or prohibition, concrete values, then a pointer to any longer doc.
 
 **Pointer-rot rule.** When editing a doc under `docs/` that `AGENTS.md` points to, update the inline trigger sentence here in the same PR if applicability changes — a new fire condition, a removed fire condition, or a changed prohibition, enum, file path, test name, or required value. The inline rule is what the agent sees on every turn; the extracted doc is only loaded if the agent follows the pointer.
 
