@@ -33,7 +33,8 @@ func newPIIAuditCmd() *cobra.Command {
 .manuscripts/**) and reports per-line findings
 that signal PII-shape leaks. Detection is purely mechanical: card
 last-4 with context tokens, order IDs, email addresses, US-shaped phone
-numbers, ZIP+4, and street-address-line shapes. The agent layer
+numbers, ZIP+4, street-address-line shapes, and account-identifier
+values under account/party/customer-number keys. The agent layer
 (skills/printing-press-polish/references/pii-polish.md) takes these
 findings and applies judgment per item — fix in source or accept with
 pre-decision fields.
@@ -112,9 +113,9 @@ func renderPIIAuditTable(w io.Writer, findings []artifacts.PIIFinding, delta art
 	switch {
 	case pending == 0 && !gateFired:
 		if accepted > 0 {
-			fmt.Fprintf(w, "pii-audit: no pending findings (%d accepted) — phase-1 scope (order-id/card/email/phone/zip/postal); ASINs and standalone names are a future detector class\n", accepted)
+			fmt.Fprintf(w, "pii-audit: no pending findings (%d accepted) — phase-1 scope (order-id/card/email/phone/zip/postal/account-id); ASINs and standalone names are a future detector class\n", accepted)
 		} else {
-			fmt.Fprintln(w, "pii-audit: no findings — phase-1 scope (order-id/card/email/phone/zip/postal); ASINs and standalone names are a future detector class")
+			fmt.Fprintln(w, "pii-audit: no findings — phase-1 scope (order-id/card/email/phone/zip/postal/account-id); ASINs and standalone names are a future detector class")
 		}
 	case pending == 0 && gateFired:
 		fmt.Fprintf(w, "pii-audit: incomplete (%d accepted, %d gate failure(s))\n",
