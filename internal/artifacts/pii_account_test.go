@@ -146,6 +146,26 @@ func TestFindPII_AccountID_PositiveShapes(t *testing.T) {
 			body: "# accountId: 4839201756\n",
 			want: []string{"4839201756"},
 		},
+		{
+			name: "json escaped slash before account",
+			body: `{"url":"https:\/\/bank.invalid","accountId":"AB12CD34EF56GH78"}` + "\n",
+			want: []string{"AB12CD34EF56GH78"},
+		},
+		{
+			name: "yaml flow bare scalar",
+			body: "account: {number: AB12CD34EF56GH78}\n",
+			want: []string{"AB12CD34EF56GH78"},
+		},
+		{
+			name: "yaml flow array",
+			body: "accountId: [\"AB12CD34EF56GH78\"]\naccountId: [77120934581]\n",
+			want: []string{"AB12CD34EF56GH78", "77120934581"},
+		},
+		{
+			name: "yaml next document keeps its own key",
+			body: "account:\n  name: checking\n---\naccountId: AB12CD34EF56GH78\n",
+			want: []string{"AB12CD34EF56GH78"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -185,6 +205,7 @@ func TestFindPII_AccountID_NegativeShapes(t *testing.T) {
 		{name: "zip under account key", body: `{"accountId": "12345-6789"}` + "\n"},
 		{name: "whitespace prose", body: "accountId: 4839201756 is the sample\n"},
 		{name: "generated go is out of scope", body: "package p\nconst x = `{\"accountId\": \"4839201756\"}`\n"},
+		{name: "yaml document boundary drops parent", body: "account:\n  name: checking\n---\n- id: AB12CD34EF56GH78\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

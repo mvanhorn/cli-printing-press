@@ -106,10 +106,14 @@ func dedupeAccountHits(hits []accountHit) []accountHit {
 		return hits[i].span < hits[j].span
 	})
 	out := make([]accountHit, 0, len(hits))
+	lineStart := 0
 	for _, h := range hits {
+		if len(out) == 0 || out[len(out)-1].line != h.line {
+			lineStart = len(out)
+		}
 		dup := false
-		for _, prev := range out {
-			if prev.line != h.line || prev.span != h.span {
+		for _, prev := range out[lineStart:] {
+			if prev.span != h.span {
 				continue
 			}
 			d := h.col - prev.col
@@ -188,7 +192,7 @@ func isAccountIdentifierValue(raw string) bool {
 	if strings.ContainsAny(v, " \t\r\n") {
 		return false
 	}
-	if isAllDigits(v) {
+	if isBareDigits(v) {
 		if len(v) < accountIDDigitMin || len(v) > accountIDDigitMax {
 			return false
 		}
@@ -249,18 +253,6 @@ func hasAccountIDDigit(s string) bool {
 		}
 	}
 	return false
-}
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func isTrivialDigitRun(s string) bool {
@@ -646,11 +638,20 @@ func (c *jsCursor) parseValue(path []string) bool {
 	case '[':
 		return c.parseArray(path)
 	case 't':
-		return c.consumeLiteral("true")
+		if c.consumeLiteral("true") {
+			return true
+		}
+		return c.takeBareScalar(path)
 	case 'f':
-		return c.consumeLiteral("false")
+		if c.consumeLiteral("false") {
+			return true
+		}
+		return c.takeBareScalar(path)
 	case 'n':
-		return c.consumeLiteral("null")
+		if c.consumeLiteral("null") {
+			return true
+		}
+		return c.takeBareScalar(path)
 	default:
 		if c.peek() == '-' || isDigitByte(c.peek()) {
 			line, col := c.line, c.col
@@ -659,6 +660,9 @@ func (c *jsCursor) parseValue(path []string) bool {
 				c.consider(path, s, line, col)
 			}
 			return ok
+		}
+		if isLetterByte(c.peek()) {
+			return c.takeBareScalar(path)
 		}
 		return false
 	}
@@ -693,8 +697,10 @@ func (c *jsCursor) readJSONString() (string, bool) {
 		if ch == '"' {
 			raw := c.s[start : c.i+1]
 			c.next()
-			unq, err := strconv.Unquote(string(raw))
-			if err != nil {
+			// encoding/json accepts \/ ; strconv.Unquote rejects it and
+			// would stop the walk before a later account field.
+			var unq string
+			if err := json.Unmarshal([]byte(raw), &unq); err != nil {
 				return "", false
 			}
 			return unq, true
@@ -732,6 +738,30 @@ func (c *jsCursor) readSingleQuoted() (string, bool) {
 		c.next()
 	}
 	return "", false
+}
+
+func (c *jsCursor) takeBareScalar(path []string) bool {
+	line, col := c.line, c.col
+	s, ok := c.readBareScalar()
+	if !ok {
+		return false
+	}
+	c.consider(path, s, line, col)
+	return true
+}
+
+func (c *jsCursor) readBareScalar() (string, bool) {
+	if !isLetterByte(c.peek()) {
+		return "", false
+	}
+	start := c.i
+	for c.i < len(c.s) && isBareScalarCont(c.s[c.i]) {
+		c.next()
+	}
+	if c.i == start {
+		return "", false
+	}
+	return c.s[start:c.i], true
 }
 
 func (c *jsCursor) readBareKey() (string, bool) {
@@ -814,6 +844,14 @@ func isDigitByte(b byte) bool {
 	return b >= '0' && b <= '9'
 }
 
+func isLetterByte(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func isBareScalarCont(b byte) bool {
+	return isLetterByte(b) || isDigitByte(b) || b == '-' || b == '_'
+}
+
 func isBareKeyStart(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '_'
 }
@@ -844,6 +882,10 @@ func scanYAMLAccountIdentifiers(content string) []accountHit {
 			continue
 		}
 		indent := indentOf(raw)
+		if yamlDocMarker(body) {
+			stack = nil
+			continue
+		}
 		if comment, ok := strings.CutPrefix(body, "#"); ok {
 			recordYAMLLine(strings.TrimSpace(comment), raw, frameKeys(stack), i+1, &hits)
 			continue
@@ -885,7 +927,7 @@ func recordYAMLLine(body, raw string, parent []string, line int, hits *[]account
 }
 
 func recordYAMLValue(hits *[]accountHit, path []string, value, raw string, line int) {
-	if flow := flowObject(value); flow != "" {
+	if flow := flowFragment(value); flow != "" {
 		scanFlowAccountIdentifiers(flow, line, valueColumn(raw, flow), path, hits)
 	}
 	scalar, ok := rawYAMLScalar(stripYAMLComment(value))
@@ -898,8 +940,11 @@ func recordYAMLValue(hits *[]accountHit, path []string, value, raw string, line 
 func scanFlowAccountIdentifiers(fragment string, line, col int, path []string, hits *[]accountHit) {
 	c := &jsCursor{s: fragment, line: line, col: col, hits: hits}
 	c.skipWS()
-	if c.peek() == '{' {
+	switch c.peek() {
+	case '{':
 		c.parseObject(path)
+	case '[':
+		c.parseArray(path)
 	}
 }
 
@@ -1001,21 +1046,32 @@ func yamlValueOpensNest(value string) bool {
 	case "", "|", ">", "|-", "|+", ">-", ">+":
 		return true
 	}
-	if strings.HasPrefix(v, "{") && flowObject(v) == "" {
-		return true
-	}
-	if strings.HasPrefix(v, "[") && !strings.Contains(v, "]") {
+	if v != "" && (v[0] == '{' || v[0] == '[') && flowFragment(v) == "" {
 		return true
 	}
 	return false
 }
 
-func flowObject(value string) string {
+func yamlDocMarker(body string) bool {
+	for _, marker := range []string{"---", "..."} {
+		rest, ok := strings.CutPrefix(body, marker)
+		if !ok {
+			continue
+		}
+		rest = strings.TrimSpace(rest)
+		if rest == "" || strings.HasPrefix(rest, "#") {
+			return true
+		}
+	}
+	return false
+}
+
+func flowFragment(value string) string {
 	v := strings.TrimSpace(value)
-	if !strings.HasPrefix(v, "{") {
+	if v == "" || (v[0] != '{' && v[0] != '[') {
 		return ""
 	}
-	depth := 0
+	var stack []byte
 	var inStr byte
 	for i := 0; i < len(v); i++ {
 		ch := v[i]
@@ -1037,11 +1093,18 @@ func flowObject(value string) string {
 		switch ch {
 		case '"', '\'':
 			inStr = ch
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
+		case '{', '[':
+			stack = append(stack, ch)
+		case '}', ']':
+			if len(stack) == 0 {
+				return ""
+			}
+			open := stack[len(stack)-1]
+			if (ch == '}' && open != '{') || (ch == ']' && open != '[') {
+				return ""
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
 				return v[:i+1]
 			}
 		}
