@@ -710,6 +710,7 @@ only to inspect the current output.
 | README Quick Start | `research.json::narrative.quickstart[]` | Edit the command/comment in `research.json`, then regenerate or re-run the dogfood/rendering step. |
 | SKILL Recipes | `research.json::narrative.recipes[]` | Edit the recipe title, command, or explanation in `research.json`, then regenerate or re-run the dogfood/rendering step. |
 | README/SKILL Troubleshooting | `research.json::narrative.troubleshoots[]` | Edit the symptom/fix pair in `research.json`, then regenerate or re-run the dogfood/rendering step. |
+| `.printing-press.json` `homepage` | `research.json::homepage` | Fix it in `research.json`, then correct or remove `homepage` in the working CLI's `.printing-press.json` before regenerating: an existing manifest value wins over research on regenerate. A value already in the library manifest also wins on promote and publish, so correct a published homepage in the library copy too. |
 | `.printing-press.json` `display_name`, `description`, `mcp_*` | `WriteManifestForGenerate`; for description/display-name overrides, edit the spec (`info.title`, `info.x-display-name`, `info.description`) | Edit the spec or rerun the manifest writer. Do not hand-edit generated manifest metadata unless you are doing temporary diagnosis. |
 
 Recommended loop for these rendered sections: edit the source field, re-run

@@ -949,6 +949,18 @@ func TestPrintingPressSkillSetsPublicLibraryCategoryBeforeGenerate(t *testing.T)
 	assert.GreaterOrEqual(t, strings.Count(generateBlocks, "--category <public-library-category>"), 7)
 }
 
+func TestPrintingPressSkillRecordsResearchedHomepage(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "**Homepage rule**", "**Narrative rules**")
+
+	assert.Contains(t, skill, "- Homepage:")
+	assert.Contains(t, skill, `"homepage": "<https URL of the product's public website, omit when unconfirmed>"`)
+	assert.Contains(t, block, "Omit `homepage`")
+	assert.Contains(t, block, "API host")
+	assert.Contains(t, block, "not the docs site")
+	assert.Contains(t, block, "never overwrites")
+}
+
 func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 

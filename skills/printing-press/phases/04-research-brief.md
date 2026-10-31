@@ -53,6 +53,7 @@ Suggested shape:
 - Domain:
 - Users:
 - Data profile:
+- Homepage: [the product's public website and the evidence for it, or "unknown"]
 
 ## Reachability Risk
 - [None / Low / High] [evidence: e.g., "6 open issues on reteps/redfin about 403 errors since 2025"]

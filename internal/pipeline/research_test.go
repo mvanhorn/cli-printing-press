@@ -107,6 +107,20 @@ func TestWriteAndLoadResearch(t *testing.T) {
 	assert.Equal(t, "alt-1", loaded.Alternatives[0].Name)
 }
 
+func TestWriteNovelFeaturesBuiltKeepsResearchHomepage(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), []byte(`{
+		"api_name": "test-api",
+		"homepage": "https://example.com"
+	}`), 0o644))
+
+	require.NoError(t, WriteNovelFeaturesBuilt(dir, []NovelFeature{{Name: "Health", Command: "health"}}))
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com", loaded.Homepage)
+}
+
 func TestLoadResearchAcceptsStructuredGapsAndPatterns(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte(`{

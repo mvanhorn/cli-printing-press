@@ -1,0 +1,45 @@
+package pipeline
+
+import (
+	"net"
+	"net/url"
+	"strings"
+
+	"golang.org/x/net/idna"
+)
+
+// NormalizeHomepage returns raw trimmed when it is a plausible public product
+// homepage, and "" otherwise. Catalog clients render the value as a favicon
+// and an "Open website" link, so a wrong URL is worse than none.
+func NormalizeHomepage(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "{}<> ") {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	// Map the host the way browsers do, so lookalikes such as fullwidth
+	// "ｌｏｃａｌｈｏｓｔ" are checked in the form they resolve to.
+	host, err := idna.Lookup.ToASCII(strings.TrimSuffix(u.Hostname(), "."))
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+			return ""
+		}
+		return raw
+	}
+	// Browsers resolve shortened, decimal, and hex IPv4 forms such as 127.1 or
+	// 2130706433. A real domain's top-level label starts with a letter.
+	tld := host[strings.LastIndex(host, ".")+1:]
+	if tld == "" || tld[0] < 'a' || tld[0] > 'z' {
+		return ""
+	}
+	return raw
+}
