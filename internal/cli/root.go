@@ -235,6 +235,7 @@ func newGenerateCmd() *cobra.Command {
 					RunID:         runID,
 					Spec:          parsed,
 					NovelFeatures: generateResult.NovelFeatures,
+					Homepage:      generateResult.Homepage,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
@@ -551,6 +552,7 @@ func newGenerateCmd() *cobra.Command {
 				Spec:            apiSpec,
 				AuthPreference:  openAPIParseAuthPref,
 				NovelFeatures:   generateResult.NovelFeatures,
+				Homepage:        generateResult.Homepage,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
@@ -662,6 +664,7 @@ type generateProjectResult struct {
 	NovelFeatures       []pipeline.NovelFeatureManifest
 	ManifestDescription string
 	DisplayName         string
+	Homepage            string
 	Polished            bool
 	Validate            func() error
 }
@@ -730,6 +733,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		NovelFeatures:       novelFeatures,
 		ManifestDescription: manifestDescription,
 		DisplayName:         gen.ManifestDisplayName(),
+		Homepage:            researchHomepage(opts.researchDir),
 		Polished:            runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
 		Validate:            validateGeneratedProject,
 	}, nil
@@ -3306,6 +3310,24 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 		})
 	}
 	return out
+}
+
+// researchHomepage returns the research-confirmed homepage when it passes
+// validation. A rejected value is reported so the researching agent learns
+// it was dropped instead of assuming the manifest carries it.
+func researchHomepage(researchDir string) string {
+	if strings.TrimSpace(researchDir) == "" {
+		return ""
+	}
+	research, err := pipeline.LoadResearch(researchDir)
+	if err != nil {
+		return ""
+	}
+	homepage := pipeline.NormalizeHomepage(research.Homepage)
+	if homepage == "" && strings.TrimSpace(research.Homepage) != "" {
+		fmt.Fprintf(os.Stderr, "warning: research homepage %q is not a public https URL; leaving manifest homepage unset\n", research.Homepage)
+	}
+	return homepage
 }
 
 func applyResearchAuthMetadata(apiSpec *spec.APISpec, researchDir string) {

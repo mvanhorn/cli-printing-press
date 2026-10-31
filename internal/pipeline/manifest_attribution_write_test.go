@@ -104,6 +104,59 @@ func TestWriteManifestForGenerate_CrossLineageNoResurrection(t *testing.T) {
 	assert.Equal(t, "new-creator", m.Creator.Handle, "creator must be the new run's, not the stale one")
 }
 
+func TestWriteManifestForGenerate_HomepagePrecedence(t *testing.T) {
+	base := GenerateManifestParams{
+		APIName:  "acme",
+		SpecSrcs: []string{"https://example.com/openapi.json"},
+	}
+	tests := []struct {
+		name     string
+		existing string
+		research string
+		want     string
+	}{
+		{name: "existing value wins over fresh research", existing: "https://acme.com", research: "https://acme.io", want: "https://acme.com"},
+		{name: "research fills an empty manifest", research: "https://acme.io", want: "https://acme.io"},
+		{name: "existing value survives a run without research", existing: "https://acme.com", want: "https://acme.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			first := base
+			first.OutputDir = dir
+			first.Homepage = tt.existing
+			require.NoError(t, WriteManifestForGenerate(first))
+
+			second := base
+			second.OutputDir = dir
+			second.Homepage = tt.research
+			require.NoError(t, WriteManifestForGenerate(second))
+
+			assert.Equal(t, tt.want, readManifest(t, dir).Homepage)
+		})
+	}
+}
+
+func TestWriteManifestForGenerate_CrossLineageDropsHomepage(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "old-api",
+		SpecSrcs:  []string{"https://example.com/old.json"},
+		OutputDir: dir,
+		Homepage:  "https://old-api.com",
+	}))
+
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "new-api",
+		SpecSrcs:  []string{"https://example.com/new.json"},
+		OutputDir: dir,
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "homepage", "a different API's homepage must not carry over")
+}
+
 // A non-nil empty contributors slice is the explicit-clear signal.
 func TestWriteManifestForGenerate_ExplicitClearContributors(t *testing.T) {
 	dir := t.TempDir()

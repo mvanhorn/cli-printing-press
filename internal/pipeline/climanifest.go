@@ -1131,6 +1131,7 @@ type GenerateManifestParams struct {
 	Spec            *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	AuthPreference  string                 // resolved OpenAPI securityScheme preference selected for this generate
 	NovelFeatures   []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+	Homepage        string                 // validated research homepage; "" when research had none
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
@@ -1395,6 +1396,11 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// prose to become canonical on a later generate run.
 	if preserveExisting && preserveExistingDescription(existing.Description) {
 		m.Description = existing.Description
+	}
+	// A hand-checked or backfilled homepage outranks a later research guess.
+	m.Homepage = p.Homepage
+	if preserveExisting && strings.TrimSpace(existing.Homepage) != "" {
+		m.Homepage = existing.Homepage
 	}
 	if len(p.NovelFeatures) > 0 {
 		m.NovelFeatures = p.NovelFeatures
