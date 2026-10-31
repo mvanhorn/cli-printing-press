@@ -2477,7 +2477,7 @@ func TestCLIManifestHomepageKeyOrderMatchesAcrossWritePaths(t *testing.T) {
 
 	keyOrder := func(data []byte) []string {
 		var keys []string
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, `"`) && strings.Contains(line, `":`) {
 				keys = append(keys, line[1:strings.Index(line[1:], `"`)+1])
