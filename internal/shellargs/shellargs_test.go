@@ -20,6 +20,10 @@ func TestSplit(t *testing.T) {
 		{"cli --name foo\\\nbar", []string{"cli", "--name", "foobar"}},
 		{"cli --name \"foo\\\nbar\"", []string{"cli", "--name", "foobar"}},
 		{`cli regex \\d+\\s+goat`, []string{"cli", "regex", `\d+\s+goat`}},
+		// Inside double quotes a backslash only escapes $ ` " \ and newline;
+		// before any other character it stays.
+		{`cli grep "\d+\s+goat"`, []string{"cli", "grep", `\d+\s+goat`}},
+		{`cli say "a \"quoted\" \$HOME \\ end"`, []string{"cli", "say", `a "quoted" $HOME \ end`}},
 		// Shell line comments: '#' at the start of a word drops the rest of
 		// the input. Cobra Example fields routinely use trailing comments.
 		{`cli sync                       # full schema + records refresh`, []string{"cli", "sync"}},
