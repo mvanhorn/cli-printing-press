@@ -28,6 +28,11 @@ func Split(s string) ([]string, error) {
 
 	for _, r := range s {
 		if escaped {
+			// Inside double quotes a backslash only escapes $ ` " and \;
+			// before anything else it is kept.
+			if quoteChar == '"' && !strings.ContainsRune("$`\"\\", r) {
+				current.WriteRune('\\')
+			}
 			current.WriteRune(r)
 			tokenStarted = true
 			escaped = false
