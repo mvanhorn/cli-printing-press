@@ -2,7 +2,7 @@
 
 **Goal:** clear the PII ledger so promote and publish gates pass. Every pending finding is either real PII (replace with a placeholder in source) or a justified non-PII match (accept in the ledger with pre-decision fields).
 
-**Scope:** Phase 1 detectors are shape-only — order/transaction IDs, card-last-4, email, US phone, ZIP+4, postal-address. ASINs and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
+**Scope:** Phase 1 detectors are shape-only — order/transaction IDs, card-last-4, email, US phone, ZIP+4, postal-address, and account identifiers under account/party/customer-number keys. ASINs and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
 
 ```bash
 cli-printing-press pii-audit <cli-dir>
@@ -57,6 +57,7 @@ Use these to avoid re-flagging on the next audit:
 | `phone-us` | `PII_PHONE_EXAMPLE` |
 | `zip-plus-4` | `PII_ZIP_EXAMPLE` |
 | `postal-address` | `PII_ADDRESS_EXAMPLE` |
+| `account-id` | `PII_ACCOUNT_EXAMPLE` |
 
 When a downstream consumer (parser, schema validator) needs a valid-shape value, use the standards-reserved synthetics — `user@example.com`, `+1-555-0100`, `90210-1234`, `1 EXAMPLE WAY` — and accept the first audit finding as `synthetic_placeholder`. Subsequent audits preserve the accept.
 
@@ -65,6 +66,7 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 - **`zip-plus-4`** has high false-positive rate. Request IDs, batch IDs, correlation IDs, and version ranges all match the shape. Most pending findings here resolve to `category: other` with a `note` naming the actual field, not real PII.
 - **`postal-address`** matches Title-Case and ALL-CAPS street names with the common US suffixes. Lowercase real addresses are a known gap.
 - **`card-last-4`** requires a context token (`card`/`visa`/`ending in`/`last 4`/4+ asterisks/x's). Bare 4-digit numbers don't match.
+- **`account-id`** matches an identifier-shaped value (8–17 digits, or 8–34 mixed letters and digits) under an account, party, or customer-number key, including nested `account.number` and names like `digitalAccountIdentifier`. Short ids, sequential runs (`12345678`), all-zero runs, and doc tokens (`acct_123`, `<accountId>`, `PII_ACCOUNT_EXAMPLE`) do not match. Ordinary ids (`id`, `page`, `userId`) do not match.
 
 ## Special cases
 
@@ -76,7 +78,7 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 
 **Tooling workspaces (`.omc/`, `.claude/`).** Exempt from the audit at the CLI root — these are agent orchestration or scratch directories, not shippable printed-CLI content.
 
-**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII.
+**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit when the CLI was not browser-sniffed — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII. The exemption does not apply when `.printing-press.json` records `spec_source: sniffed` (any nesting or key spelling) or the root spec itself has a top-level `spec_source: sniffed`. That spec was built from the printer's own session.
 
 **Vendor spec source archived under `.manuscripts/`.** Files anywhere inside a `.manuscripts/` subtree whose head bytes match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker are exempt — the operator archived the vendor's published spec source alongside research, and its `example:` blocks are documentation. The exemption is content-based, not glob-based, so per-resource subdir basenames like `apps/calendars.json` or vendor-named files like `pushpress-v3.yaml` are covered without an allowlist. HARs, `session-state.json`, hand-edited proofs, and any other non-spec content under `.manuscripts/` stays in scope because the marker check fails on them.
 
