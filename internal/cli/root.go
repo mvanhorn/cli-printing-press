@@ -440,6 +440,12 @@ func newGenerateCmd() *cobra.Command {
 
 				specs = append(specs, apiSpec)
 			}
+			// --name and the state.json slug rename the spec below; research
+			// written under the spec's own name must still match.
+			var parsedSpecNames []string
+			for _, s := range specs {
+				parsedSpecNames = append(parsedSpecNames, s.Name, s.EffectiveDisplayName())
+			}
 
 			var apiSpec *spec.APISpec
 			if len(specs) == 1 {
@@ -494,7 +500,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true, preservedCLIDir: snapshotDir})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validateBeforeForceMerge(validate, snapshotDir), polish: polish, researchDir: researchDir, parsedSpecNames: parsedSpecNames, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true, preservedCLIDir: snapshotDir})
 			if err != nil {
 				return err
 			}
@@ -655,6 +661,7 @@ type generateProjectOptions struct {
 	validate                            bool
 	polish                              bool
 	researchDir                         string
+	parsedSpecNames                     []string
 	trafficAnalysisPath                 string
 	specFiles                           []string
 	rejectUnshippablePageContextTraffic bool
@@ -671,7 +678,7 @@ type generateProjectResult struct {
 }
 
 func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
-	research := loadGenerateResearch(opts.researchDir, apiSpec)
+	research := loadGenerateResearch(opts.researchDir, apiSpec, opts.parsedSpecNames)
 	applyResearchAuthMetadata(apiSpec, research)
 	gen := generator.New(apiSpec, absOut)
 	gen.PreservedCLIDir = opts.preservedCLIDir
@@ -3217,7 +3224,7 @@ func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, comm
 	return enc.Encode(summary)
 }
 
-func loadGenerateResearch(researchDir string, apiSpec *spec.APISpec) *pipeline.ResearchResult {
+func loadGenerateResearch(researchDir string, apiSpec *spec.APISpec, parsedSpecNames []string) *pipeline.ResearchResult {
 	if strings.TrimSpace(researchDir) == "" {
 		return nil
 	}
@@ -3225,7 +3232,11 @@ func loadGenerateResearch(researchDir string, apiSpec *spec.APISpec) *pipeline.R
 	if err != nil {
 		return nil
 	}
-	if apiSpec != nil && !researchMatchesSpec(research.APIName, apiSpec) {
+	if apiSpec == nil {
+		return research
+	}
+	names := append([]string{apiSpec.Name, apiSpec.EffectiveDisplayName()}, parsedSpecNames...)
+	if !researchMatchesSpec(research.APIName, names) {
 		fmt.Fprintf(os.Stderr, "warning: %s is for api_name %q, not %q; ignoring it for this run\n",
 			filepath.Join(researchDir, "research.json"), research.APIName, apiSpec.Name)
 		return nil
@@ -3235,13 +3246,13 @@ func loadGenerateResearch(researchDir string, apiSpec *spec.APISpec) *pipeline.R
 
 // Matching is deliberately lenient (hyphenation, token prefix): a false
 // mismatch silently drops correct research.
-func researchMatchesSpec(researchAPIName string, apiSpec *spec.APISpec) bool {
+func researchMatchesSpec(researchAPIName string, specNames []string) bool {
 	if strings.TrimSpace(researchAPIName) == "" {
 		return true
 	}
 	want := apiIdentityTokens(researchAPIName)
 	wantJoined := strings.Join(want, "")
-	for _, candidate := range []string{apiSpec.Name, apiSpec.EffectiveDisplayName()} {
+	for _, candidate := range specNames {
 		if strings.TrimSpace(candidate) == "" {
 			continue
 		}

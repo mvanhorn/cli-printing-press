@@ -954,24 +954,25 @@ func TestResearchMatchesSpec(t *testing.T) {
 	tests := []struct {
 		name        string
 		researchAPI string
-		apiSpec     spec.APISpec
+		specNames   []string
 		want        bool
 	}{
-		{name: "empty api_name is unknown", researchAPI: "  ", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
-		{name: "same slug", researchAPI: "stripe", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
-		{name: "display name with noise word", researchAPI: "Stripe API", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
-		{name: "display name punctuation", researchAPI: "Cal.com", apiSpec: spec.APISpec{Name: "cal-com"}, want: true},
-		{name: "unhyphenated slug", researchAPI: "calcom", apiSpec: spec.APISpec{Name: "cal-com"}, want: true},
-		{name: "spec display name", researchAPI: "Product Hunt", apiSpec: spec.APISpec{Name: "ph", DisplayName: "Product Hunt"}, want: true},
-		{name: "binary name", researchAPI: "stripe-pp-cli", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
-		{name: "research slug shorter than title slug", researchAPI: "canvas", apiSpec: spec.APISpec{Name: "canvas-lms"}, want: true},
-		{name: "different api", researchAPI: "github", apiSpec: spec.APISpec{Name: "stripe"}, want: false},
-		{name: "same vendor different product", researchAPI: "google-drive", apiSpec: spec.APISpec{Name: "google-calendar"}, want: false},
+		{name: "empty api_name is unknown", researchAPI: "  ", specNames: []string{"stripe"}, want: true},
+		{name: "same slug", researchAPI: "stripe", specNames: []string{"stripe"}, want: true},
+		{name: "display name with noise word", researchAPI: "Stripe API", specNames: []string{"stripe"}, want: true},
+		{name: "display name punctuation", researchAPI: "Cal.com", specNames: []string{"cal-com"}, want: true},
+		{name: "unhyphenated slug", researchAPI: "calcom", specNames: []string{"cal-com"}, want: true},
+		{name: "any spec name matches", researchAPI: "Product Hunt", specNames: []string{"ph", "Product Hunt"}, want: true},
+		{name: "binary name", researchAPI: "stripe-pp-cli", specNames: []string{"stripe"}, want: true},
+		{name: "research slug shorter than title slug", researchAPI: "canvas", specNames: []string{"canvas-lms"}, want: true},
+		{name: "different api", researchAPI: "github", specNames: []string{"stripe", "Stripe"}, want: false},
+		{name: "same vendor different product", researchAPI: "google-drive", specNames: []string{"google-calendar"}, want: false},
+		{name: "blank spec names are skipped", researchAPI: "stripe", specNames: []string{"", " "}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, researchMatchesSpec(tt.researchAPI, &tt.apiSpec))
+			assert.Equal(t, tt.want, researchMatchesSpec(tt.researchAPI, tt.specNames))
 		})
 	}
 }
@@ -982,9 +983,11 @@ func TestGenerateCmdIgnoresResearchForDifferentAPI(t *testing.T) {
 	tests := []struct {
 		name        string
 		researchAPI string
+		extraArgs   []string
 		applied     bool
 	}{
 		{name: "matching display name applies research", researchAPI: "Home App", applied: true},
+		{name: "--name rename keeps research for the parsed spec", researchAPI: "homeapp", extraArgs: []string{"--name", "payments"}, applied: true},
 		{name: "different api ignores research", researchAPI: "otherapp", applied: false},
 	}
 	for _, tt := range tests {
@@ -1030,13 +1033,13 @@ resources:
 			require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), research, 0o644))
 
 			cmd := newGenerateCmd()
-			cmd.SetArgs([]string{
+			cmd.SetArgs(append([]string{
 				"--spec", specPath,
 				"--output", outputDir,
 				"--validate=false",
 				"--force",
 				"--research-dir", researchDir,
-			})
+			}, tt.extraArgs...))
 			require.NoError(t, cmd.Execute())
 
 			data, err := os.ReadFile(filepath.Join(outputDir, pipeline.CLIManifestFilename))
