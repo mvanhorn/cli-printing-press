@@ -2433,6 +2433,64 @@ func TestRefreshCLIManifestFromSpecPreservesNovelFeaturesBuilt(t *testing.T) {
 	require.Len(t, got.NovelFeatures, 1)
 }
 
+func TestRefreshCLIManifestFromSpecPreservesHomepage(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "api_name": "example",
+  "cli_name": "example-pp-cli",
+  "homepage": "https://example.com"
+}
+`), 0o644))
+
+	require.NoError(t, RefreshCLIManifestFromSpec(dir, &spec.APISpec{
+		Name:       "example",
+		WebsiteURL: "https://docs.example.com",
+	}))
+
+	got, err := ReadCLIManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com", got.Homepage)
+}
+
+func TestCLIManifestHomepageKeyOrderMatchesAcrossWritePaths(t *testing.T) {
+	m := CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "example",
+		CLIName:       "example-pp-cli",
+		Description:   "Example CLI.",
+		Homepage:      "https://example.com",
+		MCPBinary:     "example-pp-mcp",
+	}
+
+	typedDir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(typedDir, m))
+	typed, err := os.ReadFile(filepath.Join(typedDir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	rawDir := t.TempDir()
+	require.NoError(t, writeCLIManifestPreservingRaw(rawDir, m, map[string]json.RawMessage{
+		"research_note": json.RawMessage(`"keep-me"`),
+	}))
+	merged, err := os.ReadFile(filepath.Join(rawDir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	keyOrder := func(data []byte) []string {
+		var keys []string
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, `"`) && strings.Contains(line, `":`) {
+				keys = append(keys, line[1:strings.Index(line[1:], `"`)+1])
+			}
+		}
+		return keys
+	}
+	typedKeys := keyOrder(typed)
+	mergedKeys := keyOrder(merged)
+	require.Contains(t, typedKeys, "homepage")
+	assert.Equal(t, typedKeys, mergedKeys[:len(typedKeys)], "homepage must sit in the same position on both write paths")
+}
+
 func TestRefreshCLIManifestFromSpecPreservesCompactNovelFeaturesBuilt(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{

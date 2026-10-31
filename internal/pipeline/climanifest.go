@@ -110,18 +110,22 @@ type CLIManifest struct {
 	// Printer is the original printer's GitHub handle, preserved across regens.
 	Printer string `json:"printer,omitempty"` // legacy: derived from Creator.Handle
 	// PrinterName is the optional display name rendered beside the printer handle.
-	PrinterName        string            `json:"printer_name,omitempty"` // legacy: derived from Creator.Name
-	SpecURL            string            `json:"spec_url,omitempty"`
-	SpecPath           string            `json:"spec_path,omitempty"`
-	SpecFormat         string            `json:"spec_format,omitempty"`
-	SpecKind           string            `json:"spec_kind,omitempty"`
-	SpecSource         string            `json:"spec_source,omitempty"`
-	SpecChecksum       string            `json:"spec_checksum,omitempty"`
-	RunID              string            `json:"run_id,omitempty"`
-	Category           string            `json:"category,omitempty"`
-	Regions            []string          `json:"regions,omitempty"`
-	APILanguage        string            `json:"api_language,omitempty"`
-	Description        string            `json:"description,omitempty"`
+	PrinterName  string   `json:"printer_name,omitempty"` // legacy: derived from Creator.Name
+	SpecURL      string   `json:"spec_url,omitempty"`
+	SpecPath     string   `json:"spec_path,omitempty"`
+	SpecFormat   string   `json:"spec_format,omitempty"`
+	SpecKind     string   `json:"spec_kind,omitempty"`
+	SpecSource   string   `json:"spec_source,omitempty"`
+	SpecChecksum string   `json:"spec_checksum,omitempty"`
+	RunID        string   `json:"run_id,omitempty"`
+	Category     string   `json:"category,omitempty"`
+	Regions      []string `json:"regions,omitempty"`
+	APILanguage  string   `json:"api_language,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	// Homepage is the product's public website, recorded only when research
+	// confirmed it. It is never derived from spec URLs, which usually point
+	// at API hosts or docs rather than the brand's site.
+	Homepage           string            `json:"homepage,omitempty"`
 	MCPBinary          string            `json:"mcp_binary,omitempty"`
 	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
 	MCPPublicToolCount int               `json:"mcp_public_tool_count,omitempty"`
@@ -299,7 +303,7 @@ func readCLIManifestFile(path string) (CLIManifest, error) {
 // Generate-time fields (spec_url, spec_path, spec_checksum,
 // generated_at, printing_press_version, schema_version, novel_features,
 // novel_features_built, category, cli_name, api_name, api_version,
-// description) are preserved as-is. Research-originated keys that the
+// description, homepage) are preserved as-is. Research-originated keys that the
 // typed struct does not model are kept via the raw merge so a refresh
 // without --research-dir cannot zero the publish transcendence gate.
 // Only the spec-driven MCP/auth/display fields are refreshed.
@@ -847,6 +851,7 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"regions",
 		"api_language",
 		"description",
+		"homepage",
 		"mcp_binary",
 		"mcp_tool_count",
 		"mcp_public_tool_count",
