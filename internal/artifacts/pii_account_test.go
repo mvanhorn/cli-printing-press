@@ -166,6 +166,16 @@ func TestFindPII_AccountID_PositiveShapes(t *testing.T) {
 			body: "account:\n  name: checking\n---\naccountId: AB12CD34EF56GH78\n",
 			want: []string{"AB12CD34EF56GH78"},
 		},
+		{
+			name: "yaml hex escape in flow",
+			body: "account: {number: \"\\x41B12CD34\"}\n",
+			want: []string{"AB12CD34"},
+		},
+		{
+			name: "indented document marker stays in the block",
+			body: "account:\n  description: |\n    ---\n  number: \"000123456789\"\n",
+			want: []string{"000123456789"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -206,6 +216,7 @@ func TestFindPII_AccountID_NegativeShapes(t *testing.T) {
 		{name: "whitespace prose", body: "accountId: 4839201756 is the sample\n"},
 		{name: "generated go is out of scope", body: "package p\nconst x = `{\"accountId\": \"4839201756\"}`\n"},
 		{name: "yaml document boundary drops parent", body: "account:\n  name: checking\n---\n- id: AB12CD34EF56GH78\n"},
+		{name: "yaml flow prose", body: "account: {number: AB12CD34 is the sample}\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

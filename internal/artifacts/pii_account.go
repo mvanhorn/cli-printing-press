@@ -697,10 +697,8 @@ func (c *jsCursor) readJSONString() (string, bool) {
 		if ch == '"' {
 			raw := c.s[start : c.i+1]
 			c.next()
-			// encoding/json accepts \/ ; strconv.Unquote rejects it and
-			// would stop the walk before a later account field.
-			var unq string
-			if err := json.Unmarshal([]byte(raw), &unq); err != nil {
+			unq, ok := decodeQuotedScalar(raw)
+			if !ok {
 				return "", false
 			}
 			return unq, true
@@ -745,6 +743,16 @@ func (c *jsCursor) takeBareScalar(path []string) bool {
 	s, ok := c.readBareScalar()
 	if !ok {
 		return false
+	}
+	// "AB12CD34 is the sample" is prose. A prefix before the space is not
+	// the value; only a token that ends the flow entry counts.
+	c.skipWS()
+	if c.i < len(c.s) {
+		switch c.peek() {
+		case ',', '}', ']', '#':
+		default:
+			return true
+		}
 	}
 	c.consider(path, s, line, col)
 	return true
@@ -882,7 +890,9 @@ func scanYAMLAccountIdentifiers(content string) []accountHit {
 			continue
 		}
 		indent := indentOf(raw)
-		if yamlDocMarker(body) {
+		// Only a column-0 marker starts a new document. An indented
+		// "---" inside a block scalar is content, not a boundary.
+		if indent == 0 && yamlDocMarker(body) {
 			stack = nil
 			continue
 		}
@@ -1050,6 +1060,20 @@ func yamlValueOpensNest(value string) bool {
 		return true
 	}
 	return false
+}
+
+func decodeQuotedScalar(raw string) (string, bool) {
+	var unq string
+	// JSON accepts \/; strconv.Unquote does not. YAML flow strings also
+	// use Go-style \xHH, which encoding/json rejects.
+	if err := json.Unmarshal([]byte(raw), &unq); err == nil {
+		return unq, true
+	}
+	unq, err := strconv.Unquote(raw)
+	if err != nil {
+		return "", false
+	}
+	return unq, true
 }
 
 func yamlDocMarker(body string) bool {
