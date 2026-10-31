@@ -547,6 +547,57 @@ func Execute() error {
 // TestVerifySkill_FlagDeclaredViaHelper asserts the verifier accepts a flag
 // declared one level deep through a shared helper invoked with cmd as first
 // arg, e.g. addTargetFlags(cmd, &t) whose body declares the flag.
+// A catalog entry can keep SKILL.md at its root and the Go module one level
+// down. The wrapper must accept that layout, as the script does, and must still
+// reject a directory where the source cannot be picked unambiguously.
+func TestVerifySkill_NestedModuleSourceDir(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	source := `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(&cobra.Command{Use: "version"})
+	return rootCmd.Execute()
+}
+`
+	writeNested := func(t *testing.T, dir, module string) {
+		t.Helper()
+		cliDir := filepath.Join(dir, module, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, "root.go"), []byte(source), 0o644))
+	}
+	writeSkill := func(t *testing.T, dir string) {
+		t.Helper()
+		skill := "---\nname: pp-fixture\n---\n\n# Fixture\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))
+	}
+
+	t.Run("single nested module", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeSkill(t, dir)
+		writeNested(t, dir, "fixture-module")
+
+		out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+		require.NoError(t, err, "nested module layout must reach the verifier: %s", string(out))
+		require.NotContains(t, string(out), "no internal/cli/")
+	})
+
+	t.Run("ambiguous nested modules", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeSkill(t, dir)
+		writeNested(t, dir, "first-module")
+		writeNested(t, dir, "second-module")
+
+		out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+		require.Error(t, err)
+		require.Contains(t, string(out), "no internal/cli/")
+	})
+}
+
 func TestVerifySkill_FlagDeclaredViaHelper(t *testing.T) {
 	bin := buildPrintingPressBinary(t)
 	dir := t.TempDir()

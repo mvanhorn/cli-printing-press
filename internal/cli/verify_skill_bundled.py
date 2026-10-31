@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections import Counter
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -69,6 +70,8 @@ def read_utf8(path: Path) -> str:
 # generated/global flags must still be discovered in source so command-scoped
 # copy-paste examples cannot hide missing flags behind this whitelist.
 COMMON_FLAGS = {"help", "home", "version"}
+# strconv.ParseBool spellings of false, which pflag accepts for --help=<value>.
+HELP_DISABLED_VALUES = frozenset({"0", "f", "F", "false", "False", "FALSE"})
 
 CODEBLOCK_BASH = re.compile(r"^[ \t]*```bash[^\n]*\n(.*?)\n[ \t]*```[ \t]*$", re.DOTALL | re.MULTILINE)
 FENCED_CODE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
@@ -167,8 +170,9 @@ CONSTRUCTOR_RE = re.compile(
     r'\s*\*cobra\.Command\s*\{',
     re.MULTILINE,
 )
-ADDCMD_CHILD_RE = re.compile(r'\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(')
-ROOT_ADDCMD_RE = re.compile(r'rootCmd\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\(')
+ADDCMD_CALL_RE = re.compile(r'(?:\b(\w+))?\.AddCommand\s*\(')
+CONSTRUCTOR_ARGUMENT_RE = re.compile(r'(new[A-Z]\w*Cmd)\s*\(')
+CONSTRUCTOR_CALL_RE = re.compile(r'(?<![\w.])(?<!func )(new[A-Z]\w*Cmd)\s*\(')
 # Parent is one identifier (cmd, root, rootCmd, accountCmd). The candidate
 # constructor is the second argument, same role as AddCommand's argument.
 NOVEL_ATTACH_RE = re.compile(
@@ -189,9 +193,6 @@ VAR_HOOK_FUNC_RE = re.compile(
     r'(?:\s+func\b[^={}]*)?'
     r'\s*(?::=|=)\s*func\s*\(\s*([A-Za-z_]\w*)\s+\*cobra\.Command\b[^)]*\)\s*\{'
 )
-ADDCMD_CALL_RE = re.compile(
-    r'\b([A-Za-z_]\w*)\.AddCommand\s*\(\s*(new[A-Z]\w*Cmd)\s*\('
-)
 SCAFFOLD_ANN_RE = re.compile(
     r'"pp:novel-scaffold"\s*\]?\s*(?::|=)\s*"true"'
 )
@@ -203,6 +204,48 @@ FIND_FIELDS_RE = re.compile(
     r'\b([A-Za-z_]\w*)\s*,\s*_\s*,\s*(?:err|_)\s*(?::=|=)\s*'
     r'([A-Za-z_]\w*)\.Find\(\s*strings\.Fields\(\s*"([^"]*)"\s*\)'
 )
+LOCAL_COMMAND_RE = re.compile(r'(?m)^\s*(\w+)\s*:=\s*&cobra\.Command\s*\{')
+RETURN_VARIABLE_RE = re.compile(r'(?m)^\s*return\s+(\w+)\s*$')
+CONSTRUCTOR_VARIABLE_RE = re.compile(r'\b(\w+)\s*:=\s*(new[A-Z]\w*Cmd)\s*\(')
+VARIABLE_ALIAS_RE = re.compile(r'(?m)^\s*(\w+)\s*:?=\s*(\w+)\s*$')
+RETURN_CALL_RE = re.compile(r'(?:^|\n)\s*return\s+[\w.]+\(([^\n]*)\)$')
+FIND_ATTACHMENT_RE = re.compile(
+    r'if\s+(\w+),\s*_,\s*(\w+)\s*:=\s*rootCmd\.Find\(\[\]string\{'
+    r'((?:\s*"[a-z][a-z0-9-]*"\s*,?)+)\}\);\s*\2\s*==\s*nil[^{}]*\{'
+)
+
+
+def _addcommand_calls(text: str) -> Iterable[tuple[str, list[str]]]:
+    """Yield (receiver, top-level arguments) for each AddCommand call.
+
+    AddCommand is variadic, so a call can carry several children across lines.
+    Pass string-masked text: a parenthesis in a string literal would otherwise
+    unbalance the scan.
+    """
+    for match in ADDCMD_CALL_RE.finditer(text):
+        arguments: list[str] = []
+        start = match.end()
+        depth = 1
+        for index in range(start, len(text)):
+            char = text[index]
+            if char in "({[":
+                depth += 1
+            elif char in ")}]":
+                depth -= 1
+                if depth == 0:
+                    arguments.append(text[start:index].strip())
+                    break
+            elif char == "," and depth == 1:
+                arguments.append(text[start:index].strip())
+                start = index + 1
+        yield match.group(1) or "", [argument for argument in arguments if argument]
+
+
+def _addcommand_constructors(arguments: list[str]) -> Iterable[str]:
+    for argument in arguments:
+        constructor = CONSTRUCTOR_ARGUMENT_RE.match(argument)
+        if constructor:
+            yield constructor.group(1)
 
 
 def _extract_function_body(text: str, start_offset: int) -> str | None:
@@ -271,6 +314,170 @@ class CommandConstructor:
     args_info: tuple | None
     children: list[str] = field(default_factory=list)
     scaffold: bool = False
+    body: str = ""
+    # Local variable holding this command inside body, when known. A constructor
+    # body can declare flags for several commands; this says which are its own.
+    variable: str | None = None
+
+
+def _local_command_variables(body: str) -> dict[str, tuple[str, tuple | None]]:
+    """Map local `name := &cobra.Command{...}` variables to (use, args_info)."""
+    variables: dict[str, tuple[str, tuple | None]] = {}
+    for match in LOCAL_COMMAND_RE.finditer(body):
+        command_body = _extract_function_body(body, match.end())
+        if command_body is None:
+            continue
+        use_match = USE_RE.search(command_body)
+        if use_match is None:
+            continue
+        args_match = ARGS_RE.search(command_body)
+        args_info = (args_match.group(1), args_match.group(2)) if args_match else None
+        variables[match.group(1)] = (use_match.group(1), args_info)
+    return variables
+
+
+def _command_aliases(body: str, variable: str) -> set[str]:
+    """Return variable plus every name joined to it by `a := b` or `a = b`.
+
+    A name assigned more than once can hold different commands at different
+    points, so it joins nothing.
+    """
+    assignments = VARIABLE_ALIAS_RE.findall(body)
+    bindings = Counter(left for left, _ in assignments)
+    bindings.update(_local_command_variables(body).keys())
+    assignments = [pair for pair in assignments if bindings[pair[0]] == 1]
+    aliases = {variable}
+    while True:
+        joined = {
+            name
+            for left, right in assignments
+            if left in aliases or right in aliases
+            for name in (left, right)
+        }
+        if joined <= aliases:
+            return aliases
+        aliases |= joined
+
+
+def _returned_command_variable(body: str, local_commands: dict) -> str | None:
+    """Return the variable holding the command a constructor returns.
+
+    `result := cmd; return result` resolves to cmd, and so does a final
+    `return wrap(cmd)`. A `return err` from a closure is not a command.
+    """
+    final_call = RETURN_CALL_RE.search(body.rstrip())
+    if final_call:
+        for argument in re.findall(r'\w+', final_call.group(1)):
+            if argument in local_commands:
+                return argument
+    returned = RETURN_VARIABLE_RE.findall(body)
+    for name in reversed(returned):
+        for alias in sorted(_command_aliases(body, name)):
+            if alias in local_commands:
+                return alias
+    constructed = dict(CONSTRUCTOR_VARIABLE_RE.findall(body))
+    return next((name for name in reversed(returned) if name in constructed), None)
+
+
+def _receiver_constructors(scan: str, receiver: str | None) -> Iterable[str]:
+    """Yield constructors attached to receiver, directly or through a variable.
+
+    Pass string-masked text. Each variable uses its most recent binding before
+    the attachment, because separate blocks can reuse `sub` for different
+    constructor results.
+    """
+    for attachment in ADDCMD_CALL_RE.finditer(scan):
+        if attachment.group(1) != receiver:
+            continue
+        _, arguments = next(_addcommand_calls(scan[attachment.start():]))
+        yield from _addcommand_constructors(arguments)
+        variables = [argument for argument in arguments if re.fullmatch(r"\w+", argument)]
+        if not variables:
+            continue
+        ctor_bindings = dict(CONSTRUCTOR_VARIABLE_RE.findall(scan[:attachment.start()]))
+        for variable in variables:
+            child = ctor_bindings.get(variable)
+            if child:
+                yield child
+
+
+def _inline_command_children(
+    body: str,
+    fn_name: str,
+    go_file: Path,
+) -> tuple[list[str], dict[str, "CommandConstructor"]]:
+    """Collect local cobra.Command variables reachable from a constructor's
+    returned parent variable.
+
+    Generated-then-curated CLIs sometimes build children inline and call
+    `cmd.AddCommand(child)` instead of using a `newChildCmd` constructor. Those
+    are real Cobra edges and must participate in command-path resolution; a
+    same-file `Use:` declaration without that edge must not. Inline groups can
+    carry their own children, so `cmd.AddCommand(group)` followed by
+    `group.AddCommand(leaf)` nests leaf below group.
+    """
+    variables = _local_command_variables(body)
+    parent_variable = _returned_command_variable(body, variables)
+    if parent_variable not in variables:
+        return [], {}
+
+    scan = _mask_go_strings(body)
+    parent_aliases = _command_aliases(body, parent_variable)
+    edges: dict[str, list[str]] = {}
+    for receiver, arguments in _addcommand_calls(scan):
+        if receiver in parent_aliases:
+            receiver = parent_variable
+        if receiver in variables:
+            edges.setdefault(receiver, []).extend(
+                argument for argument in arguments if argument in variables
+            )
+
+    def synthetic(variable: str) -> str:
+        return f"{fn_name}__inline__{variable}"
+
+    child_names: list[str] = []
+    children: dict[str, CommandConstructor] = {}
+    pending = [parent_variable]
+    while pending:
+        parent = pending.pop(0)
+        for child_variable in edges.get(parent, []):
+            if child_variable == parent_variable:
+                continue
+            name = synthetic(child_variable)
+            siblings = child_names if parent == parent_variable else children[synthetic(parent)].children
+            _append_unique(siblings, name)
+            if name in children:
+                continue
+            use, args_info = variables[child_variable]
+            children[name] = CommandConstructor(
+                name=name,
+                file=go_file,
+                use=use,
+                args_info=args_info,
+                children=[],
+                body=body,
+                variable=child_variable,
+            )
+            for constructor in _receiver_constructors(scan, child_variable):
+                _append_unique(children[name].children, constructor)
+            pending.append(child_variable)
+    return child_names, children
+
+
+def cli_source_dir(cli_dir: Path) -> Path | None:
+    """Return the directory containing the shipped Cobra command sources.
+
+    Most catalog entries keep source at internal/cli. A small number of entries
+    may keep the public catalog files at the parent while the installable Go
+    module lives in a nested directory to avoid Go module path constraints.
+    """
+    direct = cli_dir / "internal/cli"
+    if direct.exists():
+        return direct
+    nested = sorted(path for path in cli_dir.glob("*/internal/cli") if path.is_dir())
+    if len(nested) == 1:
+        return nested[0]
+    return None
 
 
 def _mask_go_comments(text: str) -> str:
@@ -1409,8 +1616,9 @@ def _consume_hook_body(
     bindings = _find_bindings(body, {root_param, "rootCmd"})
     for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
         _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
-    for parent, ctor in ADDCMD_CALL_RE.findall(scan):
-        _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
+    for parent, arguments in _addcommand_calls(scan):
+        for ctor in _addcommand_constructors(arguments):
+            _record_hook_child(parent, ctor, root_param, bindings, root_children, deferred)
 
 
 def _command_at_token(
@@ -1521,8 +1729,8 @@ def _attach_deferred(
 
 
 def _read_cli_go_files(cli_dir: Path) -> list[tuple[Path, str]]:
-    src = cli_dir / "internal/cli"
-    if not src.exists():
+    src = cli_source_dir(cli_dir)
+    if not src:
         return []
     files: list[tuple[Path, str]] = []
     for go_file in sorted(src.glob("*.go")):
@@ -1573,8 +1781,9 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
             args_info = (args_match.group(1), args_match.group(2)) if args_match else None
             scan = _mask_go_strings(body)
             children: list[str] = []
-            for child in ADDCMD_CHILD_RE.finditer(scan):
-                _append_unique(children, child.group(1))
+            for _receiver, arguments in _addcommand_calls(scan):
+                for child in _addcommand_constructors(arguments):
+                    _append_unique(children, child)
             bindings = _find_bindings(body, {"root", "rootCmd"})
             for parent, ctor in NOVEL_ATTACH_RE.findall(scan):
                 if parent == "rootCmd":
@@ -1583,6 +1792,12 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
                     deferred.append((bindings[parent], ctor))
                 else:
                     _append_unique(children, ctor)
+            returned = RETURN_VARIABLE_RE.findall(scan)
+            for child in _receiver_constructors(scan, returned[-1] if returned else None):
+                _append_unique(children, child)
+            inline_names, inline_children = _inline_command_children(body, fn_name, go_file)
+            for name in inline_names:
+                _append_unique(children, name)
             constructors[fn_name] = CommandConstructor(
                 name=fn_name,
                 file=go_file,
@@ -1590,10 +1805,15 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
                 args_info=args_info,
                 children=children,
                 scaffold=_constructor_is_scaffold(body),
+                body=body,
+                variable=_returned_command_variable(body, _local_command_variables(body)),
             )
+            constructors.update(inline_children)
 
-        for match in ROOT_ADDCMD_RE.finditer(string_masked):
-            root_children.setdefault(match.group(1), None)
+        for receiver, arguments in _addcommand_calls(string_masked):
+            if receiver == "rootCmd":
+                for child in _addcommand_constructors(arguments):
+                    root_children.setdefault(child, None)
         for parent, ctor in NOVEL_ATTACH_RE.findall(string_masked):
             if parent == "rootCmd":
                 root_children.setdefault(ctor, None)
@@ -1605,6 +1825,23 @@ def _command_tree(cli_dir: Path) -> tuple[dict[str, CommandConstructor], tuple[s
                 continue
             root_param, body = resolved
             _consume_hook_body(body, root_param, root_children, deferred)
+
+    # Curated CLIs may attach a child to a literal path in the built root tree.
+    # Require an actual successful Find guard and an AddCommand on its result;
+    # a matching leaf declaration alone must never establish an edge.
+    for _go_file, comment_masked, _string_masked, _file_locals in parsed:
+        for attachment in FIND_ATTACHMENT_RE.finditer(comment_masked):
+            receiver, _, path_literal = attachment.groups()
+            guarded = _extract_function_body(comment_masked, attachment.end())
+            if guarded is None:
+                continue
+            path = re.findall(r'"([^"]+)"', path_literal)
+            for attached_to, arguments in _addcommand_calls(_mask_go_strings(guarded)):
+                if attached_to != receiver:
+                    continue
+                for child in _addcommand_constructors(arguments):
+                    if child in constructors:
+                        deferred.append((path, child))
 
     root_list = list(root_children)
     _attach_deferred(constructors, root_list, deferred)
@@ -1720,8 +1957,8 @@ def _legacy_find_command_source(cli_dir: Path, cmd_path: list[str]):
     expects (e.g., commands constructed via local helpers, or files that
     declare cobra.Commands without going through a `newXxxCmd` factory)."""
     leaf = cmd_path[-1]
-    src = cli_dir / "internal/cli"
-    if not src.exists():
+    src = cli_source_dir(cli_dir)
+    if not src:
         return [], None, None
 
     candidates = []
@@ -1791,6 +2028,14 @@ def _iter_bool_flag_names(text: str) -> Iterable[str]:
         if method in ("BoolVar", "BoolSliceVar"):
             yield name
 
+    # Non-Var Cobra boolean declarations have a different argument shape:
+    # Flags().Bool("json", false, ...) / BoolP("json", "j", false, ...).
+    for m in re.finditer(
+        r'(?:Persistent)?Flags\(\)\.BoolP?\(\s*"([a-z][a-z0-9-]*)"',
+        text,
+    ):
+        yield m.group(1)
+
     aliases = {
         m.group(1): m.group(2) == "Persistent"
         for m in FLAG_ALIAS_RE.finditer(text)
@@ -1816,8 +2061,8 @@ def _boolean_flag_names(cli_dir: Path) -> frozenset[str]:
     would silently drop a real positional. A CLI-wide scan (rather than
     per-command) deliberately includes persistent/root booleans like --json or
     --verbose, which are the common case a recipe writes before a positional."""
-    cli_pkg = cli_dir / "internal" / "cli"
-    if not cli_pkg.is_dir():
+    cli_pkg = cli_source_dir(cli_dir)
+    if cli_pkg is None:
         return frozenset()
     names: set[str] = set()
     for path in sorted(cli_pkg.glob("*.go")):
@@ -1826,6 +2071,31 @@ def _boolean_flag_names(cli_dir: Path) -> frozenset[str]:
         except Exception:
             continue
         names.update(_iter_bool_flag_names(text))
+    return frozenset(names)
+
+
+@lru_cache(maxsize=None)
+def _command_boolean_flag_names(cli_dir: Path, cmd_path: tuple[str, ...]) -> frozenset[str]:
+    """Honor local flag types over same-named flags on other commands."""
+    constructors = collect_command_constructors(cli_dir)
+    roots = find_root_children(cli_dir)
+    command = _constructor_at_path(constructors, roots, list(cmd_path))
+    if command is None or not command.body:
+        return _boolean_flag_names(cli_dir)
+    # Retain the legacy discovery of inherited booleans, then override with
+    # this command's own declarations. A constructor body can also declare
+    # flags on inline children, and those must not change this command.
+    names = set(_boolean_flag_names(cli_dir))
+    own = _command_aliases(command.body, command.variable) if command.variable else None
+    for match in FLAG_DECL_RE.finditer(command.body):
+        _, method, name = match.groups()
+        receiver = re.search(r"(\w+)\s*\.\s*$", command.body[:match.start()])
+        if own and (receiver is None or receiver.group(1) not in own):
+            continue
+        if method == "BoolVar":
+            names.add(name)
+        else:
+            names.discard(name)
     return frozenset(names)
 
 
@@ -1843,9 +2113,7 @@ def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
 
 # Matches a function call whose first positional arg is `cmd` (or `cmd.Flags()`).
 # Captures the function name so the verifier can look up its body.
-HELPER_CALL_RE = re.compile(
-    r"\b([a-zA-Z_]\w*)\s*\(\s*cmd(?:\b|\.Flags\(\))"
-)
+HELPER_CALL_RE = r"\b([a-zA-Z_]\w*)\s*\(\s*(?:{receivers})(?:\b|\.Flags\(\))"
 
 # Cobra/stdlib methods that take cmd as first arg but never declare flags.
 _HELPER_CALL_IGNORE = frozenset({
@@ -1943,9 +2211,13 @@ def go_block_body(text: str, open_brace: int) -> str:
 _HELPER_WALK_MAX_DEPTH = 8
 
 
-def _helper_names_called_with_cmd(text: str) -> set[str]:
+def _helper_names_called_with_cmd(text: str, receivers: set[str] | None = None) -> set[str]:
     names: set[str] = set()
-    for m in HELPER_CALL_RE.finditer(text):
+    # Inline subcommands reach helpers through their own variable, e.g.
+    # addCritFlags(add, &crit). Without known receivers, any local
+    # cobra.Command in the text counts.
+    candidates = sorted(receivers or {"cmd", *LOCAL_COMMAND_RE.findall(text)})
+    for m in re.finditer(HELPER_CALL_RE.format(receivers="|".join(candidates)), text):
         name = m.group(1)
         if name not in _HELPER_CALL_IGNORE:
             names.add(name)
@@ -1953,8 +2225,8 @@ def _helper_names_called_with_cmd(text: str) -> set[str]:
 
 
 def _cli_go_sources(cli_dir: Path) -> list[str]:
-    src = cli_dir / "internal/cli"
-    if not src.exists():
+    src = cli_source_dir(cli_dir)
+    if not src:
         return []
     texts: list[str] = []
     for go_file in sorted(src.glob("*.go")):
@@ -1967,9 +2239,18 @@ def _cli_go_sources(cli_dir: Path) -> list[str]:
     return texts
 
 
-def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name: str) -> bool:
+def flag_declared_via_helper(
+    cli_dir: Path,
+    cmd_files: Iterable[Path],
+    flag_name: str,
+    command: CommandConstructor | None = None,
+) -> bool:
     """Return True if a helper called from cmd_files (with cmd as first arg)
     declares flag_name, following nested helpers that also receive cmd.
+
+    When the graph resolved the command, only helpers called on that command
+    count. A file-wide scan would credit a parent with flags a helper added to
+    its inline child.
 
     A visited set and _HELPER_WALK_MAX_DEPTH bound cycles and deep chains.
     """
@@ -1978,12 +2259,17 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
         return False
 
     frontier: set[str] = set()
-    for f in cmd_files:
-        try:
-            text = read_utf8(f)
-        except Exception:
-            continue
-        frontier |= _helper_names_called_with_cmd(text)
+    if command is not None and command.body and command.variable:
+        frontier = _helper_names_called_with_cmd(
+            command.body, _command_aliases(command.body, command.variable)
+        )
+    else:
+        for f in cmd_files:
+            try:
+                text = read_utf8(f)
+            except Exception:
+                continue
+            frontier |= _helper_names_called_with_cmd(text)
     seen: set[str] = set()
     for _ in range(_HELPER_WALK_MAX_DEPTH):
         names = {n for n in frontier if n not in seen}
@@ -2007,8 +2293,8 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
 
 
 def persistent_flag_declared(cli_dir: Path, flag_name: str) -> bool:
-    src = cli_dir / "internal/cli"
-    if not src.exists():
+    src = cli_source_dir(cli_dir)
+    if not src:
         return False
     for go_file in src.glob("*.go"):
         try:
@@ -2050,18 +2336,25 @@ def _cli_invocation_from_tokens(
             break
         if len(cmd_path) < 3 and re.match(r"^[a-z][a-z0-9-]*$", t):
             if cli_dir is not None:
-                _files, use_str, _args_info = find_command_source(cli_dir, cmd_path)
-                if use_str:
-                    _, _, optional, variadic = parse_use(use_str)
-                    if optional > 0 or variadic:
-                        break
-            # Verify adding this token still maps to a valid command. If the
-            # extended path has no source match, this token is an argument.
-            if cli_dir is not None:
                 trial = cmd_path + [t]
-                files, _, _ = find_command_source(cli_dir, trial)
-                if not files:
-                    break
+                child_file, _, _ = resolve_command_path(cli_dir, trial)
+                if child_file is not None:
+                    cmd_path.append(t)
+                    i += 1
+                    continue
+                # Preserve wholly legacy command trees whose parent is not in
+                # the constructor graph. Graph-resolved parents include local
+                # variable-wired children collected by
+                # _inline_command_children, so they never need a file-proximity
+                # heuristic that could promote an unwired sibling.
+                current_file, _, _ = resolve_command_path(cli_dir, cmd_path)
+                if current_file is None:
+                    child_files, _, _ = find_command_source(cli_dir, trial)
+                    if child_files:
+                        cmd_path.append(t)
+                        i += 1
+                        continue
+                break
             cmd_path.append(t)
             i += 1
             continue
@@ -2072,10 +2365,17 @@ def _cli_invocation_from_tokens(
     while i < len(tokens):
         t = tokens[i]
         if t == "--":
-            i += 1
-            continue
+            positional.extend(tokens[i + 1:])
+            break
         if t.startswith("--"):
-            flag_name = t.split("=", 1)[0].rstrip(TOKEN_TRAILING_PUNCT)
+            flag_name, _, flag_value = t.partition("=")
+            flag_name = flag_name.rstrip(TOKEN_TRAILING_PUNCT)
+            # Help stays off when disabled, so Cobra still validates Args. The
+            # last occurrence wins, matching pflag.
+            if flag_name == "--help" and flag_value.strip(TOKEN_TRAILING_PUNCT) in HELP_DISABLED_VALUES:
+                flags = [flag for flag in flags if flag != "--help"]
+                i += 1
+                continue
             flags.append(flag_name)
             # Skip a space-separated value (`--flag value`), but NOT when:
             #  - the value is inline (`--flag=value`) — the next token is a
@@ -2085,7 +2385,7 @@ def _cli_invocation_from_tokens(
             #    recipe's positional args).
             is_bool = (
                 cli_dir is not None
-                and flag_name.lstrip("-") in _boolean_flag_names(cli_dir)
+                and flag_name.lstrip("-") in _command_boolean_flag_names(cli_dir, tuple(cmd_path))
             )
             if (
                 "=" not in t
@@ -2413,7 +2713,8 @@ def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report
     # so users see both surfaces and don't get a false "fixed" signal
     # after editing only the first source. Matches check_flag_commands's
     # per-source emission policy.
-    all_files = list((cli_dir / "internal/cli").glob("*.go"))
+    source_dir = cli_source_dir(cli_dir)
+    all_files = list(source_dir.glob("*.go")) if source_dir else []
     for src in sources:
         seen: set[str] = set()
         for raw_cmd_path, _positional, flags, _surface in extract_cli_invocations(src, cli_binary, cli_dir):
@@ -2437,13 +2738,109 @@ def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report
                 )
 
 
+@lru_cache(maxsize=None)
+def _unattached_leaf_files(cli_dir: Path, leaf: str) -> tuple[Path, ...]:
+    """Files declaring a `leaf` command that the command graph never reaches.
+
+    Curated CLIs attach children through delegating constructors, lookup
+    helpers, and loops that the graph does not follow, so a missing edge does
+    not prove a missing child. A declaration already placed elsewhere in the
+    graph is accounted for, though, and says nothing about this parent.
+    Declarations are counted because one file can hold several `list` commands
+    with only some of them attached. Each constructor call builds a separate
+    command, so a constructor called more often than the graph has edges for it
+    has an attachment the graph did not see, and stays unaccounted for.
+    """
+    constructors, root_children = _command_tree(cli_dir)
+    sources = _read_cli_go_files(cli_dir)
+    call_sites: Counter[str] = Counter()
+    for _go_file, text in sources:
+        call_sites.update(CONSTRUCTOR_CALL_RE.findall(_mask_go_strings(_mask_go_comments(text))))
+    attached: Counter[tuple[Path, str]] = Counter()
+    for info in constructors.values():
+        if info.scaffold:
+            attached[(info.file, info.use)] += 1
+    edges = Counter(root_children)
+    pending = list(root_children)
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        info = constructors.get(name)
+        if name in seen or info is None:
+            continue
+        seen.add(name)
+        edges.update(info.children)
+        pending.extend(info.children)
+    for name in seen:
+        if call_sites[name] <= edges[name]:
+            info = constructors[name]
+            attached[(info.file, info.use)] += 1
+
+    files: list[Path] = []
+    for go_file, text in sources:
+        declared = Counter(
+            use for use in USE_RE.findall(_mask_go_comments(text))
+            if parse_use(use)[0] == leaf
+        )
+        if any(count > attached[(go_file, use)] for use, count in declared.items()):
+            files.append(go_file)
+    return tuple(files)
+
+
+def _graph_command(cli_dir: Path, cmd_path: list[str]) -> CommandConstructor | None:
+    return _constructor_at_path(
+        collect_command_constructors(cli_dir), find_root_children(cli_dir), cmd_path
+    )
+
+
+def _subcommand_fallback_files(cli_dir: Path, candidate: list[str]) -> list[Path]:
+    """Files that may declare the flags of an under-resolved subcommand.
+
+    The legacy leaf scan alone would match an unrelated top-level `messages`
+    command for `export messages`, and its flags would excuse a wrong-command
+    recipe. A parent in the graph therefore needs a real child edge, or a leaf
+    declaration the graph has not placed anywhere.
+    """
+    if resolve_command_path(cli_dir, candidate[:-1])[0] is None:
+        return find_command_source(cli_dir, candidate)[0]
+    child_file = resolve_command_path(cli_dir, candidate)[0]
+    if child_file is not None:
+        return [child_file]
+    return list(_unattached_leaf_files(cli_dir, candidate[-1]))
+
+
 def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
-    all_files = list((cli_dir / "internal/cli").glob("*.go"))
+    source_dir = cli_source_dir(cli_dir)
+    all_files = list(source_dir.glob("*.go")) if source_dir else []
     for src in sources:
         seen: set[tuple[str, str]] = set()
         for raw_cmd_path, _positional, flags, _surface in extract_cli_invocations(src, cli_binary, cli_dir):
             cmd_path = list(raw_cmd_path)
             path_str = " ".join(cmd_path)
+            # The extractor under-resolves subcommands whose names contain an
+            # underscore — `messages post_message --text` yields cmd_path
+            # ["messages"] with "post_message" left among the positionals — so
+            # flags belonging to the subcommand were attributed to its parent and
+            # reported as "declared elsewhere but not on <parent>".
+            #
+            # check_positional_args already treats this shape as a false positive
+            # (see the snake_case note there), but that only downgraded its own
+            # finding; this check still emitted hard errors.
+            #
+            # Resolve it instead of suppressing it, but only as a fallback once the
+            # parent has been ruled out. Trying the child first would misread
+            # commands that take a resource name positionally — `export messages
+            # --format` and `tail messages --interval` both resolve
+            # ["export", "messages"] to a messages source file, which does not
+            # declare --format or --interval, turning working docs into errors.
+            #
+            command = _graph_command(cli_dir, cmd_path)
+            fallback_files: list[Path] = []
+            fallback_command: CommandConstructor | None = None
+            if len(cmd_path) == 1 and _positional and re.match(r"^[a-z][a-z0-9_-]+$", _positional[0]):
+                candidate = cmd_path + [_positional[0]]
+                fallback_files = _subcommand_fallback_files(cli_dir, candidate)
+                fallback_command = _graph_command(cli_dir, candidate)
             for raw_flag in flags:
                 flag = raw_flag.lstrip("-")
                 key = (path_str, flag)
@@ -2454,7 +2851,14 @@ def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, rep
                     continue
                 if persistent_flag_declared(cli_dir, flag):
                     continue
-                if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag):
+                if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag, command):
+                    continue
+                # Parent ruled out — the flag may belong to an under-resolved
+                # subcommand left in the positionals (see fallback_files above).
+                if fallback_files and (
+                    flag_declared_in(fallback_files, flag)
+                    or flag_declared_via_helper(cli_dir, fallback_files, flag, fallback_command)
+                ):
                     continue
                 seen.add(key)
                 if flag_declared_in(all_files, flag):
@@ -2481,8 +2885,10 @@ def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, rep
 
 def check_positional_args(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
     for src in sources:
-        for cmd_path, positional, _flags in extract_recipes(src, cli_binary, cli_dir):
+        for cmd_path, positional, flags in extract_recipes(src, cli_binary, cli_dir):
             report.recipes_checked += 1
+            if "--help" in flags:
+                continue  # Cobra handles --help before validating Args
             _files, use_str, args_info = find_command_source(cli_dir, cmd_path)
             if not use_str:
                 continue  # command not found — not our job to flag here
@@ -2687,8 +3093,8 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     if not skill.exists():
         print(f"error: no SKILL.md in {cli_dir}", file=sys.stderr)
         sys.exit(2)
-    if not (cli_dir / "internal/cli").exists():
-        print(f"error: no internal/cli/ in {cli_dir}", file=sys.stderr)
+    if not cli_source_dir(cli_dir):
+        print(f"error: no internal/cli/ source tree in {cli_dir}", file=sys.stderr)
         sys.exit(2)
 
     cli_binary = derive_cli_binary(cli_dir)
