@@ -220,10 +220,53 @@ func TestPIIAuditCmd_CleanDir(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 
 	assert.Contains(t, stdout.String(), "no findings")
+	assert.Contains(t, stdout.String(), "account-id")
 
 	ledger := artifacts.ReadPIILedger(dir)
 	require.NotNil(t, ledger)
 	assert.Equal(t, 0, ledger.FindingsCountBefore)
+}
+
+func TestPIIAuditCmd_AccountIdentifiersInReproTree(t *testing.T) {
+	dir := t.TempDir()
+	body := `{
+  "accountId": "4839201756",
+  "partyId": "77120934581",
+  "digitalAccountIdentifier": "AB12CD34EF56GH78",
+  "account": {"number": "000123456789"},
+  "email": "jane.doe@gmail.com"
+}
+`
+	writeFile(t, filepath.Join(dir, "sample.json"), body)
+	writeFile(t, filepath.Join(dir, ".manuscripts", "run1", "research", "notes.json"), body)
+
+	cmd := newPIIAuditCmd()
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{dir, "--json"})
+	require.NoError(t, cmd.Execute())
+
+	var findings []artifacts.PIIFinding
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &findings))
+
+	want := []string{"4839201756", "77120934581", "AB12CD34EF56GH78", "000123456789"}
+	for _, file := range []string{"sample.json", ".manuscripts/run1/research/notes.json"} {
+		var accounts, emails []string
+		for _, f := range findings {
+			if f.File != file {
+				continue
+			}
+			switch f.Kind {
+			case artifacts.PIIKindAccountID:
+				accounts = append(accounts, f.MatchedSpan)
+			case artifacts.PIIKindEmail:
+				emails = append(emails, f.MatchedSpan)
+			}
+		}
+		assert.ElementsMatch(t, want, accounts, file)
+		assert.Equal(t, []string{"jane.doe@gmail.com"}, emails, file)
+	}
 }
 
 func TestPIIAuditCmd_TypedExitCodesAnnotation(t *testing.T) {

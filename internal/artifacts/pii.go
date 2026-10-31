@@ -47,6 +47,7 @@ const (
 	PIIKindPhoneUS       = "phone-us"
 	PIIKindZipPlus4      = "zip-plus-4"
 	PIIKindPostalAddress = "postal-address"
+	PIIKindAccountID     = "account-id"
 )
 
 // Categories the agent picks from when accepting a finding. The closed
@@ -468,9 +469,14 @@ var excludedFiles = map[string]bool{
 // `--spec`. Vendor-published `example:` values (emails, phones,
 // addresses) are documentation, not customer PII, so a Stripe/Zendesk/
 // GitHub spec doesn't false-fail every promote. Exemption is depth-1
-// only; a spec.yaml nested under .manuscripts/ is captured content and
-// stays in scope unless content-detection identifies it as an archived vendor
-// spec (see manuscriptsDir + looksLikeVendorAPISpec). Generated test fixtures
+// only, and it does not apply when the printed CLI's spec source is
+// sniffed: that spec was built from the printer's own session, so its
+// examples can carry the printer's identifiers. Sniffed is read from
+// .printing-press.json (any nesting) or a column-0 / top-level
+// spec_source on the root spec itself. A spec.yaml nested under
+// .manuscripts/ is captured content and stays in scope unless
+// content-detection identifies it as an archived vendor spec (see
+// manuscriptsDir + looksLikeVendorAPISpec). Generated test fixtures
 // under testdata/ are outside the audit scope.
 // Mirrors findArchivedSpec()'s candidate set in
 // internal/pipeline/climanifest.go.
@@ -732,6 +738,7 @@ func isBareDigits(span string) bool {
 // Per-file scan errors (unreadable file, permission denied) are logged
 // to stderr and skipped — a single bad file does not abort the gate.
 func FindPII(root string) ([]PIIFinding, error) {
+	sniffedSpec := cliSpecSourceIsSniffed(root)
 	var findings []PIIFinding
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -753,7 +760,7 @@ func FindPII(root string) ([]PIIFinding, error) {
 			return err
 		}
 		relSlash := filepath.ToSlash(rel)
-		if !isHighRiskFile(relSlash) {
+		if !isHighRiskFile(relSlash, sniffedSpec) {
 			return nil
 		}
 		fileFindings, err := scanPIIFile(root, path)
@@ -866,12 +873,12 @@ func findPIIInManuscriptsRun(runDir string) ([]PIIFinding, error) {
 // in the scan scope. A file qualifies when its basename matches one
 // of the file globs OR when any path component matches one of the
 // directory globs. excludedFiles overrides matches.
-func isHighRiskFile(relSlash string) bool {
+func isHighRiskFile(relSlash string, sniffedSpec bool) bool {
 	base := filepath.Base(relSlash)
 	if excludedFiles[base] {
 		return false
 	}
-	if !strings.Contains(relSlash, "/") && rootVendorSpecFiles[base] {
+	if !sniffedSpec && !strings.Contains(relSlash, "/") && rootVendorSpecFiles[base] {
 		return false
 	}
 	parts := strings.Split(relSlash, "/")
@@ -894,9 +901,11 @@ func isHighRiskFile(relSlash string) bool {
 	return false
 }
 
-// scanPIIFile runs all detectors against a single file line-by-line.
-// Binary files (null-byte probe) are skipped. Returns findings keyed
-// to the file's path relative to root with forward-slash separators.
+// scanPIIFile runs the detectors against a single file. Regex detectors
+// walk line by line; account identifiers are matched structurally so a
+// key and its value can sit on different lines. Binary files (null-byte
+// probe) are skipped. Returns findings keyed to the file's path relative
+// to root with forward-slash separators.
 func scanPIIFile(root, path string) ([]PIIFinding, error) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
@@ -930,17 +939,16 @@ func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 		return nil, nil
 	}
 
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	return scanPIIContent(relSlash, string(rest)), nil
+}
+
+func scanPIIContent(relSlash, content string) []PIIFinding {
 	var findings []PIIFinding
-	lineNumber := 0
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil && readErr != io.EOF {
-			return nil, readErr
-		}
-		if line == "" && readErr == io.EOF {
-			break
-		}
-		lineNumber++
+	forEachPIILine(content, func(line string, lineNumber int) {
 		for _, det := range piiDetectors {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
 				matchedSpan := line[match[0]:match[1]]
@@ -962,11 +970,32 @@ func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 				})
 			}
 		}
-		if readErr == io.EOF {
-			break
+	})
+	findings = append(findings, scanAccountIdentifiers(relSlash, content)...)
+	return findings
+}
+
+// forEachPIILine preserves the previous ReadString framing: the newline
+// stays on the line, and a trailing newline does not create an extra empty line.
+func forEachPIILine(content string, fn func(line string, lineNumber int)) {
+	if content == "" {
+		return
+	}
+	lineNumber := 0
+	rest := content
+	for {
+		lineNumber++
+		i := strings.IndexByte(rest, '\n')
+		if i < 0 {
+			fn(rest, lineNumber)
+			return
+		}
+		fn(rest[:i+1], lineNumber)
+		rest = rest[i+1:]
+		if rest == "" {
+			return
 		}
 	}
-	return findings, nil
 }
 
 // PIIFindingID returns a stable 12-hex-char identifier for the finding.

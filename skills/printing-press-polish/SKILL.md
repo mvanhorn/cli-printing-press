@@ -527,7 +527,7 @@ Parse findings into categories:
 | Output entity warnings | scorecard JSON | `live_check.features[].warnings` — raw HTML entities in human output |
 | Output plausibility | Phase 4.85 | Findings from the agentic output review |
 | MCP tool quality | tools-audit | Empty Short, thin Short, missing read-only annotations, thin MCP descriptions |
-| Customer PII | pii-audit | Card last-4, email, phone, ZIP+4, postal-address shapes in high-risk files (manuscripts, fixtures, README) |
+| Customer PII | pii-audit | Card last-4, email, phone, ZIP+4, postal-address, and account-identifier shapes in high-risk files (manuscripts, fixtures, README) |
 
 **Environmental failures vs. CLI defects.** Some Phase 1 outputs surface failures that aren't real CLI bugs and should not block ship:
 
@@ -816,7 +816,7 @@ Proceed to "After all fixes" only when the audit's summary line reads `no pendin
 
 ### Priority 8: Customer-PII gate
 
-**Your goal now is to clear the PII ledger so promote and publish gates pass.** The PII gate is the deterministic floor that prevents real customer values from reaching published library content. It catches card-last-4, email, US phone, ZIP+4, and postal-address shapes in high-risk files.
+**Your goal now is to clear the PII ledger so promote and publish gates pass.** The PII gate is the deterministic floor that prevents real customer values from reaching published library content. It catches card-last-4, email, US phone, ZIP+4, postal-address, and account-identifier shapes in high-risk files.
 
 Stop and:
 
