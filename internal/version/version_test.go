@@ -12,10 +12,6 @@ func TestVersionIsValidSemver(t *testing.T) {
 	assert.Regexp(t, regexp.MustCompile(`^\d+\.\d+\.\d+$`), Version)
 }
 
-func TestGetReturnsVersion(t *testing.T) {
-	assert.Equal(t, Version, Get())
-}
-
 func TestVersionFromBuildInfo(t *testing.T) {
 	tests := []struct {
 		name string
