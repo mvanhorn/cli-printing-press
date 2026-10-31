@@ -49,7 +49,7 @@ func runVerifySkillScript(dir string, only []string, asJSON bool, strict bool) (
 		result.ExitCode = ExitInputError
 		return result, &ExitError{Code: ExitInputError, Err: fmt.Errorf("no SKILL.md in %s", abs)}
 	}
-	if _, err := os.Stat(filepath.Join(abs, "internal", "cli")); err != nil {
+	if !hasCLISourceDir(abs) {
 		result.ExitCode = ExitInputError
 		return result, &ExitError{Code: ExitInputError, Err: fmt.Errorf("no internal/cli/ in %s", abs)}
 	}
@@ -101,6 +101,28 @@ func runVerifySkillScript(dir string, only []string, asJSON bool, strict bool) (
 		return result, fmt.Errorf("running verifier: %w", runErr)
 	}
 	return result, nil
+}
+
+// hasCLISourceDir matches cli_source_dir in the verifier: source lives at
+// <dir>/internal/cli, or at <dir>/<module>/internal/cli when exactly one nested
+// module holds it. Directories are listed rather than globbed so glob
+// metacharacters in dir are taken literally.
+func hasCLISourceDir(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "internal", "cli")); err == nil {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	nested := 0
+	for _, entry := range entries {
+		info, err := os.Stat(filepath.Join(dir, entry.Name(), "internal", "cli"))
+		if err == nil && info.IsDir() {
+			nested++
+		}
+	}
+	return nested == 1
 }
 
 // canonicalFinding mirrors the Python script's finding shape so JSON merges
