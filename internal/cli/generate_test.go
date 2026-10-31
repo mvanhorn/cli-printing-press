@@ -854,7 +854,7 @@ func TestLoadResearchSourcesReturnsExplicitEmptyManifestNovelFeatures(t *testing
 		Auth: spec.AuthConfig{Type: "none"},
 	}, t.TempDir())
 
-	got := loadResearchSources(gen, researchDir)
+	got := loadResearchSources(gen, researchDir, mustLoadResearch(t, researchDir))
 	require.NotNil(t, got, "empty built list is an explicit fresh result, not unavailable metadata")
 	assert.Empty(t, got)
 	require.Len(t, gen.NovelFeatures, 1)
@@ -874,7 +874,7 @@ func TestLoadResearchSourcesRecordsURLLessAlternatives(t *testing.T) {
 		Name: "altless",
 		Auth: spec.AuthConfig{Type: "none"},
 	}, t.TempDir())
-	loadResearchSources(gen, researchDir)
+	loadResearchSources(gen, researchDir, mustLoadResearch(t, researchDir))
 	assert.True(t, gen.ListedAlternatives)
 	assert.Empty(t, gen.Sources)
 }
@@ -906,7 +906,7 @@ func TestLoadResearchSourcesScaffoldsCurrentNovelFeaturesNotBuilt(t *testing.T) 
 		Auth: spec.AuthConfig{Type: "none"},
 	}, t.TempDir())
 
-	got := loadResearchSources(gen, researchDir)
+	got := loadResearchSources(gen, researchDir, mustLoadResearch(t, researchDir))
 	require.Len(t, gen.NovelFeatures, 1)
 	assert.Equal(t, "markets scan", gen.NovelFeatures[0].Command)
 	assert.Equal(t, "New scanner", gen.NovelFeatures[0].Name)
@@ -935,10 +935,136 @@ func TestLoadResearchSourcesFirstPrintWithoutBuiltList(t *testing.T) {
 		Auth: spec.AuthConfig{Type: "none"},
 	}, t.TempDir())
 
-	got := loadResearchSources(gen, researchDir)
+	got := loadResearchSources(gen, researchDir, mustLoadResearch(t, researchDir))
 	require.Len(t, gen.NovelFeatures, 1)
 	assert.Equal(t, "items insight", gen.NovelFeatures[0].Command)
 	assert.Nil(t, got)
+}
+
+func mustLoadResearch(t *testing.T, researchDir string) *pipeline.ResearchResult {
+	t.Helper()
+	research, err := pipeline.LoadResearch(researchDir)
+	require.NoError(t, err)
+	return research
+}
+
+func TestResearchMatchesSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		researchAPI string
+		apiSpec     spec.APISpec
+		want        bool
+	}{
+		{name: "empty api_name is unknown", researchAPI: "  ", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
+		{name: "same slug", researchAPI: "stripe", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
+		{name: "display name with noise word", researchAPI: "Stripe API", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
+		{name: "display name punctuation", researchAPI: "Cal.com", apiSpec: spec.APISpec{Name: "cal-com"}, want: true},
+		{name: "unhyphenated slug", researchAPI: "calcom", apiSpec: spec.APISpec{Name: "cal-com"}, want: true},
+		{name: "spec display name", researchAPI: "Product Hunt", apiSpec: spec.APISpec{Name: "ph", DisplayName: "Product Hunt"}, want: true},
+		{name: "binary name", researchAPI: "stripe-pp-cli", apiSpec: spec.APISpec{Name: "stripe"}, want: true},
+		{name: "research slug shorter than title slug", researchAPI: "canvas", apiSpec: spec.APISpec{Name: "canvas-lms"}, want: true},
+		{name: "different api", researchAPI: "github", apiSpec: spec.APISpec{Name: "stripe"}, want: false},
+		{name: "same vendor different product", researchAPI: "google-drive", apiSpec: spec.APISpec{Name: "google-calendar"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, researchMatchesSpec(tt.researchAPI, &tt.apiSpec))
+		})
+	}
+}
+
+func TestGenerateCmdIgnoresResearchForDifferentAPI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		researchAPI string
+		applied     bool
+	}{
+		{name: "matching display name applies research", researchAPI: "Home App", applied: true},
+		{name: "different api ignores research", researchAPI: "otherapp", applied: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			specPath := filepath.Join(dir, "spec.yaml")
+			researchDir := filepath.Join(dir, "research")
+			outputDir := filepath.Join(dir, "homeapp")
+			require.NoError(t, os.MkdirAll(researchDir, 0o755))
+			require.NoError(t, os.WriteFile(specPath, []byte(`name: homeapp
+description: Home app API
+version: 0.1.0
+base_url: https://api.homeapp.com
+auth:
+  type: api_key
+  header: X-API-Key
+  env_vars:
+    - HOMEAPP_API_KEY
+config:
+  format: toml
+  path: ~/.config/homeapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+			built := []pipeline.NovelFeature{{Name: "Item insight", Command: "items insight", Description: "Summarize item state"}}
+			research, err := json.Marshal(pipeline.ResearchResult{
+				APIName:            tt.researchAPI,
+				Homepage:           "https://www.researched.example",
+				NovelFeatures:      built,
+				NovelFeaturesBuilt: &built,
+				Auth:               &pipeline.ResearchAuth{CanonicalEnvVar: "RESEARCHED_TOKEN"},
+				Narrative:          &pipeline.ReadmeNarrative{Headline: "Researched headline sentinel"},
+			})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), research, 0o644))
+
+			cmd := newGenerateCmd()
+			cmd.SetArgs([]string{
+				"--spec", specPath,
+				"--output", outputDir,
+				"--validate=false",
+				"--force",
+				"--research-dir", researchDir,
+			})
+			require.NoError(t, cmd.Execute())
+
+			data, err := os.ReadFile(filepath.Join(outputDir, pipeline.CLIManifestFilename))
+			require.NoError(t, err)
+			var manifest pipeline.CLIManifest
+			require.NoError(t, json.Unmarshal(data, &manifest))
+			readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+			require.NoError(t, err)
+			config, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+			require.NoError(t, err)
+			_, stubErr := os.Stat(filepath.Join(outputDir, "internal", "cli", "items_insight.go"))
+
+			if tt.applied {
+				assert.Equal(t, "https://www.researched.example", manifest.Homepage)
+				require.Len(t, manifest.NovelFeatures, 1)
+				assert.NoError(t, stubErr)
+				assert.Contains(t, string(readme), "Researched headline sentinel")
+				assert.Contains(t, string(config), "RESEARCHED_TOKEN")
+				return
+			}
+			assert.Empty(t, manifest.Homepage)
+			assert.Empty(t, manifest.NovelFeatures)
+			assert.ErrorIs(t, stubErr, os.ErrNotExist)
+			assert.NotContains(t, string(readme), "Researched headline sentinel")
+			assert.NotContains(t, string(config), "RESEARCHED_TOKEN")
+			assert.Contains(t, string(config), "HOMEAPP_API_KEY")
+		})
+	}
 }
 
 func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {
@@ -5632,7 +5758,7 @@ func TestApplyResearchAuthMetadataRejectsUnsafeCanonicalEnvVars(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), researchData, 0o644))
 
 			apiSpec := &spec.APISpec{Name: "test", Auth: tt.auth}
-			applyResearchAuthMetadata(apiSpec, researchDir)
+			applyResearchAuthMetadata(apiSpec, mustLoadResearch(t, researchDir))
 
 			assert.Equal(t, tt.wantEnvVars, apiSpec.Auth.EnvVars)
 			if tt.wantSpecName == "" {
