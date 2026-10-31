@@ -22,7 +22,7 @@ func NormalizeHomepage(raw string) string {
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return ""
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	if ip := net.ParseIP(host); ip != nil && (!ip.IsGlobalUnicast() || ip.IsPrivate()) {
 		return ""
 	}
 	return raw

@@ -26,6 +26,10 @@ func TestNormalizeHomepage(t *testing.T) {
 		{name: "ipv4 loopback", raw: "https://127.0.0.1", want: ""},
 		{name: "other ipv4 loopback", raw: "https://127.0.0.2", want: ""},
 		{name: "ipv6 loopback", raw: "https://[::1]", want: ""},
+		{name: "private ipv4", raw: "https://192.168.1.10", want: ""},
+		{name: "link-local ipv4", raw: "https://169.254.1.10", want: ""},
+		{name: "unspecified address", raw: "https://0.0.0.0", want: ""},
+		{name: "public ip address", raw: "https://93.184.215.14", want: "https://93.184.215.14"},
 		{name: "template placeholder host", raw: "https://{tenant}.example.com", want: ""},
 		{name: "angle placeholder", raw: "https://<your-domain>.com", want: ""},
 	}
