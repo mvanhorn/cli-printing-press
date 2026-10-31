@@ -41,9 +41,7 @@ type ResearchResult struct {
 	// Optional: templates fall back to generic content when absent. Populated
 	// during the absorb phase alongside NovelFeatures.
 	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
-	// Homepage is the product's public website as confirmed during research.
-	// Absent when research could not confirm one.
-	Homepage string `json:"homepage,omitempty"`
+	Homepage  string           `json:"homepage,omitempty"`
 }
 
 func (r *ResearchResult) UnmarshalJSON(data []byte) error {

@@ -3312,9 +3312,6 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 	return out
 }
 
-// researchHomepage returns the research-confirmed homepage when it passes
-// validation. A rejected value is reported so the researching agent learns
-// it was dropped instead of assuming the manifest carries it.
 func researchHomepage(researchDir string) string {
 	if strings.TrimSpace(researchDir) == "" {
 		return ""

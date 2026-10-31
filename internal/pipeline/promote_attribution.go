@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -149,32 +148,8 @@ func RestoreLibraryHomepage(stagingDir, libraryDir, apiName string) error {
 	if homepage == "" {
 		return nil
 	}
-
-	manifestPath := filepath.Join(stagingDir, CLIManifestFilename)
-	stagedData, err := os.ReadFile(manifestPath)
-	if err != nil {
-		return fmt.Errorf("reading staged manifest: %w", err)
-	}
-	var stagedRaw map[string]json.RawMessage
-	if err := json.Unmarshal(stagedData, &stagedRaw); err != nil {
-		return fmt.Errorf("parsing staged manifest: %w", err)
-	}
-	encoded, err := json.Marshal(homepage)
-	if err != nil {
-		return err
-	}
-	if bytes.Equal(stagedRaw["homepage"], encoded) {
-		return nil
-	}
-	stagedRaw["homepage"] = encoded
-	data, err := marshalCLIManifestObject(stagedRaw)
-	if err != nil {
-		return err
-	}
-	if err := writeFileAtomic(manifestPath, data, 0o644); err != nil {
-		return fmt.Errorf("writing staged manifest: %w", err)
-	}
-	return nil
+	_, err = mergeCLIManifestFields(filepath.Join(stagingDir, CLIManifestFilename), map[string]any{"homepage": homepage})
+	return err
 }
 
 func rewriteGeneratedAttribution(dir string, oldCreator, newCreator spec.Person, oldContributors, newContributors []spec.Person) error {
