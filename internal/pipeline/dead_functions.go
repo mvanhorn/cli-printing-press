@@ -16,9 +16,18 @@ import (
 
 type definedFunc struct {
 	key  string
+	file string
 	dir  string
 	pkg  string
 	name string
+}
+
+// deadFuncLoc is one unreferenced top-level function and the file that
+// defines it. Removal uses this path instead of searching source text, so a
+// declaration such as `func name[T any](...)` is still removed.
+type deadFuncLoc struct {
+	name string
+	file string
 }
 
 // scanFuncUses reports top-level functions defined in defFiles and which of
@@ -31,6 +40,11 @@ type definedFunc struct {
 // Files that fail to parse still count a whole-word mention, so a broken use
 // file cannot make a live function look dead.
 func scanFuncUses(defFiles, useFiles []string) (candidates, dead []string) {
+	funcs, referenced := analyzeFuncUses(defFiles, useFiles)
+	return candidateNames(funcs, referenced)
+}
+
+func analyzeFuncUses(defFiles, useFiles []string) ([]definedFunc, map[string]struct{}) {
 	defSet := map[string]struct{}{}
 	var paths []string
 	for _, p := range defFiles {
@@ -91,6 +105,7 @@ func scanFuncUses(defFiles, useFiles []string) (candidates, dead []string) {
 				continue
 			}
 			df := definedFunc{
+				file: pf.path,
 				dir:  pf.dir,
 				pkg:  pf.pkg,
 				name: fn.Name.Name,
@@ -136,7 +151,78 @@ func scanFuncUses(defFiles, useFiles []string) (candidates, dead []string) {
 		markRawMentions(pf.src, funcs, referenced)
 	}
 
-	return candidateNames(funcs, referenced)
+	return funcs, referenced
+}
+
+func findDeadFuncLocs(cliDir string, extraSearchDirs ...string) []deadFuncLoc {
+	defFiles := listGoFiles(cliDir)
+	if len(defFiles) == 0 {
+		return nil
+	}
+	useFiles := append(append([]string{}, defFiles...), listGoTestFiles(cliDir)...)
+	for _, dir := range extraSearchDirs {
+		useFiles = append(useFiles, listGoFilesRecursive(dir)...)
+	}
+	funcs, referenced := analyzeFuncUses(defFiles, useFiles)
+	return deadFuncLocs(funcs, referenced)
+}
+
+func deadFuncLocs(funcs []definedFunc, referenced map[string]struct{}) []deadFuncLoc {
+	if referenced == nil {
+		referenced = map[string]struct{}{}
+	}
+	live := map[string]struct{}{}
+	for _, fn := range funcs {
+		if skipDeadFuncCandidate(fn.name) {
+			continue
+		}
+		if _, ok := referenced[fn.key]; ok {
+			live[fn.name] = struct{}{}
+		}
+	}
+	seen := map[string]struct{}{}
+	var locs []deadFuncLoc
+	for _, fn := range funcs {
+		if skipDeadFuncCandidate(fn.name) {
+			continue
+		}
+		if _, ok := live[fn.name]; ok {
+			continue
+		}
+		key := fn.file + "\x00" + fn.name
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		locs = append(locs, deadFuncLoc{name: fn.name, file: fn.file})
+	}
+	sort.Slice(locs, func(i, j int) bool {
+		if locs[i].name != locs[j].name {
+			return locs[i].name < locs[j].name
+		}
+		return locs[i].file < locs[j].file
+	})
+	if len(locs) == 0 {
+		return nil
+	}
+	return locs
+}
+
+func deadFuncNames(locs []deadFuncLoc) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	for _, loc := range locs {
+		if _, ok := seen[loc.name]; ok {
+			continue
+		}
+		seen[loc.name] = struct{}{}
+		names = append(names, loc.name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 func candidateNames(funcs []definedFunc, referenced map[string]struct{}) (candidates, dead []string) {
