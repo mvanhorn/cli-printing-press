@@ -889,6 +889,15 @@ var credentialSaveBeforeLockHook func()
 // Credentials and config are separate files. Publishing tokens first would
 // otherwise leave a new credentials.toml if the config write fails.
 func (c *Config) saveCredentialsThenConfig() error {
+	return c.withCredentialFileLock(func(credsPath string) error {
+		return c.saveCredentialsThenConfigLocked(credsPath)
+	})
+}
+
+// withCredentialFileLock is the credential critical section. WithFileLock is
+// not reentrant: a caller that already holds this path must not save through
+// saveCredentialsThenConfig.
+func (c *Config) withCredentialFileLock(fn func(credsPath string) error) error {
 	requested := c.Path
 	if c.explicitConfig {
 		resolved, err := cliutil.ResolveConfigFilePath(requested)
@@ -924,7 +933,7 @@ func (c *Config) saveCredentialsThenConfig() error {
 		if c.explicitConfig {
 			c.Path = resolved
 		}
-		return c.saveCredentialsThenConfigLocked(credsPath)
+		return fn(credsPath)
 	})
 }
 

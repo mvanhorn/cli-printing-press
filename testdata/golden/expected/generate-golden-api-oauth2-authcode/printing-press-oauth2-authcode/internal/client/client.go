@@ -2354,10 +2354,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 					c.unlockTokenState()
 					return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
 				}
-				if err := c.refreshAccessToken(ctx); err != nil {
-					c.unlockTokenState()
+				// Drop the in-process mutex before refresh takes it again. A 401
+				// still refreshes when the stored token is the one that failed,
+				// even though that token is not near expiry.
+				c.unlockTokenState()
+				if err := c.refreshAccessToken(contextWithOAuthRefreshForce(ctx)); err != nil {
 					return nil, resp.StatusCode, fmt.Errorf("refreshing access token after 401: %w", err)
 				}
+				c.lockTokenState()
 				authHeader = c.Config.AuthHeader()
 				c.unlockTokenState()
 				if authHeaderLooksLikePlaceholderCredential(authHeader) {
@@ -2506,8 +2510,9 @@ func (c *Client) ConfiguredTimeout() time.Duration {
 	return 60 * time.Second
 }
 
-// lockTokenState covers the expiry check, the token exchange, and the
-// following header read. An unlocked pre-check races Config writes from refresh.
+// lockTokenState is the in-process half of a refresh. The cross-process
+// critical section is the credential file lock inside refreshAccessToken;
+// this mutex is not shared with another CLI or MCP process.
 func (c *Client) lockTokenState() {
 	if c == nil {
 		return
@@ -2553,11 +2558,14 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 		}
 		return "", nil
 	}
-	if !c.DryRun && c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+	if !c.DryRun && c.Config.AccessToken != "" && accessTokenNearExpiry(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
 		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
 			return "", authPlaceholderCredentialError(c.Config)
 		}
-		if err := c.refreshAccessToken(ctx); err != nil {
+		c.unlockTokenState()
+		err := c.refreshAccessToken(ctx)
+		c.lockTokenState()
+		if err != nil {
 			return "", err
 		}
 	}
@@ -2628,10 +2636,69 @@ func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) e
 	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
 }
 
+const tokenRefreshSkew = 60 * time.Second
+
+func accessTokenNearExpiry(expiry time.Time) bool {
+	return !expiry.IsZero() && time.Until(expiry) < tokenRefreshSkew
+}
+
+func tokenSecretKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "access_token", "refresh_token", "id_token", "token", "client_secret":
+		return true
+	default:
+		return false
+	}
+}
+
+// tokenBodySecrets walks every JSON value, including duplicate keys. Struct
+// decoding keeps only the last one, which would leave the earlier token in
+// an error body.
+func tokenBodySecrets(body []byte) []string {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	var secrets []string
+	nextIsSecret := false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return secrets
+		}
+		if nextIsSecret {
+			nextIsSecret = false
+			if s, ok := tok.(string); ok && strings.TrimSpace(s) != "" {
+				secrets = append(secrets, s)
+			}
+			continue
+		}
+		key, ok := tok.(string)
+		if ok && tokenSecretKey(key) {
+			nextIsSecret = true
+		}
+	}
+}
+
+// oauthRefreshPersistedHook runs after a refresh is saved and before the
+// credential file lock is released. Tests exit from it to simulate a crash.
+var oauthRefreshPersistedHook func()
+
+type oauthRefreshForce struct{}
+
+func oauthRefreshAfterUnauthorized(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(oauthRefreshForce{}) != nil
+}
+func contextWithOAuthRefreshForce(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, oauthRefreshForce{}, true)
+}
+
 func (c *Client) refreshAccessToken(ctx context.Context) error {
-	if c.Config == nil {
+	if c == nil || c.Config == nil {
 		return nil
 	}
+	c.lockTokenState()
+	defer c.unlockTokenState()
 	if c.Config.RefreshToken == "" {
 		return nil
 	}
@@ -2639,69 +2706,113 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("refreshing access token: OAuth2 client ID is required when a refresh token is configured; set client_id in config or the client ID environment variable")
 	}
 
-	tokenURL := c.Config.TokenURL
-	if tokenURL == "" {
-		tokenURL = "https://accounts.authcode.example/oauth/token"
-	}
+	spentRefresh := c.Config.RefreshToken
+	usedAccess := c.Config.AccessToken
+	afterUnauthorized := oauthRefreshAfterUnauthorized(ctx)
+	// File lock then re-read. A peer may already have spent this refresh token.
+	// save must not call saveCredentialsThenConfig: WithFileLock is not reentrant.
+	return c.Config.WithOAuthRefreshLock(spentRefresh, func(loaded []*cliutil.Credentials, save func() error) error {
+		if c.usePersistedOAuthRefresh(loaded, spentRefresh, usedAccess, afterUnauthorized) {
+			return nil
+		}
 
-	params := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {c.Config.RefreshToken},
-		"client_id":     {c.Config.ClientID},
-	}
-	if c.Config.ClientSecret != "" {
-		params.Set("client_secret", c.Config.ClientSecret)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))
-	if err != nil {
-		return fmt.Errorf("building refresh request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req, err = guardOutbound(req, nil, "", []byte(params.Encode()))
-	if err != nil {
-		return err
-	}
-	resp, err := cliutil.OAuthTokenHTTPClient(c.HTTPClient).Do(req)
-	if err != nil {
-		return fmt.Errorf("refreshing access token: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := readResponseBody(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(truncateBody(body)))
-	}
+		tokenURL := c.Config.TokenURL
+		if tokenURL == "" {
+			tokenURL = "https://accounts.authcode.example/oauth/token"
+		}
 
-	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("parsing refresh response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return fmt.Errorf("refreshing access token: no access token in response")
-	}
+		params := url.Values{
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {c.Config.RefreshToken},
+			"client_id":     {c.Config.ClientID},
+		}
+		if c.Config.ClientSecret != "" {
+			params.Set("client_secret", c.Config.ClientSecret)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))
+		if err != nil {
+			return fmt.Errorf("building refresh request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req, err = guardOutbound(req, nil, "", []byte(params.Encode()))
+		if err != nil {
+			return err
+		}
+		resp, err := cliutil.OAuthTokenHTTPClient(c.HTTPClient).Do(req)
+		if err != nil {
+			return fmt.Errorf("refreshing access token: %w", err)
+		}
+		defer resp.Body.Close()
+		body, err := readResponseBody(resp.Body)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode >= 400 {
+			return c.maskHeldError(fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(truncateBody(body))), tokenBodySecrets(body)...)
+		}
 
-	refreshToken := c.Config.RefreshToken
-	if tokenResp.RefreshToken != "" {
-		refreshToken = tokenResp.RefreshToken
-	}
+		var tokenResp struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int    `json:"expires_in"`
+		}
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&tokenResp); err != nil {
+			return fmt.Errorf("parsing refresh response: %w", err)
+		}
+		if tokenResp.AccessToken == "" {
+			return fmt.Errorf("refreshing access token: no access token in response")
+		}
 
-	expiry := time.Time{}
-	if tokenResp.ExpiresIn > 0 {
-		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
+		refreshToken := c.Config.RefreshToken
+		if tokenResp.RefreshToken != "" {
+			refreshToken = tokenResp.RefreshToken
+		}
 
-	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the refreshed AccessToken path
-	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
-		return fmt.Errorf("saving refreshed token: %w", err)
-	}
+		expiry := time.Time{}
+		if tokenResp.ExpiresIn > 0 {
+			expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+		}
 
-	return nil
+		c.Config.StageOAuthTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry)
+		if err := save(); err != nil {
+			return fmt.Errorf("saving refreshed token: %w", err)
+		}
+		if oauthRefreshPersistedHook != nil {
+			oauthRefreshPersistedHook()
+		}
+		return nil
+	})
+}
+
+func (c *Client) usePersistedOAuthRefresh(loaded []*cliutil.Credentials, spentRefresh, usedAccess string, afterUnauthorized bool) bool {
+	var rotated *cliutil.Credentials
+	for _, creds := range loaded {
+		if creds == nil || creds.RefreshToken == "" {
+			continue
+		}
+		sameRefresh := creds.RefreshToken == spentRefresh
+		sameAccess := creds.AccessToken != "" && creds.AccessToken == usedAccess
+		// The token that just drew a 401 is still inside the skew window.
+		// Adopting it would retry the request that the server already refused.
+		if afterUnauthorized && sameRefresh && sameAccess {
+			continue
+		}
+		// Zero expiry is not a recorded lifetime. A different access or
+		// refresh token still counts: a peer already wrote a replacement.
+		usable := creds.AccessToken != "" && !accessTokenNearExpiry(creds.TokenExpiry) &&
+			(!sameRefresh || !sameAccess || !creds.TokenExpiry.IsZero())
+		if usable {
+			c.Config.AdoptOAuthTokens(creds)
+			return true
+		}
+		if !sameRefresh {
+			rotated = creds
+		}
+	}
+	if rotated != nil {
+		c.Config.AdoptOAuthRefreshToken(rotated.RefreshToken)
+	}
+	return false
 }
 
 // binaryResponseEnvelope wraps a non-textual success body so it survives the
@@ -3081,6 +3192,24 @@ func (c *Client) maskError(err error, extraCredentials ...string) error {
 }
 
 func (c *Client) maskCredentialText(text string, extraCredentials ...string) string {
+	return c.applyCredentialMask(text, false, extraCredentials...)
+}
+
+func (c *Client) maskHeldError(err error, extraCredentials ...string) error {
+	if err == nil {
+		return nil
+	}
+	raw := err.Error()
+	msg := c.applyCredentialMask(raw, true, extraCredentials...)
+	if msg == raw {
+		return err
+	}
+	return maskedError{msg: msg}
+}
+
+// applyCredentialMask redacts secrets. held is true when the caller already
+// owns lockTokenState: that mutex is not reentrant.
+func (c *Client) applyCredentialMask(text string, held bool, extraCredentials ...string) string {
 	if text == "" {
 		return text
 	}
@@ -3130,14 +3259,16 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(value)
 	}
 	if c != nil && c.Config != nil {
-		c.lockTokenState()
+		if !held {
+			c.lockTokenState()
+			defer c.unlockTokenState()
+		}
 		addCredential(c.Config.AuthHeaderVal)
 		addCredential(c.Config.AuthHeader())
 		addCredential(c.Config.AccessToken)
 		addCredential(c.Config.RefreshToken)
 		addCredential(c.Config.ClientSecret)
 		addCredential(c.Config.PrintingPressOauth2Oauth2AuthCode)
-		c.unlockTokenState()
 	}
 	sort.SliceStable(masks, func(i, j int) bool {
 		return len(masks[i].needle) > len(masks[j].needle)

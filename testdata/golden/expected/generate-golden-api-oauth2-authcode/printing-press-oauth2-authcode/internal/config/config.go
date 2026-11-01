@@ -5,10 +5,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -876,6 +878,15 @@ var credentialSaveBeforeLockHook func()
 // Credentials and config are separate files. Publishing tokens first would
 // otherwise leave a new credentials.toml if the config write fails.
 func (c *Config) saveCredentialsThenConfig() error {
+	return c.withCredentialFileLock(func(credsPath string) error {
+		return c.saveCredentialsThenConfigLocked(credsPath)
+	})
+}
+
+// withCredentialFileLock is the credential critical section. WithFileLock is
+// not reentrant: a caller that already holds this path must not save through
+// saveCredentialsThenConfig.
+func (c *Config) withCredentialFileLock(fn func(credsPath string) error) error {
 	requested := c.Path
 	if c.explicitConfig {
 		resolved, err := cliutil.ResolveConfigFilePath(requested)
@@ -911,7 +922,7 @@ func (c *Config) saveCredentialsThenConfig() error {
 		if c.explicitConfig {
 			c.Path = resolved
 		}
-		return c.saveCredentialsThenConfigLocked(credsPath)
+		return fn(credsPath)
 	})
 }
 
@@ -1085,6 +1096,413 @@ func restoreCredentialsFile(snap credentialsSnapshot) error {
 		return err
 	}
 	return os.Chmod(snap.path, mode)
+}
+
+// errOAuthRefreshLockRetry means the set of files holding the refresh token
+// changed between the unlocked listing and the locked re-read.
+var errOAuthRefreshLockRetry = errors.New("oauth refresh lock retry")
+
+const oauthRefreshLockAttempts = 3
+
+// oauthTokenSource is one place a refresh token can live. lockPath is what
+// WithFileLock takes; credsPath is the file the tokens are read from.
+type oauthTokenSource struct {
+	lockPath     string
+	credsPath    string
+	explicit     bool
+	configBacked bool
+	saveTarget   bool
+	creds        *cliutil.Credentials
+}
+
+type oauthRefreshSnap struct {
+	explicit bool
+	snap     credentialsSnapshot
+}
+
+// StageOAuthTokens records a token response in memory. The caller persists it
+// under the refresh file lock; SaveTokens is the unlocked entry point.
+func (c *Config) StageOAuthTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) {
+	c.ClientID = clientID
+	c.ClientSecret = clientSecret
+	c.AccessToken = accessToken
+	c.RefreshToken = refreshToken
+	c.TokenExpiry = expiry
+	// AuthHeader() prefers a stored header over the access token.
+	c.AuthHeaderVal = ""
+	delete(c.envOverrides, "AccessToken")
+	delete(c.envOverrides, "RefreshToken")
+	delete(c.envOverrides, "TokenExpiry")
+	c.updateFileConfigField("ClientID")
+	c.updateFileConfigField("ClientSecret")
+	c.updateFileConfigField("AccessToken")
+	c.updateFileConfigField("RefreshToken")
+	c.updateFileConfigField("TokenExpiry")
+}
+
+// AdoptOAuthTokens replaces the in-memory access token with one already
+// stored by another process.
+func (c *Config) AdoptOAuthTokens(creds *cliutil.Credentials) {
+	if c == nil || creds == nil {
+		return
+	}
+	c.AccessToken = creds.AccessToken
+	if creds.RefreshToken != "" {
+		c.RefreshToken = creds.RefreshToken
+	}
+	c.TokenExpiry = creds.TokenExpiry
+	c.AuthHeaderVal = ""
+	delete(c.envOverrides, "AccessToken")
+	delete(c.envOverrides, "RefreshToken")
+	delete(c.envOverrides, "TokenExpiry")
+	delete(c.envOverrides, "AuthHeaderVal")
+	c.updateFileConfigField("AccessToken")
+	c.updateFileConfigField("RefreshToken")
+	c.updateFileConfigField("TokenExpiry")
+	c.updateFileConfigField("AuthHeaderVal")
+}
+
+// AdoptOAuthRefreshToken keeps the current access token and switches the
+// refresh token to one a peer already rotated, so this process does not spend
+// the retired value.
+func (c *Config) AdoptOAuthRefreshToken(refreshToken string) {
+	if c == nil || refreshToken == "" {
+		return
+	}
+	c.RefreshToken = refreshToken
+	delete(c.envOverrides, "RefreshToken")
+	c.updateFileConfigField("RefreshToken")
+}
+
+// WithOAuthRefreshLock locks every credentials file that holds refreshToken,
+// re-reads them, and runs fn inside those locks. save persists the in-memory
+// config to each locked source. Locks are not reentrant: save must not call
+// saveCredentialsThenConfig or WithOAuthRefreshLock.
+func (c *Config) WithOAuthRefreshLock(refreshToken string, fn func(loaded []*cliutil.Credentials, save func() error) error) error {
+	if c == nil {
+		return fmt.Errorf("oauth refresh: config is nil")
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return fmt.Errorf("oauth refresh: refresh token is empty")
+	}
+	var err error
+	for attempt := 0; attempt < oauthRefreshLockAttempts; attempt++ {
+		err = c.withOAuthRefreshLockOnce(refreshToken, fn)
+		if !errors.Is(err, errOAuthRefreshLockRetry) {
+			return err
+		}
+	}
+	return fmt.Errorf("credential lock path changed while refreshing")
+}
+
+func (c *Config) withOAuthRefreshLockOnce(refreshToken string, fn func(loaded []*cliutil.Credentials, save func() error) error) error {
+	sources, err := c.oauthRefreshSources()
+	if err != nil {
+		return err
+	}
+	lockPaths := oauthRefreshLockPaths(sources, refreshToken)
+	if len(lockPaths) == 0 {
+		return fmt.Errorf("oauth refresh: credential lock path is empty")
+	}
+	saveLock := oauthSaveTargetLock(sources)
+	return withOrderedFileLocks(lockPaths, func() error {
+		fresh, err := c.oauthRefreshSources()
+		if err != nil {
+			return err
+		}
+		if oauthSaveTargetLock(fresh) != saveLock {
+			return fmt.Errorf("profile changed while locking credentials")
+		}
+		if c.explicitConfig {
+			resolved, _, _, err := c.credentialSavePlan(c.Path)
+			if err != nil {
+				return err
+			}
+			c.Path = resolved
+		}
+		if !sameStringSet(oauthRefreshLockPaths(fresh, refreshToken), lockPaths) {
+			return errOAuthRefreshLockRetry
+		}
+		loaded := make([]*cliutil.Credentials, 0, len(fresh))
+		held := map[string]struct{}{}
+		for _, path := range lockPaths {
+			held[path] = struct{}{}
+		}
+		locked := make([]oauthTokenSource, 0, len(lockPaths))
+		for _, src := range fresh {
+			loaded = append(loaded, src.creds)
+			if _, ok := held[src.lockPath]; ok {
+				locked = append(locked, src)
+			}
+		}
+		return fn(loaded, func() error {
+			return c.persistOAuthRefreshSources(locked)
+		})
+	})
+}
+
+func (c *Config) oauthRefreshSources() ([]oauthTokenSource, error) {
+	save, err := c.oauthSaveTargetSource()
+	if err != nil {
+		return nil, err
+	}
+	out := []oauthTokenSource{save}
+	if save.configBacked || !c.explicitConfig {
+		return out, nil
+	}
+	globalPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		return nil, err
+	}
+	if globalPath == "" || globalPath == save.lockPath || globalPath == save.credsPath {
+		return out, nil
+	}
+	creds, err := c.readStoredOAuthCredentials(false, "")
+	if err != nil {
+		return nil, err
+	}
+	if creds == nil || !creds.HasValues() || !c.allowsGlobalCredential(creds) {
+		return out, nil
+	}
+	out = append(out, oauthTokenSource{
+		lockPath:  globalPath,
+		credsPath: globalPath,
+		creds:     creds,
+	})
+	return out, nil
+}
+
+func (c *Config) oauthSaveTargetSource() (oauthTokenSource, error) {
+	requested := c.Path
+	if c.explicitConfig {
+		resolved, err := cliutil.ResolveConfigFilePath(requested)
+		if err != nil {
+			return oauthTokenSource{}, err
+		}
+		if err := os.MkdirAll(filepath.Dir(resolved), 0o700); err != nil {
+			return oauthTokenSource{}, err
+		}
+	}
+	_, credsPath, lockPath, err := c.credentialSavePlan(requested)
+	if err != nil {
+		return oauthTokenSource{}, err
+	}
+	if !c.explicitConfig {
+		if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+			return oauthTokenSource{}, err
+		}
+	}
+	if lockPath == "" {
+		return oauthTokenSource{}, fmt.Errorf("oauth refresh: credential lock path is empty")
+	}
+	src := oauthTokenSource{
+		lockPath:     lockPath,
+		credsPath:    credsPath,
+		explicit:     c.explicitConfig,
+		configBacked: c.AgentcookieManagedByExternalStore(),
+		saveTarget:   true,
+	}
+	if src.configBacked {
+		src.creds, err = c.readConfigBackedOAuthCredentials()
+	} else {
+		src.creds, err = c.readStoredOAuthCredentials(c.explicitConfig, requested)
+	}
+	if err != nil {
+		return oauthTokenSource{}, err
+	}
+	return src, nil
+}
+
+func (c *Config) readStoredOAuthCredentials(explicit bool, configPath string) (*cliutil.Credentials, error) {
+	var (
+		creds  *cliutil.Credentials
+		status cliutil.CredentialLoadStatus
+		err    error
+	)
+	if explicit {
+		creds, status, err = cliutil.LoadCredentialsForConfigWithStatus(configPath)
+	} else {
+		creds, status, err = cliutil.LoadCredentialsWithStatus()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status.Refusal != nil && status.Refusal.CredentialsPresent {
+		return nil, status.Refusal
+	}
+	if !status.Loaded {
+		return nil, nil
+	}
+	return creds, nil
+}
+
+func (c *Config) readConfigBackedOAuthCredentials() (*cliutil.Credentials, error) {
+	path := c.Path
+	if c.explicitConfig {
+		resolved, err := cliutil.ResolveConfigFilePath(path)
+		if err != nil {
+			return nil, err
+		}
+		path = resolved
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var parsed Config
+	if err := parseConfigData(data, &parsed, path, "config-kind path"); err != nil {
+		return nil, err
+	}
+	return parsed.credentials(), nil
+}
+
+func (c *Config) persistOAuthRefreshSources(locked []oauthTokenSource) error {
+	if c.AgentcookieManagedByExternalStore() {
+		return c.save()
+	}
+	var snaps []oauthRefreshSnap
+	restore := func() error {
+		var first error
+		for i := len(snaps) - 1; i >= 0; i-- {
+			var err error
+			if snaps[i].explicit {
+				err = restoreExplicitCredentials(snaps[i].snap)
+			} else {
+				err = restoreCredentialsFile(snaps[i].snap)
+			}
+			if err != nil && first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+	fail := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		if rerr := restore(); rerr != nil {
+			return fmt.Errorf("%w (credentials restore failed: %v)", err, rerr)
+		}
+		return err
+	}
+	seen := map[string]struct{}{}
+	for _, src := range locked {
+		if src.configBacked || src.credsPath == "" {
+			continue
+		}
+		if _, ok := seen[src.credsPath]; ok {
+			continue
+		}
+		seen[src.credsPath] = struct{}{}
+		var snap credentialsSnapshot
+		var err error
+		if src.explicit {
+			snap, err = snapshotExplicitCredentials(src.credsPath)
+		} else {
+			snap, err = snapshotCredentialsFile(src.credsPath)
+		}
+		if err != nil {
+			return fail(err)
+		}
+		snaps = append(snaps, oauthRefreshSnap{explicit: src.explicit, snap: snap})
+		persisted := c.configForSave()
+		if src.explicit {
+			err = cliutil.SaveExplicitCredentials(src.credsPath, persisted.credentials())
+		} else {
+			err = cliutil.SaveCredentials(persisted.credentials())
+		}
+		if err != nil {
+			return fail(err)
+		}
+	}
+	c.CredentialSource = "credentials file"
+	if err := c.save(); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+func oauthSaveTargetLock(sources []oauthTokenSource) string {
+	for _, src := range sources {
+		if src.saveTarget {
+			return src.lockPath
+		}
+	}
+	return ""
+}
+
+func oauthRefreshLockPaths(sources []oauthTokenSource, refreshToken string) []string {
+	seen := map[string]struct{}{}
+	var held []string
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		held = append(held, path)
+	}
+	for _, src := range sources {
+		if src.saveTarget {
+			add(src.lockPath)
+		}
+		if refreshToken != "" && src.creds != nil && src.creds.RefreshToken == refreshToken {
+			add(src.lockPath)
+		}
+	}
+	sort.Strings(held)
+	return held
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// withOrderedFileLocks takes each path in sorted order. An empty path fails
+// closed: WithFileLock treats "" as already held and would refresh unlocked.
+func withOrderedFileLocks(paths []string, fn func() error) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("oauth refresh: credential lock path is empty")
+	}
+	seen := map[string]struct{}{}
+	ordered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			return fmt.Errorf("oauth refresh: credential lock path is empty")
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+	var nest func(i int) error
+	nest = func(i int) error {
+		if i == len(ordered) {
+			return fn()
+		}
+		if ordered[i] == "" {
+			return fmt.Errorf("oauth refresh: credential lock path is empty")
+		}
+		return cliutil.WithFileLock(ordered[i], func() error {
+			return nest(i + 1)
+		})
+	}
+	return nest(0)
 }
 
 // Explicit login flags intentionally opt these fields out of environment-value
