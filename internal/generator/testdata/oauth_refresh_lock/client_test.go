@@ -41,6 +41,12 @@ func TestOAuthRefreshFileLock(t *testing.T) {
 		t.Run("distinct profiles spend their own refresh tokens", testDistinctProfiles)
 		t.Run("explicit profile shares the global refresh token", testExplicitInheritsGlobal)
 		t.Run("peer refresh is adopted instead of spent", testAdoptSuccessor)
+		t.Run("profile does not switch to a global login", testProfileDoesNotSwitchToGlobal)
+		t.Run("diverged global token is not spent", testDivergedGlobalIsNotSpent)
+		t.Run("shared peer rotation is saved to both", testSharedPeerRotationSavedToBoth)
+		t.Run("env refresh token does not spend the other login", testEnvDoesNotSpendOtherLogin)
+		t.Run("hard-linked credentials take one spend", testHardLinkedCredentialsOneSpend)
+		t.Run("symlinked config shares one spend", testSymlinkedConfigOneSpend)
 		t.Run("refused refresh body does not echo tokens", testRefreshErrorRedactsTokens)
 		t.Run("crash after persist lets the waiter adopt", testCrashAfterPersist)
 		t.Run("agentcookie refresh is locked on the config store", testAgentcookieOneSpend)
@@ -92,17 +98,34 @@ func oauthChildHold() {
 		if err := os.WriteFile(ready, []byte("1"), 0o600); err != nil {
 			return err
 		}
-		hold := time.Second
-		if os.Getenv("PP_OAUTH_HOLD_REWRITE") == "1" {
-			hold = 800 * time.Millisecond
+		if start := os.Getenv("PP_OAUTH_START"); start != "" && os.Getenv("PP_OAUTH_HOLD_REWRITE") == "1" {
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				if _, err := os.Stat(start); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("start file missing")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		} else {
+			hold := time.Second
+			if os.Getenv("PP_OAUTH_HOLD_REWRITE") == "1" {
+				hold = 800 * time.Millisecond
+			}
+			time.Sleep(hold)
 		}
-		time.Sleep(hold)
 		if os.Getenv("PP_OAUTH_HOLD_REWRITE") == "1" {
+			expiry := time.Now().Add(time.Hour)
+			if os.Getenv("PP_OAUTH_HOLD_NEAR") == "1" {
+				expiry = time.Now().Add(30 * time.Second)
+			}
 			return cliutil.SaveCredentials(&cliutil.Credentials{
 				BaseURL:      "https://api.example.com",
 				AccessToken:  "access-successor",
 				RefreshToken: "refresh-successor",
-				TokenExpiry:  time.Now().Add(time.Hour),
+				TokenExpiry:  expiry,
 				ClientID:     "client-id",
 				ClientSecret: "client-secret-value",
 			})
@@ -430,6 +453,286 @@ func testAdoptSuccessor(t *testing.T) {
 	}
 }
 
+func testProfileDoesNotSwitchToGlobal(t *testing.T) {
+	home := isolateOAuth(t)
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true}`)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := r.Form.Get("refresh_token")
+		mu.Lock()
+		seen[got]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"access-for-%s","refresh_token":"next-%s","expires_in":3600}`, got, got)
+	}))
+	t.Cleanup(srv.Close)
+	seedTokens(t, srv.URL+"/token", "access-global", "refresh-global", time.Now().Add(time.Hour))
+	explicit := writeProfile(t, home, "profile-own")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-profile")
+	c := reloadClient(t, explicit, srv.URL+"/token")
+	if c.Config.RefreshToken != "refresh-profile" {
+		t.Fatalf("refresh=%q, want refresh-profile", c.Config.RefreshToken)
+	}
+	if err := c.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["refresh-global"] != 0 || seen["refresh-profile"] != 1 {
+		t.Fatalf("spent=%v, want only refresh-profile", seen)
+	}
+	if c.Config.AccessToken != "access-for-refresh-profile" {
+		t.Fatalf("access=%q", c.Config.AccessToken)
+	}
+	global := reloadConfig(t, "", "")
+	if global.RefreshToken != "refresh-global" || global.AccessToken != "access-global" {
+		t.Fatalf("global access=%q refresh=%q", global.AccessToken, global.RefreshToken)
+	}
+	profile := reloadConfig(t, explicit, "")
+	if profile.RefreshToken != "next-refresh-profile" {
+		t.Fatalf("profile refresh=%q", profile.RefreshToken)
+	}
+}
+
+func testDivergedGlobalIsNotSpent(t *testing.T) {
+	home := isolateOAuth(t)
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := r.Form.Get("refresh_token")
+		mu.Lock()
+		seen[got]++
+		mu.Unlock()
+		if got == "refresh-global" {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"access-for-%s","refresh_token":"next-%s","expires_in":3600}`, got, got)
+	}))
+	t.Cleanup(srv.Close)
+	seedTokens(t, srv.URL+"/token", "access-global", "refresh-global", time.Now().Add(30*time.Second))
+	explicit := writeProfile(t, home, "profile-diverged")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-profile")
+	c := reloadClient(t, explicit, srv.URL+"/token")
+	if err := c.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["refresh-global"] != 0 || seen["refresh-profile"] != 1 {
+		t.Fatalf("spent=%v", seen)
+	}
+	global := reloadConfig(t, "", "")
+	if global.RefreshToken != "refresh-global" {
+		t.Fatalf("global refresh=%q", global.RefreshToken)
+	}
+}
+
+func testSharedPeerRotationSavedToBoth(t *testing.T) {
+	home := isolateOAuth(t)
+	var mu sync.Mutex
+	seen := map[string]int{}
+	var globalLocked atomic.Bool
+	globalPath := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true}`)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := r.Form.Get("refresh_token")
+		mu.Lock()
+		seen[got]++
+		mu.Unlock()
+		if globalPath != "" {
+			ok, err := cliutil.TryWithFileLock(globalPath, func() error { return nil })
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			globalLocked.Store(!ok)
+		}
+		if got != "refresh-successor" {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"access-final","refresh_token":"refresh-final","expires_in":3600}`)
+	}))
+	t.Cleanup(srv.Close)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-shared-rotate")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	var err error
+	globalPath, err = cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	start := filepath.Join(dir, "start")
+	cmd := startOAuthChild(t, "hold", "", ready, start, "", "PP_OAUTH_LOCK_PATH="+globalPath, "PP_OAUTH_HOLD_REWRITE=1", "PP_OAUTH_HOLD_NEAR=1")
+	waitForFile(t, ready)
+	done := make(chan error, 1)
+	go func() {
+		cfg, err := config.Load(explicit)
+		if err != nil {
+			done <- err
+			return
+		}
+		cfg.TokenURL = srv.URL + "/token"
+		c := New(cfg, 5*time.Second, 0)
+		c.NoCache = true
+		done <- c.refreshAccessToken(context.Background())
+	}()
+	time.Sleep(time.Second)
+	if err := os.WriteFile(start, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(15 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("refresh did not finish")
+	}
+	waitChild(t, cmd, 10*time.Second, 0)
+	mu.Lock()
+	defer mu.Unlock()
+	if !globalLocked.Load() || seen["refresh-successor"] != 1 || seen["refresh-old"] != 0 {
+		t.Fatalf("locked=%v spent=%v", globalLocked.Load(), seen)
+	}
+	global := reloadConfig(t, "", "")
+	profile := reloadConfig(t, explicit, "")
+	if global.RefreshToken != "refresh-final" || profile.RefreshToken != "refresh-final" {
+		t.Fatalf("global=%q profile=%q", global.RefreshToken, profile.RefreshToken)
+	}
+	if global.AccessToken != "access-final" || profile.AccessToken != "access-final" {
+		t.Fatalf("global access=%q profile access=%q", global.AccessToken, profile.AccessToken)
+	}
+}
+
+func testEnvDoesNotSpendOtherLogin(t *testing.T) {
+	home := isolateOAuth(t)
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := r.Form.Get("refresh_token")
+		mu.Lock()
+		seen[got]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"access-for-%s","refresh_token":"next-%s","expires_in":3600}`, got, got)
+	}))
+	t.Cleanup(srv.Close)
+	seedTokens(t, srv.URL+"/token", "access-global", "refresh-global", time.Now().Add(30*time.Second))
+	explicit := writeProfile(t, home, "profile-env")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-profile")
+	t.Setenv("OAUTH_REFRESH_TOKEN", "refresh-global")
+	c := reloadClient(t, explicit, srv.URL+"/token")
+	if c.Config.RefreshToken != "refresh-global" {
+		t.Fatalf("env refresh=%q", c.Config.RefreshToken)
+	}
+	if err := c.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["refresh-global"] != 0 || seen["refresh-profile"] != 1 {
+		t.Fatalf("spent=%v", seen)
+	}
+	t.Setenv("OAUTH_REFRESH_TOKEN", "")
+	global := reloadConfig(t, "", "")
+	if global.RefreshToken != "refresh-global" {
+		t.Fatalf("global refresh=%q", global.RefreshToken)
+	}
+}
+
+func testHardLinkedCredentialsOneSpend(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 300*time.Millisecond)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-link")
+	globalPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileCreds := filepath.Join(filepath.Dir(explicit), "data", "credentials.toml")
+	if err := os.MkdirAll(filepath.Dir(profileCreds), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(globalPath, profileCreds); err != nil {
+		t.Skip("hard link unavailable: " + err.Error())
+	}
+	dir := t.TempDir()
+	start := filepath.Join(dir, "start")
+	readyA := filepath.Join(dir, "a")
+	readyB := filepath.Join(dir, "b")
+	cmdA := startOAuthChild(t, "refresh", "", readyA, start, srv.URL+"/token")
+	cmdB := startOAuthChild(t, "refresh", explicit, readyB, start, srv.URL+"/token")
+	waitForFile(t, readyA)
+	waitForFile(t, readyB)
+	if err := os.WriteFile(start, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitChild(t, cmdA, 15*time.Second, 0)
+	waitChild(t, cmdB, 15*time.Second, 0)
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d, want 1 and 1", srv.calls.Load(), srv.spentOld.Load())
+	}
+}
+
+func testSymlinkedConfigOneSpend(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 300*time.Millisecond)
+	explicit := writeProfile(t, home, "profile-symlink")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	link := filepath.Join(home, "config-link.toml")
+	if err := os.Symlink(explicit, link); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	dir := t.TempDir()
+	start := filepath.Join(dir, "start")
+	readyA := filepath.Join(dir, "a")
+	readyB := filepath.Join(dir, "b")
+	cmdA := startOAuthChild(t, "refresh", explicit, readyA, start, srv.URL+"/token")
+	cmdB := startOAuthChild(t, "refresh", link, readyB, start, srv.URL+"/token")
+	waitForFile(t, readyA)
+	waitForFile(t, readyB)
+	if err := os.WriteFile(start, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitChild(t, cmdA, 15*time.Second, 0)
+	waitChild(t, cmdB, 15*time.Second, 0)
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d, want 1 and 1", srv.calls.Load(), srv.spentOld.Load())
+	}
+}
+
 func testRefreshErrorRedactsTokens(t *testing.T) {
 	isolateOAuth(t)
 	const (
@@ -582,6 +885,7 @@ func isolateOAuth(t *testing.T) string {
 	t.Setenv("PRINTING_PRESS_VERIFY", "")
 	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
 	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+	t.Setenv("OAUTH_REFRESH_TOKEN", "")
 	restore, err := cliutil.SetHomeOverride("")
 	if err != nil {
 		t.Fatal(err)

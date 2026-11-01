@@ -19,7 +19,7 @@ func TestOAuthRefreshFileLockGenerated(t *testing.T) {
 		OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
 		AuthorizationURL: "https://example.com/oauth/authorize",
 		TokenURL:         "https://example.com/oauth/token",
-		EnvVars:          []string{"OAUTH_REFRESH_LOCK_TOKEN"},
+		EnvVars:          []string{"OAUTH_REFRESH_LOCK_TOKEN", "OAUTH_REFRESH_TOKEN"},
 	}
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())

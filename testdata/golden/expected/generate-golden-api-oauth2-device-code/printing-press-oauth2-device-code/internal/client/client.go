@@ -2711,9 +2711,14 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	afterUnauthorized := oauthRefreshAfterUnauthorized(ctx)
 	// File lock then re-read. A peer may already have spent this refresh token.
 	// save must not call saveCredentialsThenConfig: WithFileLock is not reentrant.
-	return c.Config.WithOAuthRefreshLock(spentRefresh, func(loaded []*cliutil.Credentials, save func() error) error {
+	return c.Config.WithOAuthRefreshLock(spentRefresh, func(loaded []*cliutil.Credentials, save func() error, cover func(token string) error) error {
 		if c.usePersistedOAuthRefresh(loaded, spentRefresh, usedAccess, afterUnauthorized) {
-			return nil
+			return save()
+		}
+		if token := strings.TrimSpace(c.Config.RefreshToken); token != strings.TrimSpace(spentRefresh) {
+			if err := cover(token); err != nil {
+				return err
+			}
 		}
 
 		tokenURL := c.Config.TokenURL
@@ -2785,9 +2790,20 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 }
 
 func (c *Client) usePersistedOAuthRefresh(loaded []*cliutil.Credentials, spentRefresh, usedAccess string, afterUnauthorized bool) bool {
+	// loaded[0] is the save target. Once that file has its own refresh token,
+	// a different token is a peer rotation only when this refresh started from
+	// that same token. Otherwise it belongs to another login.
+	own := ""
+	if len(loaded) > 0 && loaded[0] != nil {
+		own = strings.TrimSpace(loaded[0].RefreshToken)
+	}
+	spentRefresh = strings.TrimSpace(spentRefresh)
 	var rotated *cliutil.Credentials
 	for _, creds := range loaded {
-		if creds == nil || creds.RefreshToken == "" {
+		if creds == nil || strings.TrimSpace(creds.RefreshToken) == "" {
+			continue
+		}
+		if own != "" && strings.TrimSpace(creds.RefreshToken) != own && own != spentRefresh {
 			continue
 		}
 		sameRefresh := creds.RefreshToken == spentRefresh
