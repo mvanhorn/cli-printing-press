@@ -9,8 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -150,97 +148,20 @@ func compileTestBinaries(dir string) ([]byte, error) {
 	return testCmd.CombinedOutput()
 }
 
-// findAllDeadFunctions scans ALL .go files in a CLI's internal/cli/ directory
-// for top-level function definitions, then checks if each is called anywhere
-// in cliDir and any additional search directories (e.g., cmd/).
-// Returns the names of functions that are defined but never called.
+// findAllDeadFunctions reports top-level functions defined under cliDir that
+// have no identifier use in cliDir (including _test.go) or extraSearchDirs.
+// Test files are uses only: their helpers are not removal candidates, but a
+// function whose only callers are tests is live.
 func findAllDeadFunctions(cliDir string, extraSearchDirs ...string) []string {
-	files := listGoFiles(cliDir)
-	if len(files) == 0 {
+	defFiles := listGoFiles(cliDir)
+	if len(defFiles) == 0 {
 		return nil
 	}
-
-	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
-
-	// Collect function definitions from cliDir only
-	type funcDef struct {
-		name string
-		file string
+	useFiles := append(append([]string{}, defFiles...), listGoTestFiles(cliDir)...)
+	for _, dir := range extraSearchDirs {
+		useFiles = append(useFiles, listGoFilesRecursive(dir)...)
 	}
-	var allDefs []funcDef
-	var allContent []string
-
-	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			continue
-		}
-		content := string(data)
-		allContent = append(allContent, content)
-
-		matches := funcRe.FindAllStringSubmatch(content, -1)
-		for _, match := range matches {
-			allDefs = append(allDefs, funcDef{name: match[1], file: file})
-		}
-	}
-
-	// Usage detection must see _test.go too. listGoFiles deliberately skips
-	// test files so their helpers never become removal candidates, but a
-	// function whose only callers are tests is still live: deleting it leaves a
-	// tree that passes `go build` and fails `go test`. Read them for usage
-	// only — no definitions are harvested here.
-	for _, file := range listGoTestFiles(cliDir) {
-		if data, err := os.ReadFile(file); err == nil {
-			allContent = append(allContent, string(data))
-		}
-	}
-
-	// Also read files from extra search dirs for usage detection
-	// (e.g., cmd/ where main.go calls exported functions like ExitCode)
-	for _, searchDir := range extraSearchDirs {
-		_ = filepath.WalkDir(searchDir, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".go") {
-				return nil
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			allContent = append(allContent, string(data))
-			return nil
-		})
-	}
-
-	combined := strings.Join(allContent, "\n")
-
-	// Check each function. Skip Go entry points (main, init) and test
-	// helpers (TestXxx) which are called by the runtime, not by other code.
-	skipNames := map[string]bool{"main": true, "init": true}
-	seen := map[string]bool{}
-	var dead []string
-	for _, def := range allDefs {
-		if seen[def.name] || skipNames[def.name] || isAllowedDeadHelper(def.name) {
-			continue
-		}
-		if strings.HasPrefix(def.name, "Test") || strings.HasPrefix(def.name, "Benchmark") {
-			continue
-		}
-		seen[def.name] = true
-
-		// Match calls but not definitions. A call looks like `name(` without
-		// `func ` or `func (receiver) ` preceding it. We count occurrences:
-		// if the name appears with `(` more times than it has `func name(`
-		// definitions, it's called somewhere.
-		allRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(def.name) + `\s*\(`)
-		defRe := regexp.MustCompile(`func\s+` + regexp.QuoteMeta(def.name) + `\s*\(`)
-		totalMatches := len(allRe.FindAllString(combined, -1))
-		defMatches := len(defRe.FindAllString(combined, -1))
-		if totalMatches <= defMatches {
-			dead = append(dead, def.name)
-		}
-	}
-
-	sort.Strings(dead)
+	_, dead := scanFuncUses(defFiles, useFiles)
 	return dead
 }
 

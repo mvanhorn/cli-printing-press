@@ -3672,20 +3672,12 @@ func scoreDeadCode(dir string) int {
 		}
 	}
 
-	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
-	funcNames := uniqueMatches(funcRe, helpersContent)
-	otherHelpers := readOtherGoFiles(cliDir, map[string]bool{"helpers.go": true})
-	// Check both other files AND helpers.go itself for intra-file calls.
-	// Use Count >= 2 because the definition itself contributes 1 occurrence of name+"(".
-	allContent := helpersContent + "\n" + otherHelpers + "\n" + readPackageSources(filepath.Join(dir, "internal", "mcp"))
-	for _, name := range funcNames {
-		if isAllowedDeadHelper(name) {
-			continue
-		}
-		if strings.Count(allContent, name+"(") < 2 {
-			deadFunctions++
-		}
-	}
+	useFiles := append(listGoFiles(cliDir), listGoTestFiles(cliDir)...)
+	mcpDir := filepath.Join(dir, "internal", "mcp")
+	useFiles = append(useFiles, listGoFiles(mcpDir)...)
+	useFiles = append(useFiles, listGoTestFiles(mcpDir)...)
+	_, deadNames := scanFuncUses([]string{filepath.Join(cliDir, "helpers.go")}, useFiles)
+	deadFunctions += len(deadNames)
 
 	score := 5 - (deadFlags + deadFunctions)
 	if score < 0 {

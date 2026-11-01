@@ -2199,102 +2199,21 @@ func checkDeadFlags(dir string) DeadCodeResult {
 }
 
 func checkDeadFunctions(dir string) DeadCodeResult {
-	helpersPath := filepath.Join(dir, "internal", "cli", "helpers.go")
-	data, err := os.ReadFile(helpersPath)
-	if err != nil {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	helpersPath := filepath.Join(cliDir, "helpers.go")
+	if _, err := os.Stat(helpersPath); err != nil {
 		return DeadCodeResult{}
 	}
 
-	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
-	matches := funcRe.FindAllStringSubmatch(string(data), -1)
-	if len(matches) == 0 {
-		return DeadCodeResult{}
-	}
-
-	names := make(map[string]struct{})
-	for _, match := range matches {
-		if isAllowedDeadHelper(match[1]) {
-			continue
-		}
-		names[match[1]] = struct{}{}
-	}
-
-	// Collect external sources (everything except helpers.go) for liveness seeding.
-	files := listGoFiles(filepath.Join(dir, "internal", "cli"))
-	var externalSources []string
-	for _, file := range files {
-		if filepath.Base(file) == "helpers.go" {
-			continue
-		}
-		content, err := os.ReadFile(file)
-		if err != nil {
-			continue
-		}
-		externalSources = append(externalSources, string(content))
-	}
+	useFiles := append(listGoFiles(cliDir), listGoTestFiles(cliDir)...)
 	// MCP search/sql call CLI helpers such as MCPStorePath. The CLI-only
 	// scan would mark that export dead and drop the dead-code score.
-	if mcpSrc := readPackageSources(filepath.Join(dir, "internal", "mcp")); mcpSrc != "" {
-		externalSources = append(externalSources, mcpSrc)
-	}
+	mcpDir := filepath.Join(dir, "internal", "mcp")
+	useFiles = append(useFiles, listGoFiles(mcpDir)...)
+	useFiles = append(useFiles, listGoTestFiles(mcpDir)...)
 
-	// Seed live set: functions called from external (non-helpers) files.
-	liveSet := make(map[string]bool)
-	for _, name := range sortedKeys(names) {
-		callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
-		if slices.ContainsFunc(externalSources, callRe.MatchString) {
-			liveSet[name] = true
-		}
-	}
-
-	// Build intra-helpers call map: for each helper function, which other
-	// helper functions does its body call?
-	helperBodies := extractFunctionBodies(string(data))
-	callsMap := make(map[string][]string)
-	for _, caller := range sortedKeys(names) {
-		body, ok := helperBodies[caller]
-		if !ok {
-			continue
-		}
-		for _, callee := range sortedKeys(names) {
-			if callee == caller {
-				continue
-			}
-			callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(callee) + `\s*\(`)
-			if callRe.MatchString(body) {
-				callsMap[caller] = append(callsMap[caller], callee)
-			}
-		}
-	}
-
-	// Iterative expansion: mark transitively reachable helpers as live.
-	for range 50 {
-		changed := false
-		for _, fn := range sortedKeys(names) {
-			if !liveSet[fn] {
-				continue
-			}
-			for _, callee := range callsMap[fn] {
-				if !liveSet[callee] {
-					liveSet[callee] = true
-					changed = true
-				}
-			}
-		}
-		if !changed {
-			break
-		}
-	}
-
-	result := DeadCodeResult{Total: len(names)}
-	for _, name := range sortedKeys(names) {
-		if liveSet[name] {
-			continue
-		}
-		result.Dead++
-		result.Items = append(result.Items, name)
-	}
-	return result
+	candidates, dead := scanFuncUses([]string{helpersPath}, useFiles)
+	return DeadCodeResult{Total: len(candidates), Dead: len(dead), Items: dead}
 }
 
 // checkNamingConsistency walks the generated CLI source and reports any
@@ -2399,27 +2318,6 @@ func lookupNamingRule(name, category string) (NamingRule, bool) {
 		}
 	}
 	return NamingRule{}, false
-}
-
-// extractFunctionBodies returns a map from function name to its body text
-// (everything between its func line and the next top-level func line).
-func extractFunctionBodies(source string) map[string]string {
-	bodies := make(map[string]string)
-	funcLineRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
-	locs := funcLineRe.FindAllStringIndex(source, -1)
-	nameMatches := funcLineRe.FindAllStringSubmatch(source, -1)
-	for i, match := range nameMatches {
-		name := match[1]
-		start := locs[i][1]
-		var end int
-		if i+1 < len(locs) {
-			end = locs[i+1][0]
-		} else {
-			end = len(source)
-		}
-		bodies[name] = source[start:end]
-	}
-	return bodies
 }
 
 // generatorEmittedPackages names internal/* packages emitted by the Printing
@@ -3478,22 +3376,6 @@ func pathMatchesSpec(path string, patterns []*regexp.Regexp) bool {
 		}
 	}
 	return false
-}
-
-// readPackageSources concatenates Go sources under dir, including tests, so a
-// helper whose only caller lives in another generated package still counts.
-func readPackageSources(dir string) string {
-	files := append(listGoFiles(dir), listGoTestFiles(dir)...)
-	var b strings.Builder
-	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			continue
-		}
-		b.Write(data)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func listGoFiles(dir string) []string {
