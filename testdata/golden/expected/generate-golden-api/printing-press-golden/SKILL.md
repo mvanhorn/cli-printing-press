@@ -1,6 +1,6 @@
 ---
 name: pp-printing-press-golden
-description: "Printing Press CLI for Printing Press Golden. Purpose-built fixture for golden generation coverage."
+description: "Printing Press CLI for Printing Press Studio. Purpose-built fixture for golden generation coverage."
 author: "printing-press-golden"
 license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"
@@ -12,7 +12,7 @@ metadata:
         - printing-press-golden-pp-cli
 ---
 
-# Printing Press Golden — Printing Press CLI
+# Printing Press Studio — Printing Press CLI
 
 ## Prerequisites: Install the CLI
 
