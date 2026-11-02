@@ -2316,8 +2316,10 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"refresh path sets a descriptive user agent")
 	assert.Contains(t, body, `"https://api.example.com/oauth/token"`,
 		"mint POSTs to the spec's TokenURL")
-	assert.Contains(t, body, "time.Until(cfg.TokenExpiry) < 60*time.Second",
+	assert.Contains(t, body, "const tokenRefreshSkew = 60 * time.Second",
 		"60-second proactive refresh window")
+	assert.Contains(t, body, "return accessTokenNearExpiry(cfg.TokenExpiry)",
+		"client_credentials mint shares the auth-code refresh window")
 	assert.Contains(t, body, `os.Getenv("CCCLIENT_API_KEY")`,
 		"client-id resolver falls back to first env var")
 	assert.Contains(t, body, `os.Getenv("CCCLIENT_SECRET_KEY")`,
