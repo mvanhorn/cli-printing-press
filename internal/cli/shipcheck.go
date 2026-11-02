@@ -52,6 +52,11 @@ type shipcheckOpts struct {
 	asJSON bool
 
 	// Per-leg pass-through flags.
+	// fix is the explicit opt-in that still runs verify --fix after a
+	// valid phase5 acceptance marker matches this tree. noFix forces a
+	// read-only verify. Neither flag set keeps today's default (verify
+	// --fix) unless that marker matches, in which case verify is read-only.
+	fix              bool
 	noFix            bool   // when true, omit --fix from verify argv
 	noLiveCheck      bool   // when true, omit --live-check from scorecard argv
 	apiKey           string // when set, pass --api-key to verify
@@ -533,6 +538,66 @@ func validateShipcheckDir(dir string) error {
 	return nil
 }
 
+// applyShipcheckVerifyFixPolicy decides whether verify receives --fix.
+// A passing phase5 acceptance marker is bound to the source fingerprint
+// (pipeline.ValidatePhase5Gate). verify --fix rewrites that source and
+// forces a full re-mint, so the default verify leg stays read-only until
+// the operator opts in. Missing, stale, unreadable, and corrupt markers
+// keep today's --fix default and never fail the umbrella.
+func applyShipcheckVerifyFixPolicy(cmd *cobra.Command, opts *shipcheckOpts) error {
+	fixChanged := cmd.Flags().Changed("fix")
+	noFixChanged := cmd.Flags().Changed("no-fix")
+	if fixChanged && noFixChanged {
+		return fmt.Errorf("--fix and --no-fix cannot be combined")
+	}
+
+	match, matched := shipcheckMatchingAcceptance(opts.dir)
+	// --fix=false and --no-fix are read-only. --fix and --no-fix=false
+	// are an explicit request to repair source.
+	explicitReadOnly := (fixChanged && !opts.fix) || (noFixChanged && opts.noFix)
+	explicitFix := (fixChanged && opts.fix) || (noFixChanged && !opts.noFix)
+
+	switch {
+	case explicitReadOnly:
+		opts.noFix = true
+	case explicitFix:
+		opts.noFix = false
+		if matched {
+			fmt.Fprintf(os.Stderr, "warning: passing --fix to verify invalidates the phase5 acceptance marker at %s; re-mint phase5-acceptance.json before lock promote or publish\n", match.MarkerPath)
+		}
+	case matched:
+		opts.noFix = true
+		fmt.Fprintf(os.Stderr, "shipcheck: phase5 acceptance marker matches this tree; verify will run without --fix\n")
+	}
+	return nil
+}
+
+// shipcheckMatchingAcceptance reports a phase5 acceptance marker the gate
+// accepts for this tree, including a source fingerprint that matches dir.
+// Skip markers are not acceptance. Lookup failures return false.
+func shipcheckMatchingAcceptance(dir string) (pipeline.Phase5GateValidation, bool) {
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	if err != nil {
+		return pipeline.Phase5GateValidation{}, false
+	}
+	var runstateProofs string
+	if state, err := pipeline.FindStateByWorkingDir(dir); err == nil && state != nil && strings.TrimSpace(state.RunID) != "" {
+		runstateProofs = state.ProofsDir()
+	}
+	for _, proofsDir := range pipeline.Phase5ProofsDirCandidates(dir, manifest, runstateProofs) {
+		info, statErr := os.Stat(proofsDir)
+		if statErr != nil || !info.IsDir() {
+			continue
+		}
+		result := pipeline.ValidatePhase5Gate(proofsDir, manifest, dir)
+		if !result.Passed || filepath.Base(result.MarkerPath) != pipeline.Phase5AcceptanceFilename {
+			continue
+		}
+		return result, true
+	}
+	return pipeline.Phase5GateValidation{}, false
+}
+
 func newShipcheckCmd() *cobra.Command {
 	opts := &shipcheckOpts{}
 
@@ -544,7 +609,7 @@ exit codes into a single verdict. It is the canonical local invocation that
 matches what the public-library CI runs.
 
 Legs (in canonical order):
-  verify           — runtime command testing (with --fix to auto-repair common breakage)
+  verify           — runtime command testing (--fix auto-repair; omitted when a valid phase5 acceptance marker matches this tree)
   validate-narrative — README/SKILL narrative commands against the built CLI
   dogfood          — structural validation against the source spec
   workflow-verify  — primary workflow end-to-end against the verification manifest
@@ -579,6 +644,9 @@ Each leg remains callable standalone — this command is additive orchestration.
 			}
 			opts.dir = absDir
 			opts.verifyNoSpec = shipcheckShouldVerifyNoSpec(opts.dir)
+			if err := applyShipcheckVerifyFixPolicy(cmd, opts); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 
 			binPath, err := resolveSelfBinary()
 			if err != nil {
@@ -642,6 +710,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 	cmd.Flags().StringVar(&opts.spec, "spec", "", "Path to the OpenAPI spec file (passed to dogfood, verify, scorecard)")
 	cmd.Flags().StringVar(&opts.researchDir, "research-dir", "", "Pipeline directory containing research.json (passed to dogfood and scorecard)")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "Emit a structured JSON envelope at end-of-run (suppresses per-leg stdout for clean piping; run legs standalone with --json for per-leg detail)")
+	cmd.Flags().BoolVar(&opts.fix, "fix", false, "Pass --fix to verify even when a valid phase5 acceptance marker matches this tree (source edits invalidate that marker)")
 	cmd.Flags().BoolVar(&opts.noFix, "no-fix", false, "Disable verify's --fix auto-repair loop (read-only verify)")
 	cmd.Flags().BoolVar(&opts.noLiveCheck, "no-live-check", false, "Disable scorecard's --live-check sampled output probe")
 	cmd.Flags().StringVar(&opts.apiKey, "api-key", "", "API key for verify's live testing (read-only GETs only)")
