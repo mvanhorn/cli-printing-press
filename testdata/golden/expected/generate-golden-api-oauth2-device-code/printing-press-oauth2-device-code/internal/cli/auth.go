@@ -289,7 +289,7 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 				expiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 			}
 			cfg.AuthHeaderVal = ""
-			if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, tok.AccessToken, refreshToken, expiry); err != nil {
+			if err := cfg.SaveRefreshedOAuthTokens(cfg.ClientID, cfg.ClientSecret, tok.AccessToken, refreshToken, expiry); err != nil {
 				return configErr(fmt.Errorf("saving refreshed token: %w", err))
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Token refreshed.")
