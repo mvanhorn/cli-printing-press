@@ -206,6 +206,9 @@ type shipcheckHarness struct {
 func newShipcheckHarness(t *testing.T) shipcheckHarness {
 	t.Helper()
 	useShipcheckStub(t)
+	// Acceptance lookup consults runstate under the press home. Keep it off
+	// the real profile so a local marker cannot change these argv tests.
+	t.Setenv("PRINTING_PRESS_HOME", t.TempDir())
 	logFile := filepath.Join(t.TempDir(), "stub.log")
 	t.Setenv("STUB_LOG_FILE", logFile)
 	return shipcheckHarness{
@@ -1097,4 +1100,475 @@ func findInvocation(invocations [][]string, leg string) []string {
 
 func argvHas(argv []string, needle string) bool {
 	return slices.Contains(argv, needle)
+}
+
+const shipcheckAcceptanceRunID = "run-acceptance"
+
+func shipcheckPolicyHarness(t *testing.T) shipcheckHarness {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("PRINTING_PRESS_HOME", filepath.Join(home, "printing-press"))
+	logFile := filepath.Join(t.TempDir(), "stub.log")
+	t.Setenv("STUB_LOG_FILE", logFile)
+	return shipcheckHarness{
+		dir:     fakeCLIDir(t),
+		logFile: logFile,
+	}
+}
+
+func writeShipcheckAcceptanceManifest(t *testing.T, dir, runID string) {
+	t.Helper()
+	manifest := pipeline.CLIManifest{
+		APIName:  "example",
+		CLIName:  "example-pp-cli",
+		RunID:    runID,
+		AuthType: "none",
+		Scorecard: &pipeline.CLIManifestScorecard{
+			UnverifiedDimensions: []string{},
+		},
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshaling manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+}
+
+func shipcheckSourcePath(dir string) string {
+	return filepath.Join(dir, "main.go")
+}
+
+// writeShipcheckAcceptance mints a gate-passing phase5-acceptance.json in the
+// CLI's embedded proofs directory and returns the marker path plus the source
+// file the fingerprint covers.
+func writeShipcheckAcceptance(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	sourcePath := shipcheckSourcePath(dir)
+	if err := os.WriteFile(sourcePath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("writing source: %v", err)
+	}
+	source, err := pipeline.CaptureSourceFingerprint(dir)
+	if err != nil {
+		t.Fatalf("fingerprinting CLI: %v", err)
+	}
+	writeShipcheckAcceptanceManifest(t, dir, shipcheckAcceptanceRunID)
+	marker := pipeline.Phase5GateMarker{
+		SchemaVersion:     1,
+		APIName:           "example",
+		RunID:             shipcheckAcceptanceRunID,
+		Status:            "pass",
+		Level:             "full",
+		MatrixSize:        1,
+		TestsPassed:       1,
+		SourceFingerprint: source.Digest,
+		SourceFiles:       source.Files,
+		AuthContext:       pipeline.Phase5AuthContext{Type: "none"},
+	}
+	proofsDir := filepath.Join(dir, ".manuscripts", shipcheckAcceptanceRunID, "proofs")
+	if err := os.MkdirAll(proofsDir, 0o755); err != nil {
+		t.Fatalf("creating proofs dir: %v", err)
+	}
+	markerPath := filepath.Join(proofsDir, pipeline.Phase5AcceptanceFilename)
+	writeShipcheckMarkerFile(t, markerPath, marker)
+	return markerPath, sourcePath
+}
+
+func writeShipcheckMarkerFile(t *testing.T, path string, marker pipeline.Phase5GateMarker) {
+	t.Helper()
+	data, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		t.Fatalf("marshaling marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("creating marker dir: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("writing marker: %v", err)
+	}
+}
+
+func shipcheckAcceptanceValid(t *testing.T, dir, proofsDir string) bool {
+	t.Helper()
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	result := pipeline.ValidatePhase5Gate(proofsDir, manifest, dir)
+	return result.Passed
+}
+
+func runShipcheckCaptured(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return runWithCapturedStderr(t, func() error {
+		return runShipcheckCmd(t, args...)
+	})
+}
+
+func TestShipcheck_PostAcceptanceVerifyFixPolicy(t *testing.T) {
+	useShipcheckStub(t)
+
+	t.Run("valid marker leaves tree and omits fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		markerPath, sourcePath := writeShipcheckAcceptance(t, h.dir)
+		beforeSource, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source: %v", err)
+		}
+		beforeMarker, err := os.ReadFile(markerPath)
+		if err != nil {
+			t.Fatalf("reading marker: %v", err)
+		}
+		t.Setenv("STUB_VERIFY_FIX_TOUCH", sourcePath)
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("shipcheck after a valid acceptance marker: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want no --fix while the acceptance fingerprint matches", verifyArgs)
+		}
+		if !strings.Contains(stderr, "verify will run without --fix") {
+			t.Fatalf("stderr = %q, want read-only notice", stderr)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") {
+			t.Fatalf("read-only shipcheck warned that it invalidated the marker: %s", stderr)
+		}
+		afterSource, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source after shipcheck: %v", err)
+		}
+		if string(afterSource) != string(beforeSource) {
+			t.Fatalf("source changed:\n%s", afterSource)
+		}
+		afterMarker, err := os.ReadFile(markerPath)
+		if err != nil {
+			t.Fatalf("reading marker after shipcheck: %v", err)
+		}
+		if string(afterMarker) != string(beforeMarker) {
+			t.Fatalf("marker file changed:\n%s", afterMarker)
+		}
+		proofsDir := filepath.Dir(markerPath)
+		if !shipcheckAcceptanceValid(t, h.dir, proofsDir) {
+			t.Fatal("acceptance fingerprint no longer matches after read-only shipcheck")
+		}
+	})
+
+	t.Run("explicit fix still fixes and warns", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		markerPath, sourcePath := writeShipcheckAcceptance(t, h.dir)
+		beforeSource, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source: %v", err)
+		}
+		t.Setenv("STUB_VERIFY_FIX_TOUCH", sourcePath)
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir, "--fix")
+		if err != nil {
+			t.Fatalf("shipcheck --fix: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if !strings.Contains(stderr, "invalidates the phase5 acceptance marker at "+markerPath) {
+			t.Fatalf("stderr = %q, want invalidation warning for %s", stderr, markerPath)
+		}
+		afterSource, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source after --fix: %v", err)
+		}
+		if string(afterSource) == string(beforeSource) {
+			t.Fatal("verify --fix did not edit source")
+		}
+		if shipcheckAcceptanceValid(t, h.dir, filepath.Dir(markerPath)) {
+			t.Fatal("acceptance fingerprint still matches after verify --fix edited source")
+		}
+	})
+
+	t.Run("no-fix=false is an explicit fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		markerPath, _ := writeShipcheckAcceptance(t, h.dir)
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir, "--no-fix=false")
+		if err != nil {
+			t.Fatalf("shipcheck --no-fix=false: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if !strings.Contains(stderr, "invalidates the phase5 acceptance marker at "+markerPath) {
+			t.Fatalf("stderr = %q, want invalidation warning", stderr)
+		}
+	})
+
+	t.Run("fix=false stays read-only", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		_, sourcePath := writeShipcheckAcceptance(t, h.dir)
+		t.Setenv("STUB_VERIFY_FIX_TOUCH", sourcePath)
+		before, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source: %v", err)
+		}
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir, "--fix=false")
+		if err != nil {
+			t.Fatalf("shipcheck --fix=false: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want no --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") {
+			t.Fatalf("read-only --fix=false warned about invalidation: %s", stderr)
+		}
+		after, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source: %v", err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("source changed under --fix=false:\n%s", after)
+		}
+	})
+
+	t.Run("no-fix with valid marker does not warn", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		_, sourcePath := writeShipcheckAcceptance(t, h.dir)
+		t.Setenv("STUB_VERIFY_FIX_TOUCH", sourcePath)
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir, "--no-fix")
+		if err != nil {
+			t.Fatalf("shipcheck --no-fix: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want no --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") {
+			t.Fatalf("--no-fix warned about invalidation: %s", stderr)
+		}
+	})
+
+	t.Run("fix and no-fix cannot be combined", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		writeShipcheckAcceptance(t, h.dir)
+
+		_, err := runShipcheckCaptured(t, "--dir", h.dir, "--fix", "--no-fix")
+		if err == nil {
+			t.Fatal("expected mutually exclusive flags to fail")
+		}
+		exitErr, ok := err.(*ExitError)
+		if !ok {
+			t.Fatalf("expected *ExitError; got %T: %v", err, err)
+		}
+		if exitErr.Code != ExitInputError {
+			t.Fatalf("exit code = %d, want %d", exitErr.Code, ExitInputError)
+		}
+		if !strings.Contains(err.Error(), "--fix and --no-fix cannot be combined") {
+			t.Fatalf("error = %v, want mutual-exclusion message", err)
+		}
+		if _, statErr := os.Stat(h.logFile); !os.IsNotExist(statErr) {
+			invocations := readStubLog(t, h.logFile)
+			if len(invocations) != 0 {
+				t.Fatalf("flags rejected after legs ran: %v", invocations)
+			}
+		}
+	})
+
+	t.Run("no marker keeps fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("shipcheck without a marker: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") || strings.Contains(stderr, "without --fix") {
+			t.Fatalf("stderr = %q, want today's default with no acceptance notice", stderr)
+		}
+	})
+
+	t.Run("stale marker keeps fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		_, sourcePath := writeShipcheckAcceptance(t, h.dir)
+		if err := os.WriteFile(sourcePath, []byte("package main\n\nfunc changed() {}\n"), 0o644); err != nil {
+			t.Fatalf("editing source: %v", err)
+		}
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("shipcheck with a stale marker: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") || strings.Contains(stderr, "without --fix") {
+			t.Fatalf("stderr = %q, want today's default for a mismatched fingerprint", stderr)
+		}
+	})
+
+	t.Run("corrupt marker falls back to fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		writeShipcheckAcceptanceManifest(t, h.dir, shipcheckAcceptanceRunID)
+		markerPath := filepath.Join(h.dir, ".manuscripts", shipcheckAcceptanceRunID, "proofs", pipeline.Phase5AcceptanceFilename)
+		if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+			t.Fatalf("creating proofs dir: %v", err)
+		}
+		if err := os.WriteFile(markerPath, []byte("{"), 0o644); err != nil {
+			t.Fatalf("writing corrupt marker: %v", err)
+		}
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("corrupt marker crashed shipcheck: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") || strings.Contains(stderr, "without --fix") {
+			t.Fatalf("stderr = %q, want today's default for a corrupt marker", stderr)
+		}
+	})
+
+	t.Run("unreadable marker falls back to fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		writeShipcheckAcceptanceManifest(t, h.dir, shipcheckAcceptanceRunID)
+		// A directory at the marker path fails ReadFile on every OS, including
+		// when the process is root and mode bits would not.
+		markerPath := filepath.Join(h.dir, ".manuscripts", shipcheckAcceptanceRunID, "proofs", pipeline.Phase5AcceptanceFilename)
+		if err := os.MkdirAll(markerPath, 0o755); err != nil {
+			t.Fatalf("creating unreadable marker path: %v", err)
+		}
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("unreadable marker crashed shipcheck: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "invalidates the phase5 acceptance marker") || strings.Contains(stderr, "without --fix") {
+			t.Fatalf("stderr = %q, want today's default for an unreadable marker", stderr)
+		}
+	})
+
+	t.Run("unreadable manifest falls back to fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		manifestPath := filepath.Join(h.dir, pipeline.CLIManifestFilename)
+		if err := os.Remove(manifestPath); err != nil {
+			t.Fatalf("removing manifest: %v", err)
+		}
+		if err := os.Mkdir(manifestPath, 0o755); err != nil {
+			t.Fatalf("replacing manifest with a directory: %v", err)
+		}
+
+		_, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err == nil {
+			t.Fatal("expected scorecard hold when the manifest cannot be read")
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix when the manifest cannot be read", verifyArgs)
+		}
+	})
+
+	t.Run("failed acceptance keeps fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		markerPath, _ := writeShipcheckAcceptance(t, h.dir)
+		data, err := os.ReadFile(markerPath)
+		if err != nil {
+			t.Fatalf("reading marker: %v", err)
+		}
+		updated := strings.Replace(string(data), `"status": "pass"`, `"status": "fail"`, 1)
+		if updated == string(data) {
+			t.Fatal("marker status was not replaced")
+		}
+		if err := os.WriteFile(markerPath, []byte(updated), 0o644); err != nil {
+			t.Fatalf("writing failed marker: %v", err)
+		}
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("shipcheck with a failed acceptance marker: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if !argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want --fix", verifyArgs)
+		}
+		if strings.Contains(stderr, "without --fix") {
+			t.Fatalf("stderr = %q, want today's default for a non-passing marker", stderr)
+		}
+	})
+
+	t.Run("runstate marker omits fix", func(t *testing.T) {
+		h := shipcheckPolicyHarness(t)
+		sourcePath := shipcheckSourcePath(h.dir)
+		if err := os.WriteFile(sourcePath, []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("writing source: %v", err)
+		}
+		source, err := pipeline.CaptureSourceFingerprint(h.dir)
+		if err != nil {
+			t.Fatalf("fingerprinting CLI: %v", err)
+		}
+		writeShipcheckAcceptanceManifest(t, h.dir, shipcheckAcceptanceRunID)
+		state := pipeline.NewStateWithRun("example", h.dir, shipcheckAcceptanceRunID, "shipcheck-test")
+		if err := state.Save(); err != nil {
+			t.Fatalf("saving runstate: %v", err)
+		}
+		markerPath := filepath.Join(state.ProofsDir(), pipeline.Phase5AcceptanceFilename)
+		writeShipcheckMarkerFile(t, markerPath, pipeline.Phase5GateMarker{
+			SchemaVersion:     1,
+			APIName:           "example",
+			RunID:             shipcheckAcceptanceRunID,
+			Status:            "pass",
+			Level:             "full",
+			MatrixSize:        1,
+			TestsPassed:       1,
+			SourceFingerprint: source.Digest,
+			SourceFiles:       source.Files,
+			AuthContext:       pipeline.Phase5AuthContext{Type: "none"},
+		})
+		before, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source: %v", err)
+		}
+		t.Setenv("STUB_VERIFY_FIX_TOUCH", sourcePath)
+
+		stderr, err := runShipcheckCaptured(t, "--dir", h.dir)
+		if err != nil {
+			t.Fatalf("shipcheck with a runstate acceptance marker: %v", err)
+		}
+		verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+		if argvHas(verifyArgs, "--fix") {
+			t.Fatalf("verify argv = %v, want no --fix", verifyArgs)
+		}
+		if !strings.Contains(stderr, "verify will run without --fix") {
+			t.Fatalf("stderr = %q, want read-only notice", stderr)
+		}
+		after, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("reading source: %v", err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("source changed:\n%s", after)
+		}
+		if !shipcheckAcceptanceValid(t, h.dir, state.ProofsDir()) {
+			t.Fatal("runstate acceptance fingerprint no longer matches")
+		}
+	})
 }

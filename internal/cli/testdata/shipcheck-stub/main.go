@@ -46,6 +46,28 @@ func main() {
 	// streamed through the umbrella to the terminal.
 	fmt.Fprintf(os.Stdout, "stub running leg=%s args=%v\n", leg, os.Args[2:])
 
+	// Stand-in for verify --fix rewriting CLI source. Shipcheck tests set
+	// STUB_VERIFY_FIX_TOUCH to a source file and assert the acceptance
+	// fingerprint only moves when --fix was actually passed.
+	if leg == "verify" {
+		if touch := os.Getenv("STUB_VERIFY_FIX_TOUCH"); touch != "" && argvHasFix(os.Args[1:]) {
+			f, err := os.OpenFile(touch, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "stub: opening %s: %v\n", touch, err)
+				os.Exit(99)
+			}
+			if _, err := fmt.Fprintln(f, "\n// verify-fix"); err != nil {
+				fmt.Fprintf(os.Stderr, "stub: writing %s: %v\n", touch, err)
+				f.Close()
+				os.Exit(99)
+			}
+			if err := f.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "stub: closing %s: %v\n", touch, err)
+				os.Exit(99)
+			}
+		}
+	}
+
 	// Look up the configured exit code: STUB_EXIT_DOGFOOD=2, etc.
 	envName := "STUB_EXIT_" + strings.ToUpper(strings.ReplaceAll(leg, "-", "_"))
 	if v := os.Getenv(envName); v != "" {
@@ -60,4 +82,13 @@ func main() {
 		os.Exit(code)
 	}
 	os.Exit(0)
+}
+
+func argvHasFix(argv []string) bool {
+	for _, arg := range argv {
+		if arg == "--fix" {
+			return true
+		}
+	}
+	return false
 }

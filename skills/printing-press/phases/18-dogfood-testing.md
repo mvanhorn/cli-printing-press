@@ -107,7 +107,7 @@ If the command exits non-zero, inspect the structured failures, fix the CLI, and
 rerun live dogfood. The runner writes `phase5-acceptance.json` on every outcome
 (`status: "pass"` on success, `status: "fail"` with a `failure_summary` block on
 failure), so the [Phase 5.6](20-promote-and-archive.md) gate always has a marker to read. Do not hand-edit
-`phase5-acceptance.json`; it must come from the runner.
+`phase5-acceptance.json`; it must come from the runner. Re-running `shipcheck` after a passing marker does not pass `verify --fix` while that fingerprint matches the tree. `shipcheck --fix` still repairs source and warns that the marker must be re-minted.
 
 When `hollow_features` lists a mutating novel command that only previews unless
 a confirm flag is passed, annotate it `pp:preview-happy-path` (see
