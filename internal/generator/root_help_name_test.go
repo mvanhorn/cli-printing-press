@@ -241,7 +241,7 @@ func TestRootHelpDisplayNameBacktickStaysValidGo(t *testing.T) {
 	content := readGenerated(t, outputDir, "internal", "cli", "root.go")
 	assert.Equal(t, "CI'PP CLI — Typed endpoints", rootField(t, content, "Short"))
 	assert.Contains(t, rootField(t, content, "Long"), "CI'PP CLI — Typed endpoints")
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "Short:") && strings.Contains(line, "CI'PP CLI") {
 			assert.Equal(t, 2, strings.Count(line, "`"), "line: %s", line)
 		}
