@@ -1,4 +1,4 @@
-# Printing Press Golden CLI
+# Printing Press Studio CLI
 
 Purpose-built fixture for golden generation coverage.
 

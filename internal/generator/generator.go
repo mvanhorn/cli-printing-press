@@ -1538,11 +1538,30 @@ func (g *Generator) freshnessCommandPaths() []string {
 	return paths
 }
 
+// proseName is the brand in README, SKILL, and root help. Narrative
+// display name wins, then an authored spec display_name. OpenAPI
+// title-derived names stay on humanName: that derivation is already a
+// title-case of the cleaned title, and manifest/MCP identity owns it.
 func (g *Generator) proseName() string {
-	if g.Narrative != nil && strings.TrimSpace(g.Narrative.DisplayName) != "" {
-		return strings.TrimSpace(g.Narrative.DisplayName)
+	if g.Narrative != nil {
+		if name := strings.TrimSpace(g.Narrative.DisplayName); name != "" {
+			return name
+		}
+	}
+	if name := strings.TrimSpace(g.Spec.DisplayName); name != "" && !g.Spec.DisplayNameDerivedFromTitle {
+		return name
 	}
 	return naming.HumanName(g.Spec.Name)
+}
+
+// distinctProseName is false when proseName is the title-cased slug.
+// The no-narrative help sentence keeps printing the slug in that case
+// so CLIs without an authored brand stay byte-identical.
+func (g *Generator) distinctProseName() bool {
+	if g == nil || g.Spec == nil {
+		return false
+	}
+	return g.proseName() != naming.HumanName(g.Spec.Name)
 }
 
 func hasAuth(auth spec.AuthConfig) bool {
@@ -6822,6 +6841,8 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasWorkflow            bool
 		CompactDescription     string
 		HasAPIBrowser          bool
+		ProseName              string
+		DistinctProseName      bool
 	}{
 		APISpec:                g.Spec,
 		VisionSet:              g.dataSurfaceVisionSet(),
@@ -6847,6 +6868,8 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasWorkflow:            g.hasWorkflowSurface(),
 		CompactDescription:     g.compactDescription(),
 		HasAPIBrowser:          g.hasAPIBrowser(),
+		ProseName:              g.proseName(),
+		DistinctProseName:      g.distinctProseName(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
