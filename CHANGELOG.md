@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.35.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.0...v4.35.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **ci:** verify release assets and bound cross-platform builds ([#5317](https://github.com/mvanhorn/cli-printing-press/issues/5317)) ([5c98e76](https://github.com/mvanhorn/cli-printing-press/commit/5c98e769a68562674f69efb333f21154217193ed))
+* **cli:** count function values as live uses ([#5322](https://github.com/mvanhorn/cli-printing-press/issues/5322)) ([70f7163](https://github.com/mvanhorn/cli-printing-press/commit/70f7163ab3985f2998812d94aa6bfc6fe651b6ff))
+* **cli:** lock auth-code OAuth refresh across processes ([#5323](https://github.com/mvanhorn/cli-printing-press/issues/5323)) ([7e8b3be](https://github.com/mvanhorn/cli-printing-press/commit/7e8b3be03b6049f6280ca33a8e9923626ccc2f36))
+* **skills:** require printing press 4.35.0 ([#5319](https://github.com/mvanhorn/cli-printing-press/issues/5319)) ([d0464e2](https://github.com/mvanhorn/cli-printing-press/commit/d0464e206fbdbc7856ed4f0f95d6e268ba865280))
+
 ## [4.35.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.34.2...v4.35.0) (2026-10-31)
 
 
