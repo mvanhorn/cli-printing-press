@@ -24,7 +24,7 @@
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "run_id": "<RUN_ID>",
   "schema_version": 2,
-  "spec_checksum": "sha256:02fa0e5228254d5b4997218bdcf3e81afac7965190c545b71bce2ceeade59526",
+  "spec_checksum": "sha256:dcbc35b9e501f4215bee6abe6de06d8fcd27d97587141989fcc00faf0f2797a3",
   "spec_format": "openapi3",
   "spec_path": "spec.yaml",
   "spec_source": "official",

@@ -321,8 +321,8 @@ func isCobraUsageError(err error) bool {
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "printing-press-golden-pp-cli",
-		Short: "Manage printing-press-golden resources via the printing-press-golden API",
-		Long: `Manage printing-press-golden resources via the printing-press-golden API.
+		Short: `Manage Printing Press Studio resources via the Printing Press Studio API`,
+		Long: `Manage Printing Press Studio resources via the Printing Press Studio API.
 
 Add --agent to any command for JSON output + non-interactive mode.
 Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
