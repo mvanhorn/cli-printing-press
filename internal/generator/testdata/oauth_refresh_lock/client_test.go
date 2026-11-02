@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +45,16 @@ func TestOAuthRefreshFileLock(t *testing.T) {
 		t.Run("peer refresh is adopted instead of spent", testAdoptSuccessor)
 		t.Run("profile does not switch to a global login", testProfileDoesNotSwitchToGlobal)
 		t.Run("diverged global token is not spent", testDivergedGlobalIsNotSpent)
+		t.Run("shared profile follows later global rotations", testSharedProfileFollowsGlobalRotation)
+		t.Run("legacy profile follows later global rotations", testLegacyProfileFollowsLaterRotations)
+		t.Run("legacy credentials refresh without a login id", testLegacyCredentialsRefresh)
+		t.Run("unrelated profile ignores a rotated global login", testUnrelatedProfileIgnoresRotatedGlobal)
+		t.Run("new login does not replace a shared profile", testNewLoginDoesNotReplaceSharedProfile)
+		t.Run("refreshed save keeps the shared login", testRefreshedSaveKeepsLoginLink)
+		t.Run("env override keeps the shared file token", testEnvOverrideKeepsSharedFileToken)
+		t.Run("empty global token does not block the profile", testEmptyGlobalTokenDoesNotBlockProfile)
+		t.Run("replaced global login is not adopted", testReplacedGlobalLoginIsNotAdopted)
+		t.Run("copied profile spends the refresh token once", testCopiedProfileOneSpend)
 		t.Run("shared peer rotation is saved to both", testSharedPeerRotationSavedToBoth)
 		t.Run("env refresh token does not spend the other login", testEnvDoesNotSpendOtherLogin)
 		t.Run("hard-linked credentials take one spend", testHardLinkedCredentialsOneSpend)
@@ -122,12 +134,13 @@ func oauthChildHold() {
 				expiry = time.Now().Add(30 * time.Second)
 			}
 			return cliutil.SaveCredentials(&cliutil.Credentials{
-				BaseURL:      "https://api.example.com",
-				AccessToken:  "access-successor",
-				RefreshToken: "refresh-successor",
-				TokenExpiry:  expiry,
-				ClientID:     "client-id",
-				ClientSecret: "client-secret-value",
+				BaseURL:        "https://api.example.com",
+				AccessToken:    "access-successor",
+				RefreshToken:   "refresh-successor",
+				RefreshLoginID: os.Getenv("PP_OAUTH_HOLD_LOGIN_ID"),
+				TokenExpiry:    expiry,
+				ClientID:       "client-id",
+				ClientSecret:   "client-secret-value",
 			})
 		}
 		return nil
@@ -503,6 +516,377 @@ func testProfileDoesNotSwitchToGlobal(t *testing.T) {
 	}
 }
 
+func testSharedProfileFollowsGlobalRotation(t *testing.T) {
+	home := isolateOAuth(t)
+	const start = "refresh-shared"
+	srv := newStepTokenServer(t, start)
+	seedTokens(t, srv.URL+"/token", "access-old", start, time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-shared-rot")
+	saveProfileTokens(t, explicit, srv.URL+"/token", start)
+	profile := reloadClient(t, explicit, srv.URL+"/token")
+	if profile.Config.RefreshToken != start {
+		t.Fatalf("profile refresh=%q, want %s", profile.Config.RefreshToken, start)
+	}
+	global := reloadClient(t, "", srv.URL+"/token")
+	if err := global.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	loginID := credentialLoginID(t, globalCredsPath(t))
+	if loginID == "" {
+		t.Fatal("login id missing after rotation")
+	}
+	if err := global.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := credentialLoginID(t, globalCredsPath(t)); got != loginID {
+		t.Fatalf("login id changed from %q to %q", loginID, got)
+	}
+	if srv.callCount() != 2 {
+		t.Fatalf("global rotations calls=%d, want 2, spent=%v", srv.callCount(), srv.spentTokens())
+	}
+	if err := profile.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if srv.callCount() != 2 {
+		t.Fatalf("profile spent a retired token, calls=%d want 2, spent=%v", srv.callCount(), srv.spentTokens())
+	}
+	const wantRefresh = "refresh-step-2"
+	const wantAccess = "access-step-2"
+	if profile.Config.RefreshToken != wantRefresh || profile.Config.AccessToken != wantAccess {
+		t.Fatalf("profile access=%q refresh=%q", profile.Config.AccessToken, profile.Config.RefreshToken)
+	}
+	profileDisk := reloadConfig(t, explicit, "")
+	globalDisk := reloadConfig(t, "", "")
+	if profileDisk.RefreshToken != wantRefresh || globalDisk.RefreshToken != wantRefresh {
+		t.Fatalf("disk profile=%q global=%q", profileDisk.RefreshToken, globalDisk.RefreshToken)
+	}
+	if profileDisk.AccessToken != wantAccess || globalDisk.AccessToken != wantAccess {
+		t.Fatalf("disk access profile=%q global=%q", profileDisk.AccessToken, globalDisk.AccessToken)
+	}
+	if got := credentialLoginID(t, profileCredsPath(explicit)); got != loginID {
+		t.Fatalf("profile login id=%q, want %q", got, loginID)
+	}
+	if got := credentialLoginID(t, globalCredsPath(t)); got != loginID {
+		t.Fatalf("global login id=%q, want %q", got, loginID)
+	}
+}
+
+func testLegacyProfileFollowsLaterRotations(t *testing.T) {
+	home := isolateOAuth(t)
+	const start = "refresh-shared"
+	srv := newStepTokenServer(t, start)
+	seedTokens(t, srv.URL+"/token", "access-old", start, time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-legacy-rot")
+	saveProfileTokens(t, explicit, srv.URL+"/token", start)
+	stripRefreshLoginID(t, globalCredsPath(t))
+	stripRefreshLoginID(t, profileCredsPath(explicit))
+	if credentialLoginID(t, globalCredsPath(t)) != "" || credentialLoginID(t, profileCredsPath(explicit)) != "" {
+		t.Fatal("login id survived the strip")
+	}
+	profile := reloadClient(t, explicit, srv.URL+"/token")
+	global := reloadClient(t, "", srv.URL+"/token")
+	if err := global.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := global.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if credentialLoginID(t, profileCredsPath(explicit)) != "" {
+		t.Fatal("profile file gained a login id before it refreshed")
+	}
+	loginID := credentialLoginID(t, globalCredsPath(t))
+	if loginID == "" {
+		t.Fatal("rotation did not record a login id")
+	}
+	if err := profile.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if srv.callCount() != 2 {
+		t.Fatalf("calls=%d, want 2, spent=%v", srv.callCount(), srv.spentTokens())
+	}
+	if profile.Config.RefreshToken != "refresh-step-2" {
+		t.Fatalf("profile refresh=%q", profile.Config.RefreshToken)
+	}
+	if got := credentialLoginID(t, profileCredsPath(explicit)); got != loginID {
+		t.Fatalf("profile login id=%q, want %q", got, loginID)
+	}
+}
+
+func testLegacyCredentialsRefresh(t *testing.T) {
+	isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 0)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	stripRefreshLoginID(t, globalCredsPath(t))
+	if strings.Contains(readFileString(t, globalCredsPath(t)), "refresh_login_id") {
+		t.Fatal("stripped file still names a login id")
+	}
+	c := reloadClient(t, "", srv.URL+"/token")
+	if err := c.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d", srv.calls.Load(), srv.spentOld.Load())
+	}
+	if c.Config.RefreshToken != "refresh-new" {
+		t.Fatalf("refresh=%q", c.Config.RefreshToken)
+	}
+	if credentialLoginID(t, globalCredsPath(t)) == "" {
+		t.Fatal("refresh did not record a login id")
+	}
+}
+
+func testUnrelatedProfileIgnoresRotatedGlobal(t *testing.T) {
+	home := isolateOAuth(t)
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := r.Form.Get("refresh_token")
+		mu.Lock()
+		seen[got]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"access-for-%s","refresh_token":"next-%s","expires_in":3600}`, got, got)
+	}))
+	t.Cleanup(srv.Close)
+	seedTokens(t, srv.URL+"/token", "access-global", "refresh-global", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-unrelated-rot")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-profile")
+	global := reloadClient(t, "", srv.URL+"/token")
+	if err := global.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	profile := reloadClient(t, explicit, srv.URL+"/token")
+	if err := profile.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["refresh-global"] != 1 || seen["refresh-profile"] != 1 || len(seen) != 2 {
+		t.Fatalf("spent=%v", seen)
+	}
+	if got := reloadConfig(t, "", ""); got.RefreshToken != "next-refresh-global" {
+		t.Fatalf("global refresh=%q", got.RefreshToken)
+	}
+	if got := reloadConfig(t, explicit, ""); got.RefreshToken != "next-refresh-profile" {
+		t.Fatalf("profile refresh=%q", got.RefreshToken)
+	}
+	if credentialLoginID(t, globalCredsPath(t)) == credentialLoginID(t, profileCredsPath(explicit)) {
+		t.Fatal("unrelated logins recorded the same login id")
+	}
+}
+
+func testNewLoginDoesNotReplaceSharedProfile(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 0)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-relogin")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	global := reloadConfig(t, "", srv.URL+"/token")
+	if err := global.SaveTokens("client-id", "client-secret-value", "access-other", "refresh-other", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	profile := reloadClient(t, explicit, srv.URL+"/token")
+	if err := profile.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d", srv.calls.Load(), srv.spentOld.Load())
+	}
+	if got := reloadConfig(t, "", ""); got.RefreshToken != "refresh-other" || got.AccessToken != "access-other" {
+		t.Fatalf("global access=%q refresh=%q", got.AccessToken, got.RefreshToken)
+	}
+	if got := reloadConfig(t, explicit, ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("profile refresh=%q", got.RefreshToken)
+	}
+}
+
+func testRefreshedSaveKeepsLoginLink(t *testing.T) {
+	home := isolateOAuth(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-refresh-save")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	profile := reloadClient(t, explicit, srv.URL+"/token")
+	global := reloadConfig(t, "", srv.URL+"/token")
+	if err := global.SaveRefreshedOAuthTokens("client-id", "client-secret-value", "access-kept", "refresh-kept", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := profile.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("token calls=%d, want 0", calls.Load())
+	}
+	if profile.Config.RefreshToken != "refresh-kept" || profile.Config.AccessToken != "access-kept" {
+		t.Fatalf("access=%q refresh=%q", profile.Config.AccessToken, profile.Config.RefreshToken)
+	}
+	globalID := credentialLoginID(t, globalCredsPath(t))
+	profileID := credentialLoginID(t, profileCredsPath(explicit))
+	if globalID == "" || globalID != profileID {
+		t.Fatalf("global id=%q profile id=%q", globalID, profileID)
+	}
+}
+
+func testEnvOverrideKeepsSharedFileToken(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 0)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-env-shared")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	stripRefreshLoginID(t, globalCredsPath(t))
+	stripRefreshLoginID(t, profileCredsPath(explicit))
+	t.Setenv("OAUTH_REFRESH_TOKEN", "refresh-from-env")
+	c := reloadClient(t, explicit, srv.URL+"/token")
+	if c.Config.RefreshToken != "refresh-from-env" {
+		t.Fatalf("env refresh=%q", c.Config.RefreshToken)
+	}
+	if err := c.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d", srv.calls.Load(), srv.spentOld.Load())
+	}
+	if c.Config.RefreshToken != "refresh-new" {
+		t.Fatalf("memory refresh=%q", c.Config.RefreshToken)
+	}
+	for _, path := range []string{globalCredsPath(t), profileCredsPath(explicit)} {
+		body := readFileString(t, path)
+		if strings.Contains(body, "refresh-from-env") || !strings.Contains(body, "refresh_token = 'refresh-new'") {
+			t.Fatalf("%s stored %q", path, body)
+		}
+		if got := credentialLoginID(t, path); got != oauthLoginID("refresh-old") {
+			t.Fatalf("%s login id=%q", path, got)
+		}
+	}
+	t.Setenv("OAUTH_REFRESH_TOKEN", "")
+	if got := reloadConfig(t, "", ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("global refresh=%q", got.RefreshToken)
+	}
+	if got := reloadConfig(t, explicit, ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("profile refresh=%q", got.RefreshToken)
+	}
+}
+
+func testEmptyGlobalTokenDoesNotBlockProfile(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 0)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-empty-global")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	creds, ok, err := cliutil.LoadCredentials()
+	if err != nil || !ok || creds == nil {
+		t.Fatalf("load global credentials ok=%v err=%v", ok, err)
+	}
+	if creds.RefreshLoginID == "" {
+		t.Fatal("global login id missing")
+	}
+	creds.RefreshToken = ""
+	if err := cliutil.SaveCredentials(creds); err != nil {
+		t.Fatal(err)
+	}
+	profile := reloadClient(t, explicit, srv.URL+"/token")
+	if err := profile.refreshAccessToken(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d", srv.calls.Load(), srv.spentOld.Load())
+	}
+	if got := reloadConfig(t, "", ""); got.RefreshToken != "" {
+		t.Fatalf("global refresh=%q, want empty", got.RefreshToken)
+	}
+	if got := reloadConfig(t, explicit, ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("profile refresh=%q", got.RefreshToken)
+	}
+}
+
+func testReplacedGlobalLoginIsNotAdopted(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 0)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-replaced")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	globalPath := globalCredsPath(t)
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	start := filepath.Join(dir, "start")
+	cmd := startOAuthChild(t, "hold", "", ready, start, "", "PP_OAUTH_LOCK_PATH="+globalPath, "PP_OAUTH_HOLD_REWRITE=1", "PP_OAUTH_HOLD_LOGIN_ID=other-login")
+	waitForFile(t, ready)
+	done := make(chan error, 1)
+	go func() {
+		cfg, err := config.Load(explicit)
+		if err != nil {
+			done <- err
+			return
+		}
+		cfg.TokenURL = srv.URL + "/token"
+		c := New(cfg, 5*time.Second, 0)
+		c.NoCache = true
+		done <- c.refreshAccessToken(context.Background())
+	}()
+	time.Sleep(time.Second)
+	if err := os.WriteFile(start, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(15 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("refresh did not finish")
+	}
+	waitChild(t, cmd, 10*time.Second, 0)
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d", srv.calls.Load(), srv.spentOld.Load())
+	}
+	if got := reloadConfig(t, "", ""); got.RefreshToken != "refresh-successor" || got.AccessToken != "access-successor" {
+		t.Fatalf("global access=%q refresh=%q", got.AccessToken, got.RefreshToken)
+	}
+	if got := reloadConfig(t, explicit, ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("profile refresh=%q", got.RefreshToken)
+	}
+}
+
+func testCopiedProfileOneSpend(t *testing.T) {
+	home := isolateOAuth(t)
+	srv := newRotatingTokenServer(t, "refresh-old", 300*time.Millisecond)
+	seedTokens(t, srv.URL+"/token", "access-old", "refresh-old", time.Now().Add(-time.Minute))
+	explicit := writeProfile(t, home, "profile-copied")
+	saveProfileTokens(t, explicit, srv.URL+"/token", "refresh-old")
+	dir := t.TempDir()
+	start := filepath.Join(dir, "start")
+	readyA := filepath.Join(dir, "a")
+	readyB := filepath.Join(dir, "b")
+	cmdA := startOAuthChild(t, "refresh", "", readyA, start, srv.URL+"/token")
+	cmdB := startOAuthChild(t, "refresh", explicit, readyB, start, srv.URL+"/token")
+	waitForFile(t, readyA)
+	waitForFile(t, readyB)
+	if err := os.WriteFile(start, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitChild(t, cmdA, 15*time.Second, 0)
+	waitChild(t, cmdB, 15*time.Second, 0)
+	if srv.calls.Load() != 1 || srv.spentOld.Load() != 1 {
+		t.Fatalf("calls=%d spent=%d, want 1 and 1", srv.calls.Load(), srv.spentOld.Load())
+	}
+	if got := reloadConfig(t, "", ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("global refresh=%q", got.RefreshToken)
+	}
+	if got := reloadConfig(t, explicit, ""); got.RefreshToken != "refresh-new" {
+		t.Fatalf("profile refresh=%q", got.RefreshToken)
+	}
+}
+
 func testDivergedGlobalIsNotSpent(t *testing.T) {
 	home := isolateOAuth(t)
 	var mu sync.Mutex
@@ -841,6 +1225,70 @@ type rotatingServer struct {
 	spentOld atomic.Int32
 }
 
+type stepServer struct {
+	URL string
+	mu  sync.Mutex
+	cur string
+	n   int
+	got []string
+}
+
+func newStepTokenServer(t *testing.T, start string) *stepServer {
+	t.Helper()
+	srvState := &stepServer{cur: start}
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true}`)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		got := r.Form.Get("refresh_token")
+		srvState.mu.Lock()
+		match := got == srvState.cur
+		if match {
+			srvState.n++
+			srvState.got = append(srvState.got, got)
+			srvState.cur = fmt.Sprintf("refresh-step-%d", srvState.n)
+		}
+		n := srvState.n
+		srvState.mu.Unlock()
+		if !match {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		// The first rotation sits inside the early-refresh window so a second
+		// call spends it. The latest rotation is outside that window so a
+		// follower can adopt it.
+		expires := 3600
+		if n < 2 {
+			expires = 30
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"access-step-%d","refresh_token":"refresh-step-%d","expires_in":%d}`, n, n, expires)
+	}))
+	t.Cleanup(httpSrv.Close)
+	srvState.URL = httpSrv.URL
+	return srvState
+}
+
+func (s *stepServer) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n
+}
+
+func (s *stepServer) spentTokens() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.got))
+	copy(out, s.got)
+	return out
+}
+
 func newRotatingTokenServer(t *testing.T, old string, delay time.Duration) *rotatingServer {
 	t.Helper()
 	srvState := &rotatingServer{}
@@ -929,6 +1377,72 @@ func reloadClient(t *testing.T, path, tokenURL string) *Client {
 	c := New(cfg, 5*time.Second, 0)
 	c.NoCache = true
 	return c
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func globalCredsPath(t *testing.T) string {
+	t.Helper()
+	path, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func profileCredsPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "data", "credentials.toml")
+}
+
+func oauthLoginID(refreshToken string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(refreshToken)))
+	return hex.EncodeToString(sum[:])
+}
+
+func credentialLoginID(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "refresh_login_id") {
+			continue
+		}
+		_, val, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("login id line %q", line)
+		}
+		return strings.Trim(strings.TrimSpace(val), `"'`)
+	}
+	return ""
+}
+
+func stripRefreshLoginID(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "refresh_login_id") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeProfile(t *testing.T, home, name string) string {

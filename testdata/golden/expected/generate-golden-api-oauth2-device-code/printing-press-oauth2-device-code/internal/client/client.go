@@ -2826,7 +2826,7 @@ func (c *Client) usePersistedOAuthRefresh(loaded []*cliutil.Credentials, spentRe
 		}
 	}
 	if rotated != nil {
-		c.Config.AdoptOAuthRefreshToken(rotated.RefreshToken)
+		c.Config.AdoptOAuthRefreshToken(rotated)
 	}
 	return false
 }

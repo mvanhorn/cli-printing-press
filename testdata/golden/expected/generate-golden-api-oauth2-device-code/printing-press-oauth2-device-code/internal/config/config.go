@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -45,11 +47,17 @@ type Config struct {
 	// explicitConfig keeps save and logout on the credentials file Load
 	// reads for a profile. Unexported so a save cannot persist the flag.
 	explicitConfig bool
-	AccessToken    string    `toml:"access_token"`
-	RefreshToken   string    `toml:"refresh_token"`
-	TokenExpiry    time.Time `toml:"token_expiry"`
-	ClientID       string    `toml:"client_id"`
-	ClientSecret   string    `toml:"client_secret"`
+	// refreshLoginID names one login across refresh-token rotations.
+	// The credentials file stores it. A file that omits the field still loads.
+	refreshLoginID string
+	// refreshLoginKeep tells SaveTokens that this write continues the current
+	// login. SaveRefreshedOAuthTokens sets it; a new login must not.
+	refreshLoginKeep bool
+	AccessToken      string    `toml:"access_token"`
+	RefreshToken     string    `toml:"refresh_token"`
+	TokenExpiry      time.Time `toml:"token_expiry"`
+	ClientID         string    `toml:"client_id"`
+	ClientSecret     string    `toml:"client_secret"`
 	// DeviceAuthorizationURL overrides the spec-baked OAuth2 device authorization endpoint.
 	// Falls back to the generator default at the call site when empty so a
 	// user pointing the CLI at a non-default deployment can override without
@@ -793,6 +801,7 @@ func (c *Config) credentials() *cliutil.Credentials {
 		AuthHeaderVal:      c.AuthHeaderVal,
 		AccessToken:        c.AccessToken,
 		RefreshToken:       c.RefreshToken,
+		RefreshLoginID:     c.refreshLoginID,
 		TokenExpiry:        c.TokenExpiry,
 		ClientID:           c.ClientID,
 		ClientSecret:       c.ClientSecret,
@@ -812,6 +821,9 @@ func (c *Config) applyCredentials(creds *cliutil.Credentials) {
 	}
 	if c.RefreshToken == "" {
 		c.RefreshToken = creds.RefreshToken
+	}
+	if c.refreshLoginID == "" {
+		c.refreshLoginID = strings.TrimSpace(creds.RefreshLoginID)
 	}
 	if c.TokenExpiry.IsZero() {
 		c.TokenExpiry = creds.TokenExpiry
@@ -1129,6 +1141,7 @@ type oauthRefreshSnap struct {
 // StageOAuthTokens records a token response in memory. The caller persists it
 // under the refresh file lock; SaveTokens is the unlocked entry point.
 func (c *Config) StageOAuthTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) {
+	c.keepOAuthRefreshLogin(c.RefreshToken)
 	c.ClientID = clientID
 	c.ClientSecret = clientSecret
 	c.AccessToken = accessToken
@@ -1152,6 +1165,7 @@ func (c *Config) AdoptOAuthTokens(creds *cliutil.Credentials) {
 	if c == nil || creds == nil {
 		return
 	}
+	c.noteOAuthRefreshLogin(creds)
 	c.AccessToken = creds.AccessToken
 	if creds.RefreshToken != "" {
 		c.RefreshToken = creds.RefreshToken
@@ -1168,14 +1182,15 @@ func (c *Config) AdoptOAuthTokens(creds *cliutil.Credentials) {
 	c.updateFileConfigField("AuthHeaderVal")
 }
 
-// AdoptOAuthRefreshToken keeps the current access token and switches the
-// refresh token to one a peer already rotated, so this process does not spend
-// the retired value.
-func (c *Config) AdoptOAuthRefreshToken(refreshToken string) {
-	if c == nil || refreshToken == "" {
+// AdoptOAuthRefreshToken keeps the current access token and switches to a
+// peer's rotated refresh token, including that peer's login id, so this
+// process does not spend the retired value.
+func (c *Config) AdoptOAuthRefreshToken(creds *cliutil.Credentials) {
+	if c == nil || creds == nil || strings.TrimSpace(creds.RefreshToken) == "" {
 		return
 	}
-	c.RefreshToken = refreshToken
+	c.noteOAuthRefreshLogin(creds)
+	c.RefreshToken = strings.TrimSpace(creds.RefreshToken)
 	delete(c.envOverrides, "RefreshToken")
 	c.updateFileConfigField("RefreshToken")
 }
@@ -1275,6 +1290,10 @@ func (c *Config) withOAuthRefreshLockOnce(refreshToken, pinToken string, fn func
 				locked = append(locked, src)
 			}
 		}
+		// A save replaces every locked file from memory. Copy a login id off
+		// disk first so a profile that never stored one does not wipe the copy
+		// a peer already recorded.
+		c.keepLoadedOAuthLogin(loaded)
 		cover := func(token string) error {
 			token = strings.TrimSpace(token)
 			if token == "" {
@@ -1589,28 +1608,130 @@ func profileRefreshToken(creds *cliutil.Credentials) string {
 	return strings.TrimSpace(creds.RefreshToken)
 }
 
-// globalOAuthRefreshShared is true when the global file is this profile's
-// login. A matching server is not a shared refresh token. An empty profile
-// token means the profile has not stored its own login. pinToken is a
-// replacement already read from a file this refresh included.
+// globalOAuthRefreshShared reports whether the global file is this profile's
+// login. A matching server is not enough. refreshLoginID stays constant when
+// the refresh token rotates, so a copy that still holds an older token remains
+// the same login. pinToken is a replacement already read from a file this
+// refresh included.
 func globalOAuthRefreshShared(profile, global *cliutil.Credentials, pinToken string) bool {
+	if global == nil {
+		return false
+	}
+	pinToken = strings.TrimSpace(pinToken)
+	if pinToken != "" && profileRefreshToken(global) == pinToken {
+		return true
+	}
+	return oauthRefreshLoginShared(profile, global)
+}
+
+func globalStillShared(profileAfter, globalBefore, globalAfter *cliutil.Credentials) bool {
+	if oauthRefreshLoginShared(profileAfter, globalAfter) {
+		return true
+	}
+	// The global token changed after this refresh listed the file. Follow that
+	// only when the replacement does not name a different login.
+	if profileRefreshToken(profileAfter) == "" || profileRefreshToken(profileAfter) != profileRefreshToken(globalBefore) {
+		return false
+	}
+	if profileRefreshToken(globalAfter) == "" || profileRefreshToken(globalAfter) == profileRefreshToken(globalBefore) {
+		return false
+	}
+	if id := oauthRefreshLoginIDOf(globalAfter); id != "" && id != oauthRefreshLoginIDOf(profileAfter) && id != oauthRefreshLoginID(profileRefreshToken(profileAfter)) {
+		return false
+	}
+	return true
+}
+
+// oauthRefreshLoginID is the identity of the login that first stored this
+// refresh token. Later rotations keep the id instead of hashing the new token.
+func oauthRefreshLoginID(refreshToken string) string {
+	refreshToken = strings.TrimSpace(refreshToken)
+	if refreshToken == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(refreshToken))
+	return hex.EncodeToString(sum[:])
+}
+
+func oauthRefreshLoginIDOf(creds *cliutil.Credentials) string {
+	if creds == nil {
+		return ""
+	}
+	return strings.TrimSpace(creds.RefreshLoginID)
+}
+
+func oauthRefreshLoginShared(profile, global *cliutil.Credentials) bool {
 	globalToken := profileRefreshToken(global)
 	if globalToken == "" {
 		return false
 	}
-	pinToken = strings.TrimSpace(pinToken)
-	if pinToken != "" && globalToken == pinToken {
+	profileToken := profileRefreshToken(profile)
+	profileID := oauthRefreshLoginIDOf(profile)
+	globalID := oauthRefreshLoginIDOf(global)
+	if profileID != "" && globalID != "" && profileID == globalID {
 		return true
 	}
-	profileToken := profileRefreshToken(profile)
-	return profileToken == "" || profileToken == globalToken
+	if profileToken != "" && profileToken == globalToken {
+		return true
+	}
+	if profileToken != "" && globalID != "" && oauthRefreshLoginID(profileToken) == globalID {
+		return true
+	}
+	if globalToken != "" && profileID != "" && oauthRefreshLoginID(globalToken) == profileID {
+		return true
+	}
+	return profileToken == "" && profileID == ""
 }
 
-func globalStillShared(profileBefore, profileAfter, globalBefore, globalAfter string) bool {
-	if profileAfter == "" || profileAfter == globalAfter {
-		return globalAfter != ""
+func (c *Config) keepOAuthRefreshLogin(spent string) {
+	if c == nil || strings.TrimSpace(c.refreshLoginID) != "" {
+		return
 	}
-	return globalBefore != "" && profileAfter == globalBefore && globalAfter != "" && globalAfter != globalBefore
+	c.refreshLoginID = oauthRefreshLoginID(spent)
+}
+
+func (c *Config) assignOAuthRefreshLogin(next string, keep bool) {
+	if c == nil {
+		return
+	}
+	next = strings.TrimSpace(next)
+	if keep {
+		c.keepOAuthRefreshLogin(c.RefreshToken)
+		if strings.TrimSpace(c.refreshLoginID) == "" {
+			c.refreshLoginID = oauthRefreshLoginID(next)
+		}
+		return
+	}
+	prev := strings.TrimSpace(c.RefreshToken)
+	if next != "" && next == prev && strings.TrimSpace(c.refreshLoginID) != "" {
+		return
+	}
+	c.refreshLoginID = oauthRefreshLoginID(next)
+}
+
+func (c *Config) noteOAuthRefreshLogin(creds *cliutil.Credentials) {
+	if c == nil || creds == nil {
+		return
+	}
+	if id := oauthRefreshLoginIDOf(creds); id != "" {
+		c.refreshLoginID = id
+		return
+	}
+	if strings.TrimSpace(c.refreshLoginID) == "" {
+		c.refreshLoginID = oauthRefreshLoginID(creds.RefreshToken)
+	}
+}
+
+func (c *Config) keepLoadedOAuthLogin(loaded []*cliutil.Credentials) {
+	if c == nil || strings.TrimSpace(c.refreshLoginID) != "" {
+		return
+	}
+	for _, creds := range loaded {
+		if id := oauthRefreshLoginIDOf(creds); id != "" {
+			c.refreshLoginID = id
+			return
+		}
+	}
 }
 
 func reconcileOAuthRefreshSources(before, after []oauthTokenSource) ([]oauthTokenSource, bool) {
@@ -1618,24 +1739,22 @@ func reconcileOAuthRefreshSources(before, after []oauthTokenSource) ([]oauthToke
 		return nil, true
 	}
 	afterByLock := make(map[string]oauthTokenSource, len(after))
-	profileAfter := ""
+	var profileAfter *cliutil.Credentials
 	for _, src := range after {
 		if _, ok := afterByLock[src.lockPath]; ok {
 			return nil, true
 		}
 		afterByLock[src.lockPath] = src
 		if src.saveTarget {
-			profileAfter = profileRefreshToken(src.creds)
+			profileAfter = src.creds
 		}
 	}
-	profileBefore := ""
 	haveProfile := false
 	for _, src := range before {
 		if _, ok := afterByLock[src.lockPath]; !ok {
 			return nil, true
 		}
 		if src.saveTarget {
-			profileBefore = profileRefreshToken(src.creds)
 			haveProfile = true
 		}
 	}
@@ -1649,7 +1768,7 @@ func reconcileOAuthRefreshSources(before, after []oauthTokenSource) ([]oauthToke
 			out = append(out, fresh)
 			continue
 		}
-		if globalStillShared(profileBefore, profileAfter, profileRefreshToken(src.creds), profileRefreshToken(fresh.creds)) {
+		if globalStillShared(profileAfter, src.creds, fresh.creds) {
 			out = append(out, fresh)
 		}
 	}
@@ -1732,6 +1851,9 @@ func (c *Config) MarkCredentialsExplicit(clientID, clientSecret bool) {
 }
 
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
+	keep := c.refreshLoginKeep
+	c.refreshLoginKeep = false
+	c.assignOAuthRefreshLogin(refreshToken, keep)
 	c.ClientID = clientID
 	c.ClientSecret = clientSecret
 	c.AccessToken = accessToken
@@ -1748,6 +1870,13 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	return c.saveCredentialsThenConfig()
 }
 
+// SaveRefreshedOAuthTokens persists a refresh-grant response without treating
+// it as a different login. SaveTokens is the new-login entry point.
+func (c *Config) SaveRefreshedOAuthTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
+	c.refreshLoginKeep = true
+	return c.SaveTokens(clientID, clientSecret, accessToken, refreshToken, expiry)
+}
+
 func (c *Config) ClearTokens() error {
 	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
 	// and AccessToken are empty, so dropping the working credential requires
@@ -1761,6 +1890,8 @@ func (c *Config) ClearTokens() error {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
+	c.refreshLoginID = ""
+	c.refreshLoginKeep = false
 	delete(c.envOverrides, "AuthHeaderVal")
 	delete(c.envOverrides, "AccessToken")
 	delete(c.envOverrides, "RefreshToken")
