@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.35.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.1...v4.35.2) (2026-11-03)
+
+
+### Bug Fixes
+
+* **cli:** omit verify --fix after a matching phase5 marker ([#5326](https://github.com/mvanhorn/cli-printing-press/issues/5326)) ([8a97f39](https://github.com/mvanhorn/cli-printing-press/commit/8a97f39820d26af1619ddf4aa7ce51a300dc9a76))
+* **cli:** re-fetch live dogfood writes to catch silent no-ops ([#5334](https://github.com/mvanhorn/cli-printing-press/issues/5334)) ([7f49e40](https://github.com/mvanhorn/cli-printing-press/commit/7f49e4062467b7fd5980fe460708ae934ce62863))
+* **cli:** use the display name in printed root help ([#5327](https://github.com/mvanhorn/cli-printing-press/issues/5327)) ([55c6d77](https://github.com/mvanhorn/cli-printing-press/commit/55c6d772a16ae12ee68544e5f15045896b314f4b))
+
 ## [4.35.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.0...v4.35.1) (2026-11-02)
 
 
