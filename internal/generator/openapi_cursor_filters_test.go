@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -51,14 +53,24 @@ paths:
 		}
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv(naming.EnvPrefix(api.Name)+"_BASE_URL", server.URL)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	stdout, _ := runGeneratedBinary(t, binary, "events", "--all", "--after", "2026-01-01", "--before", "2026-02-01", "--json")
+	testHome := t.TempDir()
+	cmd := exec.Command(binary, "events", "--all", "--after", "2026-01-01", "--before", "2026-02-01", "--json")
+	cmd.Env = []string{
+		"HOME=" + testHome,
+		"USERPROFILE=" + testHome,
+		"XDG_CONFIG_HOME=" + filepath.Join(testHome, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(testHome, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(testHome, ".local", "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(testHome, ".cache"),
+		naming.EnvPrefix(api.Name) + "_BASE_URL=" + server.URL,
+	}
+	stdout, err := cmd.Output()
+	require.NoError(t, err)
 	server.Close()
 	require.Equal(t, []url.Values{
 		{"after": {"2026-01-01"}, "before": {"2026-02-01"}},
 		{"after": {"2026-01-01"}, "before": {"2026-02-01"}, "cursor": {"page-two"}},
 	}, queries)
-	require.Contains(t, stdout, "first-event")
-	require.Contains(t, stdout, "second-event")
+	require.Contains(t, string(stdout), "first-event")
+	require.Contains(t, string(stdout), "second-event")
 }
