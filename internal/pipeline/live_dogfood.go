@@ -43,6 +43,9 @@ const (
 	LiveDogfoodTestDryRunJSON LiveDogfoodTestKind = "dry_run_json"
 	LiveDogfoodTestError      LiveDogfoodTestKind = "error_path"
 	LiveDogfoodTestErrorReal  LiveDogfoodTestKind = "error_path_real"
+	// LiveDogfoodTestWriteReadback re-fetches a resource after a live
+	// create/update and checks that a submitted field persisted.
+	LiveDogfoodTestWriteReadback LiveDogfoodTestKind = "write_readback"
 )
 
 // reasonDestructiveAtAuth is the Skip reason emitted for endpoints that
@@ -2256,6 +2259,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		runArgs = protectLiveDogfoodNegativeNumericPositionals(runArgs, command.Path,
 			len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))), liveDogfoodFlagValueNames(command.Help), liveDogfoodFlagNames(command.Help))
 
+		// Capture the baseline before the write. A read after the call cannot
+		// tell a silent no-op from a server that stored a different value.
+		readback := startLiveDogfoodWriteReadback(command, ctx, runArgs, stdinPayload, previewHappy)
 		happyRun := runLiveDogfoodMatrixProcess(ctx.binaryPath, ctx.cliDir, runArgs, len(command.Path), ctx.timeout, stdinPayload)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun, ctx.authEnvValue)
 		happyResult.FixtureSource = fixtureSource
@@ -2283,6 +2289,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			happyResult.Reason = featureAbsentReason
 		}
 		results = append(results, happyResult)
+		if readback != nil {
+			if extra := readback.finish(happyResult, happyRun, ctx.authEnvValue); extra != nil {
+				results = append(results, *extra)
+			}
+		}
 
 		if (happyResult.Status == LiveDogfoodStatusSkip || happyResult.Status == LiveDogfoodStatusUnverified) &&
 			(happyResult.Reason == reasonUnavailableRunnerCredentials ||
