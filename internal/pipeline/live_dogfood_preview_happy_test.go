@@ -36,7 +36,7 @@ func TestParseLiveDogfoodFlagDecl(t *testing.T) {
 		{line: "      --limit int   Max rows", want: liveDogfoodFlagDecl{long: "limit", takesValue: true}, ok: true},
 		{line: "      --dry-run     Int preview only", want: liveDogfoodFlagDecl{long: "dry-run"}, ok: true},
 		{line: "  -l int   Max rows", want: liveDogfoodFlagDecl{shorthand: 'l', takesValue: true}, ok: true},
-		{line: "      --tags strings   Tags", want: liveDogfoodFlagDecl{long: "tags", takesValue: true}, ok: true},
+		{line: "      --tags strings   Tags", want: liveDogfoodFlagDecl{long: "tags", takesValue: true, slice: true}, ok: true},
 		{line: "                     continued description --other string", ok: false},
 		{line: "", ok: false},
 	}
