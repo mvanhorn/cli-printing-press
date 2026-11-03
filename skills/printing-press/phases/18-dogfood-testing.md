@@ -95,7 +95,7 @@ with that diagnosis instead of recording hundreds of command failures; the
 operator's stored refresh token may have been revoked and needs a fresh login.
 
 The live dogfood runner enumerates the CLI's `agent-context` command tree,
-runs help, happy-path, JSON-fidelity, and error-path checks where applicable,
+runs help, happy-path, JSON-fidelity, error-path, and write read-back checks where applicable,
 captures subprocess exit codes directly without shell pipes, and emits a
 structured report with pass/fail/skipped counts. Before running the matrix, it
 atomically rebuilds a selected binary that is older than the CLI's Go sources;
@@ -134,6 +134,7 @@ A novel command with no fixture stays hollow.
 - For every command that takes an arg, one error-path test.
 - For every command that supports `--json`, one JSON parse validation.
 - For write-side commands (when API key + user consent): create test entity with obviously-test data, verify in subsequent list/get, test one mutation, verify change.
+- A live create/update that exits 0 records a `write_readback` row. The row passes when a sibling get/show of the created or targeted id shows one submitted field holding that value, or a modification timestamp advanced while the field stayed unchanged. It fails with `mutation reported success but read-back shows field "<name>" unchanged` only when a pre-read shows every comparable field still holding its previous value. The row is skipped, and does not fail the matrix, when no sibling read exists, the id cannot be determined, the submitted field is absent from the read, the value was normalized or transformed, another submitted field shows the write landed, or the read itself fails.
 
 ### Context budget for long matrices
 
