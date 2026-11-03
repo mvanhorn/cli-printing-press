@@ -3517,6 +3517,7 @@ type liveDogfoodFlagDecl struct {
 	shorthand  byte // 0 when the flag has no shorthand
 	long       string
 	takesValue bool
+	slice      bool
 }
 
 // parseLiveDogfoodFlagDecl reads the declaration segment of a Cobra help
@@ -3543,7 +3544,7 @@ func parseLiveDogfoodFlagDecl(line string) (liveDogfoodFlagDecl, bool) {
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimSuffix(fields[i], ","), "--"), "=")
 		decl.long = name
 		if hasValue {
-			decl.takesValue = isLiveDogfoodFlagValueType(value)
+			applyLiveDogfoodFlagType(&decl, value)
 			return decl, true
 		}
 		i++
@@ -3552,9 +3553,25 @@ func parseLiveDogfoodFlagDecl(line string) (liveDogfoodFlagDecl, bool) {
 		return liveDogfoodFlagDecl{}, false
 	}
 	if i < len(fields) {
-		decl.takesValue = isLiveDogfoodFlagValueType(fields[i])
+		applyLiveDogfoodFlagType(&decl, fields[i])
 	}
 	return decl, true
+}
+
+func applyLiveDogfoodFlagType(decl *liveDogfoodFlagDecl, value string) {
+	decl.takesValue = isLiveDogfoodFlagValueType(value)
+	decl.slice = isLiveDogfoodSliceType(value)
+}
+
+func liveDogfoodSliceFlagNames(help string) map[string]struct{} {
+	names := make(map[string]struct{})
+	for line := range strings.SplitSeq(extractFlagsSection(help), "\n") {
+		decl, ok := parseLiveDogfoodFlagDecl(line)
+		if ok && decl.long != "" && decl.slice {
+			names[strings.ToLower(decl.long)] = struct{}{}
+		}
+	}
+	return names
 }
 
 func liveDogfoodFlagNames(help string) map[string]struct{} {
@@ -3568,8 +3585,17 @@ func liveDogfoodFlagNames(help string) map[string]struct{} {
 func isLiveDogfoodFlagValueType(value string) bool {
 	value = strings.ToLower(strings.Trim(value, ","))
 	switch value {
-	case "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64", "duration",
-		"stringslice", "stringarray", "strings", "ints", "uints", "bools", "floats", "durations", "ips":
+	case "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float", "float32", "float64", "duration":
+		return true
+	default:
+		return isLiveDogfoodSliceType(value)
+	}
+}
+
+func isLiveDogfoodSliceType(value string) bool {
+	value = strings.ToLower(strings.Trim(value, ","))
+	switch value {
+	case "stringslice", "stringarray", "strings", "ints", "uints", "bools", "floats", "durations", "ips":
 		return true
 	default:
 		return strings.HasSuffix(value, "slice") || strings.HasSuffix(value, "array")

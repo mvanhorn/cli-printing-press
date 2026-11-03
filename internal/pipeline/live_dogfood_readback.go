@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,11 +23,19 @@ const (
 	reasonWriteReadbackAbsent      = "write read-back skipped: submitted field absent from read response"
 	reasonWriteReadbackNormalized  = "write read-back skipped: submitted value looks normalized"
 	reasonWriteReadbackTransformed = "write read-back skipped: submitted value was transformed"
+	reasonWriteReadbackConnection  = "write read-back skipped: connection target not determined"
 
-	// reasonWriteReadbackUnchanged is a format string. The field name is the
-	// flag or body key the command submitted.
-	reasonWriteReadbackUnchanged = "mutation reported success but read-back shows field %q unchanged"
+	writeReadbackKindCreate writeReadbackKind = "create"
+	writeReadbackKindUpdate writeReadbackKind = "update"
 )
+
+// writeReadbackKind is the persistence check a live create or update gets.
+// Other mutations are the zero value and are not re-fetched.
+type writeReadbackKind string
+
+// reasonWriteReadbackUnchanged is a format string. The field name is the
+// flag or body key the command submitted.
+const reasonWriteReadbackUnchanged = "mutation reported success but read-back shows field %q unchanged"
 
 // writeReadbackIgnoredFlags are invocation flags that do not name a resource
 // field. Comparing them against a read response would fail correct CLIs.
@@ -36,9 +45,33 @@ var writeReadbackIgnoredFlags = map[string]bool{
 	"send": true, "launch": true, "select": true, "compact": true,
 	"limit": true, "output": true, "out": true, "format": true, "csv": true,
 	"quiet": true, "verbose": true, "timeout": true, "help": true,
-	"stdin": true, "no-color": true, "color": true, "config": true,
-	"profile": true, "debug": true, "page": true, "per-page": true,
-	"cursor": true, "fields": true,
+	"stdin": true, "no-color": true, "color": true, "debug": true,
+	"page": true, "per-page": true, "cursor": true, "fields": true,
+}
+
+// writeReadbackConnectionFlags are root flags that choose the server,
+// account, credential, or data source. true means the flag takes a value.
+// They are copied onto the sibling read and are not resource fields. A
+// value-taking flag with no value skips the check: guessing the target
+// could read a different server and fail a write that landed.
+var writeReadbackConnectionFlags = map[string]bool{
+	"access-token":    true,
+	"api-key":         true,
+	"authorization":   true,
+	"base-url":        true,
+	"ca-cert":         true,
+	"client":          true,
+	"client-profile":  true,
+	"config":          true,
+	"cookie":          true,
+	"cookies":         true,
+	"cookies-file":    true,
+	"data-source":     true,
+	"home":            true,
+	"insecure":        false,
+	"profile":         true,
+	"tls-server-name": true,
+	"token":           true,
 }
 
 // writeReadbackLeafRank is the sibling single-resource reads, best first.
@@ -61,11 +94,12 @@ type liveDogfoodReadbackExec func(args []string, pathLen int) liveDogfoodRun
 
 type writeReadbackSession struct {
 	commandName string
-	kind        string
+	kind        writeReadbackKind
 	skipReason  string
 	siblingPath []string
 	siblingHelp string
 	readArgs    []string
+	connection  []string
 	fields      map[string]string
 	fieldNames  map[string]string
 	before      any
@@ -119,9 +153,15 @@ func startLiveDogfoodWriteReadbackWith(command liveDogfoodCommand, ctx resolveCt
 		session.skipReason = reasonWriteReadbackNoField
 		return session
 	}
-	if kind == "update" {
+	connection, connectionReason := writeReadbackConnectionArgs(command, runArgs)
+	if connectionReason != "" {
+		session.skipReason = connectionReason
+		return session
+	}
+	session.connection = connection
+	if kind == writeReadbackKindUpdate {
 		ids := liveDogfoodResourceIDs(command, runArgs)
-		args, reason := buildWriteReadbackArgs(session.siblingPath, session.siblingHelp, ids)
+		args, reason := buildWriteReadbackArgs(session.siblingPath, session.siblingHelp, ids, session.connection)
 		if reason != "" {
 			session.skipReason = reason
 			return session
@@ -146,7 +186,7 @@ func (s *writeReadbackSession) finish(happy LiveDogfoodTestResult, happyRun live
 		return s.skipped(s.skipReason, liveDogfoodRun{})
 	}
 	readArgs := s.readArgs
-	if s.kind == "create" {
+	if s.kind == writeReadbackKindCreate {
 		decoded, ok := decodeLiveDogfoodJSONValue(happyRun.stdout)
 		if !ok {
 			return s.skipped(reasonWriteReadbackNoID, liveDogfoodRun{})
@@ -155,7 +195,7 @@ func (s *writeReadbackSession) finish(happy LiveDogfoodTestResult, happyRun live
 		if !ok {
 			return s.skipped(reasonWriteReadbackNoID, liveDogfoodRun{})
 		}
-		args, reason := buildWriteReadbackArgs(s.siblingPath, s.siblingHelp, []string{id})
+		args, reason := buildWriteReadbackArgs(s.siblingPath, s.siblingHelp, []string{id}, s.connection)
 		if reason != "" {
 			return s.skipped(reason, liveDogfoodRun{})
 		}
@@ -203,11 +243,11 @@ func liveDogfoodWriteReadbackApplies(command liveDogfoodCommand, runArgs []strin
 	return true
 }
 
-// liveDogfoodWriteReadbackKind reports "create" or "update" for a command
+// liveDogfoodWriteReadbackKind reports create or update for a command
 // whose live success should be re-fetched. Other mutations (delete, send,
 // render) are left alone: a missing resource or an action with no body
 // field is not evidence the write was ignored.
-func liveDogfoodWriteReadbackKind(command liveDogfoodCommand) string {
+func liveDogfoodWriteReadbackKind(command liveDogfoodCommand) writeReadbackKind {
 	if annotationIsTrueValue(command.Annotations[mcpReadOnlyAnnotation]) ||
 		annotationIsTrueValue(command.Annotations[mcpLocalWriteAnnotation]) {
 		return ""
@@ -225,9 +265,9 @@ func liveDogfoodWriteReadbackKind(command liveDogfoodCommand) string {
 	create := writeReadbackToken(tokens, "create", "add", "new", "post")
 	switch {
 	case method == "PUT" || method == "PATCH" || update:
-		return "update"
+		return writeReadbackKindUpdate
 	case create && (method == "POST" || method == ""):
-		return "create"
+		return writeReadbackKindCreate
 	default:
 		return ""
 	}
@@ -307,7 +347,7 @@ func liveDogfoodSubmittedFields(command liveDogfoodCommand, runArgs []string, st
 	fields := map[string]string{}
 	names := map[string]string{}
 	for name, value := range flags {
-		if writeReadbackIgnoredFlags[name] || writeReadbackIdentityFlag(name, placeholders) {
+		if _, connection := writeReadbackConnectionFlags[name]; connection || writeReadbackIgnoredFlags[name] || writeReadbackIdentityFlag(name, placeholders) {
 			continue
 		}
 		canon := canonicalFieldName(name)
@@ -380,11 +420,13 @@ func splitLiveDogfoodInvocation(commandPath, args []string, help string) ([]stri
 	flags := map[string]string{}
 	var positionals []string
 	valueFlags := liveDogfoodFlagValueNames(help)
+	sliceFlags := liveDogfoodSliceFlagNames(help)
 	shorthands := liveDogfoodShorthandTypes(help)
 	shortLong := liveDogfoodShorthandLongNames(help)
 	positionalCount := len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(help)))
 	start := min(len(commandPath), len(args))
 	afterTerminator := false
+	repeatedSlice := map[string]struct{}{}
 	for i := start; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" && !afterTerminator {
@@ -396,14 +438,23 @@ func splitLiveDogfoodInvocation(commandPath, args []string, help string) ([]stri
 			if consumed {
 				i++
 			}
-			if name != "" {
-				if _, exists := flags[name]; !exists {
-					flags[name] = value
+			if name == "" {
+				continue
+			}
+			// pflag replaces scalar flags and appends slices. A repeated slice
+			// is not one comparable value, so it is left out of the read-back.
+			if _, exists := flags[name]; exists {
+				if _, slice := sliceFlags[name]; slice {
+					repeatedSlice[name] = struct{}{}
 				}
 			}
+			flags[name] = value
 			continue
 		}
 		positionals = append(positionals, arg)
+	}
+	for name := range repeatedSlice {
+		delete(flags, name)
 	}
 	return positionals, flags
 }
@@ -425,7 +476,26 @@ func liveDogfoodFlagAssignment(args []string, start, index, positionalCount int,
 	if hasValue {
 		return flagName, flagValue, false
 	}
-	if _, takesValue := valueFlags[flagName]; takesValue || liveDogfoodFlagHasSeparateValueWithTypes(args, start, index, positionalCount, valueFlags) {
+	if takesValue, known := writeReadbackConnectionFlags[flagName]; known && !takesValue {
+		return flagName, "true", false
+	}
+	_, typedValue := valueFlags[flagName]
+	connTakesValue := false
+	if takesValue, known := writeReadbackConnectionFlags[flagName]; known {
+		connTakesValue = takesValue
+	}
+	// pflag consumes the next argv for a value flag even when that argv
+	// looks like a flag, including a literal "--".
+	if typedValue || connTakesValue {
+		if index+1 >= len(args) {
+			if connTakesValue {
+				return flagName, "", false
+			}
+			return "", "", false
+		}
+		return flagName, args[index+1], true
+	}
+	if liveDogfoodFlagHasSeparateValueWithTypes(args, start, index, positionalCount, valueFlags) {
 		next := index + 1
 		if next < len(args) && !isLiveDogfoodFlagToken(args[next]) {
 			return flagName, args[next], true
@@ -436,29 +506,51 @@ func liveDogfoodFlagAssignment(args []string, start, index, positionalCount int,
 
 func liveDogfoodShorthandAssignment(args []string, index int, shorthands map[byte]bool, shortLong map[byte]string) (name, value string, consumed bool) {
 	cluster := strings.TrimPrefix(args[index], "-")
-	letter, attached, hasAttached := strings.Cut(cluster, "=")
-	if len(letter) != 1 {
-		consumesNext, _ := liveDogfoodShorthandClusterValue(cluster, shorthands)
-		if consumesNext && index+1 < len(args) && !isLiveDogfoodFlagToken(args[index+1]) {
-			return "", "", true
+	if long, attached, takesNext, ok := liveDogfoodShorthandValue(cluster, shorthands, shortLong); ok {
+		if !takesNext {
+			return long, attached, false
 		}
-		return "", "", false
-	}
-	long := shortLong[letter[0]]
-	takesValue := shorthands[letter[0]]
-	if hasAttached {
-		return long, attached, false
-	}
-	if takesValue && index+1 < len(args) && !isLiveDogfoodFlagToken(args[index+1]) {
+		if index+1 >= len(args) {
+			if takesValue, known := writeReadbackConnectionFlags[long]; known && takesValue {
+				return long, "", false
+			}
+			return "", "", false
+		}
 		return long, args[index+1], true
 	}
-	if long == "" {
+	if len(cluster) != 1 {
 		return "", "", false
 	}
-	if takesValue {
+	long := shortLong[cluster[0]]
+	if long == "" || shorthands[cluster[0]] {
 		return "", "", false
 	}
 	return long, "true", false
+}
+
+// liveDogfoodShorthandValue reports the value-taking shorthand in a
+// single-dash cluster. pflag ends the cluster at that letter: the rest of
+// the token is the value, or the next argv is, even when it looks like a flag.
+func liveDogfoodShorthandValue(cluster string, shorthands map[byte]bool, shortLong map[byte]string) (long, attached string, takesNext, ok bool) {
+	for i := 0; i < len(cluster); i++ {
+		letter := cluster[i]
+		if letter == '=' {
+			return "", "", false, false
+		}
+		if !shorthands[letter] {
+			continue
+		}
+		rest := cluster[i+1:]
+		long = shortLong[letter]
+		if strings.HasPrefix(rest, "=") {
+			return long, rest[1:], false, true
+		}
+		if rest != "" {
+			return long, rest, false, true
+		}
+		return long, "", true, true
+	}
+	return "", "", false, false
 }
 
 func liveDogfoodShorthandLongNames(help string) map[byte]string {
@@ -538,7 +630,7 @@ func writeReadbackProtocolKey(key string, value any) bool {
 	}
 }
 
-func buildWriteReadbackArgs(siblingPath []string, help string, ids []string) ([]string, string) {
+func buildWriteReadbackArgs(siblingPath []string, help string, ids, connection []string) ([]string, string) {
 	if len(siblingPath) == 0 {
 		return nil, reasonWriteReadbackNoSibling
 	}
@@ -560,8 +652,29 @@ func buildWriteReadbackArgs(siblingPath []string, help string, ids []string) ([]
 		}
 		args = append(args, chosen...)
 	}
+	args = append(args, connection...)
 	if commandSupportsJSON(help) {
 		args = appendJSONArg(args)
+	}
+	return args, ""
+}
+
+func writeReadbackConnectionArgs(command liveDogfoodCommand, runArgs []string) ([]string, string) {
+	_, flags := splitLiveDogfoodInvocation(command.Path, runArgs, command.Help)
+	names := make([]string, 0, len(flags))
+	for name := range flags {
+		if _, ok := writeReadbackConnectionFlags[name]; ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	args := make([]string, 0, len(names))
+	for _, name := range names {
+		value := flags[name]
+		if writeReadbackConnectionFlags[name] && value == "" {
+			return nil, reasonWriteReadbackConnection
+		}
+		args = append(args, "--"+name+"="+value)
 	}
 	return args, ""
 }
@@ -760,12 +873,31 @@ func submittedValueNormalized(submitted, actual string) bool {
 }
 
 func submittedNumbersMatch(submitted, actual string) bool {
-	left, leftErr := strconv.ParseFloat(strings.TrimSpace(submitted), 64)
-	right, rightErr := strconv.ParseFloat(strings.TrimSpace(actual), 64)
-	if leftErr != nil || rightErr != nil {
+	left, leftOK := parseExactReadbackNumber(submitted)
+	right, rightOK := parseExactReadbackNumber(actual)
+	if !leftOK || !rightOK {
 		return false
 	}
-	return left == right
+	return left.Cmp(right) == 0
+}
+
+// parseExactReadbackNumber accepts decimal and scientific forms only when
+// the value is exact. float64 would treat neighboring integers above 2^53
+// as the same number and pass a write the server did not store.
+func parseExactReadbackNumber(raw string) (*big.Rat, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false
+	}
+	if rat, ok := new(big.Rat).SetString(raw); ok {
+		return rat, true
+	}
+	floatValue, _, err := big.ParseFloat(raw, 10, 256, big.ToNearestEven)
+	if err != nil || floatValue.IsInf() {
+		return nil, false
+	}
+	rat, _ := floatValue.Rat(nil)
+	return rat, true
 }
 
 func submittedBoolsMatch(submitted, actual string) bool {
@@ -875,16 +1007,27 @@ func decodeLiveDogfoodJSONValue(stdout string) (any, bool) {
 	if value, ok := decodeOneJSONValue(trimmed); ok {
 		return value, true
 	}
+	var found any
+	seen := false
 	for line := range strings.SplitSeq(trimmed, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if value, ok := decodeOneJSONValue(line); ok {
-			return value, true
+		value, ok := decodeOneJSONValue(line)
+		if !ok {
+			continue
 		}
+		if seen {
+			return nil, false
+		}
+		found = value
+		seen = true
 	}
-	return nil, false
+	if !seen {
+		return nil, false
+	}
+	return found, true
 }
 
 func decodeOneJSONValue(raw string) (any, bool) {

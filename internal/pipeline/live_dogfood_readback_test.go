@@ -64,20 +64,20 @@ func TestLiveDogfoodWriteReadbackKind(t *testing.T) {
 	tests := []struct {
 		name string
 		cmd  liveDogfoodCommand
-		want string
+		want writeReadbackKind
 	}{
-		{name: "put is update", cmd: liveDogfoodCommand{Path: []string{"issues", "save"}, Annotations: map[string]string{"pp:method": "PUT"}}, want: "update"},
-		{name: "patch leaf is update", cmd: liveDogfoodCommand{Path: []string{"issues", "patch"}, Annotations: map[string]string{"pp:method": "POST"}}, want: "update"},
-		{name: "post create", cmd: liveDogfoodCommand{Path: []string{"issues", "create"}, Annotations: map[string]string{"pp:method": "POST"}}, want: "create"},
-		{name: "unannotated create leaf", cmd: liveDogfoodCommand{Path: []string{"issues", "create"}}, want: "create"},
-		{name: "unannotated update leaf", cmd: liveDogfoodCommand{Path: []string{"issues", "update"}}, want: "update"},
+		{name: "put is update", cmd: liveDogfoodCommand{Path: []string{"issues", "save"}, Annotations: map[string]string{"pp:method": "PUT"}}, want: writeReadbackKindUpdate},
+		{name: "patch leaf is update", cmd: liveDogfoodCommand{Path: []string{"issues", "patch"}, Annotations: map[string]string{"pp:method": "POST"}}, want: writeReadbackKindUpdate},
+		{name: "post create", cmd: liveDogfoodCommand{Path: []string{"issues", "create"}, Annotations: map[string]string{"pp:method": "POST"}}, want: writeReadbackKindCreate},
+		{name: "unannotated create leaf", cmd: liveDogfoodCommand{Path: []string{"issues", "create"}}, want: writeReadbackKindCreate},
+		{name: "unannotated update leaf", cmd: liveDogfoodCommand{Path: []string{"issues", "update"}}, want: writeReadbackKindUpdate},
 		{name: "post render is not a resource write", cmd: liveDogfoodCommand{Path: []string{"render"}, Annotations: map[string]string{"pp:method": "POST"}}},
 		{name: "post inspect is not a resource write", cmd: liveDogfoodCommand{Path: []string{"widgets", "inspect"}, Annotations: map[string]string{"pp:method": "POST"}}},
 		{name: "delete", cmd: liveDogfoodCommand{Path: []string{"issues", "delete"}, Annotations: map[string]string{"pp:method": "DELETE"}}},
 		{name: "head", cmd: liveDogfoodCommand{Path: []string{"issues", "update"}, Annotations: map[string]string{"pp:method": "HEAD"}}},
 		{name: "get method", cmd: liveDogfoodCommand{Path: []string{"issues", "update"}, Annotations: map[string]string{"pp:method": "GET"}}},
 		{name: "post send is not a resource write", cmd: liveDogfoodCommand{Path: []string{"issues", "send"}, Annotations: map[string]string{"pp:method": "POST"}}},
-		{name: "add leaf is create", cmd: liveDogfoodCommand{Path: []string{"issues", "add"}}, want: "create"},
+		{name: "add leaf is create", cmd: liveDogfoodCommand{Path: []string{"issues", "add"}}, want: writeReadbackKindCreate},
 		{name: "read only", cmd: liveDogfoodCommand{Path: []string{"issues", "update"}, Annotations: map[string]string{"pp:method": "PUT", "mcp:read-only": "true"}}},
 		{name: "local write", cmd: liveDogfoodCommand{Path: []string{"issues", "update"}, Annotations: map[string]string{"pp:method": "PUT", "mcp:local-write": "true"}}},
 	}
@@ -146,11 +146,9 @@ func TestSplitLiveDogfoodInvocation(t *testing.T) {
 		writeReadbackUpdateHelp,
 	)
 	assert.Equal(t, []string{"1"}, positionals)
-	assert.Equal(t, "renamed", flags["subject"])
+	assert.Equal(t, "other", flags["subject"])
 	assert.Equal(t, "true", flags["json"])
 	assert.Equal(t, "true", flags["closed"])
-	// A later repeated flag does not replace the first assignment.
-	assert.NotEqual(t, "other", flags["subject"])
 
 	positionals, flags = splitLiveDogfoodInvocation(
 		[]string{"issues", "update"},
@@ -168,6 +166,103 @@ func TestSplitLiveDogfoodInvocation(t *testing.T) {
 	)
 	assert.Equal(t, []string{"1", "--subject=hidden"}, positionals)
 	assert.Equal(t, "false", flags["closed"])
+
+	positionals, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "--subject", "--renamed", "--subject", "--", "--json"},
+		writeReadbackUpdateHelp,
+	)
+	assert.Equal(t, []string{"1"}, positionals)
+	assert.Equal(t, "--", flags["subject"])
+	assert.Equal(t, "true", flags["json"])
+
+	positionals, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "-s", "--", "--closed"},
+		writeReadbackUpdateHelp,
+	)
+	assert.Equal(t, []string{"1"}, positionals)
+	assert.Equal(t, "--", flags["subject"])
+	assert.Equal(t, "true", flags["closed"])
+
+	_, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "-s=renamed", "-sother"},
+		writeReadbackUpdateHelp,
+	)
+	assert.Equal(t, "other", flags["subject"])
+
+	configHelp := writeReadbackUpdateHelp + "  -c, --config string   Config file\n"
+	_, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "-c"},
+		configHelp,
+	)
+	assert.Empty(t, flags["config"])
+	conn, connReason := writeReadbackConnectionArgs(
+		liveDogfoodCommand{Path: []string{"issues", "update"}, Help: configHelp},
+		[]string{"issues", "update", "1", "-c"},
+	)
+	assert.Nil(t, conn)
+	assert.Equal(t, reasonWriteReadbackConnection, connReason)
+
+	_, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "--subject"},
+		writeReadbackUpdateHelp,
+	)
+	_, hasSubject := flags["subject"]
+	assert.False(t, hasSubject, "a missing value is not the boolean true")
+
+	_, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "--closed", "--subject=renamed"},
+		writeReadbackUpdateHelp,
+	)
+	assert.Equal(t, "true", flags["closed"])
+	assert.Equal(t, "renamed", flags["subject"])
+
+	sliceHelp := writeReadbackUpdateHelp + "      --tag strings   Tags\n"
+	_, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "--tag=new", "--tag=old", "--subject=renamed"},
+		sliceHelp,
+	)
+	_, hasTag := flags["tag"]
+	assert.False(t, hasTag, "a repeated slice is not one comparable value")
+	assert.Equal(t, "renamed", flags["subject"])
+
+	_, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "1", "--tag=only"},
+		sliceHelp,
+	)
+	assert.Equal(t, "only", flags["tag"])
+
+	positionals, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "--config", "other.toml", "--insecure=false", "1"},
+		writeReadbackUpdateHelp,
+	)
+	assert.Equal(t, []string{"1"}, positionals)
+	assert.Equal(t, "other.toml", flags["config"])
+	assert.Equal(t, "false", flags["insecure"])
+
+	positionals, flags = splitLiveDogfoodInvocation(
+		[]string{"issues", "update"},
+		[]string{"issues", "update", "--insecure", "1"},
+		writeReadbackUpdateHelp,
+	)
+	assert.Equal(t, []string{"1"}, positionals)
+	assert.Equal(t, "true", flags["insecure"])
+
+	cmd := liveDogfoodCommand{Path: []string{"issues", "update"}, Help: writeReadbackUpdateHelp}
+	conn, connReason = writeReadbackConnectionArgs(cmd, []string{"issues", "update", "--config="})
+	assert.Nil(t, conn)
+	assert.Equal(t, reasonWriteReadbackConnection, connReason)
+	conn, connReason = writeReadbackConnectionArgs(cmd, []string{"issues", "update", "1", "--insecure"})
+	assert.Equal(t, []string{"--insecure=true"}, conn)
+	assert.Empty(t, connReason)
 }
 
 func TestLiveDogfoodSubmittedFields(t *testing.T) {
@@ -207,12 +302,15 @@ func TestLiveDogfoodSubmittedFields(t *testing.T) {
 
 	fields, _ = liveDogfoodSubmittedFields(cmd, []string{"issues", "update", "1"}, []byte(`{"issue":{"subject":"wrapped"},"other":{"name":"nope"}}`))
 	assert.Empty(t, fields, "two nested objects are not unwrapped")
+
+	fields, _ = liveDogfoodSubmittedFields(cmd, []string{"issues", "update", "1", "--config=other.toml", "--profile=work", "--api-key=secret", "--subject=renamed"}, nil)
+	assert.Equal(t, map[string]string{"subject": "renamed"}, fields)
 }
 
 func TestBuildWriteReadbackArgs(t *testing.T) {
 	t.Parallel()
 
-	args, reason := buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetHelp, []string{"proj", "1"})
+	args, reason := buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetHelp, []string{"proj", "1"}, nil)
 	assert.Empty(t, reason)
 	assert.Equal(t, []string{"issues", "get", "1", "--json"}, args)
 
@@ -224,7 +322,7 @@ Usage:
 Flags:
       --json   Output JSON
 `
-	args, reason = buildWriteReadbackArgs([]string{"projects", "tasks", "get"}, nestedHelp, []string{"proj", "task"})
+	args, reason = buildWriteReadbackArgs([]string{"projects", "tasks", "get"}, nestedHelp, []string{"proj", "task"}, nil)
 	assert.Empty(t, reason)
 	assert.Equal(t, []string{"projects", "tasks", "get", "proj", "task", "--json"}, args)
 
@@ -236,18 +334,18 @@ Usage:
 Flags:
       --json   Output JSON
 `
-	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, optionalHelp, []string{"1"})
+	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, optionalHelp, []string{"1"}, nil)
 	assert.Empty(t, reason)
 	assert.Equal(t, []string{"issues", "get", "1", "--json"}, args)
 
-	_, reason = buildWriteReadbackArgs([]string{"issues", "get"}, nestedHelp, []string{"only"})
+	_, reason = buildWriteReadbackArgs([]string{"issues", "get"}, nestedHelp, []string{"only"}, nil)
 	assert.Equal(t, reasonWriteReadbackNoID, reason)
 
-	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetByFlagHelp, []string{"1"})
+	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetByFlagHelp, []string{"1"}, nil)
 	assert.Empty(t, reason)
 	assert.Equal(t, []string{"issues", "get", "--id=1", "--json"}, args)
 
-	_, reason = buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetByFlagHelp, nil)
+	_, reason = buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetByFlagHelp, nil, nil)
 	assert.Equal(t, reasonWriteReadbackNoID, reason)
 
 	noJSON := `Get an issue.
@@ -255,9 +353,15 @@ Flags:
 Usage:
   fixture-pp-cli issues get <id>
 `
-	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, noJSON, []string{"1"})
+	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, noJSON, []string{"1"}, nil)
 	assert.Empty(t, reason)
 	assert.Equal(t, []string{"issues", "get", "1"}, args)
+
+	connection := []string{"--api-key=secret", "--base-url=https://example.test", "--config=other.toml", "--insecure=false", "--profile=work"}
+	args, reason = buildWriteReadbackArgs([]string{"issues", "get"}, writeReadbackGetHelp, []string{"1"}, connection)
+	assert.Empty(t, reason)
+	assert.Equal(t, append([]string{"issues", "get", "1"}, append(connection, "--json")...), args)
+	assert.NotContains(t, args, "--subject=renamed")
 }
 
 func TestExtractCreatedID(t *testing.T) {
@@ -277,6 +381,9 @@ func TestExtractCreatedID(t *testing.T) {
 		{name: "disagreeing id spellings", raw: `{"id":"1","ID":"2","nested":{"id":"9"}}`},
 		{name: "foreign key is not the resource id", raw: `{"issueId":"abc"}`},
 		{name: "trailing junk", raw: `{"id":"1"}{"id":"2"}`},
+		{name: "newline conflicting records", raw: "{\"id\":\"1\"}\n{\"id\":\"2\"}"},
+		{name: "newline agreeing records", raw: "{\"id\":\"1\"}\n{\"id\":\"1\"}"},
+		{name: "log line then one record", raw: "warning: retry\n{\"id\":\"9\"}", want: "9", ok: true},
 		{name: "envelope only", raw: `{"status":204,"success":true}`},
 		{name: "ambiguous", raw: `{"a":{"id":"1"},"b":{"id":"2"}}`},
 		{name: "same nested id", raw: `{"a":{"id":"1"},"b":{"id":"1"}}`, want: "1", ok: true},
@@ -382,6 +489,25 @@ func TestJudgeWriteReadback(t *testing.T) {
 			before: mustDecodeReadback(t, `{"subject":"1"}`),
 			after:  `{"subject":2}`,
 			status: LiveDogfoodStatusPass,
+		},
+		{
+			name: "decimal and integer equivalence passes", fields: map[string]string{"subject": "2.0"},
+			before: mustDecodeReadback(t, `{"subject":"1"}`),
+			after:  `{"subject":2}`,
+			status: LiveDogfoodStatusPass,
+		},
+		{
+			name: "identical integers above 2^53 pass", fields: map[string]string{"subject": "9007199254740993"},
+			before: mustDecodeReadback(t, `{"subject":"1"}`),
+			after:  `{"subject":9007199254740993}`,
+			status: LiveDogfoodStatusPass,
+		},
+		{
+			name: "neighboring integers above 2^53 stay unchanged", fields: map[string]string{"subject": "9007199254740993"},
+			before: mustDecodeReadback(t, `{"subject":9007199254740992}`),
+			after:  `{"subject":9007199254740992}`,
+			status: LiveDogfoodStatusFail,
+			reason: `mutation reported success but read-back shows field "subject" unchanged`,
 		},
 		{
 			name: "bool equivalence passes", fields: map[string]string{"closed": "true"},
@@ -742,6 +868,111 @@ func TestStartLiveDogfoodWriteReadback(t *testing.T) {
 		assert.Nil(t, startLiveDogfoodWriteReadbackWith(update, ctx, append(args, "--dry-run"), nil, false, nil))
 		assert.Nil(t, startLiveDogfoodWriteReadbackWith(update, ctx, args, nil, true, nil))
 	})
+
+	t.Run("connection flags are copied onto both reads", func(t *testing.T) {
+		t.Parallel()
+		var got [][]string
+		session := startLiveDogfoodWriteReadbackWith(update, ctx, []string{
+			"issues", "update", "1", "--config", "other.toml", "--profile=work",
+			"--base-url=https://example.test", "--api-key=secret", "--insecure=false", "--subject=renamed",
+		}, nil, false, func(gotArgs []string, _ int) liveDogfoodRun {
+			got = append(got, append([]string{}, gotArgs...))
+			if strings.Contains(strings.Join(gotArgs, " "), "--help") {
+				return liveDogfoodRun{stdout: writeReadbackGetHelp}
+			}
+			return liveDogfoodRun{stdout: afterBody}
+		})
+		result := session.finish(happy, liveDogfoodRun{stdout: `{"status":204}`}, "")
+		require.NotNil(t, result)
+		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+		require.Len(t, got, 3)
+		for _, call := range got[1:] {
+			assert.Contains(t, call, "--config=other.toml")
+			assert.Contains(t, call, "--profile=work")
+			assert.Contains(t, call, "--base-url=https://example.test")
+			assert.Contains(t, call, "--api-key=secret")
+			assert.Contains(t, call, "--insecure=false")
+			assert.Contains(t, call, "1")
+			assert.NotContains(t, call, "other.toml")
+			assert.NotContains(t, call, "--subject=renamed")
+		}
+	})
+
+	t.Run("missing connection value is skipped", func(t *testing.T) {
+		t.Parallel()
+		reads := 0
+		session := startLiveDogfoodWriteReadbackWith(update, ctx, []string{"issues", "update", "1", "--subject=renamed", "--config"}, nil, false, func(got []string, _ int) liveDogfoodRun {
+			if strings.Contains(strings.Join(got, " "), "--help") {
+				return liveDogfoodRun{stdout: writeReadbackGetHelp}
+			}
+			reads++
+			return liveDogfoodRun{stdout: beforeBody}
+		})
+		result := session.finish(happy, liveDogfoodRun{}, "")
+		require.NotNil(t, result)
+		assert.Equal(t, LiveDogfoodStatusSkip, result.Status)
+		assert.Equal(t, reasonWriteReadbackConnection, result.Reason)
+		assert.Equal(t, 0, reads)
+	})
+
+	t.Run("create read keeps connection flags", func(t *testing.T) {
+		t.Parallel()
+		create := liveDogfoodCommand{
+			Path:        []string{"issues", "create"},
+			Help:        "Usage:\n  fixture-pp-cli issues create [flags]\n\nFlags:\n      --subject string\n      --json\n",
+			Annotations: map[string]string{"pp:method": "POST"},
+		}
+		var gotArgs []string
+		session := startLiveDogfoodWriteReadbackWith(create, ctx, []string{"issues", "create", "--config=other.toml", "--subject=renamed"}, nil, false, func(got []string, _ int) liveDogfoodRun {
+			if strings.Contains(strings.Join(got, " "), "--help") {
+				return liveDogfoodRun{stdout: writeReadbackGetHelp}
+			}
+			gotArgs = append([]string{}, got...)
+			return liveDogfoodRun{stdout: afterBody}
+		})
+		result := session.finish(happy, liveDogfoodRun{stdout: `{"id":"9","subject":"renamed"}`}, "")
+		require.NotNil(t, result)
+		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+		assert.Equal(t, []string{"issues", "get", "9", "--config=other.toml", "--json"}, gotArgs)
+	})
+}
+
+func TestSubmittedNumbersMatch(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, submittedNumbersMatch("2", "2.0"))
+	assert.True(t, submittedNumbersMatch("1e2", "100"))
+	assert.True(t, submittedNumbersMatch("9007199254740993", "9007199254740993"))
+	assert.False(t, submittedNumbersMatch("9007199254740992", "9007199254740993"))
+	assert.False(t, submittedNumbersMatch("abc", "1"))
+	assert.False(t, submittedNumbersMatch("", "1"))
+	assert.False(t, submittedNumbersMatch("Inf", "Inf"))
+	assert.False(t, submittedNumbersMatch("NaN", "1"))
+}
+
+func TestDecodeLiveDogfoodJSONValue(t *testing.T) {
+	t.Parallel()
+
+	value, ok := decodeLiveDogfoodJSONValue("  {\"id\":\"1\"}\n")
+	assert.True(t, ok)
+	decoded, isMap := value.(map[string]any)
+	require.True(t, isMap)
+	assert.Equal(t, "1", decoded["id"])
+
+	_, ok = decodeLiveDogfoodJSONValue("{\"id\":\"1\"}\n{\"id\":\"2\"}")
+	assert.False(t, ok)
+
+	_, ok = decodeLiveDogfoodJSONValue("not json\nstill not")
+	assert.False(t, ok)
+
+	_, ok = decodeLiveDogfoodJSONValue("   ")
+	assert.False(t, ok)
+
+	value, ok = decodeLiveDogfoodJSONValue("log line\n{\"id\":\"3\"}\n")
+	assert.True(t, ok)
+	decoded, isMap = value.(map[string]any)
+	require.True(t, isMap)
+	assert.Equal(t, "3", decoded["id"])
 }
 
 func TestRunLiveDogfoodWriteReadbackMatrix(t *testing.T) {
