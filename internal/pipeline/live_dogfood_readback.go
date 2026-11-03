@@ -434,21 +434,23 @@ func splitLiveDogfoodInvocation(commandPath, args []string, help string) ([]stri
 			continue
 		}
 		if !afterTerminator && isLiveDogfoodFlagToken(arg) {
-			name, value, consumed := liveDogfoodFlagAssignment(args, start, i, positionalCount, valueFlags, shorthands, shortLong)
+			assigned, consumed := liveDogfoodFlagAssignments(args, start, i, positionalCount, valueFlags, shorthands, shortLong)
 			if consumed {
 				i++
 			}
-			if name == "" {
-				continue
-			}
-			// pflag replaces scalar flags and appends slices. A repeated slice
-			// is not one comparable value, so it is left out of the read-back.
-			if _, exists := flags[name]; exists {
-				if _, slice := sliceFlags[name]; slice {
-					repeatedSlice[name] = struct{}{}
+			for _, flag := range assigned {
+				if flag.name == "" {
+					continue
 				}
+				// pflag replaces scalar flags and appends slices. A repeated slice
+				// is not one comparable value, so it is left out of the read-back.
+				if _, exists := flags[flag.name]; exists {
+					if _, slice := sliceFlags[flag.name]; slice {
+						repeatedSlice[flag.name] = struct{}{}
+					}
+				}
+				flags[flag.name] = flag.value
 			}
-			flags[name] = value
 			continue
 		}
 		positionals = append(positionals, arg)
@@ -459,11 +461,25 @@ func splitLiveDogfoodInvocation(commandPath, args []string, help string) ([]stri
 	return positionals, flags
 }
 
-func liveDogfoodFlagAssignment(args []string, start, index, positionalCount int, valueFlags map[string]struct{}, shorthands map[byte]bool, shortLong map[byte]string) (name, value string, consumed bool) {
+type liveDogfoodAssignedFlag struct {
+	name  string
+	value string
+}
+
+func liveDogfoodFlagAssignments(args []string, start, index, positionalCount int, valueFlags map[string]struct{}, shorthands map[byte]bool, shortLong map[byte]string) ([]liveDogfoodAssignedFlag, bool) {
 	arg := args[index]
 	if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") {
-		return liveDogfoodShorthandAssignment(args, index, shorthands, shortLong)
+		return liveDogfoodShorthandAssignments(args, index, shorthands, shortLong)
 	}
+	name, value, consumed := liveDogfoodLongAssignment(args, start, index, positionalCount, valueFlags)
+	if name == "" {
+		return nil, false
+	}
+	return []liveDogfoodAssignedFlag{{name: name, value: value}}, consumed
+}
+
+func liveDogfoodLongAssignment(args []string, start, index, positionalCount int, valueFlags map[string]struct{}) (name, value string, consumed bool) {
+	arg := args[index]
 	raw, ok := strings.CutPrefix(arg, "--")
 	if !ok || raw == "" {
 		return "", "", false
@@ -504,53 +520,46 @@ func liveDogfoodFlagAssignment(args []string, start, index, positionalCount int,
 	return flagName, "true", false
 }
 
-func liveDogfoodShorthandAssignment(args []string, index int, shorthands map[byte]bool, shortLong map[byte]string) (name, value string, consumed bool) {
+// pflag takes a boolean shorthand value only from `-c=false`. `-cfalse`
+// is more shorthand letters, and a cluster that would not parse is dropped.
+func liveDogfoodShorthandAssignments(args []string, index int, shorthands map[byte]bool, shortLong map[byte]string) ([]liveDogfoodAssignedFlag, bool) {
 	cluster := strings.TrimPrefix(args[index], "-")
-	if long, attached, takesNext, ok := liveDogfoodShorthandValue(cluster, shorthands, shortLong); ok {
-		if !takesNext {
-			return long, attached, false
-		}
-		if index+1 >= len(args) {
-			if takesValue, known := writeReadbackConnectionFlags[long]; known && takesValue {
-				return long, "", false
-			}
-			return "", "", false
-		}
-		return long, args[index+1], true
+	if cluster == "" {
+		return nil, false
 	}
-	if len(cluster) != 1 {
-		return "", "", false
-	}
-	long := shortLong[cluster[0]]
-	if long == "" || shorthands[cluster[0]] {
-		return "", "", false
-	}
-	return long, "true", false
-}
-
-// liveDogfoodShorthandValue reports the value-taking shorthand in a
-// single-dash cluster. pflag ends the cluster at that letter: the rest of
-// the token is the value, or the next argv is, even when it looks like a flag.
-func liveDogfoodShorthandValue(cluster string, shorthands map[byte]bool, shortLong map[byte]string) (long, attached string, takesNext, ok bool) {
-	for i := 0; i < len(cluster); i++ {
+	var parsed []liveDogfoodAssignedFlag
+	for i := 0; i < len(cluster); {
 		letter := cluster[i]
-		if letter == '=' {
-			return "", "", false, false
-		}
-		if !shorthands[letter] {
-			continue
+		takesValue, known := shorthands[letter]
+		long := strings.ToLower(shortLong[letter])
+		if !known || long == "" {
+			return nil, false
 		}
 		rest := cluster[i+1:]
-		long = shortLong[letter]
-		if strings.HasPrefix(rest, "=") {
-			return long, rest[1:], false, true
+		if len(rest) >= 2 && rest[0] == '=' {
+			parsed = append(parsed, liveDogfoodAssignedFlag{name: long, value: rest[1:]})
+			return parsed, false
+		}
+		if !takesValue {
+			parsed = append(parsed, liveDogfoodAssignedFlag{name: long, value: "true"})
+			i++
+			continue
 		}
 		if rest != "" {
-			return long, rest, false, true
+			parsed = append(parsed, liveDogfoodAssignedFlag{name: long, value: rest})
+			return parsed, false
 		}
-		return long, "", true, true
+		if index+1 >= len(args) {
+			if takes, ok := writeReadbackConnectionFlags[long]; ok && takes {
+				parsed = append(parsed, liveDogfoodAssignedFlag{name: long, value: ""})
+				return parsed, false
+			}
+			return nil, false
+		}
+		parsed = append(parsed, liveDogfoodAssignedFlag{name: long, value: args[index+1]})
+		return parsed, true
 	}
-	return "", "", false, false
+	return parsed, false
 }
 
 func liveDogfoodShorthandLongNames(help string) map[byte]string {
@@ -881,23 +890,66 @@ func submittedNumbersMatch(submitted, actual string) bool {
 	return left.Cmp(right) == 0
 }
 
-// parseExactReadbackNumber accepts decimal and scientific forms only when
-// the value is exact. float64 would treat neighboring integers above 2^53
-// as the same number and pass a write the server did not store.
+// parseExactReadbackNumber accepts decimal and base-10 scientific text
+// only. SetString also accepts fractions, prefixes, and `p` exponents,
+// which would pass a write that left different text in place, and float64
+// would collapse integers above 2^53. Numeric strings stay eligible.
 func parseExactReadbackNumber(raw string) (*big.Rat, bool) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if !readbackDecimalNumber(raw) {
 		return nil, false
 	}
-	if rat, ok := new(big.Rat).SetString(raw); ok {
-		return rat, true
-	}
-	floatValue, _, err := big.ParseFloat(raw, 10, 256, big.ToNearestEven)
-	if err != nil || floatValue.IsInf() {
+	rat, ok := new(big.Rat).SetString(raw)
+	if !ok {
 		return nil, false
 	}
-	rat, _ := floatValue.Rat(nil)
 	return rat, true
+}
+
+func readbackDecimalNumber(raw string) bool {
+	i := 0
+	if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
+		i++
+	}
+	digits := 0
+	sawDot := false
+	for i < len(raw) {
+		c := raw[i]
+		if c >= '0' && c <= '9' {
+			digits++
+			i++
+			continue
+		}
+		if c == '.' && !sawDot {
+			sawDot = true
+			i++
+			continue
+		}
+		break
+	}
+	if digits == 0 {
+		return false
+	}
+	if i == len(raw) {
+		return true
+	}
+	if raw[i] != 'e' && raw[i] != 'E' {
+		return false
+	}
+	i++
+	if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
+		i++
+	}
+	if i >= len(raw) {
+		return false
+	}
+	for i < len(raw) {
+		if raw[i] < '0' || raw[i] > '9' {
+			return false
+		}
+		i++
+	}
+	return true
 }
 
 func submittedBoolsMatch(submitted, actual string) bool {

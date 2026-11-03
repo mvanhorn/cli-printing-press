@@ -265,6 +265,218 @@ func TestSplitLiveDogfoodInvocation(t *testing.T) {
 	assert.Empty(t, connReason)
 }
 
+func TestSplitLiveDogfoodBooleanShorthand(t *testing.T) {
+	t.Parallel()
+
+	help := `Usage:
+  fixture-pp-cli issues update <id> [flags]
+
+Flags:
+  -c, --closed           Close the issue
+  -s, --subject string   New subject
+  -v, --verbose          Verbose
+  -f, --force            Force
+  -t, --tag strings      Tags
+`
+	path := []string{"issues", "update"}
+	tests := []struct {
+		name        string
+		args        []string
+		positionals []string
+		flags       map[string]string
+	}{
+		{
+			name:        "explicit shorthand false replaces an earlier true",
+			args:        []string{"issues", "update", "1", "--closed=true", "-c=false"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "false"},
+		},
+		{
+			name:        "later long false replaces shorthand true",
+			args:        []string{"issues", "update", "1", "-c=true", "--closed=false"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "false"},
+		},
+		{
+			name:        "bare shorthand true replaces an earlier false",
+			args:        []string{"issues", "update", "1", "-c=false", "-c"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "true"},
+		},
+		{
+			name:        "spaced false is a positional",
+			args:        []string{"issues", "update", "1", "-c", "false"},
+			positionals: []string{"1", "false"},
+			flags:       map[string]string{"closed": "true"},
+		},
+		{
+			name:        "stuck-on word is not the boolean value",
+			args:        []string{"issues", "update", "1", "-cfalse"},
+			positionals: []string{"1"},
+			flags:       map[string]string{},
+		},
+		{
+			name:        "unknown letter drops the whole cluster",
+			args:        []string{"issues", "update", "1", "--closed=false", "-cfa"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "false"},
+		},
+		{
+			name:        "combined booleans set each letter",
+			args:        []string{"issues", "update", "1", "-vcf"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "true", "verbose": "true", "force": "true"},
+		},
+		{
+			name:        "combined cluster equals value is last",
+			args:        []string{"issues", "update", "1", "--closed=true", "-vc=false"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"verbose": "true", "closed": "false"},
+		},
+		{
+			name:        "boolean then attached value overwrites the boolean",
+			args:        []string{"issues", "update", "1", "--closed=false", "-csrenamed"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "true", "subject": "renamed"},
+		},
+		{
+			name:        "boolean then equals value",
+			args:        []string{"issues", "update", "1", "-cs=hello"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "true", "subject": "hello"},
+		},
+		{
+			name:        "mixed long and short repetition keeps the last scalar",
+			args:        []string{"issues", "update", "1", "--subject=old", "-s=new", "-c=false"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"subject": "new", "closed": "false"},
+		},
+		{
+			name:        "shorthand equals sign alone is the attached value",
+			args:        []string{"issues", "update", "1", "-s="},
+			positionals: []string{"1"},
+			flags:       map[string]string{"subject": "="},
+		},
+		{
+			name:        "boolean equals sign alone does not parse",
+			args:        []string{"issues", "update", "1", "-c="},
+			positionals: []string{"1"},
+			flags:       map[string]string{},
+		},
+		{
+			name:        "shorthand letters are case sensitive",
+			args:        []string{"issues", "update", "1", "-C"},
+			positionals: []string{"1"},
+			flags:       map[string]string{},
+		},
+		{
+			name:        "shortest explicit boolean value",
+			args:        []string{"issues", "update", "1", "-c=f"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "f"},
+		},
+		{
+			name:        "boolean shorthand keeps the raw value text",
+			args:        []string{"issues", "update", "1", "-c=FALSE"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"closed": "FALSE"},
+		},
+		{
+			name:        "value shorthand consumes a flag-looking argv",
+			args:        []string{"issues", "update", "1", "-s", "--closed"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"subject": "--closed"},
+		},
+		{
+			name:        "attached value is not another shorthand",
+			args:        []string{"issues", "update", "1", "-sv"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"subject": "v"},
+		},
+		{
+			name:  "boolean cluster consumes the next value",
+			args:  []string{"issues", "update", "-cs", "1"},
+			flags: map[string]string{"closed": "true", "subject": "1"},
+		},
+		{
+			name:        "missing shorthand value drops the cluster",
+			args:        []string{"issues", "update", "1", "-cs"},
+			positionals: []string{"1"},
+			flags:       map[string]string{},
+		},
+		{
+			name:        "missing value shorthand is not true",
+			args:        []string{"issues", "update", "1", "-s"},
+			positionals: []string{"1"},
+			flags:       map[string]string{},
+		},
+		{
+			name:        "repeated slice shorthand is not one value",
+			args:        []string{"issues", "update", "1", "--tag=a", "-t=b", "--subject=renamed"},
+			positionals: []string{"1"},
+			flags:       map[string]string{"subject": "renamed"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			positionals, flags := splitLiveDogfoodInvocation(path, tt.args, help)
+			assert.Equal(t, tt.positionals, positionals)
+			assert.Equal(t, tt.flags, flags)
+		})
+	}
+
+	cmd := liveDogfoodCommand{Path: path, Help: help}
+	fields, names := liveDogfoodSubmittedFields(cmd, []string{"issues", "update", "1", "--closed=true", "-c=false"}, nil)
+	assert.Equal(t, map[string]string{"closed": "false"}, fields)
+	status, reason := judgeWriteReadback(fields, names, mustDecodeReadback(t, `{"closed":false}`), mustDecodeReadback(t, `{"closed":false}`))
+	assert.Equal(t, LiveDogfoodStatusPass, status, reason)
+
+	fields, names = liveDogfoodSubmittedFields(cmd, []string{"issues", "update", "1", "--closed=false", "-vc"}, nil)
+	assert.Equal(t, map[string]string{"closed": "true"}, fields)
+	status, reason = judgeWriteReadback(fields, names, mustDecodeReadback(t, `{"closed":true}`), mustDecodeReadback(t, `{"closed":true}`))
+	assert.Equal(t, LiveDogfoodStatusPass, status, reason)
+
+	insecureHelp := help + "  -k, --insecure         Skip TLS verify\n"
+	_, flags := splitLiveDogfoodInvocation(path, []string{"issues", "update", "1", "--insecure=true", "-k=false"}, insecureHelp)
+	assert.Equal(t, "false", flags["insecure"])
+	conn, connReason := writeReadbackConnectionArgs(
+		liveDogfoodCommand{Path: path, Help: insecureHelp},
+		[]string{"issues", "update", "1", "--insecure=true", "-k=false"},
+	)
+	assert.Equal(t, []string{"--insecure=false"}, conn)
+	assert.Empty(t, connReason)
+
+	positionals, flags := splitLiveDogfoodInvocation(path, []string{"issues", "update", "1", "-k", "false"}, insecureHelp)
+	assert.Equal(t, []string{"1", "false"}, positionals)
+	assert.Equal(t, map[string]string{"insecure": "true"}, flags)
+
+	configHelp := `Usage:
+  fixture-pp-cli issues update <id> [flags]
+
+Flags:
+  -k, --insecure
+  -c, --config string
+`
+	positionals, flags = splitLiveDogfoodInvocation(path, []string{"issues", "update", "1", "-kc", "other.toml"}, configHelp)
+	assert.Equal(t, []string{"1"}, positionals)
+	assert.Equal(t, map[string]string{"insecure": "true", "config": "other.toml"}, flags)
+	conn, connReason = writeReadbackConnectionArgs(
+		liveDogfoodCommand{Path: path, Help: configHelp},
+		[]string{"issues", "update", "1", "-kc", "other.toml"},
+	)
+	assert.Equal(t, []string{"--config=other.toml", "--insecure=true"}, conn)
+	assert.Empty(t, connReason)
+
+	_, flags = splitLiveDogfoodInvocation(path, []string{"issues", "update", "1", "-kc"}, configHelp)
+	assert.Equal(t, "", flags["config"])
+	_, connReason = writeReadbackConnectionArgs(
+		liveDogfoodCommand{Path: path, Help: configHelp},
+		[]string{"issues", "update", "1", "-kc"},
+	)
+	assert.Equal(t, reasonWriteReadbackConnection, connReason)
+}
+
 func TestLiveDogfoodSubmittedFields(t *testing.T) {
 	t.Parallel()
 
@@ -495,6 +707,39 @@ func TestJudgeWriteReadback(t *testing.T) {
 			before: mustDecodeReadback(t, `{"subject":"1"}`),
 			after:  `{"subject":2}`,
 			status: LiveDogfoodStatusPass,
+		},
+		{
+			name: "numeric strings stay equivalent", fields: map[string]string{"subject": "2.0"},
+			before: mustDecodeReadback(t, `{"subject":"1"}`),
+			after:  `{"subject":"2"}`,
+			status: LiveDogfoodStatusPass,
+		},
+		{
+			name: "fraction text is not the stored decimal", fields: map[string]string{"subject": "1/2"},
+			before: mustDecodeReadback(t, `{"subject":"0.5"}`),
+			after:  `{"subject":"0.5"}`,
+			status: LiveDogfoodStatusFail,
+			reason: `mutation reported success but read-back shows field "subject" unchanged`,
+		},
+		{
+			name: "fraction that changed the field is inconclusive", fields: map[string]string{"subject": "1/2"},
+			before: mustDecodeReadback(t, `{"subject":"old"}`),
+			after:  `{"subject":"0.5"}`,
+			status: LiveDogfoodStatusSkip, reason: reasonWriteReadbackTransformed,
+		},
+		{
+			name: "hex text is not the stored number", fields: map[string]string{"subject": "0x10"},
+			before: mustDecodeReadback(t, `{"subject":"16"}`),
+			after:  `{"subject":"16"}`,
+			status: LiveDogfoodStatusFail,
+			reason: `mutation reported success but read-back shows field "subject" unchanged`,
+		},
+		{
+			name: "binary exponent is not scientific notation", fields: map[string]string{"subject": "1p1"},
+			before: mustDecodeReadback(t, `{"subject":"2"}`),
+			after:  `{"subject":"2"}`,
+			status: LiveDogfoodStatusFail,
+			reason: `mutation reported success but read-back shows field "subject" unchanged`,
 		},
 		{
 			name: "identical integers above 2^53 pass", fields: map[string]string{"subject": "9007199254740993"},
@@ -940,14 +1185,62 @@ func TestStartLiveDogfoodWriteReadback(t *testing.T) {
 func TestSubmittedNumbersMatch(t *testing.T) {
 	t.Parallel()
 
-	assert.True(t, submittedNumbersMatch("2", "2.0"))
-	assert.True(t, submittedNumbersMatch("1e2", "100"))
-	assert.True(t, submittedNumbersMatch("9007199254740993", "9007199254740993"))
-	assert.False(t, submittedNumbersMatch("9007199254740992", "9007199254740993"))
-	assert.False(t, submittedNumbersMatch("abc", "1"))
-	assert.False(t, submittedNumbersMatch("", "1"))
-	assert.False(t, submittedNumbersMatch("Inf", "Inf"))
-	assert.False(t, submittedNumbersMatch("NaN", "1"))
+	tests := []struct {
+		submitted string
+		actual    string
+		match     bool
+	}{
+		{submitted: "2", actual: "2.0", match: true},
+		{submitted: "1e2", actual: "100", match: true},
+		{submitted: "1E+02", actual: "100", match: true},
+		{submitted: ".5", actual: "0.5", match: true},
+		{submitted: "5.", actual: "5", match: true},
+		{submitted: "+2", actual: "2", match: true},
+		{submitted: "-2.5", actual: "-2.50", match: true},
+		{submitted: "2.5e-3", actual: "0.0025", match: true},
+		{submitted: "9007199254740993", actual: "9007199254740993", match: true},
+		{submitted: "9007199254740992", actual: "9007199254740993", match: false},
+		{submitted: "abc", actual: "1", match: false},
+		{submitted: "", actual: "1", match: false},
+		{submitted: "Inf", actual: "Inf", match: false},
+		{submitted: "NaN", actual: "1", match: false},
+		{submitted: "1/2", actual: "0.5", match: false},
+		{submitted: "2/4", actual: "0.5", match: false},
+		{submitted: "+1/2", actual: "0.5", match: false},
+		{submitted: "10/2", actual: "5", match: false},
+		{submitted: "0x10/2", actual: "8", match: false},
+		{submitted: "0b10/0b10", actual: "1", match: false},
+		{submitted: "010/1", actual: "8", match: false},
+		{submitted: "0x10", actual: "16", match: false},
+		{submitted: "0X10", actual: "16", match: false},
+		{submitted: "+0x10", actual: "16", match: false},
+		{submitted: "0b10", actual: "2", match: false},
+		{submitted: "0o10", actual: "8", match: false},
+		{submitted: "0x1p4", actual: "16", match: false},
+		{submitted: "0x.8p0", actual: "0.5", match: false},
+		{submitted: "0b1.1p1", actual: "3", match: false},
+		{submitted: "1_000", actual: "1000", match: false},
+		{submitted: "1e1_0", actual: "10000000000", match: false},
+		{submitted: "1p1", actual: "2", match: false},
+		{submitted: "1P+1", actual: "2", match: false},
+		{submitted: "1.2.3", actual: "1.2", match: false},
+		{submitted: "++1", actual: "1", match: false},
+		{submitted: "1e", actual: "10", match: false},
+		{submitted: "1 / 2", actual: "0.5", match: false},
+		{submitted: " 2 ", actual: "2.0", match: true},
+		{submitted: "1e2x", actual: "100", match: false},
+		{submitted: "1e+", actual: "1", match: false},
+		{submitted: "true", actual: "1", match: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.submitted+" vs "+tt.actual, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.match, submittedNumbersMatch(tt.submitted, tt.actual))
+		})
+	}
+	assert.False(t, submittedValuesMatch("1/2", "0.5"))
+	assert.False(t, submittedValuesMatch("0x10", "16"))
+	assert.False(t, submittedValuesMatch("1p1", "2"))
 }
 
 func TestDecodeLiveDogfoodJSONValue(t *testing.T) {
