@@ -3011,6 +3011,14 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 	}
 
 	switch {
+	case strings.EqualFold(scheme.Type, "apikey") && scheme.In == "cookie":
+		// apiKey cookie attachment follows the declared type. Scheme keys such
+		// as bearerSession, botSession, and basicSession stay on this path.
+		scoreable = true
+		if cookieCredentialAttached(clientContent, cookieAuthHeaderName(scheme)) {
+			authHeaderMatched = true
+			headerNameMatched = true
+		}
 	case strings.Contains(nameLower, "bot"):
 		scoreable = true
 		if authPrefixLiteralPresent("Bot", clientContent, configContent, authContent) {
@@ -3040,12 +3048,6 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
-		}
-		// Cookie-jar and composed clients do not emit Header.Set("Cookie").
-		// Credit only wiring that puts the credential on a request.
-		if scheme.In == "cookie" && cookieCredentialAttached(clientContent, cookieAuthHeaderName(scheme)) {
-			authHeaderMatched = true
-			headerNameMatched = true
 		}
 		if scheme.In == "query" && headerName != "" {
 			if queryAssignmentPresent(clientContent, headerName) {

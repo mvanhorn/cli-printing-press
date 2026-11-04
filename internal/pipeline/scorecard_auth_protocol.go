@@ -9,22 +9,22 @@ import (
 	"strings"
 )
 
-// cookieCredentialAttached reports whether client.go puts a cookie-carried
-// credential on an outbound request. A Header.Set("Cookie") string, an unused
-// const, or a helper that never runs is not attachment: the jar has to be
-// seeded and installed on the client, or the request that is Do'd has to
-// carry the header or cookie.
+// cookieCredentialAttached reports whether client.go puts the scheme credential
+// on an outbound request. A Header.Set("Cookie") string, an unused const, or a
+// helper that never runs is not attachment. A seeded jar counts only when the
+// scheme sends that credential as cookies; a stamped header such as
+// Authorization has to be on the request that is Do'd.
 func cookieCredentialAttached(clientContent, headerName string) bool {
 	file, err := parser.ParseFile(token.NewFileSet(), "client.go", clientContent, parser.SkipObjectResolution)
 	if err != nil {
 		return false
 	}
-	if cookieJarCredentialWired(file) {
-		return true
-	}
 	name := strings.TrimSpace(headerName)
 	if name == "" {
 		name = "Cookie"
+	}
+	if strings.EqualFold(name, "Cookie") && cookieJarCredentialWired(file) {
+		return true
 	}
 	return requestCarriesAuthMaterial(file, name)
 }
@@ -138,13 +138,8 @@ func requestCarriesAuthMaterial(file *ast.File, headerName string) bool {
 		if !ok || fn.Body == nil {
 			continue
 		}
-		wire := &reqWire{
-			want:    want,
-			isReq:   map[string]bool{},
-			headers: map[string]map[string]bool{},
-			cookies: map[string]map[string]bool{},
-		}
-		walkBlock(fn.Body, wire.stmt)
+		wire := &reqWire{want: want}
+		wire.walkBlock(fn.Body)
 		if wire.matched {
 			return true
 		}
@@ -152,76 +147,288 @@ func requestCarriesAuthMaterial(file *ast.File, headerName string) bool {
 	return false
 }
 
+// reqState is one *http.Request. Aliases share the pointer, so a later Set or
+// Del is visible through every name that still refers to it. Clone gets its
+// own header map; WithContext and guardOutbound keep this one.
+type reqState struct {
+	headers map[string]bool
+	cookies map[string]bool
+}
+
+func newReqState() *reqState {
+	return &reqState{
+		headers: map[string]bool{},
+		cookies: map[string]bool{},
+	}
+}
+
+func (s *reqState) clone() *reqState {
+	if s == nil {
+		return newReqState()
+	}
+	return &reqState{
+		headers: cloneBoolMap(s.headers),
+		cookies: cloneBoolMap(s.cookies),
+	}
+}
+
+func (s *reqState) carries(want string) bool {
+	if s == nil || want == "" {
+		return false
+	}
+	return s.headers[want] || s.cookies[want]
+}
+
+func (s *reqState) applyHeader(op, name string, value ast.Expr) {
+	key := strings.ToLower(name)
+	if s == nil || key == "" {
+		return
+	}
+	switch op {
+	case "Del":
+		delete(s.headers, key)
+		if key == "cookie" {
+			s.cookies = map[string]bool{}
+		}
+	case "Set":
+		if key == "cookie" {
+			s.cookies = map[string]bool{}
+		}
+		if authValueExpr(value) {
+			s.headers[key] = true
+		} else {
+			delete(s.headers, key)
+		}
+	case "Add":
+		if authValueExpr(value) {
+			s.headers[key] = true
+		}
+	}
+}
+
+func (s *reqState) addCookie(name string) {
+	if s == nil {
+		return
+	}
+	key := strings.ToLower(name)
+	if key == "" {
+		return
+	}
+	s.cookies[key] = true
+}
+
 type reqWire struct {
 	want    string
-	isReq   map[string]bool
-	headers map[string]map[string]bool
-	cookies map[string]map[string]bool
+	scopes  []map[string]*reqState
 	matched bool
 }
 
-func (w *reqWire) stmt(stmt ast.Stmt) {
-	switch s := stmt.(type) {
-	case *ast.ExprStmt:
-		if call, ok := s.X.(*ast.CallExpr); ok {
-			w.observeCall(call)
+func (w *reqWire) push() {
+	w.scopes = append(w.scopes, map[string]*reqState{})
+}
+
+func (w *reqWire) pop() {
+	w.scopes = w.scopes[:len(w.scopes)-1]
+}
+
+func (w *reqWire) lookup(name string) (*reqState, bool) {
+	if name == "" {
+		return nil, false
+	}
+	for i := len(w.scopes) - 1; i >= 0; i-- {
+		state, ok := w.scopes[i][name]
+		if !ok {
+			continue
 		}
+		return state, state != nil
+	}
+	return nil, false
+}
+
+func (w *reqWire) known(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := len(w.scopes) - 1; i >= 0; i-- {
+		if _, ok := w.scopes[i][name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// bind records name in the current block when define is set, which is how Go
+// shadows an outer short-variable declaration. Plain assignment updates the
+// block that already holds the name.
+func (w *reqWire) bind(name string, state *reqState, define bool) {
+	if name == "" || len(w.scopes) == 0 {
+		return
+	}
+	if define {
+		w.scopes[len(w.scopes)-1][name] = state
+		return
+	}
+	for i := len(w.scopes) - 1; i >= 0; i-- {
+		if _, ok := w.scopes[i][name]; ok {
+			w.scopes[i][name] = state
+			return
+		}
+	}
+	w.scopes[len(w.scopes)-1][name] = state
+}
+
+func (w *reqWire) walkBlock(block *ast.BlockStmt) {
+	if block == nil {
+		return
+	}
+	w.push()
+	for _, stmt := range block.List {
+		w.walkStmt(stmt)
+	}
+	w.pop()
+}
+
+func (w *reqWire) walkStmt(stmt ast.Stmt) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.BlockStmt:
+		w.walkBlock(s)
+	case *ast.ExprStmt:
+		w.observeExpr(s.X)
 	case *ast.AssignStmt:
-		w.assign(s.Lhs, s.Rhs)
+		w.assign(s.Tok, s.Lhs, s.Rhs)
+	case *ast.ReturnStmt:
+		for _, result := range s.Results {
+			w.observeExpr(result)
+		}
+	case *ast.IfStmt:
+		w.push()
+		w.walkStmt(s.Init)
+		w.walkBlock(s.Body)
+		w.walkStmt(s.Else)
+		w.pop()
+	case *ast.ForStmt:
+		w.push()
+		w.walkStmt(s.Init)
+		w.walkBlock(s.Body)
+		w.pop()
+	case *ast.RangeStmt:
+		w.push()
+		if s.Tok == token.DEFINE {
+			w.shadow(s.Key)
+			w.shadow(s.Value)
+		}
+		w.walkBlock(s.Body)
+		w.pop()
+	case *ast.SwitchStmt:
+		w.push()
+		w.walkStmt(s.Init)
+		w.walkBlock(s.Body)
+		w.pop()
+	case *ast.TypeSwitchStmt:
+		w.push()
+		w.walkStmt(s.Init)
+		w.walkStmt(s.Assign)
+		w.walkBlock(s.Body)
+		w.pop()
+	case *ast.CaseClause:
+		w.push()
+		for _, inner := range s.Body {
+			w.walkStmt(inner)
+		}
+		w.pop()
+	case *ast.SelectStmt:
+		w.walkBlock(s.Body)
+	case *ast.CommClause:
+		w.push()
+		w.walkStmt(s.Comm)
+		for _, inner := range s.Body {
+			w.walkStmt(inner)
+		}
+		w.pop()
+	case *ast.LabeledStmt:
+		w.walkStmt(s.Stmt)
 	}
 }
 
-func (w *reqWire) assign(lhs, rhs []ast.Expr) {
+func (w *reqWire) shadow(expr ast.Expr) {
+	if id := exprIdent(expr); id != "" {
+		w.bind(id, nil, true)
+	}
+}
+
+func (w *reqWire) assign(tok token.Token, lhs, rhs []ast.Expr) {
 	if len(rhs) != 1 || len(lhs) == 0 {
 		return
 	}
+	if call, ok := rhs[0].(*ast.CallExpr); ok && callName(call.Fun) == "Do" {
+		w.noteDo(call)
+		return
+	}
+	id := exprIdent(lhs[0])
+	if id == "" {
+		return
+	}
+	define := tok == token.DEFINE
 	if call, ok := rhs[0].(*ast.CallExpr); ok {
 		if selectorName(call.Fun, "NewRequest", "NewRequestWithContext") {
-			if id := exprIdent(lhs[0]); id != "" {
-				w.fresh(id)
-			}
+			w.bind(id, newReqState(), define)
 			return
 		}
-		if callName(call.Fun) == "Do" {
-			w.noteDo(call)
-			return
-		}
-		if src := w.requestArg(call); src != "" {
-			if id := exprIdent(lhs[0]); id != "" {
-				w.copy(id, src)
-			}
-			return
-		}
-		// req = req.WithContext(ctx) (and Clone) replaces the ident with a
-		// derived request. Dropping the recorded header here would miss the
-		// Do that follows the reassignment in the generated client.
 		if sel, ok := unwrapExpr(call.Fun).(*ast.SelectorExpr); ok {
-			if recv := exprIdent(sel.X); recv != "" && w.isReq[recv] {
-				if id := exprIdent(lhs[0]); id != "" {
-					w.copy(id, recv)
+			if recv, ok := w.lookup(exprIdent(sel.X)); ok {
+				next := recv
+				if sel.Sel.Name == "Clone" {
+					next = recv.clone()
 				}
+				w.bind(id, next, define)
 				return
 			}
 		}
+		if src := w.requestArg(call); src != nil {
+			w.bind(id, src, define)
+			return
+		}
 	}
-	if src := exprIdent(rhs[0]); src != "" && w.isReq[src] {
-		if id := exprIdent(lhs[0]); id != "" {
-			w.copy(id, src)
+	if src, ok := w.lookup(exprIdent(rhs[0])); ok {
+		w.bind(id, src, define)
+		return
+	}
+	if define {
+		if w.known(id) {
+			w.bind(id, nil, true)
 		}
 		return
 	}
-	if id := exprIdent(lhs[0]); id != "" && w.isReq[id] {
-		w.fresh(id)
+	if _, ok := w.lookup(id); ok {
+		w.bind(id, newReqState(), false)
+	}
+}
+
+func (w *reqWire) observeExpr(expr ast.Expr) {
+	call, ok := unwrapExpr(expr).(*ast.CallExpr)
+	if !ok {
+		return
+	}
+	w.observeCall(call)
+	for _, arg := range call.Args {
+		w.observeExpr(arg)
 	}
 }
 
 func (w *reqWire) observeCall(call *ast.CallExpr) {
-	if req, name, ok := headerSetOnRequest(call); ok && w.isReq[req] {
-		w.headers[req][strings.ToLower(name)] = true
+	if req, op, name, value, ok := headerMutOnRequest(call); ok {
+		if state, known := w.lookup(req); known {
+			state.applyHeader(op, name, value)
+		}
 		return
 	}
-	if req, name, ok := addCookieOnRequest(call); ok && w.isReq[req] {
-		w.cookies[req][strings.ToLower(name)] = true
+	if req, name, ok := addCookieOnRequest(call); ok {
+		if state, known := w.lookup(req); known {
+			state.addCookie(name)
+		}
 		return
 	}
 	if callName(call.Fun) == "Do" {
@@ -233,52 +440,56 @@ func (w *reqWire) noteDo(call *ast.CallExpr) {
 	if len(call.Args) == 0 {
 		return
 	}
-	id := exprIdent(call.Args[0])
-	if id == "" || !w.isReq[id] {
-		return
-	}
-	if w.headers[id][w.want] || w.cookies[id][w.want] {
+	state, ok := w.lookup(exprIdent(call.Args[0]))
+	if ok && state.carries(w.want) {
 		w.matched = true
 	}
 }
 
-func (w *reqWire) fresh(id string) {
-	w.isReq[id] = true
-	w.headers[id] = map[string]bool{}
-	w.cookies[id] = map[string]bool{}
-}
-
-func (w *reqWire) copy(dst, src string) {
-	w.isReq[dst] = true
-	w.headers[dst] = cloneBoolMap(w.headers[src])
-	w.cookies[dst] = cloneBoolMap(w.cookies[src])
-}
-
-func (w *reqWire) requestArg(call *ast.CallExpr) string {
+func (w *reqWire) requestArg(call *ast.CallExpr) *reqState {
 	for _, arg := range call.Args {
-		id := exprIdent(arg)
-		if id != "" && w.isReq[id] {
-			return id
+		if state, ok := w.lookup(exprIdent(arg)); ok {
+			return state
 		}
 	}
-	return ""
+	return nil
 }
 
-func headerSetOnRequest(call *ast.CallExpr) (string, string, bool) {
+func headerMutOnRequest(call *ast.CallExpr) (string, string, string, ast.Expr, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || (sel.Sel.Name != "Set" && sel.Sel.Name != "Add") || len(call.Args) < 2 {
-		return "", "", false
+	if !ok {
+		return "", "", "", nil, false
 	}
 	headerSel, ok := sel.X.(*ast.SelectorExpr)
 	if !ok || headerSel.Sel.Name != "Header" {
-		return "", "", false
+		return "", "", "", nil, false
 	}
 	req := exprIdent(headerSel.X)
-	name := stringLit(call.Args[0])
-	if req == "" || name == "" || !authValueExpr(call.Args[1]) {
-		return "", "", false
+	if req == "" {
+		return "", "", "", nil, false
 	}
-	return req, name, true
+	switch sel.Sel.Name {
+	case "Set", "Add":
+		if len(call.Args) < 2 {
+			return "", "", "", nil, false
+		}
+		name := stringLit(call.Args[0])
+		if name == "" {
+			return "", "", "", nil, false
+		}
+		return req, sel.Sel.Name, name, call.Args[1], true
+	case "Del":
+		if len(call.Args) < 1 {
+			return "", "", "", nil, false
+		}
+		name := stringLit(call.Args[0])
+		if name == "" {
+			return "", "", "", nil, false
+		}
+		return req, "Del", name, nil, true
+	default:
+		return "", "", "", nil, false
+	}
 }
 
 func addCookieOnRequest(call *ast.CallExpr) (string, string, bool) {

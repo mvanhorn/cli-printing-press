@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,6 +116,16 @@ resources:
 
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "client", "client.go"), []byte(original), 0o644))
 		rewriteClient(t, dir, func(src string) string {
+			replaced := strings.ReplaceAll(src, `req.Header.Set("Authorization", authHeader)`, `req.Header.Set("Authorization", "unused")`)
+			require.NotEqual(t, src, replaced)
+			require.Contains(t, replaced, "SeedCookieJarForDomain(")
+			return replaced
+		})
+		assert.False(t, cookieCredentialAttached(readClient(t, dir), "Authorization"))
+		assert.Equal(t, 2, authProtocolScore(t, dir, specPath), "a seeded jar does not stand in for a missing Authorization credential")
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "client", "client.go"), []byte(original), 0o644))
+		rewriteClient(t, dir, func(src string) string {
 			src = strings.ReplaceAll(src, "SeedCookieJarForDomain(", "skipSeed(")
 			src = strings.ReplaceAll(src, "SeedCookieJar(", "skipSeed(")
 			replaced := strings.ReplaceAll(src, `req.Header.Set("Authorization", authHeader)`, `req.Header.Set("Authorization", "unused")`)
@@ -198,6 +209,7 @@ paths:
 		api.Config = spec.ConfigSpec{Format: "toml", Path: "~/.config/cookiekey-pp-cli/config.toml"}
 		dir := filepath.Join(t.TempDir(), "cookiekey-pp-cli")
 		require.NoError(t, generator.New(api, dir).Generate())
+		requireGeneratedCompiles(t, dir)
 		specPath := filepath.Join(t.TempDir(), "spec.yaml")
 		require.NoError(t, os.WriteFile(specPath, []byte(specYAML), 0o644))
 
@@ -563,6 +575,137 @@ func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error
 			want:   2,
 		},
 		{
+			name: "returned Do still carries the header",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) (*http.Response, error) {
+	req, err := http.NewRequest("GET", "https://example.test", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", authHeader)
+	return httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "header overwritten before Do",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Authorization", "unused")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "header deleted before Do",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Del("Authorization")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "header set again after delete",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Del("Authorization")
+	req.Header.Add("Authorization", authHeader)
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "inner req does not credit the outer request",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	{
+		req, _ := http.NewRequest("GET", "https://example.test/inner", nil)
+		req.Header.Set("Cookie", authHeader)
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Cookie"),
+			want:   2,
+		},
+		{
+			name: "outer req keeps its header when an inner req shadows it",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Cookie", authHeader)
+	{
+		req, _ := http.NewRequest("GET", "https://example.test/inner", nil)
+		req.Header.Set("Cookie", "unused")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Cookie"),
+			want:   8,
+		},
+		{
+			name: "alias sees a header set on the original request",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	other := req
+	req.Header.Set("Cookie", authHeader)
+	_, _ = httpClient.Do(other)
+}
+`,
+			scheme: cookieScheme("Cookie"),
+			want:   8,
+		},
+		{
+			name: "alias sees a later delete",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	other := req
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Del("Authorization")
+	_, _ = httpClient.Do(other)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "clone keeps the header copied before a later overwrite",
+			client: `package client
+func (c *Client) do(ctx context.Context, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Cookie", authHeader)
+	other := req.Clone(ctx)
+	req.Header.Set("Cookie", "unused")
+	_, _ = httpClient.Do(other)
+}
+`,
+			scheme: cookieScheme("Cookie"),
+			want:   8,
+		},
+		{
 			name: "header is set after Do",
 			client: `package client
 func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
@@ -573,6 +716,20 @@ func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error
 `,
 			auth:   chrome,
 			scheme: cookieScheme("Cookie"),
+			want:   2,
+		},
+		{
+			name: "Del Cookie drops a cookie added earlier",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.AddCookie(&http.Cookie{Name: "session", Value: authHeader})
+	req.Header.Del("Cookie")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("session"),
 			want:   2,
 		},
 		{
@@ -599,6 +756,38 @@ func (c *Client) do(httpClient interface{ Do(any) (any, error) }) {
 `,
 			auth:   chrome,
 			scheme: cookieScheme("session"),
+			want:   2,
+		},
+		{
+			name:   "seeded jar does not satisfy Authorization",
+			client: jarBacked,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name:   "cookie scheme named bearerSession uses the jar",
+			client: jarBacked,
+			scheme: openAPISecurityScheme{Key: "bearerSession", Type: "apikey", In: "cookie", HeaderName: "Cookie"},
+			want:   8,
+		},
+		{
+			name:   "cookie scheme named botSession uses the jar",
+			client: jarBacked,
+			scheme: openAPISecurityScheme{Key: "botSession", Type: "apikey", In: "cookie", HeaderName: "Cookie"},
+			want:   8,
+		},
+		{
+			name:   "cookie scheme named basicSession uses the jar",
+			client: jarBacked,
+			scheme: openAPISecurityScheme{Key: "basicSession", Type: "apikey", In: "cookie", HeaderName: "Cookie"},
+			want:   8,
+		},
+		{
+			name:   "bearer literal does not credit a cookie scheme named bearerSession",
+			client: "package client\nconst leftover = \"Bearer \"\n",
+			auth:   chrome,
+			scheme: openAPISecurityScheme{Key: "bearerSession", Type: "apikey", In: "cookie", HeaderName: "Cookie"},
 			want:   2,
 		},
 		{
@@ -674,9 +863,49 @@ func generateInternalCLI(t *testing.T, yamlSpec string) (string, string) {
 	api.Creator = spec.Person{Handle: "tester", Name: "Test Author"}
 	dir := filepath.Join(t.TempDir(), api.Name+"-pp-cli")
 	require.NoError(t, generator.New(api, dir).Generate())
+	requireGeneratedCompiles(t, dir)
 	specPath := filepath.Join(t.TempDir(), "spec.yaml")
 	require.NoError(t, os.WriteFile(specPath, []byte(yamlSpec), 0o644))
 	return dir, specPath
+}
+
+func requireGeneratedCompiles(t *testing.T, dir string) {
+	t.Helper()
+	if testing.Short() {
+		// The lint lane runs -short. Scoring still runs there; the full suite compiles.
+		return
+	}
+	cmd := exec.Command("go", "build", "-mod=mod", "./...")
+	cmd.Dir = dir
+	home := t.TempDir()
+	env := []string{
+		"HOME=" + home,
+		"USERPROFILE=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"GOCACHE=" + filepath.Join(home, "gocache"),
+	}
+	// A replaced HOME would otherwise make Go download modules into that
+	// temp dir. The module cache is read-only, so the test cleanup fails.
+	for _, name := range []string{"GOPATH", "GOMODCACHE"} {
+		if value := goEnv(t, name); value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+}
+
+func goEnv(t *testing.T, name string) string {
+	t.Helper()
+	out, err := exec.Command("go", "env", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func assertGeneratedAuthProtocol(t *testing.T, dir, specPath string, auth spec.AuthConfig, want int) {
