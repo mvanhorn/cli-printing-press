@@ -909,6 +909,82 @@ func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any
 			want:   2,
 		},
 		{
+			name: "break in a switch case still reaches Do when a later statement returns",
+			client: `package client
+func (c *Client) do(mode string, ready bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	switch mode {
+	case "auth":
+		req.Header.Set("Authorization", authHeader)
+		if ready {
+			break
+		}
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "return in a switch case does not reach the later Do",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	switch mode {
+	case "auth":
+		req.Header.Set("Authorization", authHeader)
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "break in a select still reaches Do when a later statement returns",
+			client: `package client
+func (c *Client) do(a, b <-chan struct{}, ready bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	select {
+	case <-a:
+		req.Header.Set("Authorization", authHeader)
+		if ready {
+			break
+		}
+		return
+	case <-b:
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "break in a loop skips a later delete",
+			client: `package client
+func (c *Client) do(stop bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	for {
+		if stop {
+			req.Header.Set("Authorization", authHeader)
+			break
+		}
+		req.Header.Del("Authorization")
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
 			name: "fallthrough keeps the header when the next case does not delete it",
 			client: `package client
 func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
@@ -1066,6 +1142,41 @@ func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error
 	other := req
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Del("Authorization")
+	_, _ = httpClient.Do(other)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "reassigned alias delete does not clear the original request",
+			client: `package client
+func (c *Client) do(anon bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	other := req
+	if anon {
+		other, _ = http.NewRequest("GET", "https://example.test/other", nil)
+	}
+	other.Header.Del("Authorization")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "reassigned alias delete still clears the alias on every path",
+			client: `package client
+func (c *Client) do(anon bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	other := req
+	if anon {
+		other, _ = http.NewRequest("GET", "https://example.test/other", nil)
+	}
+	other.Header.Del("Authorization")
 	_, _ = httpClient.Do(other)
 }
 `,
