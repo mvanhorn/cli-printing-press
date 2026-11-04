@@ -1752,6 +1752,368 @@ func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error
 			scheme: cookieScheme("Authorization"),
 			want:   8,
 		},
+		{
+			name: "fallthrough drops a case-local request before the next case deletes",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	case "a":
+		req, _ := http.NewRequest("GET", "https://example.test", nil)
+		fallthrough
+	case "b":
+		req.Header.Del("Authorization")
+	default:
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "fallthrough Do sees the outer request not the case-local one",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	switch mode {
+	case "a":
+		req, _ := http.NewRequest("GET", "https://example.test", nil)
+		req.Header.Set("Authorization", authHeader)
+		fallthrough
+	case "b":
+		_, _ = httpClient.Do(req)
+	default:
+		return
+	}
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "a case-local request is visible to Do inside that case",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	switch mode {
+	case "a":
+		req, _ := http.NewRequest("GET", "https://example.test", nil)
+		req.Header.Set("Authorization", authHeader)
+		_, _ = httpClient.Do(req)
+		return
+	default:
+		return
+	}
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "breaking out of a case-local request keeps the outer credential",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	case "a":
+		req, _ := http.NewRequest("GET", "https://example.test", nil)
+		req.Header.Del("Authorization")
+		break
+	default:
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a case-local request does not hide the outer one after fallthrough",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	case "a":
+		req, _ := http.NewRequest("GET", "https://example.test", nil)
+		fallthrough
+	case "b":
+	default:
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a method call named panic does not end the path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	var x interface{ panic(string) }
+	x.panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a method call named panic in a loop condition leaves the zero-iteration path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	var x interface{ panic(string) bool }
+	for x.panic("stop") {
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a locally rebound panic does not end the path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic := func(string) {}
+	for {
+		panic("stop")
+		break
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a type parameter named panic does not end the path",
+			client: `package client
+func do[panic any](authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a panic parameter does not end the path",
+			client: `package client
+func (c *Client) do(panic func(string), authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a named result called panic does not end the path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) (panic error) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+	return nil
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a receiver named panic does not end the path",
+			client: `package client
+func (panic *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a local var named panic does not end the path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	var panic = func(string) {}
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a package-level var named panic does not end the path",
+			client: `package client
+var panic = func(string) {}
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a package-level panic does not end the path",
+			client: `package client
+func panic(msg string) { _ = msg }
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "an import named panic does not end the path",
+			client: `package client
+import panic "fmt"
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a blank import does not hide the builtin panic",
+			client: `package client
+import _ "example.com/panic"
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "an import path named panic does not end the path",
+			client: `package client
+import "example.com/panic"
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a versioned import path named panic does not end the path",
+			client: `package client
+import "example.com/panic/v2"
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a dot import leaves panic unresolved so the call does not end the path",
+			client: `package client
+import . "fmt"
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "a panic shadowed in a nested block does not hide a later builtin panic",
+			client: `package client
+func (c *Client) do(stop bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	if stop {
+		panic := func(string) {}
+		panic("inner")
+	}
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "a method named panic does not hide the builtin",
+			client: `package client
+func (c *Client) panic(msg string) { _ = msg }
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	panic("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "a parenthesized builtin panic still ends the path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	(panic)("stop")
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
 	}
 
 	for _, tc := range cases {

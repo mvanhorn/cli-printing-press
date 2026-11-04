@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -134,13 +135,17 @@ func requestCarriesAuthMaterial(file *ast.File, headerName string) bool {
 	if want == "" || file == nil {
 		return false
 	}
+	hidePanic := hidesBuiltinPanic(file)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 		wire := &reqWire{want: want, paths: []reqPath{{}}}
-		wire.execBlock(fn.Body)
+		if hidePanic {
+			wire.seedOuterPanic()
+		}
+		wire.execFunc(fn)
 		if wire.matched {
 			return true
 		}
@@ -416,6 +421,61 @@ func (w *reqWire) execBlock(block *ast.BlockStmt) {
 	w.pop()
 }
 
+func (w *reqWire) execFunc(fn *ast.FuncDecl) {
+	if fn == nil || fn.Body == nil {
+		return
+	}
+	w.push()
+	w.bindSignature(fn)
+	w.execList(fn.Body.List)
+	w.pop()
+}
+
+func (w *reqWire) bindSignature(fn *ast.FuncDecl) {
+	if fn == nil {
+		return
+	}
+	if fn.Recv != nil {
+		w.bindFields(fn.Recv)
+	}
+	if fn.Type == nil {
+		return
+	}
+	w.bindFields(fn.Type.TypeParams)
+	w.bindFields(fn.Type.Params)
+	w.bindFields(fn.Type.Results)
+}
+
+func (w *reqWire) bindFields(list *ast.FieldList) {
+	if list == nil {
+		return
+	}
+	for _, field := range list.List {
+		for _, name := range field.Names {
+			w.shadow(name)
+		}
+	}
+}
+
+func (w *reqWire) bindDecl(decl ast.Decl) {
+	gen, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return
+	}
+	for _, spec := range gen.Specs {
+		switch s := spec.(type) {
+		case *ast.ValueSpec:
+			for _, name := range s.Names {
+				w.shadow(name)
+			}
+		case *ast.TypeSpec:
+			if s.Name != nil {
+				w.shadow(s.Name)
+			}
+		}
+	}
+}
+
 func (w *reqWire) execList(list []ast.Stmt) {
 	for _, stmt := range list {
 		if len(w.paths) == 0 {
@@ -427,25 +487,29 @@ func (w *reqWire) execList(list []ast.Stmt) {
 
 // execStmt advances every path that can still reach the next statement.
 //
-// return and panic end a path. goto ends it too, and the target is not
-// rejoined, so a credential reached only through goto is not credited. break
-// and continue transfer to the labeled statement or, unlabeled, to the
-// innermost switch, select, or loop. continue ignores switches and selects
-// until it reaches a loop.
+// return and a call of the builtin panic end a path. goto ends it too, and
+// the target is not rejoined, so a credential reached only through goto is
+// not credited. break and continue transfer to the labeled statement or,
+// unlabeled, to the innermost switch, select, or loop. continue ignores
+// switches and selects until it reaches a loop.
 //
 // A switch or type-switch case starts from the state at the switch and,
-// separately, from each previous fallthrough. With no default that state is
-// also an exit. A select runs one comm: it has no fallthrough and no
-// implicit skip.
+// separately, from each previous fallthrough. Each case is its own block:
+// names it declares are dropped before a fallthrough path is carried into
+// the next case, and before the case's other exits leave it. With no
+// default the switch state is also an exit. A select runs one comm: it has
+// no fallthrough and no implicit skip.
 //
 // A loop's exits are its breaks plus, when a condition or a range can end
 // it, the state before the first iteration and the state after one pass
 // through the body or a continue, including the post statement. Conditions
-// are not evaluated, except that a panic call in a condition, switch tag,
-// or range expression ends the path. An unconditional loop does not fall
-// out of its body. A later iteration is not modeled, so a header removed
-// only on a second pass can still be credited. defer, go, and function
-// literals are not run.
+// are not evaluated, except that a bare call of the builtin panic, in a
+// condition, switch tag, or range expression, ends the path. A selector
+// never counts. A panic already bound in scope does not count, nor does a
+// dot import, which leaves the name unresolved. An unconditional loop does
+// not fall out of its body. A later iteration is not modeled, so a header
+// removed only on a second pass can still be credited. defer, go, and
+// function literals are not run.
 func (w *reqWire) execStmt(stmt ast.Stmt) {
 	if stmt == nil || len(w.paths) == 0 {
 		return
@@ -458,7 +522,7 @@ func (w *reqWire) execStmt(stmt ast.Stmt) {
 	case *ast.ExprStmt:
 		w.onEach(func() {
 			w.observeExpr(s.X)
-			if callPanics(s.X) {
+			if w.callPanics(s.X) {
 				w.paths = nil
 			}
 		})
@@ -485,6 +549,8 @@ func (w *reqWire) execStmt(stmt ast.Stmt) {
 		w.execSwitch(nil, s.Init, s.Assign, nil, s.Body, true)
 	case *ast.SelectStmt:
 		w.execSwitch(nil, nil, nil, nil, s.Body, false)
+	case *ast.DeclStmt:
+		w.onEach(func() { w.bindDecl(s.Decl) })
 	}
 }
 
@@ -542,7 +608,7 @@ func (w *reqWire) execIf(s *ast.IfStmt) {
 		w.paths = []reqPath{cloneReqPath(p)}
 		w.push()
 		w.execStmt(s.Init)
-		if callPanics(s.Cond) || len(w.paths) == 0 {
+		if w.callPanics(s.Cond) || len(w.paths) == 0 {
 			continue
 		}
 		bases := append([]reqPath(nil), w.paths...)
@@ -614,17 +680,40 @@ func (w *reqWire) execClause(stmt ast.Stmt) bool {
 	}
 }
 
+// execCaseBody runs one switch case in its own block. Fallthrough leaves
+// that block before the path is carried forward, so the next case resolves
+// names where Go does: the blocks outside this case.
 func (w *reqWire) execCaseBody(body []ast.Stmt) bool {
+	depth := w.scopeDepth()
+	w.push()
 	for _, inner := range body {
 		if isFallthrough(inner) {
-			return len(w.paths) > 0
+			live := len(w.paths) > 0
+			w.restoreDepth(depth)
+			return live
 		}
 		w.execStmt(inner)
 		if len(w.paths) == 0 {
 			return false
 		}
 	}
+	w.restoreDepth(depth)
 	return false
+}
+
+func (w *reqWire) scopeDepth() int {
+	if len(w.paths) == 0 {
+		return 0
+	}
+	return len(w.paths[0].scopes)
+}
+
+func (w *reqWire) restoreDepth(depth int) {
+	for i := range w.paths {
+		if len(w.paths[i].scopes) > depth {
+			w.paths[i].scopes = w.paths[i].scopes[:depth]
+		}
+	}
 }
 
 func (w *reqWire) execComm(clause *ast.CommClause) {
@@ -654,7 +743,7 @@ func (w *reqWire) execSwitch(labels []string, init, assign ast.Stmt, tag ast.Exp
 		w.push()
 		w.execStmt(init)
 		w.execStmt(assign)
-		if callPanics(tag) || len(w.paths) == 0 {
+		if w.callPanics(tag) || len(w.paths) == 0 {
 			continue
 		}
 		bases := append([]reqPath(nil), w.paths...)
@@ -702,7 +791,7 @@ func (w *reqWire) execLoop(labels []string, canLeave bool, abort ast.Expr, init,
 		w.paths = []reqPath{cloneReqPath(p)}
 		w.push()
 		init()
-		if callPanics(abort) {
+		if w.callPanics(abort) {
 			continue
 		}
 		afterInit := append([]reqPath(nil), w.paths...)
@@ -735,7 +824,7 @@ func (w *reqWire) execLoop(labels []string, canLeave bool, abort ast.Expr, init,
 	w.shrink()
 }
 
-func callPanics(expr ast.Expr) bool {
+func (w *reqWire) callPanics(expr ast.Expr) bool {
 	if expr == nil {
 		return false
 	}
@@ -748,13 +837,144 @@ func callPanics(expr ast.Expr) bool {
 			return false
 		}
 		call, ok := n.(*ast.CallExpr)
-		if ok && callName(call.Fun) == "panic" {
+		if ok && w.builtinPanic(call.Fun) {
 			found = true
 			return false
 		}
 		return true
 	})
 	return found
+}
+
+// builtinPanic reports whether fun is a call of the predeclared panic.
+// Selectors are methods. A panic bound in the walker's scopes, including
+// the outer binding seeded for a package declaration or a dot import, is
+// not the builtin. When the name is not a bare identifier, it is not either.
+func (w *reqWire) builtinPanic(fun ast.Expr) bool {
+	if fun == nil {
+		return false
+	}
+	fun = unwrapExpr(fun)
+	if fun == nil {
+		return false
+	}
+	id, ok := fun.(*ast.Ident)
+	if !ok || !identIsPanic(id) {
+		return false
+	}
+	return !w.known("panic")
+}
+
+// seedOuterPanic hides the builtin for a package-level panic, or for a dot
+// import whose names this file does not list. The binding sits outside the
+// function, so a bare panic() in that file does not end the path.
+func (w *reqWire) seedOuterPanic() {
+	if len(w.paths) == 0 {
+		return
+	}
+	for i := range w.paths {
+		w.paths[i].scopes = append(reqEnv{{"panic": nil}}, w.paths[i].scopes...)
+	}
+}
+
+func hidesBuiltinPanic(file *ast.File) bool {
+	if file == nil {
+		return false
+	}
+	if slices.ContainsFunc(file.Imports, importHidesPanic) {
+		return true
+	}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && identIsPanic(d.Name) {
+				return true
+			}
+		case *ast.GenDecl:
+			if genHidesPanic(d) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func genHidesPanic(decl *ast.GenDecl) bool {
+	if decl == nil {
+		return false
+	}
+	for _, spec := range decl.Specs {
+		switch s := spec.(type) {
+		case *ast.ValueSpec:
+			if slices.ContainsFunc(s.Names, identIsPanic) {
+				return true
+			}
+		case *ast.TypeSpec:
+			if identIsPanic(s.Name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func importHidesPanic(imp *ast.ImportSpec) bool {
+	if imp == nil {
+		return false
+	}
+	if imp.Name != nil {
+		switch imp.Name.Name {
+		case "_":
+			// A blank import adds no name, so the builtin stays visible.
+			return false
+		case ".":
+			// A dot import's names are not in this file, so panic may not be the builtin.
+			return true
+		default:
+			if imp.Name.Name != "" {
+				return imp.Name.Name == "panic"
+			}
+		}
+	}
+	if imp.Path == nil {
+		return true
+	}
+	specPath, err := strconv.Unquote(imp.Path.Value)
+	if err != nil {
+		return true
+	}
+	return importPathHidesPanic(specPath)
+}
+
+// importPathHidesPanic uses the import path's last element as the local
+// name. A version suffix keeps the parent element, matching the usual
+// module layout. A package clause that disagrees with that path is not
+// visible to this walk.
+func importPathHidesPanic(specPath string) bool {
+	base := path.Base(specPath)
+	if base == "panic" {
+		return true
+	}
+	if len(base) < 2 || base[0] != 'v' || !digitsOnly(base[1:]) {
+		return false
+	}
+	return path.Base(path.Dir(specPath)) == "panic"
+}
+
+func digitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func identIsPanic(id *ast.Ident) bool {
+	return id != nil && id.Name == "panic"
 }
 
 func clonePaths(paths []reqPath) []reqPath {
@@ -772,21 +992,33 @@ func (w *reqWire) shadow(expr ast.Expr) {
 }
 
 func (w *reqWire) assign(tok token.Token, lhs, rhs []ast.Expr) {
+	define := tok == token.DEFINE
 	if len(rhs) != 1 || len(lhs) == 0 {
+		if define {
+			w.shadowDefs(lhs)
+		}
 		return
 	}
 	if call, ok := rhs[0].(*ast.CallExpr); ok && callName(call.Fun) == "Do" {
 		w.noteDo(call)
+		if define {
+			w.shadowDefs(lhs)
+		}
 		return
 	}
 	id := exprIdent(lhs[0])
 	if id == "" {
+		if define {
+			w.shadowDefs(lhs)
+		}
 		return
 	}
-	define := tok == token.DEFINE
 	if call, ok := rhs[0].(*ast.CallExpr); ok {
 		if selectorName(call.Fun, "NewRequest", "NewRequestWithContext") {
 			w.bind(id, []*reqState{w.freshReq()}, define)
+			if define {
+				w.shadowDefs(lhs[1:])
+			}
 			return
 		}
 		if sel, ok := unwrapExpr(call.Fun).(*ast.SelectorExpr); ok {
@@ -796,26 +1028,39 @@ func (w *reqWire) assign(tok token.Token, lhs, rhs []ast.Expr) {
 					next = w.detachAll(recv)
 				}
 				w.bind(id, next, define)
+				if define {
+					w.shadowDefs(lhs[1:])
+				}
 				return
 			}
 		}
 		if src := w.requestArg(call); len(src) > 0 {
 			w.bind(id, src, define)
+			if define {
+				w.shadowDefs(lhs[1:])
+			}
 			return
 		}
 	}
 	if src, ok := w.lookup(exprIdent(rhs[0])); ok {
 		w.bind(id, src, define)
+		if define {
+			w.shadowDefs(lhs[1:])
+		}
 		return
 	}
 	if define {
-		if w.known(id) {
-			w.bind(id, nil, true)
-		}
+		w.shadowDefs(lhs)
 		return
 	}
 	if _, ok := w.lookup(id); ok {
 		w.bind(id, []*reqState{w.freshReq()}, false)
+	}
+}
+
+func (w *reqWire) shadowDefs(lhs []ast.Expr) {
+	for _, expr := range lhs {
+		w.shadow(expr)
 	}
 }
 
