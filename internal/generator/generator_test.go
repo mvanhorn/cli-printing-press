@@ -9105,6 +9105,19 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 						},
 					}},
 				},
+				"enroll": {
+					Method: "POST", Path: "/sessions/enroll",
+					Body: []spec.Param{
+						{
+							Name: "owner", Type: "object", Required: true,
+							Fields: []spec.Param{{
+								Name: "profile", Type: "object",
+								Fields: []spec.Param{{Name: "id", Type: "string", Required: true}},
+							}},
+						},
+						{Name: "note", Type: "string"},
+					},
+				},
 			},
 		},
 	}
@@ -9119,9 +9132,15 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 	env := []string{
 		naming.EnvPrefix(apiSpec.Name) + "_BASE_URL=" + server.URL,
 		"HOME=" + home,
+		"USERPROFILE=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		// Blank any inherited verify/dogfood mode so it cannot short-circuit the POST.
+		"PRINTING_PRESS_VERIFY=",
+		"PRINTING_PRESS_VERIFY_LIVE_HTTP=",
+		"PRINTING_PRESS_DOGFOOD=",
 	}
 	run := func(args ...string) (int, string) {
 		t.Helper()
@@ -9159,6 +9178,15 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 		code, body := run("sessions", "logout", "--screen-share-note", "x")
 		assert.NotEqual(t, 0, code)
 		assert.Empty(t, body, "no request may be sent when the group is incomplete")
+	})
+	t.Run("multi-root required parent holding only an optional group still needs input", func(t *testing.T) {
+		_, body := run("sessions", "enroll")
+		assert.Empty(t, body, "a bare call must print help, not send a body missing the required parent")
+		code, body := run("sessions", "enroll", "--owner-profile-id", "p1")
+		require.Equal(t, 0, code)
+		var decoded map[string]map[string]map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		assert.Equal(t, map[string]any{"id": "p1"}, decoded["owner"]["profile"])
 	})
 	t.Run("required wrapper unchanged", func(t *testing.T) {
 		code, body := run("sessions", "create", "--owner-name", "Ann")
@@ -9274,7 +9302,11 @@ func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
 		{"optional object with required child is conditional, not required input", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, false},
 		{"required object with required child", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string", Required: true}}}}}, true},
 		{"required object with only optional children", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string"}}}}}, false},
-		{"optional object nested in required object, required grandchild", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, false},
+		{"required parent whose only child is an optional object with a required grandchild", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, true},
+		{"required parent with optional-object child plus root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
+		{"required parent with a required scalar and an optional object", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, true},
+		{"required parent whose only child is an optional object without required descendants", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string"}}}}}}}, false},
+		{"optional parent with required scalar, root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Fields: []spec.Param{{Name: "s", Type: "string", Required: true}}}, {Name: "other", Type: "string"}}}, false},
 		{"optional object with required child beside required top-level field", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Type: "string", Required: true}, {Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, true},
 		{"GET with required body ignored", spec.Endpoint{Method: "GET", Body: []spec.Param{{Name: "title", Required: true}}}, false},
 	}

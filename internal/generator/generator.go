@@ -9347,7 +9347,9 @@ func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent 
 // dropConditionalBodyParams removes optional nested objects (and everything
 // under them) so only the body fields that are required unconditionally remain.
 // depth mirrors renderBodyRequiredChecks: an object at the flag-depth cap is
-// required as one unit, so it is kept as-is.
+// required as one unit, so it is kept as-is. A required object stays when it
+// has unconditionally required children, or when its only requirements sit
+// in optional sub-objects (it still needs input to be built).
 func dropConditionalBodyParams(body []spec.Param, depth int) []spec.Param {
 	out := make([]spec.Param, 0, len(body))
 	for _, p := range body {
@@ -9355,8 +9357,16 @@ func dropConditionalBodyParams(body []spec.Param, depth int) []spec.Param {
 			if !p.Required {
 				continue
 			}
-			p.Fields = dropConditionalBodyParams(p.Fields, depth+1)
-			if len(p.Fields) == 0 {
+			kept := dropConditionalBodyParams(p.Fields, depth+1)
+			switch {
+			case len(kept) > 0:
+				p.Fields = kept
+			case bodyHasRequiredJSONFields(p.Fields):
+				// Only conditional groups remain, but a required parent whose
+				// content needs input cannot be built from nothing (the
+				// serializer omits an empty required object), so it stays
+				// required input. Keep its fields so the check still fires.
+			default:
 				continue // a required object emits only its children's checks
 			}
 		}
