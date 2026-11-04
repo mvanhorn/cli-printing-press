@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9057,6 +9058,118 @@ func TestOptionalNestedRequiredBodyFlags_AreConditional(t *testing.T) {
 	assert.Contains(t, control, `if !cmd.Flags().Changed("owner-name") && bodyOwnerName == "" && !requiredInputWaived() {`,
 		"required object's required child must be unconditionally required")
 	requireGeneratedCompiles(t, outputDir)
+}
+
+// Runs the generated CLI against a capture server and asserts the serialized
+// request bodies: an optional wrapper object with required children is omitted
+// when none of its flags is supplied, sent with its conditional required check
+// enforced when one is, and a required wrapper keeps its wrapper shape.
+func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := minimalSpec("nestedwire")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"sessions": {
+			Endpoints: map[string]spec.Endpoint{
+				"logout": {
+					Method: "POST", Path: "/sessions/logout",
+					Body: []spec.Param{{
+						Name: "screenShare", Type: "object",
+						Fields: []spec.Param{
+							{Name: "code", Type: "string", Required: true},
+							{Name: "note", Type: "string"},
+						},
+					}},
+				},
+				"create": {
+					Method: "POST", Path: "/sessions",
+					Body: []spec.Param{{
+						Name: "owner", Type: "object", Required: true,
+						Fields: []spec.Param{
+							{Name: "name", Type: "string", Required: true},
+							{Name: "email", Type: "string"},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	home := t.TempDir()
+	env := []string{
+		naming.EnvPrefix(apiSpec.Name) + "_BASE_URL=" + server.URL,
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+	}
+	run := func(args ...string) (int, string) {
+		t.Helper()
+		mu.Lock()
+		bodies = nil
+		mu.Unlock()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append([]string{"--home", home, "--json"}, args...)...)
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) == 0 {
+			return code, ""
+		}
+		require.Len(t, bodies, 1, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		return code, bodies[0]
+	}
+
+	t.Run("optional wrapper, no flags: wrapper key omitted", func(t *testing.T) {
+		code, body := run("sessions", "logout")
+		require.Equal(t, 0, code)
+		assert.NotContains(t, body, "screenShare")
+		var decoded map[string]any
+		if body != "" {
+			require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		}
+		assert.Empty(t, decoded)
+	})
+	t.Run("optional wrapper, one flag: wrapper present", func(t *testing.T) {
+		code, body := run("sessions", "logout", "--screen-share-code", "abc")
+		require.Equal(t, 0, code)
+		var decoded map[string]map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		assert.Equal(t, map[string]any{"code": "abc"}, decoded["screenShare"])
+	})
+	t.Run("optional wrapper, sibling flag only: conditional required check enforced", func(t *testing.T) {
+		code, body := run("sessions", "logout", "--screen-share-note", "x")
+		assert.NotEqual(t, 0, code)
+		assert.Empty(t, body, "no request may be sent when the group is incomplete")
+	})
+	t.Run("required wrapper unchanged", func(t *testing.T) {
+		code, body := run("sessions", "create", "--owner-name", "Ann")
+		require.Equal(t, 0, code)
+		var decoded map[string]map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		assert.Equal(t, map[string]any{"name": "Ann"}, decoded["owner"])
+		code, body = run("sessions", "create")
+		assert.Empty(t, body, "required wrapper with no flags must not send a request")
+		_ = code
+	})
 }
 
 func TestEndpointFixturesEmittedFromSpec(t *testing.T) {

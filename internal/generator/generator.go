@@ -8866,6 +8866,14 @@ func bodyResourceWrap(endpoint spec.Endpoint) (spec.Param, bool) {
 	if p.Type != "object" || len(p.Fields) == 0 {
 		return spec.Param{}, false
 	}
+	// An optional wrapper whose children carry required fields is a
+	// conditional group: serialize it through the nested path, which omits an
+	// untouched object, instead of always sending {"wrapper": {...}} (a bare
+	// call would otherwise send an empty object that violates its own
+	// required children). A required wrapper keeps the wrapper shape.
+	if !p.Required && bodyHasRequiredJSONFields(p.Fields) {
+		return spec.Param{}, false
+	}
 	return p, true
 }
 
