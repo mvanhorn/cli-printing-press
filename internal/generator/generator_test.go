@@ -9115,6 +9115,19 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 						}},
 					}},
 				},
+				"enrolllabel": {
+					Method: "POST", Path: "/sessions/enrolllabel",
+					Body: []spec.Param{
+						{
+							Name: "a", Type: "object", Required: true,
+							Fields: []spec.Param{
+								{Name: "label", Type: "string"},
+								{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}},
+							},
+						},
+						{Name: "note", Type: "string"},
+					},
+				},
 				"enroll": {
 					Method: "POST", Path: "/sessions/enroll",
 					Body: []spec.Param{
@@ -9197,6 +9210,13 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 		var decoded map[string]map[string]map[string]any
 		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
 		assert.Equal(t, map[string]any{"id": "p1"}, decoded["owner"]["profile"])
+	})
+	t.Run("multi-root required parent with optional scalar kept still needs input", func(t *testing.T) {
+		_, body := run("sessions", "enrolllabel")
+		assert.Empty(t, body, "a bare call must be refused, not send {} without the required parent")
+		code, body := run("sessions", "enrolllabel", "--a-label", "x")
+		require.Equal(t, 0, code)
+		assert.JSONEq(t, `{"a":{"label":"x"}}`, body)
 	})
 	t.Run("sole required root with optional object child: bare call sends {\"a\":{}}", func(t *testing.T) {
 		code, body := run("sessions", "wrapopt")
@@ -9321,6 +9341,10 @@ func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
 		{"required parent with optional-object child plus root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
 		{"required parent with a required scalar and an optional object", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, true},
 		{"required parent whose only child is an optional object without required descendants", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string"}}}}}}}, false},
+		{"multi-root required parent, optional scalar kept, optional object with required grandchild dropped", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "label", Type: "string"}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
+		{"multi-root required parent with a required scalar kept (guard on the child)", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
+		{"nested required parent under a sole required root with only optional kept children: the optional group sits at the flag-depth cap, so no check can be emitted", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "m", Type: "object", Required: true, Fields: []spec.Param{{Name: "x", Type: "string"}, {Name: "y", Type: "object", Fields: []spec.Param{{Name: "z", Type: "string", Required: true}}}}}}}}}, false},
+		{"sole root with only optional scalar and optional-object children", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "label", Type: "string"}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, false},
 		{"optional parent with required scalar, root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Fields: []spec.Param{{Name: "s", Type: "string", Required: true}}}, {Name: "other", Type: "string"}}}, false},
 		{"optional object with required child beside required top-level field", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Type: "string", Required: true}, {Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, true},
 		{"GET with required body ignored", spec.Endpoint{Method: "GET", Body: []spec.Param{{Name: "title", Required: true}}}, false},

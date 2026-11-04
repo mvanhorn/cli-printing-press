@@ -9344,6 +9344,29 @@ func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent 
 	}
 }
 
+// Invariant: a required parent is never silently omitted from a bare request.
+// For a required object parent, "required input" holds when either
+// (a) a REQUIRED child survived filtering, so the presence guard sits on that
+// child (requiredParentKeepsOwnGuard), or
+// (b) serialization could omit the parent on a bare call and the parent has
+// required content somewhere below (requiredParentCouldBeOmitted): it sits
+// beside a root sibling (multi-root) or below depth 0, where an empty object
+// is dropped from the wire. Optional kept children (including zero kept) do
+// not satisfy (a). The sole-root wrapper (depth 0, one root) is the exception:
+// bodyResourceWrap emits {"a":{}} unconditionally, so it is not required input.
+func requiredParentKeepsOwnGuard(kept []spec.Param) bool {
+	for _, c := range kept {
+		if c.Required && c.Default == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func requiredParentCouldBeOmitted(p spec.Param, depth, rootCount int) bool {
+	return (depth > 0 || rootCount > 1) && bodyHasRequiredJSONFields(p.Fields)
+}
+
 // dropConditionalBodyParams removes optional nested objects (and everything
 // under them) so only the body fields that are required unconditionally remain.
 // depth mirrors renderBodyRequiredChecks: an object at the flag-depth cap is
@@ -9359,15 +9382,11 @@ func dropConditionalBodyParams(body []spec.Param, depth int) []spec.Param {
 			}
 			kept := dropConditionalBodyParams(p.Fields, depth+1)
 			switch {
-			case len(kept) > 0:
+			case requiredParentKeepsOwnGuard(kept):
 				p.Fields = kept
-			case bodyHasRequiredJSONFields(p.Fields) && (depth > 0 || len(body) > 1):
-				// Only conditional groups remain, but a required parent whose
-				// content needs input cannot be built from nothing (the
-				// serializer omits an empty required object), so it stays
-				// required input. Keep its fields so the check still fires.
-				// The sole root is excluded: bodyResourceWrap keeps it and
-				// emits {"a":{}} unconditionally, which is a valid bare call.
+			case requiredParentCouldBeOmitted(p, depth, len(body)):
+				// Keep every field so the conditional group's check text is
+				// still emitted and the parent counts as required input.
 			default:
 				continue // a required object emits only its children's checks
 			}
