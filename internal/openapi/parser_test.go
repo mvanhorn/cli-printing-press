@@ -14822,6 +14822,19 @@ func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 	}
 }
 
+func TestDetectPaginationPairsCursorWithNextCursor(t *testing.T) {
+	t.Parallel()
+
+	responses := openapi3.NewResponses()
+	schema := openapi3.NewObjectSchema().WithProperty("next_cursor", openapi3.NewStringSchema())
+	responses.Set("200", &openapi3.ResponseRef{Value: openapi3.NewResponse().WithJSONSchema(schema)})
+	params := []spec.Param{{Name: "after"}, {Name: "cursor"}, {Name: "limit"}}
+	pag := detectPagination(params, &openapi3.Operation{Responses: responses})
+	require.NotNil(t, pag)
+	assert.Equal(t, "cursor", pag.CursorParam)
+	assert.Equal(t, "next_cursor", pag.NextCursorPath)
+}
+
 func TestDetectPaginationRecognizesTakePageSize(t *testing.T) {
 	t.Parallel()
 

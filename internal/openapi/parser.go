@@ -9406,6 +9406,15 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 			}
 		}
 	}
+	// Some APIs accept both an after filter and an opaque cursor. Prefer the
+	// cursor when the response explicitly supplies its next value.
+	if cursor, ok := paramsByKey["cursor"]; ok && pag.Type == "cursor" &&
+		paginationParamKey(pag.CursorParam) == "after" && !cursor.HasDateFormat() {
+		leaf := pag.NextCursorPath[strings.LastIndex(pag.NextCursorPath, ".")+1:]
+		if strings.EqualFold(leaf, "next_cursor") || strings.EqualFold(leaf, "nextCursor") {
+			pag.CursorParam = cursor.WireName()
+		}
+	}
 	// Preserve the historical Google-style fallback when the response schema
 	// does not declare a cursor field. When a schema does declare one, the
 	// response walk above owns the path so nested and snake_case fields win.
