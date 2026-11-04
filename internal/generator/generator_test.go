@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -9159,8 +9160,12 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	requireGeneratedCompiles(t, outputDir)
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
-	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	binaryName := naming.CLI(apiSpec.Name)
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
+	runGoCommand(t, outputDir, "build", "-o", binaryName, "./cmd/"+naming.CLI(apiSpec.Name))
 
 	home := t.TempDir()
 	env := []string{
@@ -9176,7 +9181,7 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 		"PRINTING_PRESS_VERIFY_LIVE_HTTP=",
 		"PRINTING_PRESS_DOGFOOD=",
 	}
-	run := func(args ...string) (int, string) {
+	run := func(args ...string) (int, string, int) {
 		t.Helper()
 		mu.Lock()
 		bodies = nil
@@ -9185,15 +9190,16 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		if len(bodies) == 0 {
-			return code, ""
+			return code, "", 0
 		}
 		require.Len(t, bodies, 1, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
-		return code, bodies[0]
+		return code, bodies[0], 1
 	}
 
 	t.Run("optional wrapper, no flags: wrapper key omitted", func(t *testing.T) {
-		code, body := run("sessions", "logout")
+		code, body, n := run("sessions", "logout")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n, "the bare call must send exactly one request")
 		assert.NotContains(t, body, "screenShare")
 		var decoded map[string]any
 		if body != "" {
@@ -9202,54 +9208,60 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 		assert.Empty(t, decoded)
 	})
 	t.Run("optional wrapper, one flag: wrapper present", func(t *testing.T) {
-		code, body := run("sessions", "logout", "--screen-share-code", "abc")
+		code, body, n := run("sessions", "logout", "--screen-share-code", "abc")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
 		var decoded map[string]map[string]any
 		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
 		assert.Equal(t, map[string]any{"code": "abc"}, decoded["screenShare"])
 	})
 	t.Run("optional wrapper, sibling flag only: conditional required check enforced", func(t *testing.T) {
-		code, body := run("sessions", "logout", "--screen-share-note", "x")
+		code, body, n := run("sessions", "logout", "--screen-share-note", "x")
 		assert.NotEqual(t, 0, code)
-		assert.Empty(t, body, "no request may be sent when the group is incomplete")
+		assert.Zero(t, n, "no request may be sent when the group is incomplete")
+		assert.Empty(t, body)
 	})
 	t.Run("multi-root required parent holding only an optional group still needs input", func(t *testing.T) {
-		_, body := run("sessions", "enroll")
-		assert.Empty(t, body, "a bare call must print help, not send a body missing the required parent")
-		code, body := run("sessions", "enroll", "--owner-profile-id", "p1")
+		_, _, n := run("sessions", "enroll")
+		assert.Zero(t, n, "a bare call must print help, not send a body missing the required parent")
+		code, body, n := run("sessions", "enroll", "--owner-profile-id", "p1")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
 		var decoded map[string]map[string]map[string]any
 		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
 		assert.Equal(t, map[string]any{"id": "p1"}, decoded["owner"]["profile"])
 	})
 	t.Run("multi-root required parent with optional scalar kept still needs input", func(t *testing.T) {
-		_, body := run("sessions", "enrolllabel")
-		assert.Empty(t, body, "a bare call must be refused, not send {} without the required parent")
-		code, body := run("sessions", "enrolllabel", "--a-label", "x")
+		_, _, n := run("sessions", "enrolllabel")
+		assert.Zero(t, n, "a bare call must be refused, not send {} without the required parent")
+		code, body, n := run("sessions", "enrolllabel", "--a-label", "x")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
 		assert.JSONEq(t, `{"a":{"label":"x"}}`, body)
 	})
 	t.Run("required object child with an object default still guards its required descendant", func(t *testing.T) {
-		_, body := run("sessions", "defobj")
-		assert.Empty(t, body, "a bare call must be refused by the m.s check")
-		code, body := run("sessions", "defobj", "--a-m-s", "v")
+		_, _, n := run("sessions", "defobj")
+		assert.Zero(t, n, "a bare call must be refused by the m.s check")
+		code, body, n := run("sessions", "defobj", "--a-m-s", "v")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
 		assert.JSONEq(t, `{"a":{"m":{"s":"v"}}}`, body)
 	})
 	t.Run("sole required root with optional object child: bare call sends {\"a\":{}}", func(t *testing.T) {
-		code, body := run("sessions", "wrapopt")
+		code, body, n := run("sessions", "wrapopt")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
 		assert.JSONEq(t, `{"a":{}}`, body)
 	})
 	t.Run("required wrapper unchanged", func(t *testing.T) {
-		code, body := run("sessions", "create", "--owner-name", "Ann")
+		code, body, n := run("sessions", "create", "--owner-name", "Ann")
 		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
 		var decoded map[string]map[string]any
 		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
 		assert.Equal(t, map[string]any{"name": "Ann"}, decoded["owner"])
-		code, body = run("sessions", "create")
-		assert.Empty(t, body, "required wrapper with no flags must not send a request")
-		_ = code
+		_, _, n = run("sessions", "create")
+		assert.Zero(t, n, "required wrapper with no flags must not send a request")
 	})
 }
 
