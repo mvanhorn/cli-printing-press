@@ -9128,6 +9128,17 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 						{Name: "note", Type: "string"},
 					},
 				},
+				"defobj": {
+					Method: "POST", Path: "/sessions/defobj",
+					Body: []spec.Param{{
+						Name: "a", Type: "object", Required: true,
+						Fields: []spec.Param{{
+							Name: "m", Type: "object", Required: true,
+							Default: map[string]any{"s": "d"},
+							Fields:  []spec.Param{{Name: "s", Type: "string", Required: true}},
+						}},
+					}},
+				},
 				"enroll": {
 					Method: "POST", Path: "/sessions/enroll",
 					Body: []spec.Param{
@@ -9217,6 +9228,13 @@ func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
 		code, body := run("sessions", "enrolllabel", "--a-label", "x")
 		require.Equal(t, 0, code)
 		assert.JSONEq(t, `{"a":{"label":"x"}}`, body)
+	})
+	t.Run("required object child with an object default still guards its required descendant", func(t *testing.T) {
+		_, body := run("sessions", "defobj")
+		assert.Empty(t, body, "a bare call must be refused by the m.s check")
+		code, body := run("sessions", "defobj", "--a-m-s", "v")
+		require.Equal(t, 0, code)
+		assert.JSONEq(t, `{"a":{"m":{"s":"v"}}}`, body)
 	})
 	t.Run("sole required root with optional object child: bare call sends {\"a\":{}}", func(t *testing.T) {
 		code, body := run("sessions", "wrapopt")
@@ -9337,6 +9355,7 @@ func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
 		{"optional object with required child is conditional, not required input", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, false},
 		{"required object with required child", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string", Required: true}}}}}, true},
 		{"required object with only optional children", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string"}}}}}, false},
+		{"sole required root, required object child with an object default and a required descendant", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "m", Type: "object", Required: true, Default: map[string]any{"s": "d"}, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}}}}}}}, true},
 		{"sole required root whose only child is an optional object with a required grandchild is not required input", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, false}, // sole root: bodyResourceWrap emits {"a":{}} unconditionally, a valid bare call
 		{"required parent with optional-object child plus root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
 		{"required parent with a required scalar and an optional object", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, true},
