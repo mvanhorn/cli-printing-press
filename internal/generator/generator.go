@@ -9324,10 +9324,37 @@ func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent 
 		return
 	}
 	body := flattenCollidingBodyFields(endpoint.Body)
+	if !includeEnum {
+		// Presence mode answers "would a bare invocation fail?". Required
+		// fields under an optional object only fire once some flag of that
+		// object is supplied, so they must not count.
+		body = dropConditionalBodyParams(body, 0)
+	}
 	renderBodyRequiredChecks(b, body, 0, indent, "", "", true)
 	if includeEnum {
 		renderBodyEnumChecks(b, body, 0, indent, "", "", true)
 	}
+}
+
+// dropConditionalBodyParams removes optional nested objects (and everything
+// under them) so only the body fields that are required unconditionally remain.
+// depth mirrors renderBodyRequiredChecks: an object at the flag-depth cap is
+// required as one unit, so it is kept as-is.
+func dropConditionalBodyParams(body []spec.Param, depth int) []spec.Param {
+	out := make([]spec.Param, 0, len(body))
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			if !p.Required {
+				continue
+			}
+			p.Fields = dropConditionalBodyParams(p.Fields, depth+1)
+			if len(p.Fields) == 0 {
+				continue // a required object emits only its children's checks
+			}
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // An empty enum skips the allowed-value check, so a disjoint wrapper/branch

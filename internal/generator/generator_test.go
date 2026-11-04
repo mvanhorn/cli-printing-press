@@ -8995,6 +8995,70 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 	assert.Contains(t, string(pingBytes), "schema permits no value")
 }
 
+// A property that is required only inside an OPTIONAL nested body object is a
+// conditional requirement: the flags stay optional on the command, the group is
+// validated only when one of its flags is supplied, and a bare call executes
+// instead of printing help. A required nested object keeps its required flags
+// and the help fallback.
+func TestOptionalNestedRequiredBodyFlags_AreConditional(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "nested-required",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Key", In: "header", EnvVars: []string{"NR_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/nested-required-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"sessions": {
+				Endpoints: map[string]spec.Endpoint{
+					"logout": {
+						Method: "POST",
+						Path:   "/sessions/logout",
+						Body: []spec.Param{{
+							Name: "screenShare", Type: "object",
+							Fields: []spec.Param{
+								{Name: "code", Type: "string", Required: true},
+								{Name: "note", Type: "string"},
+							},
+						}},
+					},
+					"create": {
+						Method: "POST",
+						Path:   "/sessions",
+						Body: []spec.Param{{
+							Name: "owner", Type: "object", Required: true,
+							Fields: []spec.Param{
+								{Name: "name", Type: "string", Required: true},
+								{Name: "email", Type: "string"},
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	guard := "if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {"
+
+	optional := readGeneratedFile(t, outputDir, "internal", "cli", "sessions_logout.go")
+	assert.NotContains(t, optional, guard, "all-optional body (nested required is conditional) must run on a bare call")
+	assert.NotContains(t, optional, `"pp:requires-input"`)
+	assert.Contains(t, optional, `if (cmd.Flags().Changed("screen-share-code")`,
+		"nested required flag must be validated only when a flag of the group is supplied")
+	assert.Contains(t, optional, `"screen-share-code"`)
+
+	control := readGeneratedFile(t, outputDir, "internal", "cli", "sessions_create.go")
+	assert.Contains(t, control, guard, "required nested object must keep the help fallback")
+	assert.Contains(t, control, `"pp:requires-input": "true"`)
+	assert.Contains(t, control, `if !cmd.Flags().Changed("owner-name") && bodyOwnerName == "" && !requiredInputWaived() {`,
+		"required object's required child must be unconditionally required")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 	t.Parallel()
 
@@ -9094,6 +9158,11 @@ func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
 		{"optional body only", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "note"}}}, false},
 		{"optional body with unsatisfiable enum", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "disjoint", Type: "string", EnumUnsatisfiable: true}}}, false},
 		{"required body beside unsatisfiable enum", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Required: true}, {Name: "disjoint", Type: "string", EnumUnsatisfiable: true}}}, true},
+		{"optional object with required child is conditional, not required input", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, false},
+		{"required object with required child", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string", Required: true}}}}}, true},
+		{"required object with only optional children", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string"}}}}}, false},
+		{"optional object nested in required object, required grandchild", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, false},
+		{"optional object with required child beside required top-level field", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Type: "string", Required: true}, {Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, true},
 		{"GET with required body ignored", spec.Endpoint{Method: "GET", Body: []spec.Param{{Name: "title", Required: true}}}, false},
 	}
 	for _, tc := range cases {
