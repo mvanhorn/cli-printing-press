@@ -3036,10 +3036,16 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 		// For apiKey schemes, the header value format varies (Bearer, Bot, custom).
 		// Credit authHeaderMatched if the client sets the correct header name,
 		// since that proves the auth plumbing is wired correctly regardless of format.
-		if (scheme.In == "header" || scheme.In == "cookie") && headerName != "" {
+		if scheme.In == "header" && headerName != "" {
 			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
+		}
+		// Cookie-jar and composed clients do not emit Header.Set("Cookie").
+		// Credit only wiring that puts the credential on a request.
+		if scheme.In == "cookie" && cookieCredentialAttached(clientContent, cookieAuthHeaderName(scheme)) {
+			authHeaderMatched = true
+			headerNameMatched = true
 		}
 		if scheme.In == "query" && headerName != "" {
 			if queryAssignmentPresent(clientContent, headerName) {
@@ -3073,7 +3079,9 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 	}
 
 	// AuthProtocol pattern: generated clients use Header.Set/Add with the expected header name.
-	if headerAssignmentPresent(clientContent, headerName) {
+	// Cookie-carried schemes use cookieCredentialAttached above; a bare
+	// Header.Set("Cookie") string is not enough there.
+	if scheme.In != "cookie" && headerAssignmentPresent(clientContent, headerName) {
 		headerNameMatched = true
 	}
 
