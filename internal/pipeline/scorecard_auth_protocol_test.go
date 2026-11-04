@@ -1302,6 +1302,456 @@ func (c *Client) do(httpClient interface{ Do(any) (any, error) }) {
 			scheme: openAPISecurityScheme{Key: "api_key", Type: "apikey", In: "query", HeaderName: "api_key"},
 			want:   0,
 		},
+		{
+			name: "direct case entry keeps a credential when the previous case falls through after deleting it",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	case "a":
+		req.Header.Del("Authorization")
+		fallthrough
+	case "b":
+	default:
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "direct and fallthrough entries both delete the header",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	case "a":
+		req.Header.Del("Authorization")
+		fallthrough
+	case "b":
+		req.Header.Del("Authorization")
+	default:
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "returned loop arm is not revived when the break arm deletes the header",
+			client: `package client
+func (c *Client) do(stop bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for {
+		if stop {
+			req.Header.Del("Authorization")
+			break
+		} else {
+			return
+		}
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "return from an unconditional loop does not reach Do",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for {
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "return from a conditional loop leaves the zero-iteration path",
+			client: `package client
+func (c *Client) do(cond bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for cond {
+		req.Header.Del("Authorization")
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "unconditional loop does not fall out of the body",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for {
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "conditional loop keeps the header when the body deletes it",
+			client: `package client
+func (c *Client) do(cond bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for cond {
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "panic ends only that path",
+			client: `package client
+func (c *Client) do(stop bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	if stop {
+		panic("stop")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "panic on every path does not reach Do",
+			client: `package client
+func (c *Client) do(stop bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	if stop {
+		panic("stop")
+	} else {
+		panic("stop")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "goto is not rejoined so a later Do is not credited",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	goto skip
+	req.Header.Del("Authorization")
+skip:
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "continue skips a delete after the switch and can leave the loop",
+			client: `package client
+func (c *Client) do(cond bool, mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	for cond {
+		req.Header.Set("Authorization", authHeader)
+		switch mode {
+		case "skip":
+			continue
+		default:
+			break
+		}
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "continue runs the post statement before a conditional loop ends",
+			client: `package client
+func (c *Client) do(cond bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	for ; cond; req.Header.Del("Authorization") {
+		req.Header.Set("Authorization", authHeader)
+		continue
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "labeled break leaves the outer loop before a later delete",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+loop:
+	for {
+		switch mode {
+		case "a":
+			break loop
+		default:
+			break
+		}
+		req.Header.Del("Authorization")
+		break
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "unlabeled break leaves the switch and the loop body still deletes",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for {
+		switch mode {
+		case "a":
+			break
+		default:
+			break
+		}
+		req.Header.Del("Authorization")
+		break
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "labeled continue leaves the outer loop before a later delete",
+			client: `package client
+func (c *Client) do(cond bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+outer:
+	for cond {
+		req.Header.Set("Authorization", authHeader)
+		for {
+			continue outer
+		}
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "select paths that return do not reach Do",
+			client: `package client
+func (c *Client) do(a, b <-chan struct{}, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	select {
+	case <-a:
+		return
+	case <-b:
+		return
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "range may be empty so a delete in the body is not the only path",
+			client: `package client
+func (c *Client) do(items []string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for range items {
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "panic in a condition ends the path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	if panic("stop") {
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "panic in a loop condition does not leave a zero-iteration path",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	for panic("stop") {
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "panic in a switch tag does not run the cases",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch panic("stop") {
+	default:
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "defer does not remove a header before Do",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	defer req.Header.Del("Authorization")
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
+		{
+			name: "break in a nested switch does not leave the outer switch",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	case "a":
+		switch mode {
+		case "b":
+			break
+		default:
+			break
+		}
+		req.Header.Del("Authorization")
+	default:
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "break in a loop inside a switch does not leave the switch",
+			client: `package client
+func (c *Client) do(mode string, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	switch mode {
+	default:
+		for {
+			break
+		}
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "unlabeled continue stays in the inner loop",
+			client: `package client
+func (c *Client) do(cond bool, authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	for cond {
+		req.Header.Set("Authorization", authHeader)
+		for {
+			continue
+		}
+		req.Header.Del("Authorization")
+	}
+	_, _ = httpClient.Do(req)
+}
+`,
+			auth:   chrome,
+			scheme: cookieScheme("Authorization"),
+			want:   2,
+		},
+		{
+			name: "a function literal is not run",
+			client: `package client
+func (c *Client) do(authHeader string, httpClient interface{ Do(any) (any, error) }) {
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	req.Header.Set("Authorization", authHeader)
+	f := func() {
+		req.Header.Del("Authorization")
+	}
+	_ = f
+	_, _ = httpClient.Do(req)
+}
+`,
+			scheme: cookieScheme("Authorization"),
+			want:   8,
+		},
 	}
 
 	for _, tc := range cases {

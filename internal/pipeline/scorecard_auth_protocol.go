@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -139,7 +140,7 @@ func requestCarriesAuthMaterial(file *ast.File, headerName string) bool {
 			continue
 		}
 		wire := &reqWire{want: want, paths: []reqPath{{}}}
-		wire.walkBlock(fn.Body)
+		wire.execBlock(fn.Body)
 		if wire.matched {
 			return true
 		}
@@ -212,30 +213,30 @@ type reqEnv = []map[string][]*reqState
 // applied to every candidate.
 const maxAuthPaths = 64
 
-// reqPath is one feasible control-flow state. dead means a later statement in
-// this block does not run. broken means a break already recorded this path as
-// an exit of the enclosing switch, select, or loop.
+// reqPath is one path that can still reach the next statement.
 type reqPath struct {
 	scopes reqEnv
-	dead   bool
-	broken bool
 }
 
-// breakFrame collects breaks that target the switch, select, or loop that
-// pushed it. depth is the scope stack at that construct, so a break inside a
-// case drops the case scope before the exit is used.
-type breakFrame struct {
-	depth int
-	exits []reqPath
-	outer *breakFrame
+// flowFrame collects break and continue exits for one switch, select, or loop.
+// depth is the scope stack at that statement, so an exit from a nested block
+// drops the inner scopes first. labels name that statement; continue only
+// stops on a loop.
+type flowFrame struct {
+	labels    []string
+	loop      bool
+	depth     int
+	breaks    []reqPath
+	continues []reqPath
+	outer     *flowFrame
 }
 
 type reqWire struct {
-	want     string
-	paths    []reqPath
-	matched  bool
-	nextID   int
-	breakTop *breakFrame
+	want    string
+	paths   []reqPath
+	matched bool
+	nextID  int
+	frame   *flowFrame
 }
 
 func (w *reqWire) scopes() reqEnv {
@@ -328,24 +329,11 @@ func (w *reqWire) freshReq() *reqState {
 	}
 }
 
-func (w *reqWire) anyLive() bool {
-	for _, p := range w.paths {
-		if !p.dead {
-			return true
-		}
-	}
-	return false
-}
-
 func (w *reqWire) onEach(fn func()) {
 	incoming := append([]reqPath(nil), w.paths...)
 	out := make([]reqPath, 0, len(incoming))
 	for _, p := range incoming {
-		if p.dead {
-			out = append(out, p)
-			continue
-		}
-		w.paths = []reqPath{p}
+		w.paths = []reqPath{cloneReqPath(p)}
 		fn()
 		out = append(out, w.paths...)
 	}
@@ -353,105 +341,127 @@ func (w *reqWire) onEach(fn func()) {
 	w.shrink()
 }
 
-// withScope runs fn inside one more block scope on each live path.
-func (w *reqWire) withScope(fn func()) {
-	incoming := append([]reqPath(nil), w.paths...)
-	var next []reqPath
-	for _, p := range incoming {
-		if p.dead {
-			next = append(next, p)
-			continue
-		}
-		w.paths = []reqPath{cloneReqPath(p)}
-		w.push()
-		fn()
-		for i := range w.paths {
-			popScope(&w.paths[i])
-		}
-		next = append(next, w.paths...)
-	}
-	w.paths = next
-	w.shrink()
-}
-
-func (w *reqWire) pushBreak() {
-	depth := 0
-	if len(w.paths) > 0 {
-		depth = len(w.paths[0].scopes)
-	}
-	w.breakTop = &breakFrame{depth: depth, outer: w.breakTop}
-}
-
-func (w *reqWire) popBreak() []reqPath {
-	if w.breakTop == nil {
-		return nil
-	}
-	exits := w.breakTop.exits
-	w.breakTop = w.breakTop.outer
-	return exits
-}
-
-func (w *reqWire) noteBreak() {
-	if w.breakTop == nil || len(w.paths) == 0 {
-		return
-	}
-	cp := trimScopes(cloneReqPath(w.paths[0]), w.breakTop.depth)
-	cp.dead = false
-	w.breakTop.exits = append(w.breakTop.exits, cp)
-	w.paths[0].dead = true
-	w.paths[0].broken = true
-}
-
 func (w *reqWire) shrink() {
 	if len(w.paths) <= maxAuthPaths {
 		return
 	}
-	var live, rest []reqPath
-	for _, p := range w.paths {
-		if p.dead || p.broken {
-			rest = append(rest, p)
-			continue
-		}
-		live = append(live, p)
+	acc := w.paths[0]
+	for _, p := range w.paths[1:] {
+		acc.scopes = mergeEnv(acc.scopes, p.scopes)
 	}
-	if len(live) > 1 {
-		acc := live[0]
-		for _, p := range live[1:] {
-			acc.scopes = mergeEnv(acc.scopes, p.scopes)
-		}
-		acc.dead = false
-		acc.broken = false
-		live = []reqPath{acc}
-	}
-	w.paths = append(live, rest...)
-	if len(w.paths) > maxAuthPaths {
-		w.paths = w.paths[:maxAuthPaths]
-	}
+	w.paths = []reqPath{acc}
 }
 
-func (w *reqWire) walkBlock(block *ast.BlockStmt) {
+func (w *reqWire) pushFrame(labels []string, loop bool) {
+	depth := 0
+	if len(w.paths) > 0 {
+		depth = len(w.paths[0].scopes)
+	}
+	w.frame = &flowFrame{labels: labels, loop: loop, depth: depth, outer: w.frame}
+}
+
+func (w *reqWire) popFrame() *flowFrame {
+	f := w.frame
+	if f == nil {
+		return &flowFrame{}
+	}
+	w.frame = f.outer
+	return f
+}
+
+func (w *reqWire) frameFor(tok token.Token, label string) *flowFrame {
+	for f := w.frame; f != nil; f = f.outer {
+		if label != "" {
+			if frameHasLabel(f, label) {
+				return f
+			}
+			continue
+		}
+		if tok == token.CONTINUE && !f.loop {
+			continue
+		}
+		return f
+	}
+	return nil
+}
+
+func frameHasLabel(f *flowFrame, label string) bool {
+	return slices.Contains(f.labels, label)
+}
+
+func (w *reqWire) transfer(tok token.Token, label string) {
+	if len(w.paths) == 0 {
+		return
+	}
+	frame := w.frameFor(tok, label)
+	if frame == nil || (tok == token.CONTINUE && !frame.loop) {
+		w.paths = nil
+		return
+	}
+	cp := trimScopes(cloneReqPath(w.paths[0]), frame.depth)
+	if tok == token.CONTINUE {
+		frame.continues = append(frame.continues, cp)
+	} else {
+		frame.breaks = append(frame.breaks, cp)
+	}
+	w.paths = nil
+}
+
+func (w *reqWire) execBlock(block *ast.BlockStmt) {
 	if block == nil {
 		return
 	}
 	w.push()
-	for _, stmt := range block.List {
-		if !w.anyLive() {
-			break
-		}
-		w.walkStmt(stmt)
-	}
+	w.execList(block.List)
 	w.pop()
 }
 
-func (w *reqWire) walkStmt(stmt ast.Stmt) {
-	if stmt == nil {
+func (w *reqWire) execList(list []ast.Stmt) {
+	for _, stmt := range list {
+		if len(w.paths) == 0 {
+			return
+		}
+		w.execStmt(stmt)
+	}
+}
+
+// execStmt advances every path that can still reach the next statement.
+//
+// return and panic end a path. goto ends it too, and the target is not
+// rejoined, so a credential reached only through goto is not credited. break
+// and continue transfer to the labeled statement or, unlabeled, to the
+// innermost switch, select, or loop. continue ignores switches and selects
+// until it reaches a loop.
+//
+// A switch or type-switch case starts from the state at the switch and,
+// separately, from each previous fallthrough. With no default that state is
+// also an exit. A select runs one comm: it has no fallthrough and no
+// implicit skip.
+//
+// A loop's exits are its breaks plus, when a condition or a range can end
+// it, the state before the first iteration and the state after one pass
+// through the body or a continue, including the post statement. Conditions
+// are not evaluated, except that a panic call in a condition, switch tag,
+// or range expression ends the path. An unconditional loop does not fall
+// out of its body. A later iteration is not modeled, so a header removed
+// only on a second pass can still be credited. defer, go, and function
+// literals are not run.
+func (w *reqWire) execStmt(stmt ast.Stmt) {
+	if stmt == nil || len(w.paths) == 0 {
 		return
 	}
 	switch s := stmt.(type) {
+	case *ast.LabeledStmt:
+		w.execLabeled(s)
 	case *ast.BlockStmt:
-		w.walkBlock(s)
+		w.execBlock(s)
 	case *ast.ExprStmt:
-		w.onEach(func() { w.observeExpr(s.X) })
+		w.onEach(func() {
+			w.observeExpr(s.X)
+			if callPanics(s.X) {
+				w.paths = nil
+			}
+		})
 	case *ast.AssignStmt:
 		w.onEach(func() { w.assign(s.Tok, s.Lhs, s.Rhs) })
 	case *ast.ReturnStmt:
@@ -459,70 +469,92 @@ func (w *reqWire) walkStmt(stmt ast.Stmt) {
 			for _, result := range s.Results {
 				w.observeExpr(result)
 			}
-			w.paths[0].dead = true
+			w.paths = nil
 		})
 	case *ast.BranchStmt:
 		w.onEach(func() { w.branch(s) })
 	case *ast.IfStmt:
-		w.walkIf(s)
+		w.execIf(s)
 	case *ast.ForStmt:
-		w.walkFor(s)
+		w.execFor(s, nil)
 	case *ast.RangeStmt:
-		w.walkRange(s)
+		w.execRange(s, nil)
 	case *ast.SwitchStmt:
-		w.withScope(func() {
-			w.walkStmt(s.Init)
-			w.walkCases(s.Body, true)
-		})
+		w.execSwitch(nil, s.Init, nil, s.Tag, s.Body, true)
 	case *ast.TypeSwitchStmt:
-		w.withScope(func() {
-			w.walkStmt(s.Init)
-			w.walkStmt(s.Assign)
-			w.walkCases(s.Body, true)
-		})
+		w.execSwitch(nil, s.Init, s.Assign, nil, s.Body, true)
 	case *ast.SelectStmt:
-		w.walkCases(s.Body, false)
-	case *ast.LabeledStmt:
-		w.walkStmt(s.Stmt)
+		w.execSwitch(nil, nil, nil, nil, s.Body, false)
 	}
 }
 
-// branch records break as an exit of the innermost switch, select, or loop.
-// A label still uses that innermost frame. The path is not a function return,
-// so a return later in the case does not drop the break path.
+func (w *reqWire) execLabeled(s *ast.LabeledStmt) {
+	labels, stmt := labelsOf(s)
+	switch inner := stmt.(type) {
+	case *ast.ForStmt:
+		w.execFor(inner, labels)
+	case *ast.RangeStmt:
+		w.execRange(inner, labels)
+	case *ast.SwitchStmt:
+		w.execSwitch(labels, inner.Init, nil, inner.Tag, inner.Body, true)
+	case *ast.TypeSwitchStmt:
+		w.execSwitch(labels, inner.Init, inner.Assign, nil, inner.Body, true)
+	case *ast.SelectStmt:
+		w.execSwitch(labels, nil, nil, nil, inner.Body, false)
+	default:
+		w.execStmt(stmt)
+	}
+}
+
+func labelsOf(stmt ast.Stmt) ([]string, ast.Stmt) {
+	var labels []string
+	for {
+		lab, ok := stmt.(*ast.LabeledStmt)
+		if !ok {
+			return labels, stmt
+		}
+		if lab.Label != nil && lab.Label.Name != "" {
+			labels = append(labels, lab.Label.Name)
+		}
+		stmt = lab.Stmt
+	}
+}
+
 func (w *reqWire) branch(s *ast.BranchStmt) {
-	if s.Tok == token.BREAK {
-		w.noteBreak()
+	label := ""
+	if s.Label != nil {
+		label = s.Label.Name
+	}
+	switch s.Tok {
+	case token.BREAK, token.CONTINUE:
+		w.transfer(s.Tok, label)
+	default:
+		// goto, or a fallthrough that is not the last statement of a case.
+		// The target is not rejoined, so this path stops.
+		w.paths = nil
 	}
 }
 
-// walkIf keeps each branch's request state. A Do after the if sees only
-// branches that fall through; a return ends that branch before the join.
-func (w *reqWire) walkIf(s *ast.IfStmt) {
+func (w *reqWire) execIf(s *ast.IfStmt) {
 	incoming := append([]reqPath(nil), w.paths...)
 	var next []reqPath
 	for _, p := range incoming {
-		if p.dead {
-			next = append(next, p)
-			continue
-		}
 		w.paths = []reqPath{cloneReqPath(p)}
 		w.push()
-		w.walkStmt(s.Init)
-		started := append([]reqPath(nil), w.paths...)
+		w.execStmt(s.Init)
+		if callPanics(s.Cond) || len(w.paths) == 0 {
+			continue
+		}
+		bases := append([]reqPath(nil), w.paths...)
 		var joined []reqPath
-		for _, base := range started {
-			if base.dead {
-				joined = append(joined, base)
-				continue
-			}
+		for _, base := range bases {
 			w.paths = []reqPath{cloneReqPath(base)}
-			w.walkBlock(s.Body)
+			w.execStmt(s.Body)
 			thenPaths := append([]reqPath(nil), w.paths...)
 			w.paths = []reqPath{cloneReqPath(base)}
-			w.walkStmt(s.Else)
-			elsePaths := append([]reqPath(nil), w.paths...)
-			joined = append(joined, joinBranches(thenPaths, elsePaths, base)...)
+			w.execStmt(s.Else)
+			joined = append(joined, thenPaths...)
+			joined = append(joined, w.paths...)
 		}
 		for i := range joined {
 			popScope(&joined[i])
@@ -533,60 +565,108 @@ func (w *reqWire) walkIf(s *ast.IfStmt) {
 	w.shrink()
 }
 
-func joinBranches(thenPaths, elsePaths []reqPath, base reqPath) []reqPath {
-	thenLive := living(thenPaths)
-	elseLive := living(elsePaths)
-	switch {
-	case len(thenLive) == 0 && len(elseLive) == 0:
-		base = cloneReqPath(base)
-		base.dead = true
-		return []reqPath{base}
-	case len(thenLive) == 0:
-		return elseLive
-	case len(elseLive) == 0:
-		return thenLive
-	default:
-		return append(thenLive, elseLive...)
-	}
-}
-
-func living(paths []reqPath) []reqPath {
-	var out []reqPath
-	for _, p := range paths {
-		if p.dead || p.broken {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-// walkCases treats case and comm bodies as alternatives. fallthrough chains
-// the next case onto this one; a switch with no default also keeps the path
-// that matches nothing. Select has no such path: some comm runs. break exits
-// the switch or select with the state at the break, including when a later
-// statement in the case returns.
-func (w *reqWire) walkCases(body *ast.BlockStmt, switchStmt bool) {
+func (w *reqWire) caseExits(body *ast.BlockStmt, entry reqPath, conditional bool) []reqPath {
 	if body == nil {
+		if conditional {
+			return []reqPath{cloneReqPath(entry)}
+		}
+		return nil
+	}
+	entry = cloneReqPath(entry)
+	var exits, falling []reqPath
+	sawDefault := false
+	for _, stmt := range body.List {
+		entries := []reqPath{cloneReqPath(entry)}
+		if conditional {
+			entries = append(entries, clonePaths(falling)...)
+		}
+		if clauseIsDefault(stmt) {
+			sawDefault = true
+		}
+		var flow, fell []reqPath
+		for _, start := range entries {
+			w.paths = []reqPath{cloneReqPath(start)}
+			if w.execClause(stmt) {
+				fell = append(fell, w.paths...)
+				continue
+			}
+			flow = append(flow, w.paths...)
+		}
+		falling = fell
+		exits = append(exits, flow...)
+	}
+	if conditional && !sawDefault {
+		exits = append(exits, cloneReqPath(entry))
+	}
+	return exits
+}
+
+func (w *reqWire) execClause(stmt ast.Stmt) bool {
+	switch clause := stmt.(type) {
+	case *ast.CaseClause:
+		return w.execCaseBody(clause.Body)
+	case *ast.CommClause:
+		w.execComm(clause)
+		return false
+	default:
+		w.execStmt(stmt)
+		return false
+	}
+}
+
+func (w *reqWire) execCaseBody(body []ast.Stmt) bool {
+	for _, inner := range body {
+		if isFallthrough(inner) {
+			return len(w.paths) > 0
+		}
+		w.execStmt(inner)
+		if len(w.paths) == 0 {
+			return false
+		}
+	}
+	return false
+}
+
+func (w *reqWire) execComm(clause *ast.CommClause) {
+	if clause == nil {
 		return
 	}
+	w.execStmt(clause.Comm)
+	w.execList(clause.Body)
+}
+
+func clauseIsDefault(stmt ast.Stmt) bool {
+	switch clause := stmt.(type) {
+	case *ast.CaseClause:
+		return clause.List == nil
+	case *ast.CommClause:
+		return clause.Comm == nil
+	default:
+		return false
+	}
+}
+
+func (w *reqWire) execSwitch(labels []string, init, assign ast.Stmt, tag ast.Expr, body *ast.BlockStmt, conditional bool) {
 	incoming := append([]reqPath(nil), w.paths...)
 	var next []reqPath
 	for _, p := range incoming {
-		if p.dead {
-			next = append(next, p)
+		w.paths = []reqPath{cloneReqPath(p)}
+		w.push()
+		w.execStmt(init)
+		w.execStmt(assign)
+		if callPanics(tag) || len(w.paths) == 0 {
 			continue
 		}
-		base := cloneReqPath(p)
-		w.paths = []reqPath{base}
-		w.pushBreak()
-		exits := w.caseExits(body, base, switchStmt)
-		exits = append(exits, w.popBreak()...)
-		if len(exits) == 0 {
-			dead := cloneReqPath(base)
-			dead.dead = true
-			next = append(next, dead)
-			continue
+		bases := append([]reqPath(nil), w.paths...)
+		var exits []reqPath
+		for _, base := range bases {
+			w.paths = []reqPath{cloneReqPath(base)}
+			w.pushFrame(labels, false)
+			exits = append(exits, w.caseExits(body, base, conditional)...)
+			exits = append(exits, w.popFrame().breaks...)
+		}
+		for i := range exits {
+			popScope(&exits[i])
 		}
 		next = append(next, exits...)
 	}
@@ -594,124 +674,56 @@ func (w *reqWire) walkCases(body *ast.BlockStmt, switchStmt bool) {
 	w.shrink()
 }
 
-func (w *reqWire) caseExits(body *ast.BlockStmt, base reqPath, switchStmt bool) []reqPath {
-	var exits []reqPath
-	var falling []reqPath
-	sawDefault := false
-	for _, stmt := range body.List {
-		var entries []reqPath
-		if falling != nil {
-			entries = falling
-			falling = nil
-		} else {
-			entries = []reqPath{cloneReqPath(base)}
-		}
-		for i := range entries {
-			entries[i].dead = false
-		}
-		w.paths = entries
-		fell := false
-		switch clause := stmt.(type) {
-		case *ast.CaseClause:
-			if clause.List == nil {
-				sawDefault = true
+func (w *reqWire) execFor(s *ast.ForStmt, labels []string) {
+	w.execLoop(labels, s.Cond != nil, s.Cond,
+		func() { w.execStmt(s.Init) },
+		func() { w.execBlock(s.Body) },
+		func() { w.execStmt(s.Post) },
+	)
+}
+
+func (w *reqWire) execRange(s *ast.RangeStmt, labels []string) {
+	w.execLoop(labels, true, s.X,
+		func() {
+			if s.Tok == token.DEFINE {
+				w.shadow(s.Key)
+				w.shadow(s.Value)
 			}
-			fell = w.walkCaseBody(clause.Body, switchStmt)
-		case *ast.CommClause:
-			if clause.Comm == nil {
-				sawDefault = true
-			}
-			w.walkComm(clause)
-		default:
-			w.walkStmt(stmt)
-		}
-		if fell {
-			falling = living(w.paths)
-			continue
-		}
-		exits = append(exits, living(w.paths)...)
-	}
-	if len(falling) > 0 {
-		exits = append(exits, falling...)
-	}
-	if switchStmt && !sawDefault {
-		exits = append(exits, cloneReqPath(base))
-	}
-	return exits
+		},
+		func() { w.execBlock(s.Body) },
+		func() {},
+	)
 }
 
-func (w *reqWire) walkCaseBody(body []ast.Stmt, fallthroughOK bool) bool {
-	w.push()
-	defer w.pop()
-	for _, inner := range body {
-		if fallthroughOK && isFallthrough(inner) {
-			return w.anyLive()
-		}
-		w.walkStmt(inner)
-		if !w.anyLive() {
-			return false
-		}
-	}
-	return false
-}
-
-func (w *reqWire) walkComm(clause *ast.CommClause) {
-	w.push()
-	defer w.pop()
-	w.walkStmt(clause.Comm)
-	for _, inner := range clause.Body {
-		if !w.anyLive() {
-			return
-		}
-		w.walkStmt(inner)
-	}
-}
-
-func (w *reqWire) walkFor(s *ast.ForStmt) {
-	w.walkLoop(func() { w.walkStmt(s.Init) }, func() { w.walkBlock(s.Body) })
-}
-
-func (w *reqWire) walkRange(s *ast.RangeStmt) {
-	w.walkLoop(func() {
-		if s.Tok == token.DEFINE {
-			w.shadow(s.Key)
-			w.shadow(s.Value)
-		}
-	}, func() { w.walkBlock(s.Body) })
-}
-
-// walkLoop runs init and then body. break leaves the loop with the state at
-// the break. A return inside the body does not kill the statements after the
-// loop: the loop may not take that path.
-func (w *reqWire) walkLoop(init, body func()) {
+func (w *reqWire) execLoop(labels []string, canLeave bool, abort ast.Expr, init, body, post func()) {
 	incoming := append([]reqPath(nil), w.paths...)
 	var next []reqPath
 	for _, p := range incoming {
-		if p.dead {
-			next = append(next, p)
-			continue
-		}
 		w.paths = []reqPath{cloneReqPath(p)}
 		w.push()
 		init()
-		started := append([]reqPath(nil), w.paths...)
+		if callPanics(abort) {
+			continue
+		}
+		afterInit := append([]reqPath(nil), w.paths...)
 		var succ []reqPath
-		for _, base := range started {
-			if base.dead {
-				succ = append(succ, base)
-				continue
+		for _, base := range afterInit {
+			if canLeave {
+				succ = append(succ, cloneReqPath(base))
 			}
 			w.paths = []reqPath{cloneReqPath(base)}
-			w.pushBreak()
+			w.pushFrame(labels, true)
 			body()
-			breaks := w.popBreak()
-			succ = append(succ, breaks...)
-			for _, walked := range w.paths {
-				if walked.broken {
-					continue
+			completed := append([]reqPath(nil), w.paths...)
+			frame := w.popFrame()
+			succ = append(succ, frame.breaks...)
+			if canLeave {
+				completed = append(completed, frame.continues...)
+				for _, st := range completed {
+					w.paths = []reqPath{cloneReqPath(st)}
+					post()
+					succ = append(succ, w.paths...)
 				}
-				walked.dead = false
-				succ = append(succ, walked)
 			}
 		}
 		for i := range succ {
@@ -721,6 +733,36 @@ func (w *reqWire) walkLoop(init, body func()) {
 	}
 	w.paths = next
 	w.shrink()
+}
+
+func callPanics(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found || n == nil {
+			return false
+		}
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if ok && callName(call.Fun) == "panic" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func clonePaths(paths []reqPath) []reqPath {
+	out := make([]reqPath, len(paths))
+	for i, p := range paths {
+		out[i] = cloneReqPath(p)
+	}
+	return out
 }
 
 func (w *reqWire) shadow(expr ast.Expr) {
@@ -871,7 +913,7 @@ func oneRequest(states []*reqState) bool {
 }
 
 func (w *reqWire) noteDo(call *ast.CallExpr) {
-	if len(w.paths) == 0 || w.paths[0].dead || len(call.Args) == 0 {
+	if len(w.paths) == 0 || len(call.Args) == 0 {
 		return
 	}
 	states, ok := w.lookup(exprIdent(call.Args[0]))
@@ -901,7 +943,7 @@ func isFallthrough(stmt ast.Stmt) bool {
 }
 
 func cloneReqPath(p reqPath) reqPath {
-	return reqPath{scopes: cloneEnv(p.scopes), dead: p.dead}
+	return reqPath{scopes: cloneEnv(p.scopes)}
 }
 
 func trimScopes(p reqPath, depth int) reqPath {
