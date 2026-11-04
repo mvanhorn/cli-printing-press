@@ -9361,11 +9361,13 @@ func dropConditionalBodyParams(body []spec.Param, depth int) []spec.Param {
 			switch {
 			case len(kept) > 0:
 				p.Fields = kept
-			case bodyHasRequiredJSONFields(p.Fields):
+			case bodyHasRequiredJSONFields(p.Fields) && (depth > 0 || len(body) > 1):
 				// Only conditional groups remain, but a required parent whose
 				// content needs input cannot be built from nothing (the
 				// serializer omits an empty required object), so it stays
 				// required input. Keep its fields so the check still fires.
+				// The sole root is excluded: bodyResourceWrap keeps it and
+				// emits {"a":{}} unconditionally, which is a valid bare call.
 			default:
 				continue // a required object emits only its children's checks
 			}
