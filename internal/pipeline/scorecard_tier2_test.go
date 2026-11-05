@@ -3710,13 +3710,24 @@ func (c *Client) do() {
 func TestEvaluateAuthProtocol_InternalCookieAuth(t *testing.T) {
 	t.Run("scores generated Cookie header for internal YAML cookie auth", func(t *testing.T) {
 		sc := scoreInternalCookieAuthProtocol(t, `package client
-func (c *Client) do() {
+
+import (
+	"context"
+	"net/http"
+)
+
+func (c *Client) do(ctx context.Context, authHeader string, httpClient *http.Client) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.test/users", nil)
+	if err != nil {
+		return
+	}
 	req.Header.Set("Cookie", authHeader)
+	_, _ = httpClient.Do(req)
 }
 `)
 
 		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
-		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
 	})
 
 	t.Run("does not score Cookie mentions without header assignment", func(t *testing.T) {
@@ -3728,7 +3739,7 @@ func (c *Client) do() {
 `)
 
 		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
-		assert.Less(t, sc.Steinberger.AuthProtocol, 8)
+		assert.Equal(t, 2, sc.Steinberger.AuthProtocol)
 	})
 }
 
