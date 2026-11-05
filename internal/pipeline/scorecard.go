@@ -3011,6 +3011,14 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 	}
 
 	switch {
+	case strings.EqualFold(scheme.Type, "apikey") && scheme.In == "cookie":
+		// apiKey cookie attachment follows the declared type. Scheme keys such
+		// as bearerSession, botSession, and basicSession stay on this path.
+		scoreable = true
+		if cookieCredentialAttached(clientContent, cookieAuthHeaderName(scheme)) {
+			authHeaderMatched = true
+			headerNameMatched = true
+		}
 	case strings.Contains(nameLower, "bot"):
 		scoreable = true
 		if authPrefixLiteralPresent("Bot", clientContent, configContent, authContent) {
@@ -3036,7 +3044,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 		// For apiKey schemes, the header value format varies (Bearer, Bot, custom).
 		// Credit authHeaderMatched if the client sets the correct header name,
 		// since that proves the auth plumbing is wired correctly regardless of format.
-		if (scheme.In == "header" || scheme.In == "cookie") && headerName != "" {
+		if scheme.In == "header" && headerName != "" {
 			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
@@ -3073,7 +3081,9 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 	}
 
 	// AuthProtocol pattern: generated clients use Header.Set/Add with the expected header name.
-	if headerAssignmentPresent(clientContent, headerName) {
+	// Cookie-carried schemes use cookieCredentialAttached above; a bare
+	// Header.Set("Cookie") string is not enough there.
+	if scheme.In != "cookie" && headerAssignmentPresent(clientContent, headerName) {
 		headerNameMatched = true
 	}
 
