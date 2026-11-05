@@ -1,0 +1,2 @@
+# Boolean examples must parse without stray true/false positional arguments.
+boolean-examples/internal/cli/settings_create.go

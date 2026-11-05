@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/boolean-examples.yaml --output "$CASE_ACTUAL_DIR/boolean-examples" --validate=false
