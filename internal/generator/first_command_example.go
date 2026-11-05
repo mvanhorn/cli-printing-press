@@ -137,7 +137,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		if val == "" {
 			val = "value"
 		}
-		parts = append(parts, "--"+publicFlagName(p), val)
+		parts = appendExampleFlag(parts, publicFlagName(p), val, p)
 	}
 
 	switch strings.ToUpper(ep.Method) {

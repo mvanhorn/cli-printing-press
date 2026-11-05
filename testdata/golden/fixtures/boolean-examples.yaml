@@ -1,0 +1,38 @@
+openapi: 3.0.3
+info:
+  title: boolean-examples
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /settings:
+    get:
+      operationId: listSettings
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+    post:
+      operationId: createSettings
+      requestBody:
+        content:
+          application/json:
+            example: {enabled: true, archived: false, confirmed: true, label: 'false'}
+            schema:
+              type: object
+              required: [confirmed]
+              properties:
+                enabled: {type: boolean}
+                archived: {type: boolean}
+                confirmed: {type: boolean}
+                label: {type: string}
+      responses:
+        '200':
+          description: Created
