@@ -143,6 +143,14 @@ var _ = &notcobra.Command{Use: "x", Short: "List resources for another package"}
 
 const marker = "NOT_A_COMMAND"
 `)
+	writeScorecardFixture(t, dir, "internal/cli/aah_namedcobra.go", `package cli
+
+import cobra "example.com/notcobra"
+
+var _ = &cobra.Command{Use: "x", Short: "List resources for a package imported as cobra"}
+
+const marker = "NOT_A_COMMAND"
+`)
 	writeScorecardFixture(t, dir, "internal/cli/helpers.go", `package cli
 
 import "github.com/spf13/cobra"
@@ -194,6 +202,78 @@ func f(cmd *cobra.Command) {}
 import other "example.com/other"
 var _ = &other.Command{Use: "items"}
 `))
+	assert.True(t, fileHasCobraCommandLiteral(`package cli
+import c "github.com/spf13/cobra"
+var _ = &c.Command{Use: "items"}
+`))
+	assert.True(t, fileHasCobraCommandLiteral(`package cli
+import cobra "github.com/spf13/cobra"
+var _ = &cobra.Command{Use: "items"}
+`))
+	assert.False(t, fileHasCobraCommandLiteral(`package cli
+import c "github.com/spf13/cobra"
+var _ = &cobra.Command{Use: "items"}
+`))
+	assert.False(t, fileHasCobraCommandLiteral(`package cli
+import cobra "example.com/other"
+var _ = &cobra.Command{Use: "items"}
+`))
+	assert.True(t, fileHasCobraCommandLiteral(`package cli
+import (
+	c "github.com/spf13/cobra"
+	cobra "example.com/other"
+)
+var _ = &cobra.Command{Use: "other"}
+var _ = &c.Command{Use: "items"}
+`))
+	assert.False(t, fileHasCobraCommandLiteral(`package cli
+import _ "github.com/spf13/cobra"
+var _ = &cobra.Command{Use: "items"}
+`))
+	assert.False(t, fileHasCobraCommandLiteral(`package cli
+var _ = &cobra.Command{Use: "items"}
+`))
 	assert.False(t, fileHasCobraCommandLiteral("package cli\nfunc (\n"))
 	assert.False(t, fileHasCobraCommandLiteral(""))
+}
+
+func TestSampleCommandFiles_AliasedCobraImport(t *testing.T) {
+	dir := t.TempDir()
+	writeTerminalUXNoise(t, dir)
+	names := []string{"cmd_alpha.go", "cmd_bravo.go", "cmd_charlie.go", "cmd_delta.go", "cmd_echo.go"}
+	for _, name := range names {
+		writeScorecardFixture(t, dir, "internal/cli/"+name, `package cli
+
+import c "github.com/spf13/cobra"
+
+func newCmd() *c.Command {
+	return &c.Command{
+		Use:   "items",
+		Short: "List alpha resources for the account",
+	}
+}
+
+const marker = "ALIASED_COMMAND"
+`)
+	}
+
+	got := sampleCommandFiles(dir, 5)
+	require.Len(t, got, 5)
+	for _, content := range got {
+		assert.Contains(t, content, "ALIASED_COMMAND")
+		assert.NotContains(t, content, "NOT_A_COMMAND")
+	}
+	assert.Equal(t, 5, scoreTerminalUX(dir))
+
+	rejected := t.TempDir()
+	writeScorecardFixture(t, rejected, "internal/cli/cmd_alpha.go", `package cli
+
+import cobra "example.com/notcobra"
+
+var _ = &cobra.Command{Use: "items", Short: "List alpha resources for the account"}
+
+const marker = "NOT_A_COMMAND"
+`)
+	assert.Empty(t, sampleCommandFiles(rejected, 5))
+	assert.Equal(t, 0, scoreTerminalUX(rejected))
 }

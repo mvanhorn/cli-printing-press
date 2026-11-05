@@ -3726,11 +3726,17 @@ func sampleCommandFiles(dir string, n int) []string {
 	return files
 }
 
-// fileHasCobraCommandLiteral reports whether content contains a cobra.Command
-// composite literal. Comments, strings, and other packages' Command types do not qualify.
+// fileHasCobraCommandLiteral reports whether content contains a composite
+// literal of github.com/spf13/cobra Command. The selector is resolved through
+// the file's import specs. Comments, strings, and *cobra.Command signatures
+// do not qualify.
 func fileHasCobraCommandLiteral(content string) bool {
 	file, err := parser.ParseFile(token.NewFileSet(), "", content, parser.SkipObjectResolution)
 	if err != nil {
+		return false
+	}
+	aliases := cobraImportAliases(file)
+	if len(aliases) == 0 {
 		return false
 	}
 	found := false
@@ -3739,7 +3745,7 @@ func fileHasCobraCommandLiteral(content string) bool {
 			return false
 		}
 		lit, ok := n.(*ast.CompositeLit)
-		if !ok || !compositeLitIsCobraCommand(lit) {
+		if !ok || !compositeLitIsCobraCommand(lit, aliases) {
 			return true
 		}
 		found = true
@@ -3748,13 +3754,13 @@ func fileHasCobraCommandLiteral(content string) bool {
 	return found
 }
 
-func compositeLitIsCobraCommand(lit *ast.CompositeLit) bool {
+func compositeLitIsCobraCommand(lit *ast.CompositeLit, cobraAliases map[string]bool) bool {
 	sel, ok := lit.Type.(*ast.SelectorExpr)
 	if !ok || sel.Sel == nil || sel.Sel.Name != "Command" {
 		return false
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "cobra"
+	return ok && cobraAliases[pkg.Name]
 }
 
 func specPathExists(specPaths []string, actual string) bool {
