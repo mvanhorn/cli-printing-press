@@ -448,7 +448,7 @@ func TestParentNoSubcommandRunESitesDeclareTypedExitCodes(t *testing.T) {
 			declared[base]++
 		}
 		if base == "novel_feature_command.go.tmpl" {
-			if !strings.Contains(src, `{{if not .Feature}}, "pp:typed-exit-codes": "0,2"{{end}}`) {
+			if !strings.Contains(src, `{{if not .Feature}}, "pp:parent-group": "true", "pp:typed-exit-codes": "0,2"{{end}}`) {
 				t.Errorf("%s: typed exit codes must be gated to the non-feature parent branch", path)
 			}
 			if strings.Contains(src, `{{if .Feature}}, "pp:typed-exit-codes"`) {
