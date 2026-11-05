@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1218,6 +1219,77 @@ func TestRenderRootShortFromCLIDescription(t *testing.T) {
 	}
 }
 
+func TestDogfoodExampleCoverageUnderivableInputs(t *testing.T) {
+	exampleless := []string{"comments create", "items get", "videos get"}
+	for _, tc := range []struct {
+		name    string
+		spec    string
+		tested  int
+		missing []string
+		omitted []string
+	}{
+		{
+			name: "omitted underivable inputs excluded",
+			spec: examplelessLiveDogfoodSpec, tested: 1, omitted: exampleless,
+		},
+		{
+			name:   "derivable inputs without examples still missing",
+			spec:   strings.ReplaceAll(examplelessLiveDogfoodSpec, "required: true", "required: true\n            example: concrete-value"),
+			tested: 4, missing: exampleless,
+		},
+		{
+			name:   "no spec preserves coverage",
+			tested: 4, missing: exampleless,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "fixture-pp-cli"), 0o755))
+			writeTestFile(t, filepath.Join(dir, "go.mod"), "module example.com/fixture\n\ngo 1.24.0\n")
+			writeTestFile(t, filepath.Join(dir, "cmd", "fixture-pp-cli", "main.go"), `package main
+import (
+    "fmt"
+    "os"
+    "strings"
+)
+func main() {
+    args := strings.Join(os.Args[1:], " ")
+    if args == "agent-context" {
+        fmt.Println(`+"`"+`{"commands":[
+            {"name":"comments","subcommands":[{"name":"create","annotations":{"pp:endpoint":"comments.create"}}]},
+            {"name":"items","subcommands":[
+                {"name":"get","annotations":{"pp:endpoint":"items.get"}},
+                {"name":"list","annotations":{"pp:endpoint":"items.list"}}
+            ]},
+            {"name":"videos","subcommands":[{"name":"get","annotations":{"pp:endpoint":"videos.get"}}]}
+        ]}`+"`"+`)
+        return
+    }
+    fmt.Println("Usage:\n  fixture-pp-cli " + args)
+    if args == "items list --help" {
+        fmt.Println("\nExamples:\n  fixture-pp-cli items list\n\nFlags:\n  --help   help")
+    }
+}
+`)
+			var specPath string
+			if tc.spec != "" {
+				specPath = filepath.Join(dir, "spec.yaml")
+				writeTestFile(t, specPath, tc.spec)
+			}
+			report, err := RunDogfood(dir, specPath)
+			require.NoError(t, err)
+			result := report.ExampleCheck
+			require.False(t, result.Skipped, result.Detail)
+			assert.Equal(t, tc.tested, result.Tested)
+			assert.Equal(t, 1, result.WithExamples)
+			assert.Equal(t, 1, result.ValidExamples)
+			assert.Equal(t, tc.missing, result.Missing)
+			assert.Equal(t, tc.omitted, result.OmittedUnderivable)
+			assert.Equal(t, len(tc.missing) > 0, slices.Contains(report.Issues, "25% example coverage"))
+		})
+	}
+}
+
 func TestExtractExamplesSection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1976,6 +2048,7 @@ paths:
 
 	preferred, err := loadDogfoodOpenAPISpec(specPath, "ApiKeyAuth")
 	require.NoError(t, err)
+	require.NotNil(t, preferred.Parsed)
 	assert.Equal(t, "api_key", preferred.Auth.Type)
 	assert.Equal(t, "ApiKeyAuth", preferred.Auth.Scheme)
 	assert.Equal(t, "x-api-key", preferred.Auth.Header)
@@ -4328,7 +4401,7 @@ EOF
 	require.NoError(t, err, "stderr noise must not break JSON parsing")
 	// auth/login is filtered out because "auth" is in the framework
 	// skip set; only the posts subtree should survive.
-	assert.Equal(t, [][]string{{"posts", "list"}}, paths)
+	assert.Equal(t, []dogfoodAgentCommandPath{{Path: []string{"posts", "list"}}}, paths)
 }
 
 // TestDiscoverExampleCheckCommandsSurfacesStderrOnFailure — when the
