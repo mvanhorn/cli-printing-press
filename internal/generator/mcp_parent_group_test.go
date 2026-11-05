@@ -34,7 +34,17 @@ func TestMCPParentGroupClassifiesAsCommandGroupAndIsSkippedFromToolsList(t *test
 	}
 
 	outputDir := filepath.Join(t.TempDir(), "parentgroup-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{Name: "Snapshot list", Command: "snapshot list", Description: "List snapshots."},
+		{Name: "Workspace", Command: "workspace", Description: "Inspect workspace."},
+		{Name: "Workspace status", Command: "workspace status", Description: "Inspect workspace status."},
+	}
+	require.NoError(t, gen.Generate())
+	assert.Contains(t, readGeneratedFile(t, outputDir, "internal", "cli", "snapshot.go"), `"pp:parent-group": "true"`)
+	for _, name := range []string{"snapshot_list.go", "workspace.go", "workspace_status.go"} {
+		assert.NotContains(t, readGeneratedFile(t, outputDir, "internal", "cli", name), `"pp:parent-group"`)
+	}
 
 	classifySrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "classify.go"))
 	require.NoError(t, err)
@@ -111,6 +121,14 @@ func TestParentGroupSkippedFromToolsList(t *testing.T) {
 	}
 	if _, ok := tools["companies"]; ok {
 		t.Fatalf("API resource grouping command leaked into MCP tools/list: %#v", tools)
+	}
+	if _, ok := tools["snapshot"]; ok {
+		t.Fatal("novel grouping parent leaked into MCP tools/list")
+	}
+	for _, leaf := range []string{"snapshot_list", "workspace", "workspace_status"} {
+		if _, ok := tools[leaf]; !ok {
+			t.Fatalf("runnable novel tool %q missing from MCP tools/list", leaf)
+		}
 	}
 	for _, leaf := range []string{"companies_list", "companies_get", "companies_sites_list", "companies_sites_get"} {
 		entry, ok := tools[leaf]

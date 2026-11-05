@@ -8,6 +8,13 @@
   "researched_at": "2026-04-25T00:00:00Z",
   "novel_features": [
     {
+      "name": "Snapshot list",
+      "command": "snapshot list",
+      "description": "List snapshots.",
+      "rationale": "Requires local correlation.",
+      "example": "novel-feature-scaffold-pp-cli snapshot list"
+    },
+    {
       "name": "Inspect item",
       "command": "inspect <id>",
       "description": "Inspect one item.",
