@@ -66,7 +66,8 @@ func noLearnActive(flags *rootFlags) bool {
 }
 
 func writeLearningDisabled(cmd *cobra.Command, flags *rootFlags) error {
-	if flags.asJSON || flags.agent {
+	quiet, _ := cmd.Flags().GetBool("quiet")
+	if teachEmitsJSON(flags, quiet, cmd) {
 		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"disabled": true}, flags)
 	}
 	return nil

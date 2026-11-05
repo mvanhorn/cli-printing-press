@@ -47,7 +47,6 @@ func TestFrameworkJSONWithDisabledLearningAndEmptyTail(t *testing.T) {
 		var stdout, stderr strings.Builder
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		require.NoError(t, cmd.Run(), "stdout=%s stderr=%s", &stdout, &stderr)
-		require.True(t, json.Valid([]byte(stdout.String())), "stdout=%q stderr=%q", &stdout, &stderr)
 		return []byte(stdout.String())
 	}
 	for _, command := range [][]string{{"teach"}, {"teach-playbook"}, {"playbook", "amend"}} {
@@ -58,6 +57,9 @@ func TestFrameworkJSONWithDisabledLearningAndEmptyTail(t *testing.T) {
 			}
 			var body map[string]any
 			require.NoError(t, json.Unmarshal(run(args, !flag), &body))
+			require.Equal(t, true, body["disabled"])
+			require.Empty(t, run(append(args, "--quiet"), !flag))
+			require.NoError(t, json.Unmarshal(run(append(args, "--quiet=false"), !flag), &body))
 			require.Equal(t, true, body["disabled"])
 			require.NoError(t, json.Unmarshal(run(append(args, "--dry-run"), !flag), &body))
 			require.Equal(t, true, body["dry_run"])
@@ -71,6 +73,17 @@ func TestFrameworkJSONWithDisabledLearningAndEmptyTail(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(sample), &expected))
 		require.Equal(t, expected, rows)
 		before := hits.Load()
+		var envelope struct {
+			Results []map[string]any `json:"results"`
+			Meta    struct {
+				Source string `json:"source"`
+			} `json:"meta"`
+		}
+		require.NoError(t, json.Unmarshal(run([]string{"tail", "deliveries", "--follow=false", "--json", "--agent"}, true), &envelope))
+		require.Equal(t, expected, envelope.Results)
+		require.Equal(t, "live", envelope.Meta.Source)
+		require.Greater(t, hits.Load(), before, "tail agent output must come from the API")
+		before = hits.Load()
 		var dryRun map[string]any
 		require.NoError(t, json.Unmarshal(run([]string{"tail", "deliveries", "--follow=false", "--json", "--dry-run"}, true), &dryRun))
 		require.Equal(t, true, dryRun["dry_run"])
