@@ -202,13 +202,14 @@ type PipelineResult struct {
 }
 
 type ExampleCheckResult struct {
-	Tested        int      `json:"tested"`
-	WithExamples  int      `json:"with_examples"`
-	ValidExamples int      `json:"valid_examples"`
-	InvalidFlags  []string `json:"invalid_flags,omitempty"`
-	Missing       []string `json:"missing,omitempty"`
-	Skipped       bool     `json:"skipped,omitempty"`
-	Detail        string   `json:"detail"`
+	Tested             int      `json:"tested"`
+	WithExamples       int      `json:"with_examples"`
+	ValidExamples      int      `json:"valid_examples"`
+	InvalidFlags       []string `json:"invalid_flags,omitempty"`
+	Missing            []string `json:"missing,omitempty"`
+	OmittedUnderivable []string `json:"omitted_underivable,omitempty"`
+	Skipped            bool     `json:"skipped,omitempty"`
+	Detail             string   `json:"detail"`
 }
 
 type dogfoodAgentContext struct {
@@ -250,6 +251,7 @@ type WorkflowCompleteResult struct {
 }
 
 type openAPISpec struct {
+	Parsed                 *apispec.APISpec
 	Paths                  []string
 	Auth                   apispec.AuthConfig
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
@@ -348,12 +350,14 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	}
 
 	var spec *openAPISpec
+	var parsedSpec *apispec.APISpec
 	if specPath != "" {
 		loaded, err := loadDogfoodOpenAPISpec(specPath, dogfoodAuthPreferenceFromManifest(dir))
 		if err != nil {
 			return nil, err
 		}
 		spec = loaded
+		parsedSpec = loaded.Parsed
 
 		if spec.IsSynthetic() {
 			// Synthetic CLIs intentionally go beyond the spec; strict
@@ -410,7 +414,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.DeadFlags = checkDeadFlags(dir)
 	report.DeadFuncs = checkDeadFunctions(dir)
 	report.PipelineCheck = checkPipelineIntegrity(dir)
-	report.ExampleCheck = checkExamples(dir)
+	report.ExampleCheck = checkExamples(dir, parsedSpec)
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeaturesOpts(dir, cfg.researchDir, cfg.overwriteCommandMirror)
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
@@ -1261,7 +1265,9 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 		if err != nil {
 			return nil, fmt.Errorf("parsing internal YAML spec: %w", err)
 		}
-		return internalSpecToDogfoodSpec(internal), nil
+		summary := internalSpecToDogfoodSpec(internal)
+		summary.Parsed = internal
+		return summary, nil
 	}
 
 	summary, summaryErr := loadOpenAPISpecData(data, specPath)
@@ -1277,6 +1283,7 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 			scopeRequirements = summary.OAuthScopeRequirements
 		}
 		return &openAPISpec{
+			Parsed:                 parsed,
 			Paths:                  collectDogfoodSpecPaths(parsed.Resources),
 			Auth:                   parsed.Auth,
 			OAuthScopeRequirements: scopeRequirements,
@@ -2940,7 +2947,7 @@ func mcpSurfaceCheckActive(result MCPSurfaceResult) bool {
 	return result.State != ""
 }
 
-func checkExamples(dir string) ExampleCheckResult {
+func checkExamples(dir string, parsedSpec *apispec.APISpec) ExampleCheckResult {
 	result := ExampleCheckResult{}
 
 	cliName := findCLIName(dir)
@@ -2974,7 +2981,9 @@ func checkExamples(dir string) ExampleCheckResult {
 		return result
 	}
 
-	for _, parts := range commandPaths {
+	specEndpoints := liveDogfoodSpecEndpoints(parsedSpec)
+	for _, command := range commandPaths {
+		parts := command.Path
 		result.Tested++
 		cmdLabel := strings.Join(parts, " ")
 
@@ -2987,6 +2996,11 @@ func checkExamples(dir string) ExampleCheckResult {
 
 		examples := extractExamplesSection(cmdOut)
 		if examples == "" {
+			if liveDogfoodOmittedExampleSkipReason(liveDogfoodCommand{Path: parts, Annotations: command.Annotations}, specEndpoints) != "" {
+				result.Tested--
+				result.OmittedUnderivable = append(result.OmittedUnderivable, cmdLabel)
+				continue
+			}
 			result.Missing = append(result.Missing, cmdLabel)
 			continue
 		}
@@ -3019,6 +3033,7 @@ func checkExamples(dir string) ExampleCheckResult {
 
 	result.InvalidFlags = uniqueSorted(result.InvalidFlags)
 	result.Missing = uniqueSorted(result.Missing)
+	result.OmittedUnderivable = uniqueSorted(result.OmittedUnderivable)
 
 	if result.Tested == 0 {
 		result.Detail = "no endpoint commands found to test"
@@ -3032,7 +3047,7 @@ func checkExamples(dir string) ExampleCheckResult {
 	return result
 }
 
-func discoverExampleCheckCommands(binaryPath string) ([][]string, error) {
+func discoverExampleCheckCommands(binaryPath string) ([]dogfoodAgentCommandPath, error) {
 	out, err := runStdoutOnly(binaryPath, 15*time.Second, "agent-context")
 	if err != nil {
 		// Device CLIs (and any CLI lacking agent-context) enumerate via --help.
@@ -3040,16 +3055,20 @@ func discoverExampleCheckCommands(binaryPath string) ([][]string, error) {
 			if len(paths) > 10 {
 				paths = sampleEvenlyCommandPaths(paths, 10)
 			}
-			return paths, nil
+			commands := make([]dogfoodAgentCommandPath, 0, len(paths))
+			for _, path := range paths {
+				commands = append(commands, dogfoodAgentCommandPath{Path: path})
+			}
+			return commands, nil
 		}
 		return nil, fmt.Errorf("agent-context failed: %w", err)
 	}
-	paths, err := dogfoodExampleCommandPathsFromAgentContext(out)
+	paths, err := dogfoodExampleCommandPathsWithAnnotationsFromAgentContext(out)
 	if err != nil {
 		return nil, err
 	}
 	if len(paths) > 10 {
-		paths = sampleEvenlyCommandPaths(paths, 10)
+		paths = sampleEvenlyAgentCommandPaths(paths, 10)
 	}
 	return paths, nil
 }
