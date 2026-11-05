@@ -5,3 +5,5 @@
 
 novel-feature-scaffold/internal/cli/inspect.go
 novel-feature-scaffold/internal/cli/audit.go
+novel-feature-scaffold/internal/cli/snapshot.go
+novel-feature-scaffold/internal/cli/snapshot_list.go
