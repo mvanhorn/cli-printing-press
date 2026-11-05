@@ -69,3 +69,30 @@ func TestLiveDogfoodDisabledFeatureRequiresExplicitHTTPProof(t *testing.T) {
 		require.Equal(t, tc.want, liveDogfoodFeatureAbsentFixtureReason(liveDogfoodRun{stderr: tc.text, exitCode: tc.code}) != "", tc.text)
 	}
 }
+
+func TestRunLiveDogfoodSkipsDisabledFeatureAuthExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture is a shell script")
+	}
+	dir, binary := writeLiveDogfoodFeatureAbsentFixture(t)
+	filename := filepath.Join(dir, binary)
+	script, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	old := `echo 'HTTP 404: {"error":"feature not enabled for this workspace"}' >&2
+  exit 3`
+	evidence := `HTTP 403: {"message":"Analytics is not enabled for this account"}`
+	require.Contains(t, string(script), old)
+	require.NoError(t, os.WriteFile(filename, []byte(strings.ReplaceAll(string(script), old, "echo '"+evidence+"' >&2\n  exit 4")), 0o755))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{CLIDir: dir, BinaryName: binary, Level: "full", Timeout: 5 * time.Second})
+	require.NoError(t, err)
+	require.Equal(t, "PASS", report.Verdict, report.Tests)
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		row := findResultByCommandKind(report, "workspaces list", kind)
+		require.NotNil(t, row)
+		require.Equal(t, LiveDogfoodStatusSkip, row.Status)
+		require.Equal(t, reasonFeatureAbsentFixture, row.Reason)
+		require.Equal(t, 4, row.ExitCode)
+		require.Contains(t, row.OutputSample, evidence)
+	}
+}

@@ -206,20 +206,26 @@ func TestRunLiveDogfoodAcceptsJSONOutputBeyondDisplaySampleCap(t *testing.T) {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
-	dir, binaryName := writeLiveDogfoodLargeJSONFixture(t)
-	report, err := RunLiveDogfood(LiveDogfoodOptions{
-		CLIDir:     dir,
-		BinaryName: binaryName,
-		Level:      "full",
-		Timeout:    30 * time.Second,
-	})
-	require.NoError(t, err)
-
-	result := findResultByCommandKind(report, "widgets large", LiveDogfoodTestJSON)
-	require.NotNil(t, result)
-	assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
-	assert.Contains(t, result.OutputSample, `"name":"<redacted>"`)
-	assert.Contains(t, result.OutputSample, "…[truncated]")
+	for _, exitCode := range []int{0, 2} {
+		t.Run(fmt.Sprint(exitCode), func(t *testing.T) {
+			dir, binaryName := writeLiveDogfoodLargeJSONFixture(t, exitCode)
+			report, err := RunLiveDogfood(LiveDogfoodOptions{
+				CLIDir:     dir,
+				BinaryName: binaryName,
+				Level:      "full",
+				Timeout:    30 * time.Second,
+			})
+			require.NoError(t, err)
+			for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+				result := findResultByCommandKind(report, "widgets large", kind)
+				require.NotNil(t, result)
+				assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+				assert.Equal(t, exitCode, result.ExitCode)
+				assert.Contains(t, result.OutputSample, `"name":"<redacted>"`)
+				assert.Contains(t, result.OutputSample, "…[truncated]")
+			}
+		})
+	}
 }
 
 func TestRunLiveDogfoodSkipsUnsynthesizableBody(t *testing.T) {
@@ -4743,7 +4749,7 @@ exit 99
 	return dir, binaryName
 }
 
-func writeLiveDogfoodLargeJSONFixture(t *testing.T) (dir string, binaryName string) {
+func writeLiveDogfoodLargeJSONFixture(t *testing.T, exitCode int) (dir string, binaryName string) {
 	t.Helper()
 
 	dir = t.TempDir()
@@ -4751,6 +4757,10 @@ func writeLiveDogfoodLargeJSONFixture(t *testing.T) (dir string, binaryName stri
 	writeTestManifestForLiveDogfood(t, dir)
 
 	binPath := filepath.Join(dir, binaryName)
+	prefix := `{"id":"first","name":"Jane Doe"}` + "\n" + `{"data":"`
+	if exitCode != 0 {
+		prefix = `{"verdict":"NO-GO","id":"first","name":"Jane Doe","data":"`
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 set -u
 
@@ -4758,7 +4768,7 @@ if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
   "commands": [
-    {"name":"widgets","subcommands":[{"name":"large","annotations":{"pp:method":"GET"}}]}
+    {"name":"widgets","subcommands":[{"name":"large","annotations":{"pp:method":"GET","pp:typed-exit-codes":"0,2"}}]}
   ]
 }
 JSON
@@ -4783,11 +4793,10 @@ fi
 
 if [ "$1" = "widgets" ] && [ "$2" = "large" ]; then
   if [ "${3:-}" = "--json" ]; then
-			printf '{"id":"first","name":"Jane Doe"}\n'
-    printf '{"data":"'
+    printf '%s'
     head -c %d /dev/zero | tr '\0' 'x'
     printf '"}\n'
-    exit 0
+    exit %d
   fi
   echo 'large widgets'
   exit 0
@@ -4795,7 +4804,7 @@ fi
 
 echo "unexpected args: $*" >&2
 exit 99
-`, liveDogfoodMaxOutputBytes+1024)
+`, prefix, liveDogfoodMaxOutputBytes+1024, exitCode)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
 	return dir, binaryName
 }
