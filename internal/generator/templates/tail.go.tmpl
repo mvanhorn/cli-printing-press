@@ -35,6 +35,9 @@ Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
 		Example: {{printf "%q" (tailCommandExample .)}},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "tail")
+			}
 			if len(args) > 0 {
 				resource = args[0]
 			}
@@ -92,11 +95,18 @@ native streaming instead of polling.`,
 				return usageErr(err)
 			}
 			readConfig := resourceReadConfigFor(resource)
+			if !follow && flags.asJSON {
+				data, err := c.Get(cmd.Context(), path, nil)
+				if err != nil {
+					return classifyAPIError(cmd.OutOrStdout(), err, flags)
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			}
 
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 
-			enc := json.NewEncoder(os.Stdout)
+			enc := json.NewEncoder(cmd.OutOrStdout())
 
 			if follow {
 				fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
