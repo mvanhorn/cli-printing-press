@@ -606,6 +606,10 @@ func TestScorePathValidity(t *testing.T) {
 		writeScorecardFixture(t, dir, "internal/cli/links.go", `
 package cli
 
+import "github.com/spf13/cobra"
+
+var linksCmd = &cobra.Command{Use: "links"}
+
 func runLinks() string {
 	path := "/links"
 	return path
@@ -632,6 +636,10 @@ func TestScoreSpecDimensionsPrefersEmbeddedMergedSpecJSON(t *testing.T) {
 	dir := t.TempDir()
 	writeScorecardFixture(t, dir, "internal/cli/merged.go", `
 package cli
+
+import "github.com/spf13/cobra"
+
+var mergedCmd = &cobra.Command{Use: "merged"}
 
 func runMerged() string {
 	path := "/merged"
@@ -662,9 +670,14 @@ func TestScoreTypeFidelity(t *testing.T) {
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
 package cli
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/spf13/cobra"
+)
 
 var _ = strings.ReplaceAll
+var messagesCmd = &cobra.Command{Use: "messages"}
 
 func init() {
 	cmd := messagesCmd
@@ -680,6 +693,10 @@ func init() {
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
 package cli
+
+import "github.com/spf13/cobra"
+
+var messagesCmd = &cobra.Command{Use: "messages"}
 
 func init() {
 	cmd := messagesCmd
@@ -699,6 +716,10 @@ func init() {
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
 package cli
+
+import "github.com/spf13/cobra"
+
+var messagesCmd = &cobra.Command{Use: "messages"}
 
 func init() {
 	cmd := messagesCmd
@@ -841,6 +862,10 @@ func TestParseGraphEvent(t *testing.T) {
 		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
 package cli
 
+import "github.com/spf13/cobra"
+
+var eventsCmd = &cobra.Command{Use: "events"}
+
 func init() {
 	cmd := eventsCmd
 	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query")
@@ -918,6 +943,10 @@ func TestSomethingElse(t *testing.T) {}
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
 package cli
 
+import "github.com/spf13/cobra"
+
+var messagesCmd = &cobra.Command{Use: "messages"}
+
 func init() {
 	cmd := messagesCmd
 	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query used to filter the list of messages")
@@ -964,6 +993,10 @@ func TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine(t *testing.T) {
 	writeScorecardFixture(t, dir, "internal/cli/messages.go", `
 package cli
 
+import "github.com/spf13/cobra"
+
+var messagesCmd = &cobra.Command{Use: "messages"}
+
 func init() {
 	cmd := messagesCmd
 	cmd.Flags().StringVar(&flagAlphaID, "alpha-id", "", "Alpha identifier")
@@ -985,6 +1018,10 @@ func TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired(t *testing.T) {
 	writeScorecardFixture(t, withRequired, "internal/cli/messages.go", `
 package cli
 
+import "github.com/spf13/cobra"
+
+var messagesCmd = &cobra.Command{Use: "messages"}
+
 func init() {
 	cmd := messagesCmd
 	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
@@ -999,6 +1036,10 @@ func init() {
 	withoutRequired := t.TempDir()
 	writeScorecardFixture(t, withoutRequired, "internal/cli/messages.go", `
 package cli
+
+import "github.com/spf13/cobra"
+
+var messagesCmd = &cobra.Command{Use: "messages"}
 
 func init() {
 	cmd := messagesCmd

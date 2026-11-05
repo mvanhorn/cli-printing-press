@@ -3697,7 +3697,8 @@ func scoreDeadCode(dir string) int {
 }
 
 // sampleCommandFiles reads up to n command files from internal/cli/.
-// If n <= 0, reads all command files.
+// n <= 0 reads all of them. Tests and files with no cobra.Command literal
+// are skipped so they cannot occupy a bounded sample.
 func sampleCommandFiles(dir string, n int) []string {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	entries, err := os.ReadDir(cliDir)
@@ -3706,21 +3707,54 @@ func sampleCommandFiles(dir string, n int) []string {
 	}
 	var files []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if infraAllFiles[e.Name()] {
+		if infraAllFiles[name] {
 			continue
 		}
-		content := readFileContent(filepath.Join(cliDir, e.Name()))
-		if content != "" {
-			files = append(files, content)
+		content := readFileContent(filepath.Join(cliDir, name))
+		if content == "" || !fileHasCobraCommandLiteral(content) {
+			continue
 		}
+		files = append(files, content)
 		if n > 0 && len(files) >= n {
 			break
 		}
 	}
 	return files
+}
+
+// fileHasCobraCommandLiteral reports whether content contains a cobra.Command
+// composite literal. Comments, strings, and other packages' Command types do not qualify.
+func fileHasCobraCommandLiteral(content string) bool {
+	file, err := parser.ParseFile(token.NewFileSet(), "", content, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok || !compositeLitIsCobraCommand(lit) {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
+func compositeLitIsCobraCommand(lit *ast.CompositeLit) bool {
+	sel, ok := lit.Type.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "Command" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "cobra"
 }
 
 func specPathExists(specPaths []string, actual string) bool {
