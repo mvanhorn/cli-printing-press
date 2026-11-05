@@ -3719,6 +3719,8 @@ func TestRunLiveDogfoodSkipsFeatureAbsentNotFound(t *testing.T) {
 	require.NotNil(t, jsonResult)
 	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
 	assert.Equal(t, "blocked-fixture: feature absent for runner credentials", jsonResult.Reason)
+	assert.Equal(t, happy.OutputSample, jsonResult.OutputSample)
+	assert.NotEmpty(t, jsonResult.OutputSample, "the skipped JSON row must retain the live API evidence")
 }
 
 func TestRunLiveDogfoodSkipsPPInteractiveAnnotation(t *testing.T) {

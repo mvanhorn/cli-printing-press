@@ -2275,6 +2275,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if successCodes[happyRun.exitCode] {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = liveDogfoodDeclaredNonzeroExitReason(happyRun.exitCode)
+			if liveDogfoodStructuredOutcome(happyRun) {
+				happyResult.Status = LiveDogfoodStatusPass
+			}
 		} else if liveDogfoodUnverifiedNeedsAccess(happyRun) {
 			happyResult.Status = LiveDogfoodStatusUnverified
 			happyResult.Reason = reasonUnverifiedNeedsAccess
@@ -2305,6 +2308,8 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				jsonResult.Status = LiveDogfoodStatusUnverified
 			}
 			jsonResult.FixtureSource = fixtureSource
+			jsonResult.OutputSample = happyResult.OutputSample
+			jsonResult.ExitCode = happyResult.ExitCode
 			results = append(results, jsonResult)
 		} else if liveOnce && commandSupportsJSON(command.Help) && hasExplicitNonJSONOutputMode(runArgs) {
 			// The approved args chose a non-JSON output mode and are never
@@ -2345,6 +2350,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if successCodes[jsonRun.exitCode] {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = liveDogfoodDeclaredNonzeroExitReason(jsonRun.exitCode)
+				if liveDogfoodStructuredOutcome(jsonRun) {
+					jsonResult.Status = LiveDogfoodStatusPass
+				}
 			} else if liveDogfoodUnverifiedNeedsAccess(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusUnverified
 				jsonResult.Reason = reasonUnverifiedNeedsAccess
@@ -3845,6 +3853,8 @@ func liveDogfoodFeatureAbsentFixtureReason(run liveDogfoodRun) string {
 	}
 	featureAbsentPhrases := []string{
 		"feature not enabled",
+		" are not enabled for this ",
+		" is not enabled for this ",
 		"upgrade your plan",
 		"requires a paid plan",
 		"plan does not include",
@@ -4647,9 +4657,8 @@ func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 }
 
 // happy_path and json_fidelity share one declared-success set with verify so
-// both gates honor the same typed-exit contract. Exit 0 can pass because
-// there is output to validate; a declared non-zero is a skip because there
-// is no successful body.
+// both gates honor the same typed-exit contract. Declared non-zero codes
+// count as coverage only when they carry a structured outcome, not an error.
 func liveDogfoodSuccessExitCodes(command liveDogfoodCommand) map[int]bool {
 	if command.Annotations != nil {
 		if raw := strings.TrimSpace(command.Annotations[typedExitCodesAnnotation]); raw != "" {
@@ -4668,6 +4677,26 @@ func liveDogfoodSuccessExitCodes(command liveDogfoodCommand) map[int]bool {
 
 func liveDogfoodDeclaredNonzeroExitReason(exitCode int) string {
 	return fmt.Sprintf("declared non-zero exit %d", exitCode)
+}
+
+func liveDogfoodStructuredOutcome(run liveDogfoodRun) bool {
+	if !liveDogfoodJSONValid(run) {
+		return false
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(run.stdout), &body); err != nil || len(body) == 0 {
+		return false
+	}
+	if len(body["error"]) != 0 || string(body["success"]) == "false" {
+		return false
+	}
+	if result, ok := body["results"]; ok {
+		body = nil
+		if err := json.Unmarshal(result, &body); err != nil || len(body) == 0 {
+			return false
+		}
+	}
+	return len(body["error"]) == 0 && string(body["success"]) != "false"
 }
 
 // resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,
