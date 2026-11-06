@@ -188,13 +188,14 @@ type liveDogfoodCommand struct {
 const liveDogfoodParentGroupAnnotation = "pp:parent-group"
 
 type liveDogfoodRun struct {
-	stdout          string
-	stderr          string
-	stdoutTruncated bool
-	stdoutJSONValid bool
-	stdoutJSONCheck bool
-	exitCode        int
-	err             error
+	stdout                  string
+	stderr                  string
+	stdoutTruncated         bool
+	stdoutJSONValid         bool
+	stdoutJSONCheck         bool
+	stdoutStructuredOutcome bool
+	exitCode                int
+	err                     error
 	// setupFailure is a scratch-directory or fixture-copy error. The
 	// subprocess never started, so the reason is the setup error rather
 	// than a command exit code.
@@ -2275,6 +2276,12 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if successCodes[happyRun.exitCode] {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = liveDogfoodDeclaredNonzeroExitReason(happyRun.exitCode)
+			if liveDogfoodStructuredOutcome(happyRun) {
+				happyResult.Status = LiveDogfoodStatusPass
+			}
+		} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(happyRun); featureAbsentReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = featureAbsentReason
 		} else if liveDogfoodUnverifiedNeedsAccess(happyRun) {
 			happyResult.Status = LiveDogfoodStatusUnverified
 			happyResult.Reason = reasonUnverifiedNeedsAccess
@@ -2284,9 +2291,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(happyRun); requiredParamReason != "" {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = requiredParamReason
-		} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(happyRun); featureAbsentReason != "" {
-			happyResult.Status = LiveDogfoodStatusSkip
-			happyResult.Reason = featureAbsentReason
 		}
 		results = append(results, happyResult)
 		if readback != nil {
@@ -2305,6 +2309,8 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				jsonResult.Status = LiveDogfoodStatusUnverified
 			}
 			jsonResult.FixtureSource = fixtureSource
+			jsonResult.OutputSample = happyResult.OutputSample
+			jsonResult.ExitCode = happyResult.ExitCode
 			results = append(results, jsonResult)
 		} else if liveOnce && commandSupportsJSON(command.Help) && hasExplicitNonJSONOutputMode(runArgs) {
 			// The approved args chose a non-JSON output mode and are never
@@ -2345,6 +2351,12 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if successCodes[jsonRun.exitCode] {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = liveDogfoodDeclaredNonzeroExitReason(jsonRun.exitCode)
+				if liveDogfoodStructuredOutcome(jsonRun) {
+					jsonResult.Status = LiveDogfoodStatusPass
+				}
+			} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(jsonRun); featureAbsentReason != "" {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = featureAbsentReason
 			} else if liveDogfoodUnverifiedNeedsAccess(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusUnverified
 				jsonResult.Reason = reasonUnverifiedNeedsAccess
@@ -2354,9 +2366,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(jsonRun); requiredParamReason != "" {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = requiredParamReason
-			} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(jsonRun); featureAbsentReason != "" {
-				jsonResult.Status = LiveDogfoodStatusSkip
-				jsonResult.Reason = featureAbsentReason
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -2694,23 +2703,25 @@ func runLiveDogfoodProcessOnceWithStdin(binaryPath, cliDir string, args []string
 
 	err := cmd.Run()
 	rawJSONValid := false
+	rawStructuredOutcome := false
 	if rawStdout != nil {
 		rawPath := rawStdout.Name()
 		closeErr := rawStdout.Close()
 		if err == nil {
 			err = closeErr
 		}
-		rawJSONValid = validLiveDogfoodJSONFile(rawPath)
+		rawJSONValid, rawStructuredOutcome = inspectLiveDogfoodJSONFile(rawPath)
 		_ = os.Remove(rawPath)
 	}
 	result := liveDogfoodRun{
-		stdout:          stdoutSample.String(),
-		stderr:          stderr.String(),
-		stdoutTruncated: stdoutCap.truncated,
-		stdoutJSONValid: rawJSONValid,
-		stdoutJSONCheck: jsonRequested,
-		exitCode:        0,
-		err:             err,
+		stdout:                  stdoutSample.String(),
+		stderr:                  stderr.String(),
+		stdoutTruncated:         stdoutCap.truncated,
+		stdoutJSONValid:         rawJSONValid,
+		stdoutJSONCheck:         jsonRequested,
+		stdoutStructuredOutcome: rawStructuredOutcome,
+		exitCode:                0,
+		err:                     err,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		result.exitCode = -1
@@ -3692,13 +3703,12 @@ func validLiveDogfoodJSONOutput(stdout string) bool {
 	return true
 }
 
-func validLiveDogfoodJSONFile(path string) bool {
-	file, err := os.Open(path)
+func inspectLiveDogfoodJSONFile(path string) (valid, structuredOutcome bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return false, false
 	}
-	defer func() { _ = file.Close() }()
-	return validLiveDogfoodJSONReader(file)
+	return validLiveDogfoodJSONData(data), liveDogfoodStructuredOutcomeData(data)
 }
 
 func validLiveDogfoodJSONReader(reader io.Reader) bool {
@@ -3706,6 +3716,10 @@ func validLiveDogfoodJSONReader(reader io.Reader) bool {
 	if err != nil {
 		return false
 	}
+	return validLiveDogfoodJSONData(data)
+}
+
+func validLiveDogfoodJSONData(data []byte) bool {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	documents := 0
 	for {
@@ -3845,6 +3859,8 @@ func liveDogfoodFeatureAbsentFixtureReason(run liveDogfoodRun) string {
 	}
 	featureAbsentPhrases := []string{
 		"feature not enabled",
+		" are not enabled for this ",
+		" is not enabled for this ",
 		"upgrade your plan",
 		"requires a paid plan",
 		"plan does not include",
@@ -4647,9 +4663,8 @@ func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 }
 
 // happy_path and json_fidelity share one declared-success set with verify so
-// both gates honor the same typed-exit contract. Exit 0 can pass because
-// there is output to validate; a declared non-zero is a skip because there
-// is no successful body.
+// both gates honor the same typed-exit contract. Declared non-zero codes
+// count as coverage only when they carry a structured outcome, not an error.
 func liveDogfoodSuccessExitCodes(command liveDogfoodCommand) map[int]bool {
 	if command.Annotations != nil {
 		if raw := strings.TrimSpace(command.Annotations[typedExitCodesAnnotation]); raw != "" {
@@ -4668,6 +4683,30 @@ func liveDogfoodSuccessExitCodes(command liveDogfoodCommand) map[int]bool {
 
 func liveDogfoodDeclaredNonzeroExitReason(exitCode int) string {
 	return fmt.Sprintf("declared non-zero exit %d", exitCode)
+}
+
+func liveDogfoodStructuredOutcome(run liveDogfoodRun) bool {
+	if run.stdoutJSONCheck {
+		return run.stdoutJSONValid && run.stdoutStructuredOutcome
+	}
+	return liveDogfoodStructuredOutcomeData([]byte(run.stdout))
+}
+
+func liveDogfoodStructuredOutcomeData(data []byte) bool {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(data, &body); err != nil || len(body) == 0 {
+		return false
+	}
+	if len(body["error"]) != 0 || string(body["success"]) == "false" {
+		return false
+	}
+	if result, ok := body["results"]; ok {
+		body = nil
+		if err := json.Unmarshal(result, &body); err != nil || len(body) == 0 {
+			return false
+		}
+	}
+	return len(body["error"]) == 0 && string(body["success"]) != "false"
 }
 
 // resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,
