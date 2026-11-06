@@ -1920,8 +1920,11 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 	return result
 }
 
-// novelHookReachableConstructors returns constructors registered on the root
-// parameter of registerNovelCommand callbacks, including callbacks in other files.
+// novelHookReachableConstructors returns constructors passed to AddCommand or
+// addNovelCommandIfAbsent from registerNovelCommand hook files. A hook file is
+// a root even when the callback is a named function, or a package-level
+// variable holding a function literal, in another file: init registers it,
+// and that other file may itself define no constructor.
 func novelHookReachableConstructors(fileContent map[string]string) map[string]bool {
 	type hookIndex struct {
 		calls   bool
@@ -1942,14 +1945,12 @@ func novelHookReachableConstructors(fileContent map[string]string) map[string]bo
 	}
 
 	rooted := map[string]bool{}
-	hookNames := map[string]bool{}
 	for name, idx := range indexed {
 		if !idx.calls {
 			continue
 		}
 		rooted[name] = true
 		for _, callee := range idx.callees {
-			hookNames[callee] = true
 			for _, file := range definedIn[callee] {
 				rooted[file] = true
 			}
@@ -1958,52 +1959,9 @@ func novelHookReachableConstructors(fileContent map[string]string) map[string]bo
 
 	ctors := map[string]bool{}
 	for name := range rooted {
-		file, err := parser.ParseFile(token.NewFileSet(), "", fileContent[name], 0)
-		if err != nil {
-			continue
+		for ctor := range addCommandConstructorCalls(fileContent[name]) {
+			ctors[ctor] = true
 		}
-		addHook := func(typ *ast.FuncType, body *ast.BlockStmt) {
-			if typ.Params == nil || len(typ.Params.List) == 0 || body == nil {
-				return
-			}
-			param := typ.Params.List[0]
-			if !isStarCobraCommand(param.Type) || len(param.Names) == 0 || param.Names[0].Obj == nil {
-				return
-			}
-			for ctor := range commandConstructorCalls(body, param.Names[0].Obj) {
-				ctors[ctor] = true
-			}
-		}
-		addLiteral := func(expr ast.Expr) {
-			if lit, ok := expr.(*ast.FuncLit); ok {
-				addHook(lit.Type, lit.Body)
-			}
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.FuncDecl:
-				if node.Recv == nil && hookNames[node.Name.Name] {
-					addHook(node.Type, node.Body)
-				}
-			case *ast.ValueSpec:
-				for i, ident := range node.Names {
-					if hookNames[ident.Name] && ident.Obj == file.Scope.Lookup(ident.Name) && i < len(node.Values) {
-						addLiteral(node.Values[i])
-					}
-				}
-			case *ast.AssignStmt:
-				for i, lhs := range node.Lhs {
-					if ident, ok := lhs.(*ast.Ident); ok && hookNames[ident.Name] && ident.Obj == file.Scope.Lookup(ident.Name) && i < len(node.Rhs) {
-						addLiteral(node.Rhs[i])
-					}
-				}
-			case *ast.CallExpr:
-				if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "registerNovelCommand" && len(node.Args) == 1 {
-					addLiteral(node.Args[0])
-				}
-			}
-			return true
-		})
 	}
 	return ctors
 }
@@ -2122,24 +2080,19 @@ func addCommandConstructorCalls(content string) map[string]bool {
 	if err != nil {
 		return map[string]bool{}
 	}
-	return commandConstructorCalls(file, nil)
-}
 
-func commandConstructorCalls(node ast.Node, root *ast.Object) map[string]bool {
 	ctors := map[string]bool{}
-	ast.Inspect(node, func(n ast.Node) bool {
+	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		helperCall := false
-		var parent ast.Expr
 		switch fun := call.Fun.(type) {
 		case *ast.SelectorExpr:
 			if fun.Sel == nil || fun.Sel.Name != "AddCommand" {
 				return true
 			}
-			parent = fun.X
 		case *ast.Ident:
 			if fun.Name != "addNovelCommandIfAbsent" {
 				return true
@@ -2154,13 +2107,6 @@ func commandConstructorCalls(node ast.Node, root *ast.Object) map[string]bool {
 				return true
 			}
 			args = args[1:]
-			parent = call.Args[0]
-		}
-		if root != nil {
-			ident, ok := parent.(*ast.Ident)
-			if !ok || ident.Obj != root {
-				return true
-			}
 		}
 		for _, arg := range args {
 			if ctor := commandConstructorName(arg); ctor != "" {

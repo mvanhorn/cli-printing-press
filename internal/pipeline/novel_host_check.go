@@ -239,10 +239,8 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		return nil
 	}
 	leaves := map[string]string{}
-	paths := map[string]string{}
 	for _, feature := range features {
-		path := commandPath(feature.Command)
-		leaf := lastPathSegment(path)
+		leaf := lastPathSegment(commandPath(feature.Command))
 		if leaf == "" {
 			continue
 		}
@@ -251,7 +249,6 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 			label = feature.Name
 		}
 		leaves[leaf] = label
-		paths[path] = label
 	}
 	var declared []novelHostDecl
 	contents := make(map[string]string, len(entries))
@@ -271,24 +268,13 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	registered, _, sourcePaths := collectRegisteredCommandSources(cliDir)
 	var sources []novelSourceFile
 	for _, name := range names {
 		content := contents[name]
-		commands := sourcePaths[name]
-		if len(registered) == 0 {
-			// Without registration edges, only a top-level path is unambiguous.
-			for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
-				commands = append(commands, match[1])
-			}
-		}
-		if !novelCommandSource(content, name, commands, paths) {
+		if !novelCommandSource(content, name, leaves) {
 			continue
 		}
-		label := novelSourceFeature(commands, paths)
-		if label == "" {
-			label = "novel feature"
-		}
+		label := novelSourceFeature(content, leaves)
 		declared = append(declared, hostsInGoPackage(name, content, label, contents)...)
 		sources = append(sources, novelSourceFile{name: name, content: content, label: label})
 	}
@@ -296,25 +282,34 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 	return declared
 }
 
-func novelCommandSource(content, name string, commands []string, paths map[string]string) bool {
+func novelCommandSource(content, name string, leaves map[string]string) bool {
 	// root.go defines the scaffold marker constant and is not a novel command.
 	if name == "root.go" {
 		return false
 	}
-	if novelSourceFeature(commands, paths) != "" {
+	if commandMatchesNovelLeaf(content, leaves) {
 		return true
 	}
 	// Hand-written commands and generated scaffolds carry this marker.
 	return strings.Contains(content, "pp:novel-scaffold") || strings.Contains(content, "pp:novel")
 }
 
-func novelSourceFeature(commands []string, paths map[string]string) string {
-	for _, command := range commands {
-		if label, ok := paths[command]; ok {
+func commandMatchesNovelLeaf(content string, leaves map[string]string) bool {
+	for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+		if _, ok := leaves[match[1]]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func novelSourceFeature(content string, leaves map[string]string) string {
+	for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+		if label, ok := leaves[match[1]]; ok {
 			return label
 		}
 	}
-	return ""
+	return "novel feature"
 }
 
 func hostsInGoSource(filename, content, feature string) []novelHostDecl {
