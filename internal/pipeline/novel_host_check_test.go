@@ -74,7 +74,11 @@ func TestNovelHostHookRegisteredCommands(t *testing.T) {
 		`registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
 			addNovelCommandIfAbsent(root, newTranscriptsCmd())
 		})`,
+		`registerNovelCommand(func(parent *cobra.Command, flags *rootFlags) {
+			parent.AddCommand(newTranscriptsCmd())
+		})`,
 		`registerNovelCommand(registerTranscripts)`,
+		`registerNovelCommand(transcriptsHook)`,
 		`addNovelCommandIfAbsent(rootCmd, newTranscriptsCmd())`,
 	} {
 		t.Run(registration, func(t *testing.T) {
@@ -83,15 +87,19 @@ func TestNovelHostHookRegisteredCommands(t *testing.T) {
 func init() { rootCmd.AddCommand(newVideosCmd()) }
 func newVideosCmd() *cobra.Command { return &cobra.Command{Use: "videos"} }
 `,
-				"hooks.go": "package cli\nfunc init() { " + registration + " }",
-				"transcripts.go": `package cli
-func registerTranscripts(root *cobra.Command, flags *rootFlags) {
-	addNovelCommandIfAbsent(root, newTranscriptsCmd())
+				"hooks.go": "package cli\nfunc init() { " + registration + ` }
+var transcriptsHook = func(parent *cobra.Command, flags *rootFlags) {
+	parent.AddCommand(newTranscriptsCmd())
 }
 func newTranscriptsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "transcripts"}
 	addNovelCommandIfAbsent(cmd, newTranscriptsSearchCmd())
 	return cmd
+}
+`,
+				"transcripts.go": `package cli
+func registerTranscripts(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newTranscriptsCmd())
 }
 `,
 				"search.go": `package cli
@@ -106,6 +114,12 @@ func newTranscriptsSearchCmd() *cobra.Command {
 			assert.Equal(t, "unknown.example.test", got.UnverifiedHosts[0].Host)
 			assert.Equal(t, "transcripts search", got.UnverifiedHosts[0].Command)
 			assert.Equal(t, "search.go", got.UnverifiedHosts[0].File)
+			paths, _ := collectRegisteredCommands(cliDir)
+			assert.True(t, paths["transcripts search"])
+			assert.False(t, paths["search"])
+			mismatch := novelFeatureDepthMismatch(NovelFeature{Command: "search"}, paths)
+			require.NotNil(t, mismatch)
+			assert.Equal(t, "transcripts search", mismatch.Actual)
 		})
 	}
 }
