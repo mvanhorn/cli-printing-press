@@ -26,7 +26,7 @@ func newTailCmd(flags *rootFlags) *cobra.Command {
 		Use:         "tail [resource]",
 		Short:       "Stream live changes by polling the API at regular intervals",
 		Args:         cobra.RangeArgs(0, 1),
-		Annotations: map[string]string{"mcp:read-only": "true", "pp:no-error-path-probe": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:no-error-path-probe": "true", "pp:data-source": "live"},
 		Long: `Tail streams live data changes by polling the API at configurable intervals.
 Changes are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
@@ -35,6 +35,9 @@ Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
 		Example: {{printf "%q" (tailCommandExample .)}},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "tail")
+			}
 			if len(args) > 0 {
 				resource = args[0]
 			}
@@ -92,11 +95,18 @@ native streaming instead of polling.`,
 				return usageErr(err)
 			}
 			readConfig := resourceReadConfigFor(resource)
+			if !follow && flags.asJSON {
+				data, err := c.Get(cmd.Context(), path, nil)
+				if err != nil {
+					return classifyAPIError(cmd.OutOrStdout(), err, flags)
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			}
 
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 
-			enc := json.NewEncoder(os.Stdout)
+			enc := json.NewEncoder(cmd.OutOrStdout())
 
 			if follow {
 				fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)

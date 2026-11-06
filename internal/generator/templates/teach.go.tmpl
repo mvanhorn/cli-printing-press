@@ -65,6 +65,14 @@ func noLearnActive(flags *rootFlags) bool {
 	return noLearnEnabled()
 }
 
+func writeLearningDisabled(cmd *cobra.Command, flags *rootFlags) error {
+	quiet, _ := cmd.Flags().GetBool("quiet")
+	if teachEmitsJSON(flags, quiet, cmd) {
+		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"disabled": true}, flags)
+	}
+	return nil
+}
+
 // learningsStateDir returns the directory hosting the audit log and
 // error log. Created on first use with 0o700 so a multi-user machine
 // doesn't accidentally expose one user's learned queries.
@@ -363,11 +371,11 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			if noLearnActive(flags) {
-				return nil
-			}
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "teach")
+			}
+			if noLearnActive(flags) {
+				return writeLearningDisabled(cmd, flags)
 			}
 			if strings.TrimSpace(query) == "" {
 				writeTeachErrLog(fmt.Sprintf("teach: missing --query (args=%v resources=%v)", args, resources))
