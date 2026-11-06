@@ -12,6 +12,101 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNovelHostGeneratedEndpointAnnotationIgnored(t *testing.T) {
+	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+		"root.go": `package cli
+func init() {
+	rootCmd.AddCommand(newVideosCmd())
+	rootCmd.AddCommand(newTranscriptsCmd())
+}
+`,
+		"videos.go": `package cli
+func newVideosCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "videos"}
+	cmd.AddCommand(newVideosSearchCmd())
+	return cmd
+}
+`,
+		"videos_search.go": `package cli
+func newVideosSearchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "search",
+		Annotations: map[string]string{
+			"pp:endpoint": "videos.search",
+			"pp:method": "GET",
+			"pp:path": "/v1/videos/search",
+		},
+	}
+}
+`,
+		"transcripts.go": `package cli
+func newTranscriptsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "transcripts"}
+	cmd.AddCommand(newTranscriptsSearchCmd())
+	return cmd
+}
+`,
+		"transcripts_search.go": `package cli
+func newTranscriptsSearchCmd() *cobra.Command {
+	return &cobra.Command{Use: "search"}
+}
+`,
+	}, []NovelFeature{{Name: "Search transcripts", Command: "transcripts search"}})
+
+	assert.Empty(t, checkReimplementation(cliDir, researchDir).UnverifiedHosts)
+}
+
+func TestNovelHostAnnotationCallsStillChecked(t *testing.T) {
+	for _, annotation := range []string{
+		`cmd.Annotations["custom"] = VALUE`,
+		`cmd.Annotations = map[string]string{"custom": VALUE}`,
+		`cmd = &cobra.Command{Annotations: map[string]string{"custom": VALUE}}`,
+	} {
+		for _, value := range []string{
+			`fetch("https://unknown.example.test")`,
+			`func() string { _, _ = http.Get("https://unknown.example.test"); return "metadata" }()`,
+			`fmt.Sprint(func() string { _, _ = http.Get("https://unknown.example.test"); return "metadata" }())`,
+			`"videos.search"`,
+			`("https://metadata.example.test" + "/path")`,
+		} {
+			t.Run(annotation+value, func(t *testing.T) {
+				src := "package cli\nfunc command() { " + strings.ReplaceAll(annotation, "VALUE", value) + " }"
+				got := hostsInGoSource("search.go", src, "search")
+				if strings.Contains(value, "unknown.example.test") {
+					require.Len(t, got, 1)
+					assert.Equal(t, "unknown.example.test", got[0].host)
+				} else {
+					assert.Empty(t, got)
+				}
+			})
+		}
+	}
+}
+
+func TestNovelHostIgnoresAnnotationValues(t *testing.T) {
+	src := `package cli
+func newSearchCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "search",
+		Annotations: map[string]string{
+			"pp:endpoint": "videos.search",
+			"pp:method": "GET",
+			"pp:path": "/v1/videos/search",
+			"custom": "https://metadata.example-unknown.com",
+			"https://key.example-unknown.com": "metadata",
+		},
+	}
+	cmd.Annotations["pp:endpoint"] = "transcripts.search"
+	cmd.Annotations = map[string]string{"custom": "https://other.example-unknown.com"}
+	_ = "https://api.example-unknown.com/v1"
+	return cmd
+}
+`
+	got := hostsInGoSource("search.go", src, "transcripts search")
+	require.Len(t, got, 1)
+	assert.Equal(t, "api.example-unknown.com", got[0].host)
+}
+
 func TestUnverifiedNovelHostAbsentFromResearchFails(t *testing.T) {
 	cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
 		"play.go": `package cli
