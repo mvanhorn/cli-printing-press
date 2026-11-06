@@ -985,11 +985,17 @@ func splitCommandPath(path string) (parent, leaf string) {
 // Callers prefer paths when non-empty for accuracy, and fall through to
 // leaves when the tree walker produced nothing.
 func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
+	paths, leaves, _ = collectRegisteredCommandSources(dir)
+	return paths, leaves
+}
+
+func collectRegisteredCommandSources(dir string) (paths, leaves map[string]bool, sources map[string][]string) {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	files := listGoFiles(cliDir)
 
 	type cmdFunc struct {
 		use      string
+		file     string
 		children []string
 	}
 	funcs := map[string]*cmdFunc{}
@@ -1037,7 +1043,7 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 				}
 			}
 
-			entry := &cmdFunc{}
+			entry := &cmdFunc{file: filepath.Base(file)}
 			if u := useRe.FindStringSubmatch(body); u != nil {
 				entry.use = strings.Fields(u[1])[0]
 			}
@@ -1058,8 +1064,9 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 	}
 
 	paths = map[string]bool{}
+	sources = map[string][]string{}
 	if len(rootFuncs) == 0 || len(funcs) == 0 {
-		return paths, leaves
+		return paths, leaves, sources
 	}
 
 	type qItem struct{ funcName, prefix string }
@@ -1084,11 +1091,12 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			path = it.prefix + " " + fn.use
 		}
 		paths[path] = true
+		sources[fn.file] = append(sources[fn.file], path)
 		for _, child := range fn.children {
 			queue = append(queue, qItem{funcName: child, prefix: path})
 		}
 	}
-	return paths, leaves
+	return paths, leaves, sources
 }
 
 func commandFactoryVars(src string) map[string]string {

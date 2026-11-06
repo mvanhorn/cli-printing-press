@@ -239,8 +239,10 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		return nil
 	}
 	leaves := map[string]string{}
+	paths := map[string]string{}
 	for _, feature := range features {
-		leaf := lastPathSegment(commandPath(feature.Command))
+		path := commandPath(feature.Command)
+		leaf := lastPathSegment(path)
 		if leaf == "" {
 			continue
 		}
@@ -249,6 +251,7 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 			label = feature.Name
 		}
 		leaves[leaf] = label
+		paths[path] = label
 	}
 	var declared []novelHostDecl
 	contents := make(map[string]string, len(entries))
@@ -268,13 +271,24 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	registered, _, sourcePaths := collectRegisteredCommandSources(cliDir)
 	var sources []novelSourceFile
 	for _, name := range names {
 		content := contents[name]
-		if !novelCommandSource(content, name, leaves) {
+		commands := sourcePaths[name]
+		if len(registered) == 0 {
+			// Without registration edges, only a top-level path is unambiguous.
+			for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+				commands = append(commands, match[1])
+			}
+		}
+		if !novelCommandSource(content, name, commands, paths) {
 			continue
 		}
-		label := novelSourceFeature(content, leaves)
+		label := novelSourceFeature(commands, paths)
+		if label == "" {
+			label = "novel feature"
+		}
 		declared = append(declared, hostsInGoPackage(name, content, label, contents)...)
 		sources = append(sources, novelSourceFile{name: name, content: content, label: label})
 	}
@@ -282,34 +296,25 @@ func hostsInNovelCommandSources(cliDir string, features []NovelFeature) []novelH
 	return declared
 }
 
-func novelCommandSource(content, name string, leaves map[string]string) bool {
+func novelCommandSource(content, name string, commands []string, paths map[string]string) bool {
 	// root.go defines the scaffold marker constant and is not a novel command.
 	if name == "root.go" {
 		return false
 	}
-	if commandMatchesNovelLeaf(content, leaves) {
+	if novelSourceFeature(commands, paths) != "" {
 		return true
 	}
 	// Hand-written commands and generated scaffolds carry this marker.
 	return strings.Contains(content, "pp:novel-scaffold") || strings.Contains(content, "pp:novel")
 }
 
-func commandMatchesNovelLeaf(content string, leaves map[string]string) bool {
-	for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
-		if _, ok := leaves[match[1]]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func novelSourceFeature(content string, leaves map[string]string) string {
-	for _, match := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
-		if label, ok := leaves[match[1]]; ok {
+func novelSourceFeature(commands []string, paths map[string]string) string {
+	for _, command := range commands {
+		if label, ok := paths[command]; ok {
 			return label
 		}
 	}
-	return "novel feature"
+	return ""
 }
 
 func hostsInGoSource(filename, content, feature string) []novelHostDecl {
@@ -342,10 +347,37 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		return nil
 	}
 	helpSpans := cobraHelpStringSpans(node)
+	var annotationSpans []tokenSpan
+	ast.Inspect(node, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.CompositeLit); ok && isCobraCommandLiteral(lit) {
+			for _, elt := range lit.Elts {
+				if field, ok := elt.(*ast.KeyValueExpr); ok {
+					if key, ok := field.Key.(*ast.Ident); ok && key.Name == "Annotations" {
+						annotationSpans = append(annotationSpans, tokenSpan{start: field.Value.Pos(), end: field.Value.End()})
+					}
+				}
+			}
+		}
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			for i, lhs := range assign.Lhs {
+				if i >= len(assign.Rhs) {
+					continue
+				}
+				_, _, index := annotationIndex(lhs)
+				_, _, wholeMap := annotationMapAssignment(lhs, assign.Rhs[i])
+				if index || wholeMap {
+					// Annotation values describe commands, not network destinations.
+					value := assign.Rhs[i]
+					annotationSpans = append(annotationSpans, tokenSpan{start: value.Pos(), end: value.End()})
+				}
+			}
+		}
+		return true
+	})
 	var declared []novelHostDecl
 	ast.Inspect(node, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
+		if !ok || lit.Kind != token.STRING || tokenPosInSpans(lit.Pos(), annotationSpans) {
 			return true
 		}
 		val, unquoteErr := strconv.Unquote(lit.Value)
