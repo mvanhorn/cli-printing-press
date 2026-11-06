@@ -42,6 +42,16 @@ type ResearchResult struct {
 	// during the absorb phase alongside NovelFeatures.
 	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
 	Homepage  string           `json:"homepage,omitempty"`
+	// Verify is an optional hint for verify's data-pipeline sync probe.
+	// A manifest VerifySyncResource overrides SyncResource. Exclude lists combine.
+	Verify *ResearchVerify `json:"verify,omitempty"`
+}
+
+// ResearchVerify names the sync resource verify may probe, and resources
+// that probe must not choose. Both are optional.
+type ResearchVerify struct {
+	SyncResource string   `json:"sync_resource,omitempty"`
+	SyncExclude  []string `json:"sync_exclude,omitempty"`
 }
 
 func (r *ResearchResult) UnmarshalJSON(data []byte) error {
