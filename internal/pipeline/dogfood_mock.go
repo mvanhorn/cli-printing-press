@@ -552,15 +552,62 @@ func resolveRawPointer(ref string, root map[string]any) map[string]any {
 // check. Only an envelope fixture that bare sync will request can raise
 // it; another method's fixture on the same path cannot.
 func expectedMockSyncRows(spec *openAPISpec) int {
+	return expectedMockSyncRowsForResource(spec, "")
+}
+
+// expectedMockSyncRowsForResource is the floor for the one resource the
+// probe syncs. A plain-array resource stays at 0 when a different resource
+// is the envelope that would otherwise raise the spec-wide floor. An empty
+// resource keeps the spec-wide floor. An unknown resource stays at 0 so a
+// one-row mock sync is not failed for an envelope it did not request.
+func expectedMockSyncRowsForResource(spec *openAPISpec, resource string) int {
 	if spec == nil || len(spec.NestedDataEnvelopes) == 0 {
 		return 0
 	}
-	for _, request := range spec.SyncRequests {
+	requests := spec.SyncRequests
+	if strings.TrimSpace(resource) != "" {
+		requests = syncRequestsForResource(spec, resource)
+		if len(requests) == 0 {
+			return 0
+		}
+	}
+	for _, request := range requests {
 		if _, ok := responseFixtureForRequest(spec, request.Method, request.Path); ok {
 			return len(mockListItems())
 		}
 	}
 	return 0
+}
+
+func syncRequestsForResource(spec *openAPISpec, resource string) []responseFixtureKey {
+	if spec == nil || spec.Parsed == nil {
+		return nil
+	}
+	resource = strings.TrimSpace(resource)
+	if resource == "" {
+		return nil
+	}
+	profile := profiler.Profile(spec.Parsed)
+	var keys []responseFixtureKey
+	seen := make(map[responseFixtureKey]struct{})
+	for _, item := range profile.SyncableResources {
+		if item.SkipDefaultSync || item.Name != resource {
+			continue
+		}
+		key := responseFixtureKey{
+			Method: strings.ToUpper(strings.TrimSpace(item.Method)),
+			Path:   syncFixturePath(item.Path),
+		}
+		if key.Method == "" || key.Path == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // defaultSyncRequestKeys records flat default-sync calls. Dependent paths
