@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.35.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.2...v4.35.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **cli:** count structured non-zero outcomes and skip account-disabled features in live dogfood ([#5354](https://github.com/mvanhorn/cli-printing-press/issues/5354)) ([d10c27c](https://github.com/mvanhorn/cli-printing-press/commit/d10c27c5c6b92ff4b21856ea040a94c4d1ded366))
+* **cli:** emit valid JSON from tail and the learning commands ([#5353](https://github.com/mvanhorn/cli-printing-press/issues/5353)) ([e44bea5](https://github.com/mvanhorn/cli-printing-press/commit/e44bea57c7e61a4d4dceebc7888446050812dca4))
+* **cli:** exclude intentionally omitted examples from dogfood example coverage ([#5348](https://github.com/mvanhorn/cli-printing-press/issues/5348)) ([69bd87e](https://github.com/mvanhorn/cli-printing-press/commit/69bd87e176a99af6e59ea356d9d7c1121ae72c2d))
+* **cli:** hide novel grouping parents from MCP tools ([#5347](https://github.com/mvanhorn/cli-printing-press/issues/5347)) ([69952a5](https://github.com/mvanhorn/cli-printing-press/commit/69952a5bf0fa94f727b07df9d61da230671da50f))
+* **cli:** optional nested object with required children no longer breaks bare invocation ([#5338](https://github.com/mvanhorn/cli-printing-press/issues/5338)) ([513e8e1](https://github.com/mvanhorn/cli-printing-press/commit/513e8e16dc9c81369917f280036cdc914e78cdef))
+* **cli:** sample only cobra command files for terminal UX ([#5343](https://github.com/mvanhorn/cli-printing-press/issues/5343)) ([26d1e3f](https://github.com/mvanhorn/cli-printing-press/commit/26d1e3ffed0e957547b1fe2e90607a9aa4845a6b))
+* **cli:** scope verify data-pipeline sync to one declared resource ([#5364](https://github.com/mvanhorn/cli-printing-press/issues/5364)) ([4e19151](https://github.com/mvanhorn/cli-printing-press/commit/4e19151e5f3168e6a7d73eae276d83b09a004daf))
+* **cli:** score cookie and composed auth by credential attachment ([#5340](https://github.com/mvanhorn/cli-printing-press/issues/5340)) ([d8124e7](https://github.com/mvanhorn/cli-printing-press/commit/d8124e72c60174d7473e144e4c6104c29ce5f2b7))
+* **generator:** render boolean examples with Cobra-safe flags ([#5352](https://github.com/mvanhorn/cli-printing-press/issues/5352)) ([ad52d7a](https://github.com/mvanhorn/cli-printing-press/commit/ad52d7a3b9a67d2140c058277763bc6aedd366e6))
+* **openapi:** preserve after filters during cursor pagination ([#5332](https://github.com/mvanhorn/cli-printing-press/issues/5332)) ([38b74e0](https://github.com/mvanhorn/cli-printing-press/commit/38b74e09b2ea4c6df07a029df263803efe77b92c))
+
 ## [4.35.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.1...v4.35.2) (2026-11-03)
 
 
