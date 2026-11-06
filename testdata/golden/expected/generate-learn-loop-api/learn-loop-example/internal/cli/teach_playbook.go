@@ -66,11 +66,11 @@ agents can record playbooks without a file on disk.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			if noLearnActive(flags) {
-				return nil
-			}
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "teach-playbook")
+			}
+			if noLearnActive(flags) {
+				return writeLearningDisabled(cmd, flags)
 			}
 			if strings.TrimSpace(query) == "" {
 				return usageErr(fmt.Errorf("--query is required"))
@@ -208,11 +208,11 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			if noLearnActive(flags) {
-				return nil
-			}
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "playbook amend")
+			}
+			if noLearnActive(flags) {
+				return writeLearningDisabled(cmd, flags)
 			}
 			if strings.TrimSpace(query) == "" {
 				writeTeachErrLog(fmt.Sprintf("playbook amend: missing --query (args=%v)", args))
