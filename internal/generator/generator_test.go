@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -8995,6 +8997,274 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 	assert.Contains(t, string(pingBytes), "schema permits no value")
 }
 
+// A property that is required only inside an OPTIONAL nested body object is a
+// conditional requirement: the flags stay optional on the command, the group is
+// validated only when one of its flags is supplied, and a bare call executes
+// instead of printing help. A required nested object keeps its required flags
+// and the help fallback.
+func TestOptionalNestedRequiredBodyFlags_AreConditional(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "nested-required",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Key", In: "header", EnvVars: []string{"NR_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/nested-required-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"sessions": {
+				Endpoints: map[string]spec.Endpoint{
+					"logout": {
+						Method: "POST",
+						Path:   "/sessions/logout",
+						Body: []spec.Param{{
+							Name: "screenShare", Type: "object",
+							Fields: []spec.Param{
+								{Name: "code", Type: "string", Required: true},
+								{Name: "note", Type: "string"},
+							},
+						}},
+					},
+					"create": {
+						Method: "POST",
+						Path:   "/sessions",
+						Body: []spec.Param{{
+							Name: "owner", Type: "object", Required: true,
+							Fields: []spec.Param{
+								{Name: "name", Type: "string", Required: true},
+								{Name: "email", Type: "string"},
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	guard := "if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {"
+
+	optional := readGeneratedFile(t, outputDir, "internal", "cli", "sessions_logout.go")
+	assert.NotContains(t, optional, guard, "all-optional body (nested required is conditional) must run on a bare call")
+	assert.NotContains(t, optional, `"pp:requires-input"`)
+	assert.Contains(t, optional, `if (cmd.Flags().Changed("screen-share-code")`,
+		"nested required flag must be validated only when a flag of the group is supplied")
+	assert.Contains(t, optional, `"screen-share-code"`)
+
+	control := readGeneratedFile(t, outputDir, "internal", "cli", "sessions_create.go")
+	assert.Contains(t, control, guard, "required nested object must keep the help fallback")
+	assert.Contains(t, control, `"pp:requires-input": "true"`)
+	assert.Contains(t, control, `if !cmd.Flags().Changed("owner-name") && bodyOwnerName == "" && !requiredInputWaived() {`,
+		"required object's required child must be unconditionally required")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+// Runs the generated CLI against a capture server and asserts the serialized
+// request bodies: an optional wrapper object with required children is omitted
+// when none of its flags is supplied, sent with its conditional required check
+// enforced when one is, and a required wrapper keeps its wrapper shape.
+func TestOptionalNestedRequiredBodyFlags_RequestBodyOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := minimalSpec("nestedwire")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Resources = map[string]spec.Resource{
+		"sessions": {
+			Endpoints: map[string]spec.Endpoint{
+				"logout": {
+					Method: "POST", Path: "/sessions/logout",
+					Body: []spec.Param{{
+						Name: "screenShare", Type: "object",
+						Fields: []spec.Param{
+							{Name: "code", Type: "string", Required: true},
+							{Name: "note", Type: "string"},
+						},
+					}},
+				},
+				"create": {
+					Method: "POST", Path: "/sessions",
+					Body: []spec.Param{{
+						Name: "owner", Type: "object", Required: true,
+						Fields: []spec.Param{
+							{Name: "name", Type: "string", Required: true},
+							{Name: "email", Type: "string"},
+						},
+					}},
+				},
+				"wrapopt": {
+					Method: "POST", Path: "/sessions/wrapopt",
+					Body: []spec.Param{{
+						Name: "a", Type: "object", Required: true,
+						Fields: []spec.Param{{
+							Name: "b", Type: "object",
+							Fields: []spec.Param{{Name: "c", Type: "string", Required: true}},
+						}},
+					}},
+				},
+				"enrolllabel": {
+					Method: "POST", Path: "/sessions/enrolllabel",
+					Body: []spec.Param{
+						{
+							Name: "a", Type: "object", Required: true,
+							Fields: []spec.Param{
+								{Name: "label", Type: "string"},
+								{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}},
+							},
+						},
+						{Name: "note", Type: "string"},
+					},
+				},
+				"defobj": {
+					Method: "POST", Path: "/sessions/defobj",
+					Body: []spec.Param{{
+						Name: "a", Type: "object", Required: true,
+						Fields: []spec.Param{{
+							Name: "m", Type: "object", Required: true,
+							Default: map[string]any{"s": "d"},
+							Fields:  []spec.Param{{Name: "s", Type: "string", Required: true}},
+						}},
+					}},
+				},
+				"enroll": {
+					Method: "POST", Path: "/sessions/enroll",
+					Body: []spec.Param{
+						{
+							Name: "owner", Type: "object", Required: true,
+							Fields: []spec.Param{{
+								Name: "profile", Type: "object",
+								Fields: []spec.Param{{Name: "id", Type: "string", Required: true}},
+							}},
+						},
+						{Name: "note", Type: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+	binaryName := naming.CLI(apiSpec.Name)
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
+	runGoCommand(t, outputDir, "build", "-o", binaryName, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	home := t.TempDir()
+	env := []string{
+		naming.EnvPrefix(apiSpec.Name) + "_BASE_URL=" + server.URL,
+		"HOME=" + home,
+		"USERPROFILE=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		// Blank any inherited verify/dogfood mode so it cannot short-circuit the POST.
+		"PRINTING_PRESS_VERIFY=",
+		"PRINTING_PRESS_VERIFY_LIVE_HTTP=",
+		"PRINTING_PRESS_DOGFOOD=",
+	}
+	run := func(args ...string) (int, string, int) {
+		t.Helper()
+		mu.Lock()
+		bodies = nil
+		mu.Unlock()
+		code, stdout, stderr := runGeneratedBinaryExitEnv(t, binaryPath, env, append([]string{"--home", home, "--json"}, args...)...)
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) == 0 {
+			return code, "", 0
+		}
+		require.Len(t, bodies, 1, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+		return code, bodies[0], 1
+	}
+
+	t.Run("optional wrapper, no flags: wrapper key omitted", func(t *testing.T) {
+		code, body, n := run("sessions", "logout")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n, "the bare call must send exactly one request")
+		assert.NotContains(t, body, "screenShare")
+		var decoded map[string]any
+		if body != "" {
+			require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		}
+		assert.Empty(t, decoded)
+	})
+	t.Run("optional wrapper, one flag: wrapper present", func(t *testing.T) {
+		code, body, n := run("sessions", "logout", "--screen-share-code", "abc")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
+		var decoded map[string]map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		assert.Equal(t, map[string]any{"code": "abc"}, decoded["screenShare"])
+	})
+	t.Run("optional wrapper, sibling flag only: conditional required check enforced", func(t *testing.T) {
+		code, body, n := run("sessions", "logout", "--screen-share-note", "x")
+		assert.NotEqual(t, 0, code)
+		assert.Zero(t, n, "no request may be sent when the group is incomplete")
+		assert.Empty(t, body)
+	})
+	t.Run("multi-root required parent holding only an optional group still needs input", func(t *testing.T) {
+		_, _, n := run("sessions", "enroll")
+		assert.Zero(t, n, "a bare call must print help, not send a body missing the required parent")
+		code, body, n := run("sessions", "enroll", "--owner-profile-id", "p1")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
+		var decoded map[string]map[string]map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		assert.Equal(t, map[string]any{"id": "p1"}, decoded["owner"]["profile"])
+	})
+	t.Run("multi-root required parent with optional scalar kept still needs input", func(t *testing.T) {
+		_, _, n := run("sessions", "enrolllabel")
+		assert.Zero(t, n, "a bare call must be refused, not send {} without the required parent")
+		code, body, n := run("sessions", "enrolllabel", "--a-label", "x")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
+		assert.JSONEq(t, `{"a":{"label":"x"}}`, body)
+	})
+	t.Run("required object child with an object default still guards its required descendant", func(t *testing.T) {
+		_, _, n := run("sessions", "defobj")
+		assert.Zero(t, n, "a bare call must be refused by the m.s check")
+		code, body, n := run("sessions", "defobj", "--a-m-s", "v")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
+		assert.JSONEq(t, `{"a":{"m":{"s":"v"}}}`, body)
+	})
+	t.Run("sole required root with optional object child: bare call sends {\"a\":{}}", func(t *testing.T) {
+		code, body, n := run("sessions", "wrapopt")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
+		assert.JSONEq(t, `{"a":{}}`, body)
+	})
+	t.Run("required wrapper unchanged", func(t *testing.T) {
+		code, body, n := run("sessions", "create", "--owner-name", "Ann")
+		require.Equal(t, 0, code)
+		require.Equal(t, 1, n)
+		var decoded map[string]map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &decoded))
+		assert.Equal(t, map[string]any{"name": "Ann"}, decoded["owner"])
+		_, _, n = run("sessions", "create")
+		assert.Zero(t, n, "required wrapper with no flags must not send a request")
+	})
+}
+
 func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 	t.Parallel()
 
@@ -9094,6 +9364,20 @@ func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
 		{"optional body only", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "note"}}}, false},
 		{"optional body with unsatisfiable enum", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "disjoint", Type: "string", EnumUnsatisfiable: true}}}, false},
 		{"required body beside unsatisfiable enum", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Required: true}, {Name: "disjoint", Type: "string", EnumUnsatisfiable: true}}}, true},
+		{"optional object with required child is conditional, not required input", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, false},
+		{"required object with required child", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string", Required: true}}}}}, true},
+		{"required object with only optional children", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "owner", Type: "object", Required: true, Fields: []spec.Param{{Name: "name", Type: "string"}}}}}, false},
+		{"sole required root, required object child with an object default and a required descendant", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "m", Type: "object", Required: true, Default: map[string]any{"s": "d"}, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}}}}}}}, true},
+		{"sole required root whose only child is an optional object with a required grandchild is not required input", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, false}, // sole root: bodyResourceWrap emits {"a":{}} unconditionally, a valid bare call
+		{"required parent with optional-object child plus root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
+		{"required parent with a required scalar and an optional object", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, true},
+		{"required parent whose only child is an optional object without required descendants", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string"}}}}}}}, false},
+		{"multi-root required parent, optional scalar kept, optional object with required grandchild dropped", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "label", Type: "string"}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
+		{"multi-root required parent with a required scalar kept (guard on the child)", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "s", Type: "string", Required: true}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}, {Name: "other", Type: "string"}}}, true},
+		{"nested required parent under a sole required root with only optional kept children: the optional group sits at the flag-depth cap, so no check can be emitted", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "m", Type: "object", Required: true, Fields: []spec.Param{{Name: "x", Type: "string"}, {Name: "y", Type: "object", Fields: []spec.Param{{Name: "z", Type: "string", Required: true}}}}}}}}}, false},
+		{"sole root with only optional scalar and optional-object children", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Required: true, Fields: []spec.Param{{Name: "label", Type: "string"}, {Name: "b", Type: "object", Fields: []spec.Param{{Name: "c", Type: "string", Required: true}}}}}}}, false},
+		{"optional parent with required scalar, root sibling", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "a", Type: "object", Fields: []spec.Param{{Name: "s", Type: "string", Required: true}}}, {Name: "other", Type: "string"}}}, false},
+		{"optional object with required child beside required top-level field", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Type: "string", Required: true}, {Name: "screenShare", Type: "object", Fields: []spec.Param{{Name: "code", Type: "string", Required: true}}}}}, true},
 		{"GET with required body ignored", spec.Endpoint{Method: "GET", Body: []spec.Param{{Name: "title", Required: true}}}, false},
 	}
 	for _, tc := range cases {
