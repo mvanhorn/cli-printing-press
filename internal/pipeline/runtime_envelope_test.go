@@ -372,6 +372,34 @@ func TestVerifyParsesDeclaredListEnvelopes(t *testing.T) {
 	assert.Equal(t, "mock-item", account["name"])
 }
 
+func TestExpectedMockSyncRowsFollowsSelectedResource(t *testing.T) {
+	t.Parallel()
+
+	spec := loadEnvelopeSpec(t, envelopeListSpec)
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(spec))
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRowsForResource(spec, ""))
+	assert.Equal(t, len(mockListItems()), expectedMockSyncRowsForResource(spec, "bounces"))
+	assert.Equal(t, 0, expectedMockSyncRowsForResource(spec, "tags"))
+
+	oneRow := buildDataPipelineProbeBinary(t, 1)
+	dir := seedRunnableSyncProbeCLI(t, "tags", "bounces")
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SpecFormat:         "openapi3",
+		VerifySyncResource: "tags",
+	}))
+	resource, detail := chooseDataPipelineProbeResource(dir)
+	require.Equal(t, "tags", resource)
+	require.Empty(t, detail)
+
+	pass, detail := runDataPipelineTest(oneRow, dir, "mock", os.Environ, expectedMockSyncRowsForResource(spec, resource))
+	assert.Truef(t, pass, "detail: %s", detail)
+	assert.NotContains(t, detail, "expected at least")
+
+	pass, detail = runDataPipelineTest(oneRow, dir, "mock", os.Environ, expectedMockSyncRowsForResource(spec, "bounces"))
+	assert.False(t, pass)
+	assert.Contains(t, detail, "expected at least 2")
+}
+
 func TestExpectedMockSyncRowsRaisesForSyncList(t *testing.T) {
 	t.Parallel()
 

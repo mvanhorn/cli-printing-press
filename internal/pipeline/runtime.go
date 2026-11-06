@@ -318,7 +318,8 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 
 	expectedMockRows := 0
 	if report.Mode == "mock" {
-		expectedMockRows = expectedMockSyncRows(spec)
+		resource, _ := chooseDataPipelineProbeResource(cfg.Dir)
+		expectedMockRows = expectedMockSyncRowsForResource(spec, resource)
 	}
 	if isDeviceCLIDir(cfg.Dir) {
 		// Device CLIs (BLE) have no sync->sql->search data pipeline; running the

@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,7 +33,10 @@ func dataPipelineSyncTimeout(mode string) time.Duration {
 // an unscoped sync.
 func chooseDataPipelineProbeResource(cliDir string) (string, string) {
 	declared, _ := declaredSyncResourceNames(cliDir)
-	hint, exclude := dataPipelineProbeHints(cliDir)
+	hint, exclude, hintErr := dataPipelineProbeHints(cliDir)
+	if hintErr != nil {
+		return "", fmt.Sprintf("FAIL: could not read verify sync hints (%v); refusing unscoped sync", hintErr)
+	}
 	excluded := make(map[string]struct{}, len(exclude))
 	for _, name := range exclude {
 		name = strings.TrimSpace(name)
@@ -40,6 +45,7 @@ func chooseDataPipelineProbeResource(cliDir string) (string, string) {
 		}
 		excluded[name] = struct{}{}
 	}
+	children := dependentChildrenByParent(cliDir)
 
 	var safe []string
 	seen := make(map[string]struct{})
@@ -61,8 +67,12 @@ func chooseDataPipelineProbeResource(cliDir string) (string, string) {
 		if _, drop := excluded[hint]; drop || !slices.Contains(safe, hint) {
 			return "", fmt.Sprintf("FAIL: verify sync resource %q is not an allowed declared sync resource; refusing unscoped sync", hint)
 		}
+		if cascadesToExcluded(hint, children, excluded) {
+			return "", fmt.Sprintf("FAIL: verify sync resource %q also syncs an excluded resource; refusing unscoped sync", hint)
+		}
 		return hint, ""
 	}
+	safe = withoutExcludedChildren(safe, children, excluded)
 	if len(safe) == 0 {
 		return "", "FAIL: no safe sync resource for the data-pipeline probe; refusing unscoped sync"
 	}
@@ -95,59 +105,125 @@ func isSafeSyncProbeResource(name string) bool {
 	return true
 }
 
-func dataPipelineProbeHints(cliDir string) (string, []string) {
+// Naming a parent also syncs its dependents. Skip that parent when one of
+// those dependents is excluded; --resources has no switch that syncs the
+// parent alone.
+func cascadesToExcluded(name string, children map[string][]string, excluded map[string]struct{}) bool {
+	for _, child := range children[name] {
+		if _, drop := excluded[child]; drop {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutExcludedChildren(names []string, children map[string][]string, excluded map[string]struct{}) []string {
+	if len(children) == 0 || len(excluded) == 0 {
+		return names
+	}
+	kept := make([]string, 0, len(names))
+	for _, name := range names {
+		if cascadesToExcluded(name, children, excluded) {
+			continue
+		}
+		kept = append(kept, name)
+	}
+	return kept
+}
+
+var dependentChildRe = regexp.MustCompile(`Name:\s*"([^"]+)"\s*,\s*ParentTable:\s*"([^"]+)"`)
+
+func dependentChildrenByParent(cliDir string) map[string][]string {
+	children := map[string][]string{}
 	if strings.TrimSpace(cliDir) == "" {
-		return "", nil
+		return children
+	}
+	for _, path := range listGoFiles(filepath.Join(cliDir, "internal", "cli")) {
+		content := stripGoComments(readFileContent(path))
+		for _, match := range dependentChildRe.FindAllStringSubmatch(content, -1) {
+			child, parent := match[1], match[2]
+			if child == "" || parent == "" {
+				continue
+			}
+			children[parent] = append(children[parent], child)
+		}
+	}
+	return children
+}
+
+func dataPipelineProbeHints(cliDir string) (string, []string, error) {
+	if strings.TrimSpace(cliDir) == "" {
+		return "", nil, nil
 	}
 	var resource string
 	var exclude []string
-	if manifest, err := ReadCLIManifest(cliDir); err == nil {
+	manifest, err := ReadCLIManifest(cliDir)
+	if err != nil && !os.IsNotExist(err) {
+		return "", nil, err
+	}
+	if err == nil {
 		resource = strings.TrimSpace(manifest.VerifySyncResource)
 		exclude = append(exclude, manifest.VerifySyncExclude...)
 	}
-	if verify := researchVerifyHint(cliDir); verify != nil {
+	verify, err := researchVerifyHint(cliDir)
+	if err != nil {
+		return "", nil, err
+	}
+	if verify != nil {
 		if resource == "" {
 			resource = strings.TrimSpace(verify.SyncResource)
 		}
 		exclude = append(exclude, verify.SyncExclude...)
 	}
-	return resource, exclude
+	return resource, exclude, nil
 }
 
-func researchVerifyHint(cliDir string) *ResearchVerify {
+func researchVerifyHint(cliDir string) (*ResearchVerify, error) {
 	for _, path := range []string{
 		filepath.Join(cliDir, "research.json"),
 		filepath.Join(cliDir, "research", "research.json"),
 	} {
-		if verify := researchVerifyFromFile(path); verify != nil {
-			return verify
+		verify, err := researchVerifyFromFile(path)
+		if err != nil || verify != nil {
+			return verify, err
 		}
 	}
 	canonical, err := ResolveTargetDir(cliDir)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	dir := FindResearchDir(cliDir)
 	if dir == "" || dir == canonical {
-		return nil
+		return nil, nil
 	}
-	research, err := LoadResearch(dir)
-	if err != nil || research == nil {
-		return nil
-	}
-	return research.Verify
+	return researchVerifyFromFile(filepath.Join(dir, "research.json"))
 }
 
-func researchVerifyFromFile(path string) *ResearchVerify {
+func researchVerifyFromFile(path string) (*ResearchVerify, error) {
 	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
-		return nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	research, err := decodeResearch(data)
-	if err != nil || research == nil {
-		return nil
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, nil
 	}
-	return research.Verify
+	var envelope struct {
+		Verify json.RawMessage `json:"verify"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, fmt.Errorf("decoding %s: %w", filepath.Base(path), err)
+	}
+	if trimmed := strings.TrimSpace(string(envelope.Verify)); trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	var verify ResearchVerify
+	if err := json.Unmarshal(envelope.Verify, &verify); err != nil {
+		return nil, fmt.Errorf("decoding %s verify: %w", filepath.Base(path), err)
+	}
+	return &verify, nil
 }
 
 func declaredSyncResourceNames(cliDir string) ([]string, bool) {

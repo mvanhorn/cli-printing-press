@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -194,12 +196,89 @@ func TestChooseDataPipelineProbeResource(t *testing.T) {
 		assert.Empty(t, detail)
 	})
 
+	t.Run("parent that cascades to an excluded child is not the probe", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t, "projects", "videos")
+		appendDependentSyncDef(t, dir, "tasks", "projects")
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:        "openapi3",
+			VerifySyncExclude: []string{"tasks"},
+		}))
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Equal(t, "videos", resource)
+		assert.Empty(t, detail)
+	})
+
+	t.Run("hint that cascades to an excluded child fails closed", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t, "projects", "videos")
+		appendDependentSyncDef(t, dir, "tasks", "projects")
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:         "openapi3",
+			VerifySyncResource: "projects",
+			VerifySyncExclude:  []string{"tasks"},
+		}))
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "also syncs an excluded")
+		assert.Contains(t, detail, "refusing unscoped sync")
+	})
+
+	t.Run("unrelated invalid research field does not drop verify hints", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t, "repos", "videos")
+		writeTestFile(t, filepath.Join(dir, "research.json"), `{
+			"gaps": [null],
+			"verify": {"sync_resource": "videos", "sync_exclude": ["repos"]}
+		}`)
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Equal(t, "videos", resource)
+		assert.Empty(t, detail)
+	})
+
+	t.Run("undecodable research file fails closed", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t, "videos")
+		writeTestFile(t, filepath.Join(dir, "research.json"), `{"verify":`)
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "could not read verify sync hints")
+		assert.Contains(t, detail, "refusing unscoped sync")
+	})
+
+	t.Run("invalid verify hint fails closed", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t, "videos")
+		writeTestFile(t, filepath.Join(dir, "research.json"), `{
+			"verify": {"sync_exclude": "videos"}
+		}`)
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "could not read verify sync hints")
+		assert.Contains(t, detail, "refusing unscoped sync")
+	})
+
 	t.Run("no cli directory fails closed", func(t *testing.T) {
 		resource, detail := chooseDataPipelineProbeResource("")
 
 		assert.Empty(t, resource)
 		assert.Contains(t, detail, "refusing unscoped sync")
 	})
+}
+
+func appendDependentSyncDef(t *testing.T, dir, child, parent string) {
+	t.Helper()
+
+	path := filepath.Join(dir, "internal", "cli", "sync.go")
+	existing, err := os.ReadFile(path)
+	require.NoError(t, err)
+	extra := fmt.Sprintf("\nfunc dependentResourceDefs() []dependentResourceDef {\n\treturn []dependentResourceDef{\n\t\t{Name: %q, ParentTable: %q},\n\t}\n}\n", child, parent)
+	require.NoError(t, os.WriteFile(path, append(existing, []byte(extra)...), 0o644))
 }
 
 func TestParseDefaultSyncResources(t *testing.T) {
@@ -467,7 +546,7 @@ func hasFlagValue(args []string, flag, want string) bool {
 	return flagValue(args, flag) == want
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
