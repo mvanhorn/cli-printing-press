@@ -8866,6 +8866,14 @@ func bodyResourceWrap(endpoint spec.Endpoint) (spec.Param, bool) {
 	if p.Type != "object" || len(p.Fields) == 0 {
 		return spec.Param{}, false
 	}
+	// An optional wrapper whose children carry required fields is a
+	// conditional group: serialize it through the nested path, which omits an
+	// untouched object, instead of always sending {"wrapper": {...}} (a bare
+	// call would otherwise send an empty object that violates its own
+	// required children). A required wrapper keeps the wrapper shape.
+	if !p.Required && bodyHasRequiredJSONFields(p.Fields) {
+		return spec.Param{}, false
+	}
 	return p, true
 }
 
@@ -9324,7 +9332,10 @@ func writeBodyRequiredChecks(b *strings.Builder, endpoint spec.Endpoint, indent 
 		return
 	}
 	body := flattenCollidingBodyFields(endpoint.Body)
-	renderBodyRequiredChecks(b, body, 0, indent, "", "", true)
+	// Presence mode answers "would a bare invocation fail?" with the same
+	// emitter the template uses, so endpointHasRequiredInput can never
+	// diverge from the checks actually generated.
+	renderBodyRequiredChecksMode(b, body, 0, indent, "", "", true, !includeEnum)
 	if includeEnum {
 		renderBodyEnumChecks(b, body, 0, indent, "", "", true)
 	}
@@ -9360,6 +9371,19 @@ func renderFlatBodyEnumCheck(b *strings.Builder, p spec.Param, indent, flagPrefi
 }
 
 func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel bool) {
+	renderBodyRequiredChecksMode(b, body, depth, indent, flagPrefix, identPrefix, topLevel, false)
+}
+
+// renderBodyRequiredChecksMode is the single source of truth for which body
+// checks exist. In presence mode (bare-invocation help gate) checks under an
+// optional object are conditional and are skipped. Invariant: a required
+// parent is never silently omitted from a bare request. When a required object
+// emits no unconditional check and serialization could omit it (it sits beside
+// a root sibling, or below depth 0 where an empty object is dropped), its
+// conditional checks are emitted so the parent still counts as required input.
+// The sole-root wrapper (depth 0, one root) is exempt: bodyResourceWrap emits
+// {"a":{}} unconditionally, so a bare call is valid.
+func renderBodyRequiredChecksMode(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel, presence bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
 			flag := joinFlag(flagPrefix, publicFlagName(p))
@@ -9369,7 +9393,19 @@ func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, 
 				continue
 			}
 			if p.Required {
-				renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, ident, false)
+				if !presence {
+					renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, ident, false)
+					continue
+				}
+				var unconditional strings.Builder
+				renderBodyRequiredChecksMode(&unconditional, p.Fields, depth+1, indent, flag, ident, false, true)
+				if unconditional.Len() == 0 && (depth > 0 || len(body) > 1) {
+					renderBodyRequiredChecks(&unconditional, p.Fields, depth+1, indent, flag, ident, false)
+				}
+				b.WriteString(unconditional.String())
+				continue
+			}
+			if presence {
 				continue
 			}
 			var nested strings.Builder
