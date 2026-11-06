@@ -103,6 +103,14 @@ binaries at least as new as the sources are reused. Save the JSON report to:
 
 `$PROOFS_DIR/<stamp>-dogfood-results.json`
 
+A declared nonzero exit can count as a successful happy path and JSON check
+when it returns a nonempty JSON outcome without an error envelope (for example
+a documented NO-GO verdict). A usage error or silent declared exit does not
+establish real coverage. HTTP 403/404 responses that explicitly say a feature
+is not enabled for the current account are skipped with the live response
+retained as evidence; an ordinary missing resource remains a failure. Inspect
+that evidence rather than manually changing a failed row to skipped.
+
 If the command exits non-zero, inspect the structured failures, fix the CLI, and
 rerun live dogfood. The runner writes `phase5-acceptance.json` on every outcome
 (`status: "pass"` on success, `status: "fail"` with a `failure_summary` block on
