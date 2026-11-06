@@ -313,7 +313,7 @@ paths:
 	assert.NotContains(t, report.DataPipelineDetail, "expected at least")
 
 	oneRow := buildDataPipelineProbeBinary(t, 1)
-	pass, detail := runDataPipelineTest(oneRow, "", "mock", os.Environ, expectedMockSyncRows(spec))
+	pass, detail := runDataPipelineTest(oneRow, seedRunnableSyncProbeCLI(t, "items"), "mock", os.Environ, expectedMockSyncRows(spec))
 	assert.Truef(t, pass, "detail: %s", detail)
 	assert.NotContains(t, detail, "expected at least")
 }
@@ -380,12 +380,12 @@ func TestExpectedMockSyncRowsRaisesForSyncList(t *testing.T) {
 	assert.Equal(t, len(mockListItems()), expectedMockSyncRows(spec))
 
 	oneRow := buildDataPipelineProbeBinary(t, 1)
-	pass, detail := runDataPipelineTest(oneRow, "", "mock", os.Environ, expectedMockSyncRows(spec))
+	pass, detail := runDataPipelineTest(oneRow, seedRunnableSyncProbeCLI(t, "items"), "mock", os.Environ, expectedMockSyncRows(spec))
 	assert.False(t, pass)
 	assert.Contains(t, detail, "expected at least 2")
 
 	twoRows := buildDataPipelineProbeBinary(t, len(mockListItems()))
-	pass, detail = runDataPipelineTest(twoRows, "", "mock", os.Environ, expectedMockSyncRows(spec))
+	pass, detail = runDataPipelineTest(twoRows, seedRunnableSyncProbeCLI(t, "items"), "mock", os.Environ, expectedMockSyncRows(spec))
 	assert.True(t, pass)
 	assert.Contains(t, detail, "has 2 rows")
 

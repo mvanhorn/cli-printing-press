@@ -708,6 +708,11 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		}
 	}
 
+	resource, chooseDetail := chooseDataPipelineProbeResource(cliDir)
+	if resource == "" {
+		return false, chooseDetail
+	}
+
 	env := envFn()
 
 	// Create a temp dir for the test database
@@ -720,31 +725,30 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	dbPath := filepath.Join(tmpDir, "test.db")
 	env = append(env, "HOME="+tmpDir) // so sync uses temp location
 
-	// Test sync (if it exists)
+	// Every attempt keeps --resources. Unknown --full or --db can be
+	// dropped; a missing resource or any other failure must not widen
+	// the probe to the rest of the sync surface.
+	timeout := dataPipelineSyncTimeout(mode)
 	var syncErrors []error
-	syncErr := runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath, "--resources", "repos", "--full"}), env, 30*time.Second)
-	if syncErr != nil {
+	var syncErr error
+	for _, args := range scopedSyncProbeAttempts(dbPath, resource) {
+		if shouldSkipSyncProbeAttempt(args, syncErrors) {
+			continue
+		}
+		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, args), env, timeout)
+		if syncErr == nil {
+			break
+		}
 		syncErrors = append(syncErrors, syncErr)
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath, "--full"}), env, 30*time.Second)
+		if isUnknownSyncCommandError(syncErr) {
+			continue
+		}
+		flag, unknown := unknownSyncFlag(syncErr)
+		if !unknown || !canDropSyncProbeFlag(flag) {
+			break
+		}
 	}
 	if syncErr != nil {
-		syncErrors = append(syncErrors, syncErr)
-		// Sync might not accept --resources or --full; keep --db when
-		// possible so downstream sql probes read the same temporary store.
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--db", dbPath}), env, 30*time.Second)
-	}
-	if syncErr != nil {
-		syncErrors = append(syncErrors, syncErr)
-		// Sync might not accept --db either; try the bare command before
-		// deciding the pipeline crashed.
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync", "--full"}), env, 30*time.Second)
-	}
-	if syncErr != nil {
-		syncErrors = append(syncErrors, syncErr)
-		syncErr = runCLI(binary, boundedSyncProbeArgs(mode, []string{"sync"}), env, 30*time.Second)
-	}
-	if syncErr != nil {
-		syncErrors = append(syncErrors, syncErr)
 		if allSyncAttemptsWereUnknownCommand(syncErrors) {
 			return true, "WARN: no sync command — data-pipeline check skipped"
 		}
@@ -760,7 +764,7 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	tableQuery := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%' AND name NOT LIKE '%_fts%' AND name != 'sync_state'`
 	tablesOut, sqlErr := runCLIWithOutput(binary, []string{"sql", "--db", dbPath, tableQuery}, env, 10*time.Second)
 	if sqlErr != nil {
-		return true, "PASS: sync completed (sql unavailable, table validation skipped)"
+		return annotateDataPipelineProbe(true, "PASS: sync completed (sql unavailable, table validation skipped)", resource)
 	}
 
 	// Parse table names from output (one per line, skip empty lines and header noise)
@@ -768,10 +772,10 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	if len(tables) == 0 {
 		// No domain tables found — ambiguous (could be minimal CLI or unusual naming).
 		// Don't fail the pipeline gate; report for human review.
-		return true, "WARN: sync completed but no domain tables found in sqlite_master"
+		return annotateDataPipelineProbe(true, "WARN: sync completed but no domain tables found in sqlite_master", resource)
 	}
 	if mode == "mock" && strings.TrimSpace(cliDir) != "" && !cliHasSyncableResources(cliDir) {
-		return true, fmt.Sprintf("PASS: %d domain tables created (mock mode; no syncable resources declared)", len(tables))
+		return annotateDataPipelineProbe(true, fmt.Sprintf("PASS: %d domain tables created (mock mode; no syncable resources declared)", len(tables)), resource)
 	}
 
 	var bestShortTable string
@@ -801,22 +805,22 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 				}
 				continue
 			}
-			return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
+			return annotateDataPipelineProbe(true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count), resource)
 		}
 		if expectedRows > 0 && zeroDataTable == "" && !isAuxiliaryPipelineTable(table, len(tables)) {
 			zeroDataTable = table
 		}
 	}
 	if bestPassTable != "" {
-		return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), bestPassTable, bestPassCount)
+		return annotateDataPipelineProbe(true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), bestPassTable, bestPassCount), resource)
 	}
 	if bestShortTable != "" {
-		return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", bestShortTable, bestShortCount, expectedRows, mode)
+		return annotateDataPipelineProbe(false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", bestShortTable, bestShortCount, expectedRows, mode), resource)
 	}
 	if zeroDataTable != "" && len(tables) > 1 {
-		return false, fmt.Sprintf("FAIL: %s has 0 rows after sync, expected at least %d (%s mode)", zeroDataTable, expectedRows, mode)
+		return annotateDataPipelineProbe(false, fmt.Sprintf("FAIL: %s has 0 rows after sync, expected at least %d (%s mode)", zeroDataTable, expectedRows, mode), resource)
 	}
-	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
+	return annotateDataPipelineProbe(false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode), resource)
 }
 
 func boundedSyncProbeArgs(mode string, args []string) []string {

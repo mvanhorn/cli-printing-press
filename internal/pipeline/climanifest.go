@@ -171,6 +171,13 @@ type CLIManifest struct {
 	NovelFeaturesBuilt []NovelFeatureManifest `json:"novel_features_built,omitempty"`
 	Scorecard          *CLIManifestScorecard  `json:"scorecard,omitempty"`
 	Verify             *CLIManifestVerify     `json:"verify,omitempty"`
+	// VerifySyncResource names the only resource verify's data-pipeline
+	// probe may sync. It must also be one of the CLI's declared sync
+	// resources. Empty lets the probe choose from that declared list.
+	VerifySyncResource string `json:"verify_sync_resource,omitempty"`
+	// VerifySyncExclude drops declared resources from the probe choice.
+	// The probe refuses to sync when the hint and the list leave no safe name.
+	VerifySyncExclude []string `json:"verify_sync_exclude,omitempty"`
 	// generatedEnvReads is a write-scoped scan of os.Getenv names already
 	// emitted into the printed CLI. It is not serialized; WriteMCPBManifest
 	// and reconcile attach it so a kept colliding override can bind the
