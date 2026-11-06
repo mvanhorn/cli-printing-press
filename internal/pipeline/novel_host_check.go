@@ -353,7 +353,7 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 			for _, elt := range lit.Elts {
 				if field, ok := elt.(*ast.KeyValueExpr); ok {
 					if key, ok := field.Key.(*ast.Ident); ok && key.Name == "Annotations" {
-						annotationSpans = append(annotationSpans, tokenSpan{start: field.Value.Pos(), end: field.Value.End()})
+						annotationSpans = append(annotationSpans, annotationStringSpans(field.Value)...)
 					}
 				}
 			}
@@ -366,9 +366,7 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 				_, _, index := annotationIndex(lhs)
 				_, _, wholeMap := annotationMapAssignment(lhs, assign.Rhs[i])
 				if index || wholeMap {
-					// Annotation values describe commands, not network destinations.
-					value := assign.Rhs[i]
-					annotationSpans = append(annotationSpans, tokenSpan{start: value.Pos(), end: value.End()})
+					annotationSpans = append(annotationSpans, annotationStringSpans(assign.Rhs[i])...)
 				}
 			}
 		}
@@ -402,6 +400,31 @@ func hostsInAST(fset *token.FileSet, filename string, node ast.Node, feature str
 		return true
 	})
 	return declared
+}
+
+func annotationStringSpans(expr ast.Expr) []tokenSpan {
+	switch expr := expr.(type) {
+	case *ast.BasicLit:
+		if expr.Kind == token.STRING {
+			return []tokenSpan{{start: expr.Pos(), end: expr.End()}}
+		}
+	case *ast.ParenExpr:
+		return annotationStringSpans(expr.X)
+	case *ast.BinaryExpr:
+		if expr.Op == token.ADD {
+			return append(annotationStringSpans(expr.X), annotationStringSpans(expr.Y)...)
+		}
+	case *ast.CompositeLit:
+		var spans []tokenSpan
+		for _, elt := range expr.Elts {
+			if field, ok := elt.(*ast.KeyValueExpr); ok {
+				spans = append(spans, annotationStringSpans(field.Key)...)
+				spans = append(spans, annotationStringSpans(field.Value)...)
+			}
+		}
+		return spans
+	}
+	return nil
 }
 
 // schema.org publishes JSON-LD type IRIs. Matching or stripping that

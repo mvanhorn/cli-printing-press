@@ -69,6 +69,73 @@ func newTranscriptsSearchCmd() *cobra.Command {
 	assert.Empty(t, checkReimplementation(cliDir, researchDir).UnverifiedHosts)
 }
 
+func TestNovelHostHookRegisteredCommands(t *testing.T) {
+	for _, registration := range []string{
+		`registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+			addNovelCommandIfAbsent(root, newTranscriptsCmd())
+		})`,
+		`registerNovelCommand(registerTranscripts)`,
+		`addNovelCommandIfAbsent(rootCmd, newTranscriptsCmd())`,
+	} {
+		t.Run(registration, func(t *testing.T) {
+			cliDir, researchDir := seedReimplementationFixture(t, map[string]string{
+				"root.go": `package cli
+func init() { rootCmd.AddCommand(newVideosCmd()) }
+func newVideosCmd() *cobra.Command { return &cobra.Command{Use: "videos"} }
+`,
+				"hooks.go": "package cli\nfunc init() { " + registration + " }",
+				"transcripts.go": `package cli
+func registerTranscripts(root *cobra.Command, flags *rootFlags) {
+	addNovelCommandIfAbsent(root, newTranscriptsCmd())
+}
+func newTranscriptsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "transcripts"}
+	addNovelCommandIfAbsent(cmd, newTranscriptsSearchCmd())
+	return cmd
+}
+`,
+				"search.go": `package cli
+func newTranscriptsSearchCmd() *cobra.Command {
+	_ = "https://unknown.example.test"
+	return &cobra.Command{Use: "search"}
+}
+`,
+			}, []NovelFeature{{Name: "Search transcripts", Command: "transcripts search"}})
+			got := checkReimplementation(cliDir, researchDir)
+			require.Len(t, got.UnverifiedHosts, 1)
+			assert.Equal(t, "unknown.example.test", got.UnverifiedHosts[0].Host)
+			assert.Equal(t, "transcripts search", got.UnverifiedHosts[0].Command)
+			assert.Equal(t, "search.go", got.UnverifiedHosts[0].File)
+		})
+	}
+}
+
+func TestNovelHostAnnotationCallsStillChecked(t *testing.T) {
+	for _, annotation := range []string{
+		`cmd.Annotations["custom"] = VALUE`,
+		`cmd.Annotations = map[string]string{"custom": VALUE}`,
+		`cmd = &cobra.Command{Annotations: map[string]string{"custom": VALUE}}`,
+	} {
+		for _, value := range []string{
+			`func() string { _, _ = http.Get("https://unknown.example.test"); return "metadata" }()`,
+			`fmt.Sprint(func() string { _, _ = http.Get("https://unknown.example.test"); return "metadata" }())`,
+			`"videos.search"`,
+			`("https://metadata.example.test" + "/path")`,
+		} {
+			t.Run(annotation+value, func(t *testing.T) {
+				src := "package cli\nfunc command() { " + strings.ReplaceAll(annotation, "VALUE", value) + " }"
+				got := hostsInGoSource("search.go", src, "search")
+				if strings.Contains(value, "http.Get") {
+					require.Len(t, got, 1)
+					assert.Equal(t, "unknown.example.test", got[0].host)
+				} else {
+					assert.Empty(t, got)
+				}
+			})
+		}
+	}
+}
+
 func TestNovelHostIgnoresAnnotationValues(t *testing.T) {
 	src := `package cli
 func newSearchCmd() *cobra.Command {

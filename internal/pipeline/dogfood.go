@@ -999,13 +999,14 @@ func collectRegisteredCommandSources(dir string) (paths, leaves map[string]bool,
 		children []string
 	}
 	funcs := map[string]*cmdFunc{}
+	fileContent := map[string]string{}
 	var rootFuncs []string
 	leaves = map[string]bool{}
 
 	// Root detection scans the full file because the wiring function
 	// (Execute / helpers) isn't a new*Cmd constructor.
-	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\s*\(`)
-	rootVarAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\b`)
+	rootAddRe := regexp.MustCompile(`(?:rootCmd\.AddCommand\(|addNovelCommandIfAbsent\(\s*rootCmd\s*,)\s*(\w+)\s*\(`)
+	rootVarAddRe := regexp.MustCompile(`(?:rootCmd\.AddCommand\(|addNovelCommandIfAbsent\(\s*rootCmd\s*,)\s*(\w+)\b`)
 	funcHeaderRe := regexp.MustCompile(`func\s+(\w+)\s*\(`)
 	useRe := cobraUseLeafRe
 	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\s*\(`)
@@ -1017,6 +1018,7 @@ func collectRegisteredCommandSources(dir string) (paths, leaves map[string]bool,
 			continue
 		}
 		src := string(data)
+		fileContent[filepath.Base(file)] = src
 		packageVars := packageCommandFactoryVars(src)
 		for _, u := range useRe.FindAllStringSubmatch(src, -1) {
 			if name := strings.Fields(u[1])[0]; name != "" {
@@ -1050,6 +1052,9 @@ func collectRegisteredCommandSources(dir string) (paths, leaves map[string]bool,
 			for _, cm := range addChildRe.FindAllStringSubmatch(body, -1) {
 				entry.children = append(entry.children, cm[1])
 			}
+			for ctor := range addCommandConstructorCalls("package cli\nfunc command() {" + body) {
+				entry.children = append(entry.children, ctor)
+			}
 			for _, cm := range addChildVarRe.FindAllStringSubmatch(body, -1) {
 				fn := bodyVars[cm[1]]
 				if fn == "" {
@@ -1063,6 +1068,9 @@ func collectRegisteredCommandSources(dir string) (paths, leaves map[string]bool,
 		}
 	}
 
+	for ctor := range novelHookReachableConstructors(fileContent) {
+		rootFuncs = append(rootFuncs, ctor)
+	}
 	paths = map[string]bool{}
 	sources = map[string][]string{}
 	if len(rootFuncs) == 0 || len(funcs) == 0 {
