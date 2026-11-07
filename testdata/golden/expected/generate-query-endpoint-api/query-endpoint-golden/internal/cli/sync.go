@@ -49,6 +49,32 @@ type syncResult struct {
 
 const syncWatermarkOverlap = time.Second
 
+// lockedWriter serializes concurrent Write calls onto one io.Writer.
+// The flat pool, the dependent pool, and the summary share the writer
+// installed for the command. One Fprintf is one Write, so each event
+// line stays whole.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// ensureLockedWriter reuses w when it is already a lockedWriter so the
+// flat pool, the dependent pool, and the summary share one mutex. A plain
+// writer is wrapped so a caller that did not install the command lock
+// stays race-free without nesting a second lock.
+func ensureLockedWriter(w io.Writer) io.Writer {
+	if _, ok := w.(*lockedWriter); ok {
+		return w
+	}
+	return &lockedWriter{w: w}
+}
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
@@ -149,6 +175,7 @@ Resource scoping:
 			if machineFormat {
 				syncEventWriter = cmd.ErrOrStderr()
 			}
+			syncEventWriter = ensureLockedWriter(syncEventWriter)
 
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {

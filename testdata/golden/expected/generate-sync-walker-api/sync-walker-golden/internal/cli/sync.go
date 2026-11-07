@@ -51,6 +51,32 @@ type syncResult struct {
 
 const syncWatermarkOverlap = time.Second
 
+// lockedWriter serializes concurrent Write calls onto one io.Writer.
+// The flat pool, the dependent pool, and the summary share the writer
+// installed for the command. One Fprintf is one Write, so each event
+// line stays whole.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// ensureLockedWriter reuses w when it is already a lockedWriter so the
+// flat pool, the dependent pool, and the summary share one mutex. A plain
+// writer is wrapped so a caller that did not install the command lock
+// stays race-free without nesting a second lock.
+func ensureLockedWriter(w io.Writer) io.Writer {
+	if _, ok := w.(*lockedWriter); ok {
+		return w
+	}
+	return &lockedWriter{w: w}
+}
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
@@ -151,6 +177,7 @@ Resource scoping:
 			if machineFormat {
 				syncEventWriter = cmd.ErrOrStderr()
 			}
+			syncEventWriter = ensureLockedWriter(syncEventWriter)
 			// Snapshot before defaults expand, so an empty user filter stays empty
 			// and dependents inherit "sync everything" instead of the default list.
 			parentFilter := append([]string(nil), resources...)
@@ -2846,22 +2873,6 @@ func syncOneParent(
 	return rep
 }
 
-// lockedWriter serializes concurrent Write calls to an underlying io.Writer.
-// The dependent-resource worker pool fans out across parents, and each worker's
-// syncOneParent emits events directly to the shared syncEvents writer; without
-// this guard those writes race. One Fprintf is one Write, so per-event lines
-// stay atomic relative to one another.
-type lockedWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (l *lockedWriter) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.w.Write(p)
-}
-
 // First parent, every 100th, and the last parent emit sync_progress, so a
 // 1,000-parent fan-out stays at 11 lines. The heartbeat covers a single slow
 // parent that would otherwise leave the NDJSON stream silent.
@@ -3073,13 +3084,9 @@ func syncDependentResource(ctx context.Context, c interface {
 	var depConsumedTotal int
 	depAnomalyEmitted := false
 
-	// syncOneParent writes per-parent events (reconcile, warnings, fetch errors)
-	// directly to syncEvents. Under the worker pool below, N workers would call
-	// Write concurrently on the same io.Writer — a data race (a bytes.Buffer
-	// corrupts; even an *os.File interleaves bytes). Serialize all event writes
-	// for this resource through a mutex-guarded wrapper so the pool's output is
-	// race-free and each event line stays intact.
-	syncEvents = &lockedWriter{w: syncEvents}
+	// Parent workers and the drain loop write this writer together. Reuse the
+	// command's lock when the writer is already wrapped.
+	syncEvents = ensureLockedWriter(syncEvents)
 
 	// Bounded worker pool over parents — mirrors the top-level flat-resource
 	// pool. Cloud safety holds because the shared rate limiter (applied inside
@@ -3130,7 +3137,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	// "first parent" is inherently nondeterministic under concurrency.
 	// The silence ticker shares this loop so a parent that has not reported
 	// yet still produces sync_progress. Workers write events concurrently, so
-	// those lines go through the lockedWriter installed above.
+	// those lines go through the locked writer from ensureLockedWriter above.
 	dryRunHit := false
 	cancelSeen := false
 	failedParents := 0
