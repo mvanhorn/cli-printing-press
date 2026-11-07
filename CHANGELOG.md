@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.35.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.3...v4.35.4) (2026-11-07)
+
+
+### Bug Fixes
+
+* **cli:** don't treat a registered flag's "is required" as a positional-binding failure ([#5372](https://github.com/mvanhorn/cli-printing-press/issues/5372)) ([be4e7a5](https://github.com/mvanhorn/cli-printing-press/commit/be4e7a5b46e4cae2340faae03f8bada2aae2426b))
+* **cli:** serialize concurrent sync event writes ([#5371](https://github.com/mvanhorn/cli-printing-press/issues/5371)) ([3e4630a](https://github.com/mvanhorn/cli-printing-press/commit/3e4630ab9c63b23bb200141552d8e9818d9da7ce))
+* **cli:** skip text annotation values in the novel host check ([#5362](https://github.com/mvanhorn/cli-printing-press/issues/5362)) ([94ce80e](https://github.com/mvanhorn/cli-printing-press/commit/94ce80e35cbc516cbab1b80f54d96ca419958ca0))
+
 ## [4.35.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.2...v4.35.3) (2026-11-06)
 
 
