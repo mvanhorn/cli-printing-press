@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,12 +72,13 @@ Usage:
 	}
 }
 
-// TestPathParamRequiredSentinel pins the regex that flags "is required"
-// usage errors in command output. Generator wording for path-param
-// validators is `Error: <name> is required`, so the regex must catch
-// that case-insensitively, and must NOT match Cobra's separate
-// `required flag(s) "X" not set` error (which is a flag bug, not the
-// positional-binding bug this probe targets).
+// TestPathParamRequiredSentinel pins the coarse "is required" regex.
+// Generator wording for path-param validators is `Error: <name> is
+// required`, so the regex must catch that case-insensitively, and must
+// NOT match Cobra's separate `required flag(s) "X" not set` error.
+// Flag wording such as `--email is required` still matches here on
+// purpose; pathParamRejectionIsPositionalBinding decides whether the
+// subject is a registered flag.
 func TestPathParamRequiredSentinel(t *testing.T) {
 	matches := []string{
 		"Error: tagId is required",
@@ -96,6 +98,126 @@ func TestPathParamRequiredSentinel(t *testing.T) {
 	for _, m := range doesNotMatch {
 		assert.False(t, pathParamRequiredSentinelRe.MatchString(m), "should not match: %q", m)
 	}
+}
+
+func TestPathParamFlagsFromHelp_RegistersLocalAndGlobalFlags(t *testing.T) {
+	help := `Invite a person.
+
+Usage:
+  cli people contacts invite <user-id> [--tags=<csv>] [flags]
+
+Flags:
+  -e, --email string   Email address
+      --dry-run        Preview the invite
+
+Global Flags:
+      --config string   Config file
+
+Examples:
+  cli people contacts invite abc --region us
+`
+	flags := pathParamFlagsFromHelp(help)
+	for _, name := range []string{"email", "dry-run", "config"} {
+		_, ok := flags.long[name]
+		assert.True(t, ok, "missing long flag %s", name)
+	}
+	_, ok := flags.short["e"]
+	assert.True(t, ok)
+	for _, name := range []string{"help", "region", "tags", "user-id"} {
+		_, registered := flags.long[name]
+		assert.False(t, registered, "%s is not a registered flag", name)
+	}
+}
+
+func TestPathParamRejectionIsPositionalBinding(t *testing.T) {
+	flags := pathParamFlagSet{
+		long:  map[string]struct{}{"email": {}, "user-id": {}, "format": {}, "dry-run": {}},
+		short: map[string]struct{}{"e": {}},
+	}
+	placeholders := []string{"user-id", "region", "tagid", "company_id", "email"}
+
+	notBinding := []string{
+		`Error: --email is required`,
+		"error: --EMAIL is required",
+		"Error: --email is required.",
+		"Error: --email is required!",
+		`Error: "--email" is required`,
+		"Error: '--email' is required",
+		"Error: `--email` is required",
+		"Error: (--email) is required",
+		"Error: --email=user@example.com is required",
+		"Error: --email= is required",
+		`Error: --email="user@example.com" is required`,
+		`Error: "--email=user@example.com" is required`,
+		"Error: -e is required",
+		"Error: -E is required",
+		"Error: -e=user@example.com is required",
+		`Error: -e="a b" is required`,
+		"Error: -e='a b' is required",
+		"Error: format is required",
+		"Error: --user-id is required",
+		"Error: --email is required\r\n",
+		"Error: --format=json is required",
+		"Error: --dry-run is required",
+		`Error: "--dry-run" is required`,
+		"Error: --email=user@example.com. is required",
+		"Error: --email=user@example.com, is required",
+		"ERROR: --EMAIL IS REQUIRED",
+		"Error:\t--email is required",
+		"Error: '-e' is required",
+		`Error: --email="a b" is required`,
+		"Error: --email='a b' is required",
+		`{"error":"--email is required"}`,
+		"at least one of --email, --format is required",
+		`Error: required flag(s) "email" not set`,
+		"unknown command",
+		"connection refused",
+		"Error: --email given but nothing else",
+	}
+	for _, output := range notBinding {
+		assert.False(t, pathParamRejectionIsPositionalBinding(output, placeholders, flags), "should not be a positional-binding failure: %q", output)
+	}
+
+	binding := []string{
+		"Error: user-id is required",
+		"Error: User-Id is required",
+		"Error: USER-ID IS REQUIRED",
+		`Error: "user-id" is required`,
+		"Error: user-id, is required",
+		"<region> is required",
+		"Error: <region> is required.",
+		"Error: tagId is required",
+		"COMPANY_ID is required",
+		"Error: --email given but tagId is required",
+		"passed --email=a@b.c but user-id is required",
+		"Error: --email is required; user-id is required",
+		"Error: --email is required\nError: user-id is required",
+		"Error: user-id or --email is required",
+		"Error: --email or user-id is required",
+		"Error: <user-id> is required",
+		"at least one of --email, --missing is required",
+		"Error: --email, tagId is required",
+		"Error: user-id is required\r\n",
+		"Error: email is required",
+		"Error: <email> is required",
+		"is required",
+		"Error: -z is required",
+		"Error: --email-address is required",
+		"Error: --e-mail is required",
+	}
+	for _, output := range binding {
+		assert.True(t, pathParamRejectionIsPositionalBinding(output, placeholders, flags), "should be a positional-binding failure: %q", output)
+	}
+
+	// A dashed token counts only when that flag is actually registered.
+	// email is not registered on this command, so the SKILL wording still fails.
+	unregistered := pathParamFlagSet{long: map[string]struct{}{}, short: map[string]struct{}{}}
+	assert.True(t, pathParamRejectionIsPositionalBinding("Error: --email is required", []string{"user-id"}, unregistered))
+	assert.True(t, pathParamRejectionIsPositionalBinding("Error: tagId is required", nil, pathParamFlagSet{}))
+	assert.True(t, pathParamRejectionIsPositionalBinding("Error: --user-id is required", []string{"user-id"}, pathParamFlagSet{
+		long:  map[string]struct{}{"email": {}},
+		short: map[string]struct{}{},
+	}))
 }
 
 // buildPathParamProbeFixture builds a tiny CLI binary that simulates a
@@ -435,4 +557,89 @@ func TestFinalizeVerifyReport_AllPathParamProbesPassingKeepsVerdict(t *testing.T
 	assert.Equal(t, 2, report.Passed)
 	assert.Equal(t, 0, report.Critical)
 	assert.Equal(t, "PASS", report.Verdict)
+}
+
+// TestRunPathParamProbes_RegisteredFlagRequiredIsNotBinding runs the probe
+// against a CLI whose help actually registers --email. Reverting the
+// classifier to "any is required" fails invite. Treating every leading
+// "--" as a flag, or dropping hyphenated names, fails link and bind.
+func TestRunPathParamProbes_RegisteredFlagRequiredIsNotBinding(t *testing.T) {
+	binary := buildFlagRequiredProbeFixture(t)
+
+	results := runPathParamProbes(binary, subprocessEnv(), nil)
+	require.Len(t, results, 4)
+
+	byCommand := map[string]PathParamProbeResult{}
+	for _, result := range results {
+		byCommand[result.Command] = result
+	}
+
+	invite := byCommand["people contacts invite"]
+	assert.True(t, invite.Passed, "registered --email is required is a flag check, not a positional-binding failure")
+	assert.Empty(t, invite.Reason)
+
+	bind := byCommand["people contacts bind"]
+	assert.False(t, bind.Passed, "hyphenated positional user-id is required must still fail")
+	assert.NotEmpty(t, bind.Reason)
+
+	tag := byCommand["people contacts tag"]
+	assert.False(t, tag.Passed, "a flag mentioned earlier does not excuse tagId is required")
+	assert.NotEmpty(t, tag.Reason)
+
+	link := byCommand["people contacts link"]
+	assert.False(t, link.Passed, "an unregistered --user-id is required is still a positional-binding failure")
+	assert.NotEmpty(t, link.Reason)
+}
+
+func buildFlagRequiredProbeFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	joined := strings.Join(os.Args[1:], " ")
+	switch {
+	case joined == "" || joined == "--help":
+		fmt.Print("Test\n\nUsage:\n  test-cli [command]\n\nAvailable Commands:\n  people  People commands\n")
+	case joined == "people --help":
+		fmt.Print("People\n\nUsage:\n  test-cli people [command]\n\nAvailable Commands:\n  contacts  Contact commands\n")
+	case joined == "people contacts --help":
+		fmt.Print("Contacts\n\nUsage:\n  test-cli people contacts [command]\n\nAvailable Commands:\n  invite  Invite\n  bind    Bind\n  tag     Tag\n  link    Link\n")
+	case joined == "people contacts invite --help":
+		fmt.Print("Invite\n\nUsage:\n  test-cli people contacts invite <user-id> [flags]\n\nFlags:\n  -e, --email string   Email\n")
+	case joined == "people contacts bind --help":
+		fmt.Print("Bind\n\nUsage:\n  test-cli people contacts bind <user-id> [flags]\n\nFlags:\n      --email string   Email\n")
+	case joined == "people contacts tag --help":
+		fmt.Print("Tag\n\nUsage:\n  test-cli people contacts tag <tagId> [flags]\n\nFlags:\n      --email string   Email\n")
+	case joined == "people contacts link --help":
+		fmt.Print("Link\n\nUsage:\n  test-cli people contacts link <user-id> [flags]\n\nFlags:\n      --email string   Email\n")
+	case strings.HasPrefix(joined, "people contacts invite "):
+		fmt.Fprintln(os.Stderr, "Error: --email is required")
+		os.Exit(2)
+	case strings.HasPrefix(joined, "people contacts bind "):
+		fmt.Fprintln(os.Stderr, "Error: user-id is required")
+		os.Exit(1)
+	case strings.HasPrefix(joined, "people contacts tag "):
+		fmt.Fprintln(os.Stderr, "Error: --email given but tagId is required")
+		os.Exit(1)
+	case strings.HasPrefix(joined, "people contacts link "):
+		fmt.Fprintln(os.Stderr, "Error: --user-id is required")
+		os.Exit(1)
+	default:
+		fmt.Fprintln(os.Stderr, "unknown:", joined)
+		os.Exit(2)
+	}
+}
+`)
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
+	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
+	require.NoError(t, err, "building flag-required fixture: %s", string(out))
+	return binaryPath
 }
