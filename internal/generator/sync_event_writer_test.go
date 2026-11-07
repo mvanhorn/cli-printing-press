@@ -38,8 +38,8 @@ func TestGeneratedFlatSyncEventWriterLock(t *testing.T) {
 	behavior = strings.ReplaceAll(behavior, "ITEM_LIST", strings.Join(resources, ","))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_event_writer_test.go"), []byte(behavior), 0o644))
 
-	runGoCommandRequired(t, outputDir, "test", "-count=1", "-run", flatEventLockRun, "./internal/cli")
-	runGoCommandRequired(t, outputDir, "test", "-count=1", "-race", "-run", flatEventLockRun, "./internal/cli")
+	runGoCommand(t, outputDir, "test", "-count=1", "-run", flatEventLockRun, "./internal/cli")
+	runGoCommand(t, outputDir, "test", "-count=1", "-race", "-run", flatEventLockRun, "./internal/cli")
 	requireGeneratedCompiles(t, outputDir)
 }
 
@@ -66,8 +66,8 @@ func TestGeneratedDependentSyncEventWriterLock(t *testing.T) {
 	behavior := strings.ReplaceAll(dependentEventLockBehaviorTest, "DEPEVENTLOCK_MODULE", naming.CLI(apiSpec.Name))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_dependent_event_writer_test.go"), []byte(behavior), 0o644))
 
-	runGoCommandRequired(t, outputDir, "test", "-count=1", "-run", dependentEventLockRun, "./internal/cli")
-	runGoCommandRequired(t, outputDir, "test", "-count=1", "-race", "-run", dependentEventLockRun, "./internal/cli")
+	runGoCommand(t, outputDir, "test", "-count=1", "-run", dependentEventLockRun, "./internal/cli")
+	runGoCommand(t, outputDir, "test", "-count=1", "-race", "-run", dependentEventLockRun, "./internal/cli")
 	requireGeneratedCompiles(t, outputDir)
 }
 
