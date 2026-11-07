@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,6 +152,8 @@ func TestPathParamRejectionIsPositionalBinding(t *testing.T) {
 		"Error: -e is required",
 		"Error: -E is required",
 		"Error: -e=user@example.com is required",
+		`Error: -e="a b" is required`,
+		"Error: -e='a b' is required",
 		"Error: format is required",
 		"Error: --user-id is required",
 		"Error: --email is required\r\n",
@@ -635,7 +638,7 @@ func main() {
 	}
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
 	require.NoError(t, err, "building flag-required fixture: %s", string(out))
 	return binaryPath

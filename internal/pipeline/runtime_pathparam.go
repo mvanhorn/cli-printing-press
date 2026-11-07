@@ -41,7 +41,7 @@ var pathParamRequiredSentinelRe = regexp.MustCompile(`(?i)\bis required\b`)
 // The literal space in the sentinel regex keeps this scan on one line.
 var pathParamRequiredTokenRe = regexp.MustCompile(`(?i)(?:` +
 	`--[A-Za-z0-9][\w-]*(?:=(?:"[^"]*"|'[^']*'|` + "`[^`]*`" + `|[^\s,;]+)?)?` +
-	`|-[A-Za-z0-9](?:=[^\s,;]+)?` +
+	`|-[A-Za-z0-9](?:=(?:"[^"]*"|'[^']*'|` + "`[^`]*`" + `|[^\s,;]+)?)?` +
 	`|<[A-Za-z_][\w-]*>` +
 	`|[A-Za-z_][\w-]*` +
 	`)`)
