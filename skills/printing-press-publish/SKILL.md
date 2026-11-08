@@ -2,7 +2,7 @@
 name: printing-press-publish
 description: Publish a generated CLI to the printing-press-library repo
 version: 0.1.0
-min-binary-version: "4.34.3"
+min-binary-version: "4.35.4"
 allowed-tools:
   - Bash
   - Read
@@ -62,10 +62,11 @@ fresh-turn invocation for this journal-only mode.
 If the fresh user-authored request includes `--skip-live-test=<reason>`, record
 the exact non-empty reason as `SKIP_LIVE_TEST_REASON` and remove the flag before
 resolving the CLI name. This is the only supported escape valve for the
-publish-time live test gate. Use it only for auth-unavailable, known upstream
-outage, LAN-unreachable hardware APIs, or similarly concrete operator-approved
-cases; never infer a skip from ordinary latency or from the presence of an
-older Phase 5 marker.
+publish-time live test gate. Use it only when the phase5 gate accepts a skip
+for this CLI: auth-unavailable on a credentialed API, or
+`lan-unreachable-from-generation-host` for LAN-only hardware. A no-auth cloud
+API, including during an upstream outage, needs a pass marker. Never infer a
+skip from ordinary latency or from the presence of an older Phase 5 marker.
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
@@ -177,7 +178,7 @@ Before doing anything else:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 4.34.3
+# min-binary-version: 4.35.4
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -550,8 +551,9 @@ if [ ! -f "$RESEARCH_DIR/research.json" ]; then
 fi
 ```
 
-Phase 5 markers are bound to the source tree that was exercised. The live
-dogfood writer records `source_fingerprint` and per-file hashes automatically.
+Phase 5 markers are bound to the source tree that was exercised. `dogfood --live`
+and `dogfood --write-skip` record `source_fingerprint` and per-file hashes with
+the same capture the gate validates. Do not hash the tree in the shell.
 Publish validation recomputes the fingerprint from the current CLI directory
 and refuses a marker from a drifted tree, naming changed source files when the
 marker has them. README-only edits are outside this fingerprint and do not
@@ -616,20 +618,23 @@ branch, no package, no PR. Report the failed command, exit code when present,
 stderr or reason snippet, and the path to the fresh proof files so the operator
 can re-run dogfood and fix the CLI.
 
-If `SKIP_LIVE_TEST_REASON` is set from `--skip-live-test=<reason>`, write a
-fresh skip marker instead of running dogfood:
+If `SKIP_LIVE_TEST_REASON` is set from `--skip-live-test=<reason>`, ask the
+Printing Press to write a fresh skip marker instead of running dogfood. The
+command records `source_fingerprint` and `source_files` with the capture the
+gate validates, and it refuses a skip the gate would reject, including a
+no-credential skip while the credential env var is set.
 
 ```bash
 SKIP_REASON_LOWER=$(printf '%s' "$SKIP_LIVE_TEST_REASON" | tr '[:upper:]' '[:lower:]')
 case "$AUTH_TYPE" in
-  api_key|bearer_token|oauth2)
+  api_key|bearer_token|oauth2|oauth2_refresh)
     ;;
   none)
     case "$SKIP_REASON_LOWER" in
-      *upstream*outage*|lan-unreachable-from-generation-host)
+      lan-unreachable-from-generation-host)
         ;;
       *)
-        echo "ERROR: --skip-live-test is only valid for auth_type=none during a known upstream outage or LAN-unreachable hardware case."
+        echo "ERROR: --skip-live-test for auth_type=none is only valid with reason lan-unreachable-from-generation-host. A no-auth cloud API, including during an upstream outage, needs a phase5 pass marker."
         exit 1
         ;;
     esac
@@ -640,54 +645,19 @@ case "$AUTH_TYPE" in
     ;;
 esac
 
-API_KEY_AVAILABLE=false
-if [ -n "$AUTH_ENV" ] && [ -n "${!AUTH_ENV:-}" ]; then
-  API_KEY_AVAILABLE=true
-fi
-
-SOURCE_FILES=$(find "$CLI_DIR" \( -type d \( -name '.git' -o -name '.manuscripts' -o -name '.printing-press' \) -prune \) -o -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' -o -name 'spec.json' -o -name 'spec.yaml' -o -name 'spec.yml' \) -print | LC_ALL=C sort)
-SOURCE_FINGERPRINT=$(
-  while IFS= read -r SOURCE_FILE; do
-    [ -z "$SOURCE_FILE" ] && continue
-    SOURCE_REL="${SOURCE_FILE#"$CLI_DIR"/}"
-    SOURCE_HASH=$(shasum -a 256 "$SOURCE_FILE" | sed 's/[[:space:]].*//')
-    printf '%s\0%s\n' "$SOURCE_REL" "$SOURCE_HASH"
-  done <<EOF | shasum -a 256 | sed 's/[[:space:]].*//'
-$SOURCE_FILES
-EOF
-)
-if [ -z "$SOURCE_FINGERPRINT" ]; then
-  echo "ERROR: unable to fingerprint CLI source before writing the Phase 5 skip marker."
-  exit 1
-fi
-
 rm -f "$PROOFS_DIR/phase5-acceptance.json"
-jq -n \
-  --arg api "$API_SLUG" \
-  --arg run "$RUN_ID" \
-  --arg reason "$SKIP_LIVE_TEST_REASON" \
-  --arg auth "$AUTH_TYPE" \
-  --arg source_fingerprint "$SOURCE_FINGERPRINT" \
-  --argjson api_key_available "$API_KEY_AVAILABLE" \
-  --argjson browser_session_available false \
-  '{
-    schema_version: 1,
-    api_name: $api,
-    run_id: $run,
-    status: "skip",
-    level: "none",
-    source_fingerprint: $source_fingerprint,
-    skip_reason: $reason,
-    auth_context: {
-      type: $auth,
-      api_key_available: $api_key_available,
-      browser_session_available: $browser_session_available
-    }
-  }' > "$PROOFS_DIR/phase5-skip.json"
-if [ "$SKIP_REASON_LOWER" = "lan-unreachable-from-generation-host" ]; then
-  tmp_marker=$(mktemp "${TMPDIR:-/tmp}/phase5-skip.XXXXXX")
-  jq '.auth_context.local_network_only = true' "$PROOFS_DIR/phase5-skip.json" > "$tmp_marker" &&
-    mv "$tmp_marker" "$PROOFS_DIR/phase5-skip.json"
+SKIP_ARGS=(
+  dogfood
+  --dir "$CLI_DIR"
+  --write-skip "$PROOFS_DIR/phase5-skip.json"
+  --reason "$SKIP_LIVE_TEST_REASON"
+)
+if [ -n "$AUTH_ENV" ]; then
+  SKIP_ARGS+=(--auth-env "$AUTH_ENV")
+fi
+if ! "$PRINTING_PRESS_BIN" "${SKIP_ARGS[@]}"; then
+  echo "ERROR: the Printing Press refused the phase5 skip marker."
+  exit 1
 fi
 LIVE_GATE_JSON=""
 ```

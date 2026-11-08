@@ -178,7 +178,98 @@ func TestDogfoodHelpIncludesLiveFlags(t *testing.T) {
 	assert.Contains(t, output, "--level")
 	assert.Contains(t, output, "--auth-tier")
 	assert.Contains(t, output, "--write-acceptance")
+	assert.Contains(t, output, "--write-skip")
+	assert.Contains(t, output, "--reason")
 	assert.Contains(t, output, "--overwrite-command-mirror")
+}
+
+func TestDogfoodWriteSkipFlagConflicts(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "live",
+			args: []string{"--dir", dir, "--live", "--write-skip", filepath.Join(dir, pipeline.Phase5SkipFilename), "--reason", "auth_required_no_credential"},
+			want: "--write-skip cannot be combined with --live",
+		},
+		{
+			name: "reason without write-skip",
+			args: []string{"--dir", dir, "--reason", "auth_required_no_credential"},
+			want: "--reason requires --write-skip",
+		},
+		{
+			name: "write-acceptance",
+			args: []string{"--dir", dir, "--write-skip", filepath.Join(dir, pipeline.Phase5SkipFilename), "--write-acceptance", filepath.Join(dir, pipeline.Phase5AcceptanceFilename), "--reason", "auth_required_no_credential"},
+			want: "--write-skip cannot be combined with --write-acceptance",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newDogfoodCmd()
+			cmd.SetArgs(tc.args)
+			_, err := runWithCapturedStdout(t, cmd.Execute)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestDogfoodWriteSkipCommandPassesPublishPhase5Check(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", home)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", home)
+	t.Setenv("WIDGET_API_KEY", "")
+
+	dir := filepath.Join(home, "widget-pp-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"ok\") }\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module widget-pp-cli\n\ngo 1.26\n"), 0o644))
+	manifest := pipeline.CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "widget",
+		CLIName:       "widget-pp-cli",
+		RunID:         "run-skip",
+		AuthType:      "api_key",
+		AuthEnvVars:   []string{"WIDGET_API_KEY"},
+	}
+	require.NoError(t, pipeline.WriteCLIManifest(dir, manifest))
+	skipPath := filepath.Join(dir, ".manuscripts", manifest.RunID, "proofs", pipeline.Phase5SkipFilename)
+
+	cmd := newDogfoodCmd()
+	cmd.SetArgs([]string{
+		"--dir", dir,
+		"--write-skip", skipPath,
+		"--reason", "auth_required_no_credential",
+		"--auth-env", "WIDGET_API_KEY",
+		"--json",
+	})
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	var marker pipeline.Phase5GateMarker
+	require.NoError(t, json.Unmarshal([]byte(output), &marker))
+	assert.Equal(t, "auth_required_no_credential", marker.SkipReason)
+	assert.NotEmpty(t, marker.SourceFingerprint)
+	assert.NotEmpty(t, marker.SourceFiles)
+
+	result := checkPhase5Gate(dir, manifest)
+	assert.True(t, result.Passed, result.Error)
+
+	t.Setenv("WIDGET_API_KEY", "secret-value")
+	refused := newDogfoodCmd()
+	refused.SetArgs([]string{
+		"--dir", dir,
+		"--write-skip", skipPath,
+		"--reason", "auth_required_no_credential",
+		"--auth-env", "WIDGET_API_KEY",
+	})
+	_, err = runWithCapturedStdout(t, refused.Execute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential env WIDGET_API_KEY is set")
+	assert.NotContains(t, err.Error(), "secret-value")
 }
 
 func TestPrintLiveDogfoodReportDistinguishesPassWithSkips(t *testing.T) {

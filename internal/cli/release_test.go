@@ -84,6 +84,7 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 	const dogfoodHoldReceiptFloor = "4.33.5"
 	const reuseLiveHappyPathFloor = "4.34.3"
 	const postAcceptanceShipcheckFloor = "4.35.2"
+	const phase5SkipWriterFloor = "4.35.4"
 	paths := []struct {
 		frontmatter string
 		setup       string
@@ -120,6 +121,8 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 					"printing-press min-binary-version must cover the dogfood hold archive handoff (%s)", dogfoodHoldReceiptFloor)
 				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+postAcceptanceShipcheckFloor) < 0,
 					"printing-press min-binary-version must cover read-only shipcheck verify after a valid phase5 acceptance marker (%s)", postAcceptanceShipcheckFloor)
+				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+phase5SkipWriterFloor) < 0,
+					"printing-press min-binary-version must cover dogfood --write-skip (%s)", phase5SkipWriterFloor)
 				assign := assignRe.FindStringSubmatch(string(setupData))
 				require.Len(t, assign, 2, "setup contract must assign _min_binary_version")
 				assert.Equal(t, frontmatter[1], assign[1])
@@ -128,6 +131,8 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 			if paths.frontmatter == "../../skills/printing-press-publish/SKILL.md" {
 				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+reuseLiveHappyPathFloor) < 0,
 					"printing-press-publish min-binary-version must cover --reuse-live-happy-path (%s)", reuseLiveHappyPathFloor)
+				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+phase5SkipWriterFloor) < 0,
+					"printing-press-publish min-binary-version must cover dogfood --write-skip (%s)", phase5SkipWriterFloor)
 				return
 			}
 			assert.Equal(t, majorFloor, frontmatter[1])

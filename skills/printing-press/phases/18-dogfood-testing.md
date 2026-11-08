@@ -25,7 +25,8 @@ Present via `AskUserQuestion`:
 There is no skip option when an API key is available. Phase 5 auto-skips ONLY
 when the API requires auth AND no key is available: display "No API key
 available — skipping live dogfood testing. The CLI was verified against exit
-codes and dry-run only."
+codes and dry-run only." Record that skip with the Step 4
+`dogfood --write-skip` command. Do not hand-write `phase5-skip.json`.
 
 For APIs with `auth.type: none` (or no auth section in the spec), Phase 5
 is MANDATORY — the API is freely testable without any credentials. Do not
@@ -38,10 +39,8 @@ RFC1918/private hostnames, localhost-shaped appliance endpoints). If Phase 5
 cannot reach the hardware because the generation host is not on that LAN, do
 not fabricate an API-key skip and do not hand-author `phase5-acceptance.json`.
 Ask the user whether to hold the CLI or skip live dogfood and promote anyway.
-Only when the user explicitly chooses the skip/promote path, write
-`phase5-skip.json` with `skip_reason:
-"lan-unreachable-from-generation-host"`, `auth_context.type: "none"`, and
-`auth_context.local_network_only: true`.
+Only when the user explicitly chooses the skip/promote path, record it with
+the Step 4 command for `lan-unreachable-from-generation-host`.
 
 Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test. If some commands cannot be exercised because fixture values are missing, classify them as `BLOCKED_FIXTURE` and file/fix the machine gap; do not use that as a reason to recommend Quick.
 
@@ -266,70 +265,42 @@ Use it only for features that need state a prior real write created. It is not
 a substitute for a runnable happy path, and the gate fails if a listed proof
 file is missing beside `phase5-acceptance.json`.
 
-If Phase 5 is legitimately skipped because the API requires API-key or bearer
-auth and no credential was available, write:
+If Phase 5 is legitimately skipped because the API requires API-key, bearer,
+or OAuth2 auth (`api_key`, `bearer_token`, `oauth2`, `oauth2_refresh`) and no
+credential was available, record the skip with the
+Printing Press. Do not hand-author the marker and do not compute a digest.
+`<AUTH_ENV>` is the credential variable from `.printing-press.json`
+(`auth_env_vars`). The command refuses when that variable, or any manifest
+credential variable, is set, and it refuses this reason for `none`, `cookie`,
+`composed`, and `session_handshake` auth. The marker includes
+`source_fingerprint` and `source_files`. A later `.go` edit makes it stale;
+rerun the command after the tree is final.
 
-`$PROOFS_DIR/phase5-skip.json`
-
-```json
-{
-  "schema_version": 1,
-  "api_name": "<api>",
-  "run_id": "<run-id>",
-  "status": "skip",
-  "level": "none",
-  "skip_reason": "auth_required_no_credential",
-  "auth_context": {
-    "type": "api_key|bearer_token|oauth2",
-    "api_key_available": false,
-    "browser_session_available": false
-  }
-}
+```bash
+"$PRINTING_PRESS_BIN" dogfood \
+  --dir "$CLI_WORK_DIR" \
+  --write-skip "$PROOFS_DIR/phase5-skip.json" \
+  --reason auth_required_no_credential \
+  --auth-env "<AUTH_ENV>"
 ```
 
 If Phase 5 is legitimately skipped because a no-auth API is LAN-only and the
-generation host cannot reach the user's LAN hardware, write:
+generation host cannot reach the user's LAN hardware, record that skip the
+same way. The command sets `auth_context.local_network_only` and the
+fingerprint.
 
-`$PROOFS_DIR/phase5-skip.json`
-
-```json
-{
-  "schema_version": 1,
-  "api_name": "<api>",
-  "run_id": "<run-id>",
-  "status": "skip",
-  "level": "none",
-  "skip_reason": "lan-unreachable-from-generation-host",
-  "auth_context": {
-    "type": "none",
-    "api_key_available": false,
-    "browser_session_available": false,
-    "local_network_only": true
-  }
-}
+```bash
+"$PRINTING_PRESS_BIN" dogfood \
+  --dir "$CLI_WORK_DIR" \
+  --write-skip "$PROOFS_DIR/phase5-skip.json" \
+  --reason lan-unreachable-from-generation-host
 ```
 
 If a cookie / composed / session-handshake CLI could not be exercised because
 no captured session was available to the harness (the sandboxed HOME has no
-cookie jar, so every command 401s), the runner writes this skip marker for you
-on a `skip-cookie-auth-no-session` verdict — do not hand-author it:
-
-`$PROOFS_DIR/phase5-skip.json`
-
-```json
-{
-  "schema_version": 1,
-  "api_name": "<api>",
-  "run_id": "<run-id>",
-  "status": "skip",
-  "level": "none",
-  "skip_reason": "cookie-auth-no-harness-session",
-  "auth_context": {
-    "type": "cookie|composed|session_handshake",
-    "browser_session_available": false
-  }
-}
-```
+cookie jar, so every command 401s), `dogfood --live` writes `phase5-skip.json`
+on a `skip-cookie-auth-no-session` verdict. Do not hand-author that marker,
+and do not pass `cookie-auth-no-harness-session` to `--write-skip`.
 
 Prefer the inject-session path in Step 2 (pass the captured session via the
 `<API>_CONFIG` override) so the matrix runs for real; the skip is the floor when
