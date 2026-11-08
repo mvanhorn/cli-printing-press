@@ -186,6 +186,31 @@ func addCritFlags(c *cobra.Command, crit *criteria) {
         self.assertFalse(verify_skill.flag_declared_via_helper(
             self.cli, [self.source / "root.go"], "postcode"))
 
+    def test_nested_helper_with_renamed_command_parameter_declares_flags(self):
+        self.write('''package cli
+func Execute() {
+ rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+ rootCmd.AddCommand(newSavedCmd())
+}
+func newSavedCmd() *cobra.Command {
+ cmd := &cobra.Command{Use: "saved"}
+ add := &cobra.Command{Use: "add <name>"}
+ bindCritCmdFlags(add, &crit)
+ cmd.AddCommand(add)
+ return cmd
+}
+func bindCritCmdFlags(c *cobra.Command, crit *criteria) {
+ registerDealFlag(c)
+}
+func registerDealFlag(sub *cobra.Command) {
+ sub.Flags().StringVar(&crit.deal, "deal", "", "Deal")
+}
+''')
+        self.assertTrue(verify_skill.flag_declared_via_helper(
+            self.cli, [self.source / "root.go"], "deal"))
+        self.assertFalse(verify_skill.flag_declared_via_helper(
+            self.cli, [self.source / "root.go"], "postcode"))
+
     def test_help_invocation_skips_required_positional_args(self):
         self.write('''package cli
 func Execute() {
