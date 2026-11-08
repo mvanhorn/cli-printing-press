@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 // Phase5SkipWriteOptions selects the CLI tree and the skip marker to write.
@@ -174,10 +176,25 @@ func phase5SkipCredentialPresent(manifest CLIManifest, named string) (string, bo
 }
 
 func phase5SkipCredentialEnvNames(manifest CLIManifest, named string) []string {
+	specs := make(map[string]spec.AuthEnvVar, len(manifest.AuthEnvVarSpecs))
+	for _, envVar := range manifest.AuthEnvVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" {
+			continue
+		}
+		specs[name] = envVar
+	}
 	var names []string
 	add := func(name string) {
 		name = strings.TrimSpace(name)
 		if name == "" || slices.Contains(names, name) {
+			return
+		}
+		if envVar, ok := specs[name]; ok {
+			if !phase5SkipSpecIsUsableCredential(envVar) {
+				return
+			}
+		} else if !phase5SkipFlatNameIsUsableCredential(name) {
 			return
 		}
 		names = append(names, name)
@@ -186,10 +203,43 @@ func phase5SkipCredentialEnvNames(manifest CLIManifest, named string) []string {
 	for _, name := range manifest.AuthEnvVars {
 		add(name)
 	}
-	for _, spec := range manifest.AuthEnvVarSpecs {
-		add(spec.Name)
+	for _, envVar := range manifest.AuthEnvVarSpecs {
+		add(envVar.Name)
 	}
 	return names
+}
+
+// Refresh tokens and client secrets share auth_flow_input with a public
+// client ID, so a non-sensitive client ID is the setup exemption.
+func phase5SkipSpecIsUsableCredential(envVar spec.AuthEnvVar) bool {
+	name := strings.TrimSpace(envVar.Name)
+	if name == "" {
+		return false
+	}
+	if spec.IsOAuthRefreshTokenEnvVar(name) || spec.IsOAuthClientSecretEnvVar(name) {
+		return true
+	}
+	if spec.IsOAuthClientIDEnvVar(name) && envVar.EffectiveKind() == spec.AuthEnvVarKindAuthFlowInput && !envVar.Sensitive {
+		return false
+	}
+	switch envVar.EffectiveKind() {
+	case spec.AuthEnvVarKindPerCall, spec.AuthEnvVarKindHarvested:
+		return true
+	case spec.AuthEnvVarKindAuthFlowInput:
+		return envVar.Sensitive
+	default:
+		return true
+	}
+}
+
+// Inferred oauth2_refresh specs are dropped, so CLIENT_ID stays in
+// AuthEnvVars and is the name publish passes as --auth-env.
+func phase5SkipFlatNameIsUsableCredential(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	return !spec.IsOAuthClientIDEnvVar(name)
 }
 
 func removeShadowedPhase5Acceptance(skipPath string) error {

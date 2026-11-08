@@ -1516,12 +1516,17 @@ func (v AuthEnvVar) IsRequestCredential() bool {
 	return v.EffectiveKind() == AuthEnvVarKindPerCall
 }
 
-func isOAuthClientIDEnvVar(name string) bool {
+// IsOAuthClientIDEnvVar reports whether name is a public OAuth client id
+// (CLIENT_ID or *_CLIENT_ID). It identifies the app during auth setup and
+// is not a usable request credential on its own.
+func IsOAuthClientIDEnvVar(name string) bool {
 	placeholder := naming.EnvVarPlaceholder(name)
 	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
 }
 
-func isOAuthClientSecretEnvVar(name string) bool {
+// IsOAuthClientSecretEnvVar reports whether name is an OAuth client secret
+// (CLIENT_SECRET or *_CLIENT_SECRET).
+func IsOAuthClientSecretEnvVar(name string) bool {
 	placeholder := naming.EnvVarPlaceholder(name)
 	return placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")
 }
@@ -1689,8 +1694,8 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 				sensitive := true
 				if c.Type == AuthTypeOAuth2Refresh {
 					kind = AuthEnvVarKindAuthFlowInput
-					required = !isOAuthClientSecretEnvVar(name)
-					sensitive = !isOAuthClientIDEnvVar(name)
+					required = !IsOAuthClientSecretEnvVar(name)
+					sensitive = !IsOAuthClientIDEnvVar(name)
 				}
 				c.EnvVarSpecs = append(c.EnvVarSpecs, AuthEnvVar{
 					Name:      name,
