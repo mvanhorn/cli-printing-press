@@ -271,6 +271,109 @@ func TestWritePhase5SkipMarkerClientIDIsNotACredential(t *testing.T) {
 			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
 		},
 		{
+			name:     "oauth2 flat client id only",
+			authType: "oauth2",
+			envVars:  []string{"WIDGET_CLIENT_ID", "WIDGET_CLIENT_SECRET"},
+			authEnv:  "WIDGET_CLIENT_ID",
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+		},
+		{
+			name:     "oauth2 specs and flat list client id only",
+			authType: "oauth2",
+			envVars:  []string{"WIDGET_CLIENT_ID", "WIDGET_CLIENT_SECRET"},
+			specs:    []spec.AuthEnvVar{publicClientID, clientSecret},
+			authEnv:  "WIDGET_CLIENT_ID",
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+		},
+		{
+			name:     "oauth2 specs only client id",
+			authType: "oauth2",
+			specs:    []spec.AuthEnvVar{publicClientID, clientSecret},
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+		},
+		{
+			name:     "api key flat client id is a credential",
+			authType: "api_key",
+			envVars:  []string{"WIDGET_API_KEY", "WIDGET_CLIENT_ID"},
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+			wantErr:  "credential env WIDGET_CLIENT_ID is set",
+		},
+		{
+			name:     "api key per-call client id spec still blocks",
+			authType: "api_key",
+			specs: []spec.AuthEnvVar{{
+				Name: "WIDGET_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Sensitive: false,
+			}},
+			set:     map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+			wantErr: "credential env WIDGET_CLIENT_ID is set",
+		},
+		{
+			name:     "api key setup client id spec is not the request credential",
+			authType: "api_key",
+			envVars:  []string{"WIDGET_API_KEY", "WIDGET_CLIENT_ID"},
+			specs: []spec.AuthEnvVar{
+				{Name: "WIDGET_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				publicClientID,
+			},
+			authEnv: "WIDGET_CLIENT_ID",
+			set:     map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+		},
+		{
+			name:     "bearer flat client id is a credential",
+			authType: "bearer_token",
+			envVars:  []string{"WIDGET_CLIENT_ID"},
+			authEnv:  "WIDGET_CLIENT_ID",
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+			wantErr:  "credential env WIDGET_CLIENT_ID is set",
+		},
+		{
+			name:     "api key auth-env client id is a credential",
+			authType: "api_key",
+			envVars:  []string{"WIDGET_API_KEY"},
+			authEnv:  "WIDGET_CLIENT_ID",
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+			wantErr:  "credential env WIDGET_CLIENT_ID is set",
+		},
+		{
+			name:     "bearer auth-env client id is a credential",
+			authType: "bearer_token",
+			envVars:  nil,
+			authEnv:  "WIDGET_CLIENT_ID",
+			set:      map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+			wantErr:  "credential env WIDGET_CLIENT_ID is set",
+		},
+		{
+			name:     "api key specs do not hide a flat client id",
+			authType: "api_key",
+			envVars:  []string{"WIDGET_CLIENT_ID"},
+			specs: []spec.AuthEnvVar{{
+				Name: "WIDGET_SPEC_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true,
+			}},
+			set:     map[string]string{"WIDGET_CLIENT_ID": clientIDValue},
+			wantErr: "credential env WIDGET_CLIENT_ID is set",
+		},
+		{
+			name:     "lowercase client id name is still a credential",
+			authType: "api_key",
+			envVars:  []string{"widget_client_id"},
+			authEnv:  "widget_client_id",
+			set:      map[string]string{"widget_client_id": clientIDValue},
+			wantErr:  "credential env widget_client_id is set",
+		},
+		{
+			name:     "api key flat client id unset still skips",
+			authType: "api_key",
+			envVars:  []string{"WIDGET_CLIENT_ID"},
+			authEnv:  "WIDGET_CLIENT_ID",
+		},
+		{
+			name:     "api key flat client id whitespace still skips",
+			authType: "api_key",
+			envVars:  []string{"WIDGET_CLIENT_ID"},
+			authEnv:  "WIDGET_CLIENT_ID",
+			set:      map[string]string{"WIDGET_CLIENT_ID": "   "},
+		},
+		{
 			name:     "non-sensitive auth flow input is setup",
 			authType: "oauth2",
 			envVars:  []string{"WIDGET_TENANT_ID"},
@@ -436,7 +539,7 @@ func TestWritePhase5SkipMarkerClientIDIsNotACredential(t *testing.T) {
 			manifest.AuthEnvVarSpecs = tc.specs
 			dir := writePhase5SkipTree(t, manifest, nil)
 			for _, name := range []string{
-				"WIDGET_API_KEY", "WIDGET_CLIENT_ID", "WIDGET_CLIENT_SECRET", "WIDGET_REFRESH_TOKEN",
+				"WIDGET_API_KEY", "WIDGET_CLIENT_ID", "widget_client_id", "WIDGET_CLIENT_SECRET", "WIDGET_REFRESH_TOKEN",
 				"WIDGET_ACCESS_TOKEN", "WIDGET_BEARER_TOKEN", "WIDGET_SPEC_TOKEN", "WIDGET_TENANT_ID",
 				"WIDGET_APP_SECRET", "WIDGET_SESSION", "WIDGET_OTHER", "WIDGET_LEGACY_TOKEN",
 			} {
@@ -476,6 +579,33 @@ func TestWritePhase5SkipMarkerClientIDIsNotACredential(t *testing.T) {
 			require.NoError(t, validatePhase5GateForPromote(dir, state))
 			gate := ValidatePhase5Gate(filepath.Dir(skipPath), manifest, dir)
 			require.True(t, gate.Passed, gate.Detail)
+		})
+	}
+}
+
+func TestWritePhase5SkipMarkerFlatClientIDClassification(t *testing.T) {
+	cases := []struct {
+		authType string
+		name     string
+		want     bool
+	}{
+		{authType: "oauth2", name: "WIDGET_CLIENT_ID", want: false},
+		{authType: "oauth2_refresh", name: "WIDGET_CLIENT_ID", want: false},
+		{authType: " OAuth2 ", name: "WIDGET_CLIENT_ID", want: false},
+		{authType: "api_key", name: "WIDGET_CLIENT_ID", want: true},
+		{authType: "bearer_token", name: "WIDGET_CLIENT_ID", want: true},
+		{authType: "none", name: "WIDGET_CLIENT_ID", want: true},
+		{authType: "cookie", name: "WIDGET_CLIENT_ID", want: true},
+		{authType: "", name: "WIDGET_CLIENT_ID", want: true},
+		{authType: "api_key", name: "WIDGET_API_KEY", want: true},
+		{authType: "oauth2", name: "WIDGET_CLIENT_SECRET", want: true},
+		{authType: "oauth2_refresh", name: "WIDGET_REFRESH_TOKEN", want: true},
+		{authType: "oauth2", name: "  ", want: false},
+		{authType: "api_key", name: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.authType+"/"+tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, phase5SkipFlatNameIsUsableCredential(tc.authType, tc.name))
 		})
 	}
 }
@@ -586,6 +716,26 @@ func TestWritePhase5SkipMarkerCoversSkillSkipReasons(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "credential env WIDGET_API_KEY is set")
+		assert.NotContains(t, err.Error(), "present")
+	})
+
+	t.Run("synthetic external credentials refuse a set client id", func(t *testing.T) {
+		phase5SkipTestHome(t)
+		t.Setenv("WIDGET_API_KEY", "")
+		t.Setenv("WIDGET_CLIENT_ID", "public-client-id")
+		manifest := phase5SkipManifest("none")
+		manifest.AuthEnvVars = []string{"WIDGET_CLIENT_ID"}
+		manifest.SpecKind = spec.KindSynthetic
+		dir := writePhase5SkipTree(t, manifest, nil)
+		_, err := WritePhase5SkipMarker(Phase5SkipWriteOptions{
+			CLIDir:  dir,
+			Path:    phase5SkipPath(dir, manifest.RunID),
+			Reason:  phase5SkipReasonExternalCredentialsUnavailable,
+			AuthEnv: "WIDGET_CLIENT_ID",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "credential env WIDGET_CLIENT_ID is set")
+		assert.NotContains(t, err.Error(), "public-client-id")
 	})
 
 	t.Run("standard no-auth rejects external credentials", func(t *testing.T) {

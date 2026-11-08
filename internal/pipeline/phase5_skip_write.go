@@ -194,7 +194,7 @@ func phase5SkipCredentialEnvNames(manifest CLIManifest, named string) []string {
 			if !phase5SkipSpecIsUsableCredential(envVar) {
 				return
 			}
-		} else if !phase5SkipFlatNameIsUsableCredential(name) {
+		} else if !phase5SkipFlatNameIsUsableCredential(manifest.AuthType, name) {
 			return
 		}
 		names = append(names, name)
@@ -232,14 +232,27 @@ func phase5SkipSpecIsUsableCredential(envVar spec.AuthEnvVar) bool {
 	}
 }
 
-// Inferred oauth2_refresh specs are dropped, so CLIENT_ID stays in
-// AuthEnvVars and is the name publish passes as --auth-env.
-func phase5SkipFlatNameIsUsableCredential(name string) bool {
+// Inferred specs are omitted from the manifest, so a flat CLIENT_ID is
+// setup only for oauth2 and oauth2_refresh. On api_key and bearer_token
+// the same name is the request credential.
+func phase5SkipFlatNameIsUsableCredential(authType, name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false
 	}
-	return !spec.IsOAuthClientIDEnvVar(name)
+	if spec.IsOAuthClientIDEnvVar(name) && phase5SkipClientIDIsSetup(authType) {
+		return false
+	}
+	return true
+}
+
+func phase5SkipClientIDIsSetup(authType string) bool {
+	switch strings.ToLower(strings.TrimSpace(authType)) {
+	case authTypeOAuth2, authTypeOAuth2Refresh:
+		return true
+	default:
+		return false
+	}
 }
 
 func removeShadowedPhase5Acceptance(skipPath string) error {
