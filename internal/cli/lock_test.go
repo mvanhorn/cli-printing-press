@@ -301,6 +301,122 @@ func TestLockPromote_RejectsRealSourceDrift(t *testing.T) {
 	assert.Contains(t, err.Error(), "internal/cli/root.go")
 }
 
+func TestLockPromote_AcceptsAuthRequiredSkipMarker(t *testing.T) {
+	setupLockCLITest(t)
+	t.Setenv("TEST_API_KEY", "")
+
+	runID := "20260331T120000Z-skip"
+	workDir := filepath.Join(t.TempDir(), "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"ok\") }\n"), 0o644))
+	require.NoError(t, pipeline.WriteCLIManifest(workDir, pipeline.CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         runID,
+		AuthType:      "api_key",
+		AuthEnvVars:   []string{"TEST_API_KEY"},
+	}))
+	_, err := pipeline.WritePhase5SkipMarker(pipeline.Phase5SkipWriteOptions{
+		CLIDir:  workDir,
+		Path:    filepath.Join(workDir, ".manuscripts", runID, "proofs", pipeline.Phase5SkipFilename),
+		Reason:  "auth_required_no_credential",
+		AuthEnv: "TEST_API_KEY",
+	})
+	require.NoError(t, err)
+
+	state := pipeline.NewStateWithRun("test", workDir, runID, "test-scope")
+	require.NoError(t, state.Save())
+	_, code := runLockCmd("acquire", "--cli", "test-pp-cli", "--scope", "test-scope")
+	require.Equal(t, 0, code)
+
+	stdout, code := runLockCmd("promote", "--cli", "test-pp-cli", "--dir", workDir)
+	assert.Equal(t, 0, code, stdout)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	assert.Equal(t, true, result["promoted"])
+}
+
+func TestLockPromote_RejectsStaleAuthRequiredSkip(t *testing.T) {
+	setupLockCLITest(t)
+	t.Setenv("TEST_API_KEY", "")
+
+	runID := "20260331T120000Z-stale"
+	workDir := filepath.Join(t.TempDir(), "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, pipeline.WriteCLIManifest(workDir, pipeline.CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         runID,
+		AuthType:      "api_key",
+		AuthEnvVars:   []string{"TEST_API_KEY"},
+	}))
+	_, err := pipeline.WritePhase5SkipMarker(pipeline.Phase5SkipWriteOptions{
+		CLIDir: workDir,
+		Path:   filepath.Join(workDir, ".manuscripts", runID, "proofs", pipeline.Phase5SkipFilename),
+		Reason: "auth_required_no_credential",
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\n\nvar changed = 1\n"), 0o644))
+
+	state := pipeline.NewStateWithRun("test", workDir, runID, "test-scope")
+	require.NoError(t, state.Save())
+	cmd := newLockCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"promote", "--cli", "test-pp-cli", "--dir", workDir})
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "promoting CLI: phase5 gate failed")
+	assert.Contains(t, err.Error(), "source fingerprint")
+	assert.Contains(t, err.Error(), "main.go")
+}
+
+func TestLockPromote_RejectsHandWrittenSkipWithoutFingerprint(t *testing.T) {
+	setupLockCLITest(t)
+
+	runID := "20260331T120000Z-hand"
+	workDir := filepath.Join(t.TempDir(), "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, pipeline.WriteCLIManifest(workDir, pipeline.CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         runID,
+		AuthType:      "api_key",
+	}))
+	proofs := filepath.Join(workDir, ".manuscripts", runID, "proofs")
+	require.NoError(t, os.MkdirAll(proofs, 0o755))
+	body := `{
+  "schema_version": 1,
+  "api_name": "test",
+  "run_id": "` + runID + `",
+  "status": "skip",
+  "level": "none",
+  "skip_reason": "auth_required_no_credential",
+  "auth_context": {"type": "api_key"}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(proofs, pipeline.Phase5SkipFilename), []byte(body), 0o644))
+	state := pipeline.NewStateWithRun("test", workDir, runID, "test-scope")
+	require.NoError(t, state.Save())
+
+	cmd := newLockCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"promote", "--cli", "test-pp-cli", "--dir", workDir})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "promoting CLI: phase5 gate failed")
+	assert.Contains(t, err.Error(), "phase5 marker missing source_fingerprint")
+}
+
 func TestLockHelpOutput(t *testing.T) {
 	cmd := newLockCmd()
 	buf := new(bytes.Buffer)

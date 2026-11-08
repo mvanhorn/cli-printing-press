@@ -106,9 +106,9 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 func TestPrintingPressSetupContractRebuildsStaleRepoLocalBinary(t *testing.T) {
 	t.Parallel()
 
-	output, goLog := runPrintingPressSetupContract(t, "4.35.1", "4.35.2")
+	output, goLog := runPrintingPressSetupContract(t, "4.35.3", "4.35.4")
 
-	assert.Contains(t, output, "[local-binary-stale] local build v4.35.1 is older than source v4.35.2")
+	assert.Contains(t, output, "[local-binary-stale] local build v4.35.3 is older than source v4.35.4")
 	assert.Contains(t, output, "[local-binary-rebuilt] rebuilt")
 	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
 	assert.Contains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
@@ -117,7 +117,7 @@ func TestPrintingPressSetupContractRebuildsStaleRepoLocalBinary(t *testing.T) {
 func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T) {
 	t.Parallel()
 
-	output, goLog := runPrintingPressSetupContract(t, "4.35.2", "4.35.2")
+	output, goLog := runPrintingPressSetupContract(t, "4.35.4", "4.35.4")
 
 	assert.NotContains(t, output, "[local-binary-stale]")
 	assert.NotContains(t, output, "[local-binary-rebuilt]")
@@ -128,7 +128,7 @@ func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T)
 func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *testing.T) {
 	t.Parallel()
 
-	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.35.2", "4.35.2", "9.0.0")
+	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.35.4", "4.35.4", "9.0.0")
 	require.Error(t, err, "skill-stale must fail the setup contract; err=%v output=%q", err, output)
 
 	assert.Contains(t, output, "[skill-stale] printing-press skill v")
@@ -141,7 +141,7 @@ func TestPrintingPressSetupContractEmitsSkillStaleWhenSkillBelowBinaryFloor(t *t
 func TestPrintingPressSetupContractOmitsSkillStaleWhenSkillMeetsBinaryFloor(t *testing.T) {
 	t.Parallel()
 
-	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.35.2", "4.35.2", "3.0.0")
+	output, _, err := runPrintingPressSetupContractWithSkillFloor(t, "4.35.4", "4.35.4", "3.0.0")
 	require.NoError(t, err, output)
 
 	assert.NotContains(t, output, "[skill-stale]")
@@ -155,9 +155,9 @@ func TestPrintingPressSetupContractStopsBelowMinBinaryDespiteFreshCache(t *testi
 	output, netLog, err := runPrintingPressStandaloneContract(t, "4.35.1")
 	require.Error(t, err, output)
 
-	assert.Contains(t, output, "[binary-below-min] cli-printing-press binary v4.35.1 is older than the minimum required v4.35.2")
+	assert.Contains(t, output, "[binary-below-min] cli-printing-press binary v4.35.1 is older than the minimum required v4.35.4")
 	assert.Contains(t, output, "PRESS_BINARY_INSTALLED=4.35.1")
-	assert.Contains(t, output, "PRESS_BINARY_REQUIRED=4.35.2")
+	assert.Contains(t, output, "PRESS_BINARY_REQUIRED=4.35.4")
 	assert.NotContains(t, output, "[upgrade-available]")
 	assert.NotContains(t, output, "[upgrade-required]")
 	assert.NotContains(t, output, "[browser-tools-missing]")
@@ -168,7 +168,7 @@ func TestPrintingPressSetupContractStopsBelowMinBinaryDespiteFreshCache(t *testi
 func TestPrintingPressSetupContractAllowsCurrentBinaryWithoutNetwork(t *testing.T) {
 	t.Parallel()
 
-	output, netLog, err := runPrintingPressStandaloneContract(t, "4.35.2")
+	output, netLog, err := runPrintingPressStandaloneContract(t, "4.35.4")
 	require.NoError(t, err, output)
 
 	assert.NotContains(t, output, "[binary-below-min]")
@@ -1497,11 +1497,27 @@ func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
 	assert.Contains(t, liveGateBlock, "phase5-skip.json")
 	assert.Contains(t, liveGateBlock, `"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json`)
 	assert.Contains(t, liveGateBlock, `--skip-live-test=<reason>`)
-	assert.Contains(t, liveGateBlock, `auth_type=none during a known upstream outage or LAN-unreachable hardware case`)
-	assert.Contains(t, liveGateBlock, `local_network_only = true`)
-	assert.Contains(t, liveGateBlock, `API_KEY_AVAILABLE=true`)
-	assert.Contains(t, liveGateBlock, `api_key_available: $api_key_available`)
+	assert.Contains(t, liveGateBlock, `--write-skip "$PROOFS_DIR/phase5-skip.json"`)
+	assert.Contains(t, liveGateBlock, `--reason "$SKIP_LIVE_TEST_REASON"`)
+	assert.Contains(t, liveGateBlock, `--auth-env "$AUTH_ENV"`)
+	assert.Contains(t, liveGateBlock, `lan-unreachable-from-generation-host`)
+	assert.Contains(t, liveGateBlock, `oauth2_refresh`)
+	assert.NotContains(t, liveGateBlock, `shasum -a 256`)
+	assert.NotContains(t, liveGateBlock, `API_KEY_AVAILABLE=true`)
+	assert.NotContains(t, liveGateBlock, `api_key_available: $api_key_available`)
+	assert.NotContains(t, liveGateBlock, `local_network_only = true`)
 	assert.Contains(t, skill, "### Publish Live Gate")
+}
+
+func TestDogfoodPhaseRecordsSkipWithPressCommand(t *testing.T) {
+	phase := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "phases", "18-dogfood-testing.md"))
+	assert.Contains(t, phase, `--write-skip "$PROOFS_DIR/phase5-skip.json"`)
+	assert.Contains(t, phase, `--reason auth_required_no_credential`)
+	assert.Contains(t, phase, `--auth-env "<AUTH_ENV>"`)
+	assert.Contains(t, phase, `--reason lan-unreachable-from-generation-host`)
+	assert.Contains(t, phase, "do not pass `cookie-auth-no-harness-session` to `--write-skip`")
+	assert.NotContains(t, phase, `"skip_reason": "auth_required_no_credential"`)
+	assert.NotContains(t, phase, "shasum")
 }
 
 func TestPolishPublishOfferRequiresFreshUserTurn(t *testing.T) {
@@ -2011,10 +2027,10 @@ func runSkillSetupContract(t *testing.T, skill setupSkill, opts setupContractOpt
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
 
-var Version = "4.35.2" // x-release-please-version
+var Version = "4.35.4" // x-release-please-version
 `), 0o644))
-	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript("4.35.2"))
-	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionScript("4.35.2"))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript("4.35.4"))
+	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionScript("4.35.4"))
 	writeExecutable(t, filepath.Join(fakeBin, "curl"), "#!/bin/sh\nexit 1\n")
 	writeExecutable(t, filepath.Join(fakeBin, "shasum"), "#!/bin/sh\ncat >/dev/null\necho \"0123456789abcdef  -\"\n")
 	writeExecutable(t, filepath.Join(fakeBin, "df"), `#!/bin/sh

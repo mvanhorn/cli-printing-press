@@ -22,6 +22,8 @@ func newDogfoodCmd() *cobra.Command {
 	var level string
 	var timeout time.Duration
 	var writeAcceptance string
+	var writeSkip string
+	var skipReason string
 	var authEnv string
 	var authTier string
 	var allowDestructive bool
@@ -36,7 +38,10 @@ func newDogfoodCmd() *cobra.Command {
   cli-printing-press dogfood --dir ./generated/stripe-pp-cli
 
   # Output as JSON for programmatic use
-  cli-printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
+  cli-printing-press dogfood --dir ./generated/stripe-pp-cli --json
+
+  # Record a credential-less Phase 5 skip
+  cli-printing-press dogfood --dir ./generated/example-pp-cli --write-skip ./proofs/phase5-skip.json --reason auth_required_no_credential --auth-env EXAMPLE_API_KEY`,
 		Annotations: map[string]string{
 			"pp:typed-exit-codes": "0",
 		},
@@ -46,6 +51,36 @@ func newDogfoodCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
 			dir = canonicalDir
+			if writeSkip != "" && live {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--write-skip cannot be combined with --live")}
+			}
+			if skipReason != "" && writeSkip == "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--reason requires --write-skip")}
+			}
+			if writeSkip != "" && writeAcceptance != "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--write-skip cannot be combined with --write-acceptance")}
+			}
+			if writeSkip != "" {
+				marker, err := pipeline.WritePhase5SkipMarker(pipeline.Phase5SkipWriteOptions{
+					CLIDir:  dir,
+					Path:    writeSkip,
+					Reason:  skipReason,
+					AuthEnv: authEnv,
+				})
+				if err != nil {
+					return &ExitError{Code: ExitInputError, Err: err}
+				}
+				if asJSON {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(marker); err != nil {
+						return err
+					}
+				} else {
+					fmt.Printf("Wrote %s\nReason: %s\n", writeSkip, marker.SkipReason)
+				}
+				return nil
+			}
 			if reuseLiveHappyPath != "" && !live {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--reuse-live-happy-path requires --live")}
 			}
@@ -121,7 +156,9 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().StringVar(&level, "level", "full", "Live dogfood depth: quick or full")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for each live dogfood test")
 	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path on every outcome (status:pass on success, status:fail with a failure_summary block on failure)")
-	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker. For oauth2_refresh, a refresh-token-shaped env var is copied into a shared sandbox credential file so rotation persists across subprocesses")
+	cmd.Flags().StringVar(&writeSkip, "write-skip", "", "Write a fingerprinted phase5-skip.json to this path and exit without running dogfood. Requires --reason. Refuses a skip the phase5 gate would reject, and refuses a no-credential skip when the credential env var is set")
+	cmd.Flags().StringVar(&skipReason, "reason", "", "Skip reason for --write-skip (auth_required_no_credential, lan-unreachable-from-generation-host, or another reason the phase5 gate accepts for this CLI)")
+	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker. For oauth2_refresh, a refresh-token-shaped env var is copied into a shared sandbox credential file so rotation persists across subprocesses. With --write-skip, the skip is refused when this variable or a manifest credential variable is set")
 	cmd.Flags().StringVar(&authTier, "auth-tier", "", "Credential tier for live dogfood; falls back to PP_AUTH_TIER and skips commands annotated pp:requires-tier on mismatch")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable destructive-at-auth endpoints and live mutating Example probes that do not advertise --dry-run. Default skips both.")
 	cmd.Flags().StringVar(&reuseLiveHappyPath, "reuse-live-happy-path", "", "Path to a phase5-acceptance.json whose recorded pp:live-happy-path runs cover this exact source; those commands are not run again (with --live; cannot be combined with --allow-destructive)")
