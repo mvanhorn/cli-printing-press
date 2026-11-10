@@ -2115,6 +2115,9 @@ def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
 # Captures the function name so the verifier can look up its body.
 HELPER_CALL_RE = r"\b([a-zA-Z_]\w*)\s*\(\s*(?:{receivers})(?:\b|\.Flags\(\))"
 
+# Nested helpers often rename the command (`addFlags(c *cobra.Command)`).
+HELPER_COMMAND_PARAM_RE = re.compile(r"\s*(\w+)\s+\*?cobra\.Command\b")
+
 # Cobra/stdlib methods that take cmd as first arg but never declare flags.
 _HELPER_CALL_IGNORE = frozenset({
     "AddCommand", "Run", "Execute", "Help", "Usage",
@@ -2245,12 +2248,16 @@ def flag_declared_via_helper(
     flag_name: str,
     command: CommandConstructor | None = None,
 ) -> bool:
-    """Return True if a helper called from cmd_files (with cmd as first arg)
-    declares flag_name, following nested helpers that also receive cmd.
+    """Return True if a helper called from cmd_files (with the command as
+    first arg) declares flag_name, following nested helpers that receive it.
 
     When the graph resolved the command, only helpers called on that command
     count. A file-wide scan would credit a parent with flags a helper added to
     its inline child.
+
+    A nested helper may name its *cobra.Command parameter something other than
+    cmd. The walk follows that parameter as well as cmd and any command
+    variable created in the helper body.
 
     A visited set and _HELPER_WALK_MAX_DEPTH bound cycles and deep chains.
     """
@@ -2280,7 +2287,7 @@ def flag_declared_via_helper(
         func_re = re.compile(
             r"func\s+("
             + "|".join(re.escape(n) for n in sorted(names))
-            + r")\s*\([^)]*\)\s*(?:\w+\s*)?\{"
+            + r")\s*\(([^)]*)\)\s*(?:\w+\s*)?\{"
         )
         for text in texts:
             for m in func_re.finditer(text):
@@ -2288,7 +2295,11 @@ def flag_declared_via_helper(
                 for _, name in iter_flag_declarations(body):
                     if name == flag_name:
                         return True
-                frontier |= _helper_names_called_with_cmd(body)
+                receivers = {"cmd", *LOCAL_COMMAND_RE.findall(body)}
+                param = HELPER_COMMAND_PARAM_RE.match(m.group(2))
+                if param:
+                    receivers.add(param.group(1))
+                frontier |= _helper_names_called_with_cmd(body, receivers)
     return False
 
 
