@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -109,7 +110,9 @@ func TestGeneratedExportDryRunDoesNotTouchOutput(t *testing.T) {
 		assert.Equal(t, "SENTINEL\n", string(got), "existing export destination must not be overwritten")
 		info, err := os.Stat(sentinel)
 		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "existing destination mode must not change")
+		if runtime.GOOS != "windows" {
+			assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "existing destination mode must not change")
+		}
 		assert.NoFileExists(t, missing)
 		assert.NoDirExists(t, filepath.Join(work, "nested"), "dry run must not create the output directory")
 		assert.Equal(t, dirBefore, dirNames(t, work))
@@ -150,7 +153,9 @@ func TestGeneratedExportWithoutDryRunStillWritesPrivateFile(t *testing.T) {
 	assert.JSONEq(t, `{"id":"1","name":"real"}`, string(got))
 	info, err := os.Stat(out)
 	require.NoError(t, err)
-	assert.Zero(t, info.Mode().Perm()&0o077, "export file must be private")
+	if runtime.GOOS != "windows" {
+		assert.Zero(t, info.Mode().Perm()&0o077, "export file must be private")
+	}
 	assert.Contains(t, stderr, "Exported 1 records")
 }
 
