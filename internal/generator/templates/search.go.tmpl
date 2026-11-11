@@ -142,6 +142,11 @@ Run sync first to populate the local search index.`,
 				return cmd.Help()
 			}
 			query := args[0]
+			// A negative limit would slice results[:limit] and panic; reject it
+			// before any network, store or dry-run side effect.
+			if limit < 0 {
+				return usageErr(fmt.Errorf("--limit must be 0 or greater, got %d", limit))
+			}
 
 {{- if .SearchEndpointPath}}
 			// This API has a search endpoint: {{.SearchEndpointMethod}} {{.SearchEndpointPath}}
@@ -185,7 +190,11 @@ Run sync first to populate the local search index.`,
 			}
 {{- end}}
 
-			// Local FTS search
+			// Local FTS search. A dry run must not open the store: opening
+			// creates and migrates the database.
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "search local data")
+			}
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}

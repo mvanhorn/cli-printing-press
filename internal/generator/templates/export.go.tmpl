@@ -75,6 +75,20 @@ large datasets as it has no memory pressure.`,
 				}
 			}
 
+			config := resourceReadConfigFor(resource)
+			if flags.dryRun {
+				// Preview the first request, then stop: --output must not be
+				// created, truncated, or have its directory made.
+				previewParams := map[string]string(nil)
+				if !singleItem && config.paginationType != "" {
+					previewParams = resourcePageParams(config, "", 0, limit)
+				}
+				if _, err := c.Get(cmd.Context(), path, previewParams); err != nil {
+					return classifyAPIError(cmd.OutOrStdout(), err, flags)
+				}
+				return writeDryRun(cmd.OutOrStdout(), flags, "export "+resource)
+			}
+
 			var writer *bufio.Writer
 			var outFile *os.File
 			if outputFile != "" {
@@ -105,7 +119,6 @@ large datasets as it has no memory pressure.`,
 				return nil
 			}
 
-			config := resourceReadConfigFor(resource)
 			allItems := []json.RawMessage{}
 			var singlePayload json.RawMessage
 			count, page, cursor := 0, 0, ""

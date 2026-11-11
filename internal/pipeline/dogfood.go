@@ -998,12 +998,12 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 
 	// Root detection scans the full file because the wiring function
 	// (Execute / helpers) isn't a new*Cmd constructor.
-	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\s*\(`)
-	rootVarAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\b`)
+	rootAddRe := regexp.MustCompile(`(?:rootCmd\.AddCommand\(|addNovelCommandIfAbsent\(\s*rootCmd\s*,)\s*(\w+)\s*\(`)
+	rootVarAddRe := regexp.MustCompile(`(?:rootCmd\.AddCommand\(|addNovelCommandIfAbsent\(\s*rootCmd\s*,)\s*(\w+)\b`)
 	funcHeaderRe := regexp.MustCompile(`func\s+(\w+)\s*\(`)
 	useRe := cobraUseLeafRe
-	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\s*\(`)
-	addChildVarRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\b`)
+	addChildRe := regexp.MustCompile(`(?:\.AddCommand\(|addNovelCommandIfAbsent\(\s*\w+\s*,)\s*(\w+)\s*\(`)
+	addChildVarRe := regexp.MustCompile(`(?:\.AddCommand\(|addNovelCommandIfAbsent\(\s*\w+\s*,)\s*(\w+)\b`)
 
 	for _, file := range files {
 		data, err := os.ReadFile(file)
@@ -1012,6 +1012,7 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 		}
 		src := string(data)
 		packageVars := packageCommandFactoryVars(src)
+		rootFuncs = append(rootFuncs, novelHookRootFactories(src)...)
 		for _, u := range useRe.FindAllStringSubmatch(src, -1) {
 			if name := strings.Fields(u[1])[0]; name != "" {
 				leaves[name] = true
@@ -1089,6 +1090,78 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 		}
 	}
 	return paths, leaves
+}
+
+// Hooks name their root parameter freely; compare bindings so a nested command
+// with the same identifier cannot become an invented root registration.
+func novelHookRootFactories(src string) []string {
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
+	if err != nil {
+		return nil
+	}
+	var roots []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name, ok := call.Fun.(*ast.Ident)
+		if !ok || name.Name != "registerNovelCommand" || len(call.Args) != 1 {
+			return true
+		}
+		hook, ok := call.Args[0].(*ast.FuncLit)
+		if !ok || len(hook.Type.Params.List) == 0 || len(hook.Type.Params.List[0].Names) == 0 {
+			return true
+		}
+		root := hook.Type.Params.List[0].Names[0]
+		ast.Inspect(hook.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var parent *ast.Ident
+			var candidates []ast.Expr
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				if fun.Name == "addNovelCommandIfAbsent" && len(call.Args) == 2 {
+					parent, _ = call.Args[0].(*ast.Ident)
+					candidates = call.Args[1:]
+				}
+			case *ast.SelectorExpr:
+				if fun.Sel.Name == "AddCommand" {
+					parent, _ = fun.X.(*ast.Ident)
+					candidates = call.Args
+				}
+			}
+			if parent == nil || parent.Obj != root.Obj {
+				return true
+			}
+			for _, candidate := range candidates {
+				if ident, ok := candidate.(*ast.Ident); ok && ident.Obj != nil {
+					switch decl := ident.Obj.Decl.(type) {
+					case *ast.AssignStmt:
+						for i, lhs := range decl.Lhs {
+							if name, ok := lhs.(*ast.Ident); ok && name.Obj == ident.Obj && i < len(decl.Rhs) {
+								candidate = decl.Rhs[i]
+							}
+						}
+					case *ast.ValueSpec:
+						for i, name := range decl.Names {
+							if name.Obj == ident.Obj && i < len(decl.Values) {
+								candidate = decl.Values[i]
+							}
+						}
+					}
+				}
+				if factory := commandFactoryCallName(candidate); factory != "" {
+					roots = append(roots, factory)
+				}
+			}
+			return true
+		})
+		return false
+	})
+	return roots
 }
 
 func commandFactoryVars(src string) map[string]string {

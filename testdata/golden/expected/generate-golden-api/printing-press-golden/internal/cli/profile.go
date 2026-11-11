@@ -35,9 +35,7 @@ func profileStorePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("creating profile config dir: %w", err)
-	}
+	// Path lookup only: read-side callers (GetProfile, --profile) must not create dirs.
 	return filepath.Join(dir, "profiles.json"), nil
 }
 
@@ -80,6 +78,9 @@ func saveProfileStore(s *profileStore) error {
 	p, err := profileStorePath()
 	if err != nil {
 		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return fmt.Errorf("creating profile config dir: %w", err)
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -267,7 +268,7 @@ captured: they control profile/config resolution and would never apply).`,
 			// Must stay a superset of ApplyProfileToFlags' reserved map for
 			// root flags: capturing a flag that apply refuses to overlay
 			// would store values that never take effect.
-			skip := map[string]bool{"profile": true, "client-profile": true, "config": true, "home": true, "help": true, "description": true}
+			skip := map[string]bool{"profile": true, "client-profile": true, "config": true, "home": true, "help": true, "description": true, "dry-run": dryRunOK(flags)}
 			credentialFlags := []string{}
 			visit := func(fl *pflag.Flag) {
 				if fl.Changed && credentialLikeRunProfileFlag(fl.Name) {
@@ -289,6 +290,9 @@ captured: they control profile/config resolution and would never apply).`,
 			}
 			if len(values) == 0 {
 				return fmt.Errorf("no non-default flags set - pass at least one flag to save into %q", name)
+			}
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "save profile "+name)
 			}
 			s, err := loadProfileStore()
 			if err != nil {
@@ -421,6 +425,9 @@ func newProfileDeleteCmd(flags *rootFlags) *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "delete profile "+name+" (existence not checked)")
+			}
 			s, err := loadProfileStore()
 			if err != nil {
 				return err
