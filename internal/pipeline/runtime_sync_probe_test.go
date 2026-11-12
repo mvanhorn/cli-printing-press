@@ -45,12 +45,115 @@ func TestChooseDataPipelineProbeResource(t *testing.T) {
 		assert.Empty(t, detail)
 	})
 
-	t.Run("empty resource list fails closed", func(t *testing.T) {
+	t.Run("empty resource list skips the probe", func(t *testing.T) {
 		dir := seedRunnableSyncProbeCLI(t)
 
 		resource, detail := chooseDataPipelineProbeResource(dir)
 
 		assert.Empty(t, resource)
+		assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+	})
+
+	t.Run("empty var list skips the probe", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), "package cli\n\nvar defaultSyncResources = []string{}\n")
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+	})
+
+	t.Run("empty list with only an exclude still skips", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:        "openapi3",
+			VerifySyncExclude: []string{"videos"},
+		}))
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+	})
+
+	t.Run("empty list does not fall through to a later declaration", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n\nfunc defaultSyncResources() []string {\n\treturn []string{\"items\"}\n}\n")
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+	})
+
+	t.Run("empty list with an undeclared hint fails closed", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:         "openapi3",
+			VerifySyncResource: "videos",
+		}))
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "not an allowed declared")
+		assert.Contains(t, detail, "refusing unscoped sync")
+		assert.NotEqual(t, dataPipelineNoSyncableResourcesDetail, detail)
+	})
+
+	t.Run("empty list with an unsafe hint fails closed", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:         "openapi3",
+			VerifySyncResource: "--full",
+		}))
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "not a safe")
+		assert.Contains(t, detail, "refusing unscoped sync")
+	})
+
+	t.Run("empty list with an undeclared research hint fails closed", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		writeTestFile(t, filepath.Join(dir, "research.json"), `{
+			"api_name": "example",
+			"verify": {"sync_resource": "videos"}
+		}`)
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "not an allowed declared")
+		assert.Contains(t, detail, "refusing unscoped sync")
+	})
+
+	t.Run("unparsed declaration fails closed and does not use a later list", func(t *testing.T) {
+		dir := seedRunnableSyncProbeCLI(t)
+		writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), "package cli\n\nfunc defaultSyncResources() []string {\n\treturn nil\n}\n")
+		writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n\nfunc defaultSyncResources() []string {\n\treturn []string{\"items\"}\n}\n")
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.NotEqual(t, "items", resource)
+		assert.Contains(t, detail, "no safe sync resource")
+		assert.Contains(t, detail, "refusing unscoped sync")
+	})
+
+	t.Run("missing declaration fails closed", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		storeDir := filepath.Join(dir, "internal", "store")
+		require.NoError(t, os.MkdirAll(storeDir, 0o755))
+		writeTestFile(t, filepath.Join(storeDir, "store.go"), "package store\n\nfunc Open() {}\n")
+
+		resource, detail := chooseDataPipelineProbeResource(dir)
+
+		assert.Empty(t, resource)
+		assert.Contains(t, detail, "no safe sync resource")
 		assert.Contains(t, detail, "refusing unscoped sync")
 	})
 
@@ -305,6 +408,27 @@ func other() []string {
 	require.True(t, ok)
 	assert.Empty(t, names)
 
+	names, found, parsed := inspectDefaultSyncResources("package cli\n\nfunc defaultSyncResources() []string {\n\treturn []string{}\n}\n")
+	assert.Empty(t, names)
+	assert.True(t, found)
+	assert.True(t, parsed)
+
+	names, ok = parseDefaultSyncResources("package cli\n\nfunc defaultSyncResources() []string {\n\treturn nil\n}\n")
+	require.True(t, ok)
+	assert.Empty(t, names)
+
+	_, found, parsed = inspectDefaultSyncResources("package cli\n\nfunc defaultSyncResources() []string {\n\treturn nil\n}\n")
+	assert.True(t, found)
+	assert.False(t, parsed)
+
+	_, found, parsed = inspectDefaultSyncResources("package cli\n\nfunc defaultSyncResources() []string {\n\treturn []string{notALiteral}\n}\n")
+	assert.True(t, found)
+	assert.False(t, parsed)
+
+	_, found, parsed = inspectDefaultSyncResources("package cli\n\nfunc notDefault() []string { return []string{} }\n")
+	assert.False(t, found)
+	assert.False(t, parsed)
+
 	names, ok = parseDefaultSyncResources("package cli\n\nvar defaultSyncResources = []string{\"records\"}\n")
 	require.True(t, ok)
 	assert.Equal(t, []string{"records"}, names)
@@ -426,6 +550,167 @@ func TestDataPipelineSyncProbeStaysScoped(t *testing.T) {
 		_, err := os.Stat(logPath)
 		assert.True(t, os.IsNotExist(err), "sync was invoked: log exists")
 	})
+}
+
+func TestEmptySyncDeclarationSkipsProbeWithoutSync(t *testing.T) {
+	t.Parallel()
+
+	binary := buildScopedSyncProbeBinary(t)
+
+	t.Run("mock and live pass without spawning sync", func(t *testing.T) {
+		t.Parallel()
+
+		for _, mode := range []string{"mock", "live"} {
+			t.Run(mode, func(t *testing.T) {
+				logPath := filepath.Join(t.TempDir(), "argv.log")
+				dir := seedRunnableSyncProbeCLI(t)
+				env := append(os.Environ(), "PP_SYNC_PROBE_LOG="+logPath, "PP_SYNC_PROBE_FAIL=1")
+
+				pass, detail := runDataPipelineTest(binary, dir, mode, func() []string { return env }, 1)
+
+				assert.True(t, pass, detail)
+				assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+				_, err := os.Stat(logPath)
+				assert.True(t, os.IsNotExist(err), "sync was invoked: log exists")
+
+				report := &VerifyReport{
+					DataPipeline:       pass,
+					DataPipelineDetail: detail,
+					Results:            []CommandResult{{Command: "search", Score: 3}},
+				}
+				finalizeVerifyReport(report, 80, true)
+				assert.Equal(t, "PASS", report.Verdict)
+				assert.True(t, report.DataPipeline)
+				assert.Equal(t, 100.0, report.PassRate)
+			})
+		}
+	})
+
+	t.Run("research file without a sync hint still skips", func(t *testing.T) {
+		t.Parallel()
+
+		logPath := filepath.Join(t.TempDir(), "argv.log")
+		dir := seedRunnableSyncProbeCLI(t)
+		writeTestFile(t, filepath.Join(dir, "research.json"), `{
+			"api_name": "example",
+			"gaps": ["query-only"]
+		}`)
+		env := append(os.Environ(), "PP_SYNC_PROBE_LOG="+logPath, "PP_SYNC_PROBE_FAIL=1")
+
+		pass, detail := runDataPipelineTest(binary, dir, "live", func() []string { return env }, 1)
+
+		assert.True(t, pass, detail)
+		assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+		_, err := os.Stat(logPath)
+		assert.True(t, os.IsNotExist(err), "sync was invoked: log exists")
+	})
+
+	t.Run("declared resources still probe one scoped resource", func(t *testing.T) {
+		t.Parallel()
+
+		logPath := filepath.Join(t.TempDir(), "argv.log")
+		dir := seedRunnableSyncProbeCLI(t, "videos", "accounts")
+		env := append(os.Environ(),
+			"PP_SYNC_PROBE_LOG="+logPath,
+			"PP_SYNC_PROBE_RESOURCE=videos",
+		)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", func() []string { return env }, 1)
+
+		assert.True(t, pass, detail)
+		assert.Contains(t, detail, "sync --resources videos")
+		log := assertSyncLogScopedTo(t, logPath, "videos")
+		assert.NotContains(t, log, "accounts")
+		syncLines := 0
+		for line := range strings.SplitSeq(strings.TrimSpace(log), "\n") {
+			if strings.HasPrefix(line, "sync ") {
+				syncLines++
+				assert.Contains(t, line, "--resources videos")
+			}
+		}
+		assert.Equal(t, 1, syncLines)
+	})
+
+	t.Run("undeclared hint fails without spawning sync", func(t *testing.T) {
+		t.Parallel()
+
+		logPath := filepath.Join(t.TempDir(), "argv.log")
+		dir := seedRunnableSyncProbeCLI(t)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:         "openapi3",
+			VerifySyncResource: "videos",
+		}))
+		env := append(os.Environ(), "PP_SYNC_PROBE_LOG="+logPath)
+
+		for _, mode := range []string{"mock", "live"} {
+			pass, detail := runDataPipelineTest(binary, dir, mode, func() []string { return env }, 1)
+
+			assert.False(t, pass, mode)
+			assert.Contains(t, detail, "not an allowed declared", mode)
+			assert.Contains(t, detail, "refusing unscoped sync", mode)
+		}
+		_, err := os.Stat(logPath)
+		assert.True(t, os.IsNotExist(err), "sync was invoked: log exists")
+	})
+
+	t.Run("unsafe hint fails without spawning sync", func(t *testing.T) {
+		t.Parallel()
+
+		logPath := filepath.Join(t.TempDir(), "argv.log")
+		dir := seedRunnableSyncProbeCLI(t, "videos")
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+			SpecFormat:         "openapi3",
+			VerifySyncResource: "videos,accounts",
+		}))
+		env := append(os.Environ(), "PP_SYNC_PROBE_LOG="+logPath)
+
+		pass, detail := runDataPipelineTest(binary, dir, "live", func() []string { return env }, 1)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "not a safe")
+		assert.Contains(t, detail, "refusing unscoped sync")
+		_, err := os.Stat(logPath)
+		assert.True(t, os.IsNotExist(err), "sync was invoked: log exists")
+	})
+
+	t.Run("missing declaration fails without spawning sync", func(t *testing.T) {
+		t.Parallel()
+
+		logPath := filepath.Join(t.TempDir(), "argv.log")
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		storeDir := filepath.Join(dir, "internal", "store")
+		require.NoError(t, os.MkdirAll(storeDir, 0o755))
+		writeTestFile(t, filepath.Join(storeDir, "store.go"), "package store\n\nfunc Open() {}\n")
+		env := append(os.Environ(), "PP_SYNC_PROBE_LOG="+logPath)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", func() []string { return env }, 1)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "no safe sync resource")
+		assert.Contains(t, detail, "refusing unscoped sync")
+		_, err := os.Stat(logPath)
+		assert.True(t, os.IsNotExist(err), "sync was invoked: log exists")
+	})
+}
+
+func TestScopedSyncProbeAttemptsRequireResources(t *testing.T) {
+	t.Parallel()
+
+	attempts := scopedSyncProbeAttempts(filepath.Join("tmp", "test.db"), "videos")
+	require.NotEmpty(t, attempts)
+	for _, args := range attempts {
+		require.NotEmpty(t, args)
+		assert.Equal(t, "sync", args[0])
+		got := ""
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--resources" {
+				got = args[i+1]
+				break
+			}
+		}
+		assert.Equal(t, "videos", got, strings.Join(args, " "))
+	}
 }
 
 func TestDataPipelineSyncTimeoutCoversOneLivePage(t *testing.T) {
