@@ -395,17 +395,18 @@ func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
 		assert.Contains(t, detail, "items has 2 rows")
 	})
 
-	t.Run("refuses unscoped sync when no syncable resources are declared", func(t *testing.T) {
+	t.Run("passes when no syncable resources are declared", func(t *testing.T) {
 		dir := seedDataPipelineCLIDir(t, true)
-		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "browser-sniff"}))
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
 		seedDataPipelineStore(t, dir, false)
 		binary := buildFailingSyncDataPipelineProbeBinary(t)
 
-		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+		for _, mode := range []string{"mock", "live"} {
+			pass, detail := runDataPipelineTest(binary, dir, mode, os.Environ, 2)
 
-		assert.False(t, pass)
-		assert.Contains(t, detail, "no safe sync resource")
-		assert.Contains(t, detail, "refusing unscoped sync")
+			assert.True(t, pass, "%s: %s", mode, detail)
+			assert.Equal(t, dataPipelineNoSyncableResourcesDetail, detail)
+		}
 	})
 
 	t.Run("mock mode skips graphql sync data pipeline", func(t *testing.T) {
