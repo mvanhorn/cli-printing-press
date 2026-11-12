@@ -27,12 +27,18 @@ func dataPipelineSyncTimeout(mode string) time.Duration {
 	return mockDataPipelineSyncTimeout
 }
 
+// dataPipelineNoSyncableResourcesDetail is a passing probe result. The
+// CLI's defaultSyncResources() list parsed as empty and no verify sync
+// hint was set, so there is no scoped target and sync must not run.
+const dataPipelineNoSyncableResourcesDetail = "SKIP (no syncable resources declared)"
+
 // chooseDataPipelineProbeResource returns the one resource a data-pipeline
-// sync probe may pass to --resources. An empty resource means the probe
-// must not run: the detail explains why, and callers must not fall back to
-// an unscoped sync.
+// sync probe may pass to --resources. An empty resource means sync must
+// not run. Callers treat dataPipelineNoSyncableResourcesDetail as a pass
+// and every other empty result as a refusal. Neither path may fall back
+// to an unscoped sync.
 func chooseDataPipelineProbeResource(cliDir string) (string, string) {
-	declared, _ := declaredSyncResourceNames(cliDir)
+	declared, found, parsed := declaredSyncResourceNames(cliDir)
 	hint, exclude, hintErr := dataPipelineProbeHints(cliDir)
 	if hintErr != nil {
 		return "", fmt.Sprintf("FAIL: could not read verify sync hints (%v); refusing unscoped sync", hintErr)
@@ -74,6 +80,12 @@ func chooseDataPipelineProbeResource(cliDir string) (string, string) {
 	}
 	safe = withoutExcludedChildren(safe, children, excluded)
 	if len(safe) == 0 {
+		// An explicit empty list has nothing to scope. A missing or
+		// unparsed declaration, or a list emptied by safety and exclude
+		// filters, stays a refusal so sync is never unscoped.
+		if found && parsed && len(declared) == 0 {
+			return "", dataPipelineNoSyncableResourcesDetail
+		}
 		return "", "FAIL: no safe sync resource for the data-pipeline probe; refusing unscoped sync"
 	}
 	// repos stays the probe when the CLI declares it, so GitHub-shaped
@@ -226,17 +238,17 @@ func researchVerifyFromFile(path string) (*ResearchVerify, error) {
 	return &verify, nil
 }
 
-func declaredSyncResourceNames(cliDir string) ([]string, bool) {
+func declaredSyncResourceNames(cliDir string) (names []string, found, parsed bool) {
 	if strings.TrimSpace(cliDir) == "" {
-		return nil, false
+		return nil, false, false
 	}
 	for _, path := range defaultSyncResourceFiles(cliDir) {
-		names, ok := parseDefaultSyncResources(readFileContent(path))
-		if ok {
-			return names, true
+		names, found, parsed = inspectDefaultSyncResources(readFileContent(path))
+		if found {
+			return names, true, parsed
 		}
 	}
-	return nil, false
+	return nil, false, false
 }
 
 func defaultSyncResourceFiles(cliDir string) []string {
@@ -256,14 +268,38 @@ func defaultSyncResourceFiles(cliDir string) []string {
 }
 
 func parseDefaultSyncResources(content string) ([]string, bool) {
+	names, found, _ := inspectDefaultSyncResources(content)
+	return names, found
+}
+
+// inspectDefaultSyncResources reads the first defaultSyncResources
+// declaration. found is false when it is absent. parsed is true only when
+// a []string composite was read, including an empty one. A declaration that
+// does not parse stays found and not parsed so callers do not treat it as
+// an empty list or fall through to a later file.
+func inspectDefaultSyncResources(content string) (names []string, found, parsed bool) {
 	content = stripGoComments(content)
-	if idx := indexDeclAtLineStart(content, "func defaultSyncResources"); idx >= 0 {
-		return syncResourceLiteral(truncateAtNextDecl(content[idx:]))
+	idx := indexDeclAtLineStart(content, "func defaultSyncResources")
+	if idx < 0 {
+		idx = indexDeclAtLineStart(content, "var defaultSyncResources")
 	}
-	if idx := indexDeclAtLineStart(content, "var defaultSyncResources"); idx >= 0 {
-		return syncResourceLiteral(truncateAtNextDecl(content[idx:]))
+	if idx < 0 {
+		return nil, false, false
 	}
-	return nil, false
+	return parsedSyncResourceLiteral(truncateAtNextDecl(content[idx:]))
+}
+
+func parsedSyncResourceLiteral(segment string) (names []string, found, parsed bool) {
+	const marker = "[]string{"
+	lit := strings.Index(segment, marker)
+	if lit < 0 {
+		return nil, true, false
+	}
+	names, parsed = compositeStringLiterals(segment[lit+len(marker)-1:])
+	if !parsed {
+		return nil, true, false
+	}
+	return names, true, true
 }
 
 func truncateAtNextDecl(segment string) string {
@@ -277,19 +313,6 @@ func truncateAtNextDecl(segment string) string {
 		}
 	}
 	return segment[:cut]
-}
-
-func syncResourceLiteral(segment string) ([]string, bool) {
-	const marker = "[]string{"
-	lit := strings.Index(segment, marker)
-	if lit < 0 {
-		return nil, true
-	}
-	names, ok := compositeStringLiterals(segment[lit+len(marker)-1:])
-	if !ok {
-		return nil, true
-	}
-	return names, true
 }
 
 // stripGoComments drops // and /* */ comments so a commented resource list

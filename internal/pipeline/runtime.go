@@ -711,6 +711,11 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 
 	resource, chooseDetail := chooseDataPipelineProbeResource(cliDir)
 	if resource == "" {
+		// Same skip in mock and live: a query-only CLI has no collection
+		// to sync in either mode, and an unscoped sync stays forbidden.
+		if chooseDetail == dataPipelineNoSyncableResourcesDetail {
+			return true, chooseDetail
+		}
 		return false, chooseDetail
 	}
 
