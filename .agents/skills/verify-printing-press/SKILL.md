@@ -50,13 +50,13 @@ Your real Go build and module caches are reused on purpose. The decoy HOME would
 ```
 
 Read-only. It checks:
-- the repo binary and HEAD are unchanged since launch
+- the repo binary, HEAD, and the press source under `cmd/`, `internal/`, `go.mod` and `go.sum` (uncommitted and untracked edits included) are unchanged since launch
 - both printed binaries are staged
 - the mock PID is ours and alive, and answers on its port
 - the decoy sentinel is intact
 - the printed CLI's own `doctor --json` reports `api: reachable`, `auth_source: env:PRINTING_PRESS_GOLDEN_API_KEY`, and a `config_path` under the decoy HOME
 
-Run it before the first drive, again after any drive that did something surprising, and whenever you edit generator code mid-run. A changed binary or HEAD fails doctor: the printed CLI predates your change, so clean up and relaunch.
+Run it before the first drive, again after any drive that did something surprising, and whenever you edit generator code mid-run. A changed binary, HEAD, or press source fails doctor: the printed CLI predates your change, so clean up and relaunch.
 
 ## Drive
 
@@ -108,7 +108,7 @@ Evidence goes to `$EVIDENCE`, which is `.gotmp/verify-printing-press/evidence/<r
 - For a write, proof is the request in `NNN-*.requests.jsonl` (method, path, body, `X-API-Key`) plus the CLI's envelope, not only `success: true`.
 - For a refusal or no-op (`--dry-run`, `PRINTING_PRESS_VERIFY=1`, MCP read-only mode), proof is **zero** new mock requests for that drive, plus the envelope that says why (`dry_run: true`, `verify_noop: true`, or `tool not found`). Observe the zero; don't trust the flag name.
 - For an MCP annotation claim, proof is the `annotations` object from `mcp list`, not the template source.
-- For a generator change, show the drive on a print made after the change. Doctor's binary/HEAD check enforces this.
+- For a generator change, show the drive on a print made after the change. Doctor's binary, HEAD, and source checks enforce this.
 - Mocks are acceptable only because the printed client's base URL is a production config surface (`<PREFIX>_BASE_URL`). Never stub inside the printed code.
 
 ## Cleanup

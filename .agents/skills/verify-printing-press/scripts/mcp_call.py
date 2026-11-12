@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 import json
+import queue
 import subprocess
 import sys
+import threading
+
+RPC_TIMEOUT_S = 30
 
 binary, action = sys.argv[1], sys.argv[2]
 proc = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 _next_id = 0
+_lines = queue.Queue()
+threading.Thread(target=lambda: [_lines.put(l) for l in proc.stdout] + [_lines.put("")], daemon=True).start()
 
 
 def _send(msg):
@@ -26,7 +32,10 @@ def rpc(method, params=None):
     msg["id"] = _next_id
     _send(msg)
     while True:
-        line = proc.stdout.readline()
+        try:
+            line = _lines.get(timeout=RPC_TIMEOUT_S)
+        except queue.Empty:
+            sys.exit(f"mcp server sent no response to {method} within {RPC_TIMEOUT_S}s")
         if not line:
             sys.exit(f"mcp server closed stdout while waiting for {method}")
         resp = json.loads(line)
@@ -55,4 +64,8 @@ try:
         sys.exit(f"unknown action {action}")
 finally:
     proc.stdin.close()
-    proc.wait(timeout=10)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()

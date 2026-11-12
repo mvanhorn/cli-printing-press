@@ -31,6 +31,17 @@ mock_is_ours() {
 
 count_lines() { wc -l < "$1" | tr -d ' '; }
 
+# Covers uncommitted and untracked edits, which neither HEAD nor the binary hash see.
+source_fingerprint() {
+  {
+    git -C "$REPO" rev-parse HEAD
+    git -C "$REPO" diff HEAD -- cmd internal go.mod go.sum
+    git -C "$REPO" ls-files -o --exclude-standard -- cmd internal | while IFS= read -r f; do
+      printf '%s ' "$f"; shasum -a 256 < "$REPO/$f"
+    done
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
 press_env() {
   env HOME="$RUN/home" USERPROFILE="$RUN/home" \
     XDG_CONFIG_HOME="$RUN/home/.config" XDG_DATA_HOME="$RUN/home/.local/share" \
@@ -98,6 +109,7 @@ GOCACHE_REAL='$(go env GOCACHE)'
 GOMODCACHE_REAL='$(go env GOMODCACHE)'
 BINARY_SHA='$(shasum -a 256 ./cli-printing-press | cut -d' ' -f1)'
 GIT_HEAD='$(git rev-parse HEAD)'
+SOURCE_FINGERPRINT='$(source_fingerprint)'
 EOF
   load_run "$RUN"
 
@@ -126,6 +138,8 @@ cmd_doctor() {
   check "repo binary unchanged since launch (rebuilt => relaunch)" \
     '[[ "$(shasum -a 256 "$REPO/cli-printing-press" | cut -d" " -f1)" == "$BINARY_SHA" ]]'
   check "HEAD unchanged since launch ($GIT_HEAD)" '[[ "$(git -C "$REPO" rev-parse HEAD)" == "$GIT_HEAD" ]]'
+  check "press source unchanged since launch, including uncommitted edits" \
+    '[[ "$(source_fingerprint)" == "$SOURCE_FINGERPRINT" ]]'
   check "printed CLI + MCP binaries staged" binaries_staged
   check "mock process is ours and alive" mock_is_ours
   check "mock answers on its port" \
