@@ -1,8 +1,8 @@
 package generator
 
-// Public-library CI / stdlib CVE floor (GO-2026-6809). Do not derive from the
+// Public-library CI / stdlib CVE floor (GO-2026-6859). Do not derive from the
 // print-host toolchain.
-const librarySafeGoDirective = "1.26.10"
+const librarySafeGoDirective = "1.26.11"
 
 func currentGoDirectiveVersion() string {
 	return librarySafeGoDirective
