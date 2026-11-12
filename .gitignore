@@ -27,13 +27,10 @@ CLAUDE.local.md
 AGENTS.override.md
 .claude/settings.local.json
 
-# Local project-scoped agent skill installs. These let private or
-# experimental skills live next to this checkout without being published from
-# this public repo. Note: the repo's own tracked skills live in root `skills/`,
-# which is intentionally NOT ignored here.
-.claude/skills/
+# Local agent skill installs. `.agents/skills/` (with `.claude/skills` as a
+# symlink to it) is tracked: it holds repo-development skills such as
+# verify-printing-press. Shipped skills live in root `skills/`.
 .skills/
-.agents/skills/
 .codex/skills/
 .cursor/skills/
 .gemini/skills/

@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(git -C "$SKILL_DIR" rev-parse --show-toplevel)"
+SPEC_REL="testdata/golden/fixtures/golden-api.yaml"
+# mock_api.py's routes are shaped to this fixture; other specs go through
+# `press verify`, which builds its own spec-derived mock.
+APP="printing-press-golden-pp-cli"
+MCP_APP="printing-press-golden-pp-mcp"
+PREFIX="PRINTING_PRESS_GOLDEN"
+REAL_HOME="$HOME"
+
+die() { echo "pp-verify: $*" >&2; exit 1; }
+
+load_run() {
+  RUN="${1:-}"
+  [[ -n "$RUN" && -f "$RUN/run.env" ]] || die "not a pp-verify run dir: '${RUN}' (pass the RUN printed by launch)"
+  # shellcheck disable=SC1091
+  source "$RUN/run.env"
+  CLI_BIN="$RUN/cli/build/stage/bin/$APP"
+  MCP_BIN="$RUN/cli/build/stage/bin/$MCP_APP"
+}
+
+binaries_staged() { [[ -x "$CLI_BIN" && -x "$MCP_BIN" ]]; }
+
+mock_is_ours() {
+  local pid; pid="$(cat "$RUN/mock.pid" 2>/dev/null)"
+  [[ -n "$pid" ]] && ps -p "$pid" -o command= 2>/dev/null | grep -q "$RUN/port"
+}
+
+count_lines() { wc -l < "$1" | tr -d ' '; }
+
+press_env() {
+  env HOME="$RUN/home" USERPROFILE="$RUN/home" \
+    XDG_CONFIG_HOME="$RUN/home/.config" XDG_DATA_HOME="$RUN/home/.local/share" \
+    XDG_STATE_HOME="$RUN/home/.local/state" XDG_CACHE_HOME="$RUN/home/.cache" \
+    GOCACHE="$GOCACHE_REAL" GOMODCACHE="$GOMODCACHE_REAL" GOPRIVATE='github.com/mvanhorn/*' \
+    PRINTING_PRESS_AGENTCOOKIE_REPLACE="$REPO/internal/testdata/agentcookie" "$@"
+}
+
+printed_env() {
+  env -i PATH="$PATH" HOME="$RUN/home" TMPDIR="${TMPDIR:-/tmp}" \
+    "${PREFIX}_API_KEY=verify-token" "${PREFIX}_BASE_URL=http://127.0.0.1:$(cat "$RUN/port")/v1" "$@"
+}
+
+drive() {
+  local label="$1"; shift
+  local n before out rc reqs
+  n=$(find "$EVIDENCE" -maxdepth 1 -name '[0-9][0-9][0-9]-*.stdout' | wc -l | tr -d ' ')
+  out="$EVIDENCE/$(printf '%03d' $((n + 1)))-$label"
+  before=$(count_lines "$RUN/req.log")
+  "$@" >"$out.stdout" 2>"$out.stderr"
+  rc=$?
+  tail -n +"$((before + 1))" "$RUN/req.log" > "$out.requests.jsonl"
+  reqs=$(count_lines "$out.requests.jsonl")
+  {
+    printf '## %s\n\n' "$(basename "$out")"
+    printf -- '- command: `%s`\n' "$(printf '%q ' "$@" | sed "s#$RUN#\$RUN#g")"
+    printf -- '- exit: %s\n- mock requests: %s\n\n' "$rc" "$reqs"
+  } >> "$EVIDENCE/transcript.md"
+  cat "$out.stdout"
+  cat "$out.stderr" >&2
+  echo "[pp-verify] exit=$rc requests=$reqs evidence=$out.*" >&2
+  return "$rc"
+}
+
+parse_env_flags() {
+  EXTRA_ENV=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -e) EXTRA_ENV+=("$2"); shift 2 ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+  REST=("$@")
+}
+
+cmd_launch() {
+  cd "$REPO" || die "cannot cd to $REPO"
+  command -v go >/dev/null || die "go not on PATH"
+  command -v python3 >/dev/null || die "python3 not on PATH"
+  echo "[pp-verify] building ./cli-printing-press" >&2
+  go build -o ./cli-printing-press ./cmd/cli-printing-press || die "build failed"
+
+  local run_id; run_id="$(date +%Y%m%d-%H%M%S)-$$"
+  local tmp="${TMPDIR:-/tmp}"; tmp="${tmp%/}"
+  RUN="$(mktemp -d "$tmp/pp-verify.XXXXXX")"
+  EVIDENCE="$REPO/.gotmp/verify-printing-press/evidence/$run_id"
+  mkdir -p "$EVIDENCE" "$RUN/home/.config" "$RUN/home/.local/share" "$RUN/home/.local/state"
+  echo sentinel > "$RUN/home/.config/sentinel"
+  : > "$RUN/req.log"
+  touch "$RUN/started.marker"
+  cat > "$RUN/run.env" <<EOF
+EVIDENCE='$EVIDENCE'
+GOCACHE_REAL='$(go env GOCACHE)'
+GOMODCACHE_REAL='$(go env GOMODCACHE)'
+BINARY_SHA='$(shasum -a 256 ./cli-printing-press | cut -d' ' -f1)'
+GIT_HEAD='$(git rev-parse HEAD)'
+EOF
+  load_run "$RUN"
+
+  echo "[pp-verify] generating $APP from $SPEC_REL (about 40s)" >&2
+  press_env ./cli-printing-press generate --spec "$SPEC_REL" --output "$RUN/cli" \
+    --spec-url "file://$REPO/$SPEC_REL" >"$EVIDENCE/launch-generate.log" 2>&1
+  local rc=$?
+  [[ $rc -eq 0 ]] || { tail -30 "$EVIDENCE/launch-generate.log" >&2; die "generate exited $rc; run: $0 cleanup $RUN"; }
+  grep -q "PASS $APP doctor" "$EVIDENCE/launch-generate.log" || die "generate log lacks 'PASS $APP doctor'"
+  binaries_staged || die "staged binaries missing"
+
+  python3 -I "$SKILL_DIR/scripts/mock_api.py" "$RUN/port" "$RUN/req.log" >/dev/null 2>"$RUN/mock.stderr" &
+  echo $! > "$RUN/mock.pid"
+  for _ in $(seq 1 100); do [[ -s "$RUN/port" ]] && break; sleep 0.05; done
+  [[ -s "$RUN/port" ]] || die "mock did not publish a port; see $RUN/mock.stderr"
+
+  echo "RUN=$RUN"
+  echo "EVIDENCE=$EVIDENCE"
+  echo "[pp-verify] ready; next: $0 doctor $RUN" >&2
+}
+
+cmd_doctor() {
+  load_run "$1"
+  local ok=1
+  check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; ok=0; fi; }
+  check "repo binary unchanged since launch (rebuilt => relaunch)" \
+    '[[ "$(shasum -a 256 "$REPO/cli-printing-press" | cut -d" " -f1)" == "$BINARY_SHA" ]]'
+  check "HEAD unchanged since launch ($GIT_HEAD)" '[[ "$(git -C "$REPO" rev-parse HEAD)" == "$GIT_HEAD" ]]'
+  check "printed CLI + MCP binaries staged" binaries_staged
+  check "mock process is ours and alive" mock_is_ours
+  check "mock answers on its port" \
+    'curl -fsS "http://127.0.0.1:$(cat "$RUN/port")/v1/public/status" >/dev/null 2>&1'
+  check "decoy sentinel intact" '[[ "$(cat "$RUN/home/.config/sentinel" 2>/dev/null)" == sentinel ]]'
+  local dj; dj="$(printed_env "$CLI_BIN" doctor --json 2>/dev/null)"
+  check "printed doctor: api reachable" 'grep -q "\"api\": \"reachable\"" <<<"$dj"'
+  check "printed doctor: auth from env" 'grep -q "\"auth_source\": \"env:${PREFIX}_API_KEY\"" <<<"$dj"'
+  check "printed doctor: paths under decoy HOME" 'grep -q "\"config_path\": \"$RUN/home/" <<<"$dj"'
+  [[ $ok -eq 1 ]] || { echo "doctor: NOT healthy; clean up and relaunch" >&2; exit 1; }
+  echo "doctor: healthy (RUN=$RUN)"
+}
+
+cmd_cli() {
+  load_run "$1"; shift
+  parse_env_flags "$@"
+  local label; label="cli-$(printf '%s-' "${REST[@]:0:2}" | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//')"
+  drive "$label" printed_env ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} "$CLI_BIN" "${REST[@]}"
+}
+
+cmd_mcp() {
+  load_run "$1"; shift
+  parse_env_flags "$@"
+  local label="mcp-${REST[0]:-}"; [[ "${REST[0]:-}" == call ]] && label="mcp-call-${REST[1]:-}"
+  drive "$label" printed_env ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} python3 -I "$SKILL_DIR/scripts/mcp_call.py" \
+    "$MCP_BIN" "${REST[@]}"
+}
+
+cmd_press() {
+  load_run "$1"; shift
+  cd "$REPO" || die "cannot cd to $REPO"
+  drive "press-${1:-help}" press_env ./cli-printing-press "$@"
+}
+
+cmd_requests() {
+  load_run "$1"
+  cat "$RUN/req.log"
+}
+
+check_real_home_escape() {
+  local escaped
+  escaped="$(find "$REAL_HOME/printing-press" "$REAL_HOME/.config/$APP" "$REAL_HOME/.local/share/$APP" \
+    "$REAL_HOME/.local/state/$APP" -newer "$RUN/started.marker" -type f 2>/dev/null)"
+  if [[ -n "$escaped" ]]; then
+    printf '%s\n' "$escaped" > "$EVIDENCE/home-escape.txt"
+    echo "[pp-verify] WARNING: files under the real HOME changed during the run; see $EVIDENCE/home-escape.txt" >&2
+  fi
+}
+
+cmd_cleanup() {
+  load_run "$1"
+  command -v trash >/dev/null || die "trash not found; stop mock pid $(cat "$RUN/mock.pid" 2>/dev/null) and remove $RUN by hand"
+  if mock_is_ours; then
+    kill "$(cat "$RUN/mock.pid")" 2>/dev/null || true
+  fi
+  cp "$RUN/req.log" "$EVIDENCE/all-requests.jsonl" 2>/dev/null || true
+  check_real_home_escape
+  chmod -R u+w "$RUN" 2>/dev/null || true
+  trash "$RUN" || die "trash $RUN failed"
+  [[ -f "$EVIDENCE/transcript.md" || -f "$EVIDENCE/launch-generate.log" ]] || die "evidence missing at $EVIDENCE"
+  echo "cleaned $RUN; evidence kept at $EVIDENCE"
+}
+
+case "${1:-}" in
+  launch) shift; cmd_launch "$@" ;;
+  doctor|cli|mcp|press|requests|cleanup) c="$1"; shift; "cmd_$c" "$@" ;;
+  *) cat >&2 <<'USAGE'
+usage:
+  pp-verify launch                              build, print golden CLI, start mock; prints RUN= and EVIDENCE=
+  pp-verify doctor   RUN                        read-only health check
+  pp-verify cli      RUN [-e K=V]... -- ARGS    run the printed CLI (clean env, decoy HOME, mock base URL)
+  pp-verify mcp      RUN [-e K=V]... list | call TOOL JSON_ARGS
+  pp-verify press    RUN ARGS                   run ./cli-printing-press with decoy HOME
+  pp-verify requests RUN                        dump every request the mock received
+  pp-verify cleanup  RUN                        stop our mock, move RUN to trash, keep evidence
+USAGE
+     exit 2 ;;
+esac
