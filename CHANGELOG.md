@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.35.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.4...v4.35.5) (2026-11-12)
+
+
+### Bug Fixes
+
+* **cli:** bump Go toolchain floor to 1.26.11 ([#5385](https://github.com/mvanhorn/cli-printing-press/issues/5385)) ([7d66cb0](https://github.com/mvanhorn/cli-printing-press/commit/7d66cb0668183657c52234e149d3a651df9d5586)), closes [#5381](https://github.com/mvanhorn/cli-printing-press/issues/5381)
+* **cli:** pass verify when a CLI declares no sync resource ([#5384](https://github.com/mvanhorn/cli-printing-press/issues/5384)) ([847b390](https://github.com/mvanhorn/cli-printing-press/commit/847b39013f07d06475c94df5c11c1f0b019f4680)), closes [#5380](https://github.com/mvanhorn/cli-printing-press/issues/5380)
+* **verify-skill:** sync canonical script with library nested-helper walk ([#5377](https://github.com/mvanhorn/cli-printing-press/issues/5377)) ([8e70cce](https://github.com/mvanhorn/cli-printing-press/commit/8e70ccec8180fb8df72ab6e5f2e7072f37f064dc))
+
 ## [4.35.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.3...v4.35.4) (2026-11-08)
 
 
