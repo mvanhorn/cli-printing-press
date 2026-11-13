@@ -189,6 +189,14 @@ func ApplyClientHooks(c *client.Client) error {
 	return nil
 }
 
+// defaultRateLimit is the --rate-limit default. Tests set it to 0 in TestMain
+// so commands run against httptest stubs are not paced (#5237).
+{{- if or (eq .DefaultRateLimit "auto") (not .DefaultRateLimit)}}
+var defaultRateLimit = client.RateLimitAuto
+{{- else}}
+var defaultRateLimit float64 = {{.DefaultRateLimit}}
+{{- end}}
+
 // RootCmd returns the Cobra command tree without executing it. The MCP server
 // uses this to mirror every user-facing command as an agent tool.
 func RootCmd() *cobra.Command {
@@ -479,12 +487,12 @@ Run '{{.Name}}-pp-cli doctor' to {{if .HasAuthCommand}}verify auth and connectiv
        doesn't show "-1". SpecSource no longer forks the default (sniffed 2
        vs official 0); one rule for sniffed and documented specs. */}}
 {{- if or (eq .DefaultRateLimit "auto") (not .DefaultRateLimit)}}
-	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", client.RateLimitAuto, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", defaultRateLimit, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
 	if f := rootCmd.PersistentFlags().Lookup("rate-limit"); f != nil {
 		f.DefValue = "auto"
 	}
 {{- else}}
-	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", {{.DefaultRateLimit}}, "Max requests per second (0 to disable)")
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", defaultRateLimit, "Max requests per second (0 to disable)")
 {{- end}}
 {{- if .HasCostThrottling}}
 	// --throttle-mode controls how the cost-based throttle reacts to a low
