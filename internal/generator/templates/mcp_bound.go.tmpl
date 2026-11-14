@@ -31,11 +31,17 @@ const (
 
 const SQLResultBoundNote = "SQL result was bounded during row scanning to stay within the MCP tool result budget. Narrow the query with WHERE, GROUP BY, or an aggregate."
 
+// LocalPageCursorParam is a local offset. It is not an upstream query parameter.
+const LocalPageCursorParam = "_pp_cursor"
+
 const (
 	endpointListNote = "Typed MCP endpoint response was bounded for MCP output. Narrow the request with limit, offset, filters, search/sql, or a command-mirror tool with --agent/--compact/--select."
 	endpointPreviewNote = "Typed MCP endpoint response exceeded the tool result budget and was not a recognized list envelope. Narrow the request with filters, search/sql, or a command-mirror tool with --agent/--compact/--select."
 	jsonResultNote = "MCP JSON result exceeded the tool result budget. Narrow the request with limit, filters, search/sql, or --select/--compact where available."
 	textResultNote = "MCP command output exceeded the tool result budget. Rerun with narrower flags, --agent, --compact, --select, or --limit where available."
+	// Unpaged endpoints have no limit or offset parameter. The note names the
+	// local cursor and the refetch, and does not mention those parameters.
+	localPageListNote = "Typed MCP endpoint response was bounded for MCP output. Pass next_cursor back as params." + LocalPageCursorParam + " to read the next page. This endpoint has no upstream paging, so each page fetches the list again."
 )
 
 // PageOptions describes resumable list context for typed MCP endpoint results.
@@ -78,6 +84,37 @@ func EndpointPageResponse(method string, data json.RawMessage, opts PageOptions)
 		return endpointResponse(method, data, PageOptions{})
 	}
 	return endpointResponse(method, data, opts)
+}
+
+// EndpointLocalPageResponse pages a GET list that has no upstream paging
+// profile. Responses that already fit the MCP budget match EndpointResponse.
+// A cursor that is not a local offset is dropped so an upstream token cannot
+// be copied into the next page.
+func EndpointLocalPageResponse(method string, data json.RawMessage, cursor string) string {
+	cursor = strings.TrimSpace(cursor)
+	if err := LocalPageCursor(cursor); err != nil {
+		cursor = ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(method), "GET") {
+		return EndpointResponse(method, data)
+	}
+	if out, ok := endpointLocalPage(data, cursor); ok {
+		return out
+	}
+	return EndpointResponse(method, data)
+}
+
+// LocalPageCursor accepts an empty cursor or a local offset. A cursor that
+// carries an upstream API token is rejected.
+func LocalPageCursor(cursor string) error {
+	state, err := decodeEndpointCursor(strings.TrimSpace(cursor))
+	if err != nil {
+		return err
+	}
+	if state.UpstreamCursor != "" {
+		return fmt.Errorf("invalid MCP cursor: unpaged lists only accept a local next_cursor")
+	}
+	return nil
 }
 
 // UpstreamCursor unwraps the upstream API cursor embedded in an opaque MCP
@@ -253,6 +290,12 @@ func marshalMetadataEnvelope(envelope map[string]any, meta map[string]any, origi
 			"observed": len(original), "more_available": true,
 		},
 	}
+	// A page that already fit on its own can overflow once platform metadata
+	// is wrapped around it. Shrink that page and keep its cursor. Replacing
+	// it with a non-resumable preview would drop the rest of the list.
+	if out, ok := fitMetadataPage(envelope, meta); ok {
+		return out
+	}
 	limit := maxPreviewBytes
 	if limit > len(original) {
 		limit = len(original)
@@ -276,6 +319,152 @@ func marshalMetadataEnvelope(envelope map[string]any, meta map[string]any, origi
 	}
 	out, _ := json.Marshal(map[string]any{"data": map[string]any{"resumable": false}, "meta": meta})
 	return string(out)
+}
+
+// fitMetadataPage keeps a resumable page inside the MCP budget after the
+// platform wrapper is added. The cursor is rewound by the number of items
+// removed so the next call does not skip them. A cursor that does not point
+// just past this page is left alone.
+func fitMetadataPage(envelope map[string]any, meta map[string]any) (string, bool) {
+	payload, ok := envelope["data"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	cursor, _ := payload["next_cursor"].(string)
+	if strings.TrimSpace(cursor) == "" {
+		return "", false
+	}
+	if preview, ok := payload["item_preview"].(string); ok && preview != "" {
+		if out, ok := fitMetadataPreview(payload, meta, preview); ok {
+			return out, true
+		}
+	}
+	field, items := metadataPageArray(payload)
+	if field == "" || len(items) == 0 {
+		return "", false
+	}
+	state, err := decodeEndpointCursor(cursor)
+	if err != nil || state.Offset < len(items) {
+		return "", false
+	}
+	start := state.Offset - len(items)
+	for n := len(items) - 1; n >= 1; n-- {
+		clone := cloneMetadataMap(payload)
+		clone[field] = items[:n]
+		if _, exists := clone["returned_count"]; exists {
+			clone["returned_count"] = n
+		}
+		next := encodeEndpointCursor(endpointCursor{
+			Version:        state.Version,
+			Offset:         start + n,
+			UpstreamCursor: state.UpstreamCursor,
+		})
+		if next == "" {
+			return "", false
+		}
+		clone["next_cursor"] = next
+		if out, ok := marshalMetadataWithinBudget(clone, meta); ok {
+			return out, true
+		}
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		return "", false
+	}
+	return fitMetadataItemPreview(payload, meta, field, raw, start+1, state, cursor)
+}
+
+func fitMetadataPreview(payload map[string]any, meta map[string]any, preview string) (string, bool) {
+	limit := len(preview)
+	for {
+		clone := cloneMetadataMap(payload)
+		clone["item_preview"] = previewString([]byte(preview), limit)
+		if out, ok := marshalMetadataWithinBudget(clone, meta); ok {
+			return out, true
+		}
+		if limit == 0 {
+			return "", false
+		}
+		if limit < 512 {
+			limit = 0
+			continue
+		}
+		limit -= 512
+	}
+}
+
+func fitMetadataItemPreview(payload map[string]any, meta map[string]any, field string, item []byte, nextOffset int, state endpointCursor, fallback string) (string, bool) {
+	next := encodeEndpointCursor(endpointCursor{
+		Version:        state.Version,
+		Offset:         nextOffset,
+		UpstreamCursor: state.UpstreamCursor,
+	})
+	if next == "" {
+		next = fallback
+	}
+	limit := maxPreviewBytes
+	if limit > len(item) {
+		limit = len(item)
+	}
+	for {
+		clone := cloneMetadataMap(payload)
+		clone[field] = []any{}
+		clone["item_preview"] = previewString(item, limit)
+		clone["next_cursor"] = next
+		if _, exists := clone["returned_count"]; exists {
+			clone["returned_count"] = 0
+		}
+		if out, ok := marshalMetadataWithinBudget(clone, meta); ok {
+			return out, true
+		}
+		if limit == 0 {
+			return "", false
+		}
+		if limit < 512 {
+			limit = 0
+			continue
+		}
+		limit -= 512
+	}
+}
+
+func marshalMetadataWithinBudget(payload map[string]any, meta map[string]any) (string, bool) {
+	out, err := json.Marshal(map[string]any{"data": payload, "meta": meta})
+	if err != nil || len(out) > MaxBytes {
+		return "", false
+	}
+	return string(out), true
+}
+
+func cloneMetadataMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func metadataPageArray(payload map[string]any) (string, []any) {
+	field := ""
+	var items []any
+	for key, value := range payload {
+		arr, ok := value.([]any)
+		if !ok {
+			continue
+		}
+		if field != "" {
+			if key == "items" {
+				return "items", arr
+			}
+			if field == "items" {
+				return field, items
+			}
+			return "", nil
+		}
+		field = key
+		items = arr
+	}
+	return field, items
 }
 
 func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
@@ -335,6 +524,10 @@ func boundedSingleArrayObjectWithNote(data json.RawMessage, note string) ([]byte
 }
 
 func boundedSingleArrayPageObject(data json.RawMessage, opts PageOptions) ([]byte, bool) {
+	return boundedSingleArrayPageObjectNote(data, opts, endpointListNote)
+}
+
+func boundedSingleArrayPageObjectNote(data json.RawMessage, opts PageOptions, note string) ([]byte, bool) {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
 		return nil, false
@@ -368,7 +561,133 @@ func boundedSingleArrayPageObject(data json.RawMessage, opts PageOptions) ([]byt
 	if nextUpstream != "" && explicitHasMoreFalse(data, opts) {
 		nextUpstream = ""
 	}
-	return boundedPageListEnvelope(arrayField, items, data, endpointListNote, opts, obj, nextUpstream), true
+	return boundedPageListEnvelope(arrayField, items, data, note, opts, obj, nextUpstream), true
+}
+
+func endpointLocalPage(data json.RawMessage, cursor string) (string, bool) {
+	trimmed := strings.TrimSpace(string(data))
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var items []json.RawMessage
+		if json.Unmarshal(data, &items) != nil {
+			return "", false
+		}
+		// The historical envelope is smaller than a page envelope. Prefer it
+		// when it already holds every item, so page metadata cannot turn a
+		// fitting item into a preview.
+		if localCursorAtStart(cursor) {
+			historical := boundedListEnvelope("items", items, len(data), endpointListNote)
+			if !localPageDroppedItems(historical, "items", len(items)) {
+				return string(historical), true
+			}
+		}
+		opts := PageOptions{Cursor: cursor}
+		return string(boundedPageListEnvelope("items", items, data, localPageListNote, opts, nil, "")), true
+	}
+	if localCursorAtStart(cursor) && len(data) <= MaxBytes {
+		return "", false
+	}
+	paged, ok := boundedSingleArrayPageObjectNote(data, PageOptions{Cursor: cursor}, localPageListNote)
+	if !ok {
+		return "", false
+	}
+	if localCursorAtStart(cursor) {
+		field, total := loneArrayField(data)
+		if field != "" && !localPageDroppedItems(paged, field, total) {
+			if historical, historicalOK := boundedSingleArrayObject(data); historicalOK && !localPageDroppedItems(historical, field, total) {
+				return string(historical), true
+			}
+		}
+	}
+	return string(preserveAPIPageFields(paged, data)), true
+}
+
+// preserveAPIPageFields keeps API-owned siblings when the page envelope uses
+// the same names for its own metadata. The continuation cursor stays
+// next_cursor. Untruncated objects never reach this path.
+func preserveAPIPageFields(paged []byte, original json.RawMessage) []byte {
+	var page map[string]any
+	var base map[string]json.RawMessage
+	if json.Unmarshal(paged, &page) != nil || json.Unmarshal(original, &base) != nil {
+		return paged
+	}
+	moved := false
+	relocate := func(apiKey, kept string) {
+		raw, ok := base[apiKey]
+		if !ok {
+			return
+		}
+		if value, exists := page[apiKey]; exists {
+			page[kept] = value
+		}
+		page[apiKey] = raw
+		moved = true
+	}
+	relocate("count", "_pp_total_count")
+	relocate("returned_count", "_pp_returned_count")
+	relocate("note", "_pp_note")
+	relocate("original_bytes", "_pp_original_bytes")
+	relocate("max_bytes", "_pp_max_bytes")
+	relocate("truncated", "_pp_truncated")
+	if !moved {
+		return paged
+	}
+	out, err := json.Marshal(page)
+	if err != nil || len(out) > MaxBytes {
+		return paged
+	}
+	return out
+}
+
+func localCursorAtStart(cursor string) bool {
+	if strings.TrimSpace(cursor) == "" {
+		return true
+	}
+	state, err := decodeEndpointCursor(strings.TrimSpace(cursor))
+	if err != nil {
+		return false
+	}
+	return state.Offset == 0 && state.UpstreamCursor == ""
+}
+
+func localPageDroppedItems(envelope []byte, field string, total int) bool {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(envelope, &obj) != nil {
+		return true
+	}
+	raw, ok := obj[field]
+	if !ok {
+		return total > 0
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return true
+	}
+	return len(items) < total
+}
+
+func loneArrayField(data json.RawMessage) (string, int) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return "", 0
+	}
+	field := ""
+	total := 0
+	for key, raw := range obj {
+		trimmed := strings.TrimSpace(string(raw))
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			continue
+		}
+		if field != "" {
+			return "", 0
+		}
+		field = key
+		total = len(items)
+	}
+	return field, total
 }
 
 func boundedListEnvelope(field string, items []json.RawMessage, originalBytes int, note string) []byte {

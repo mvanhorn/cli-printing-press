@@ -483,6 +483,12 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 	if params == nil {
 		params = map[string]any{}
 	}
+	// Strip the local cursor before path, header, and query routing so it
+	// cannot be forwarded upstream. Only an unpaged read GET honors it.
+	localPageCursor, cursorErr := codeOrchTakeLocalPageCursor(ep, method, params)
+	if cursorErr != nil {
+		return mcplib.NewToolResultError(cursorErr.Error()), nil
+	}
 
 {{- if .HasRequiredRoles}}
 	cfg, err := newMCPConfig()
@@ -825,6 +831,10 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			NextCursorPath: ep.Page.NextCursorPath,
 			RequestCursor:  requestCursor,
 		})
+	} else if !gated && codeOrchUnpagedReadGET(ep, method) {
+		// A resolved gated call is not paged. The next page would refetch,
+		// and that refetch would repeat the write.
+		text = bound.EndpointLocalPageResponse(method, data, localPageCursor)
 	} else {
 		text = bound.EndpointResponse(method, data)
 	}
@@ -890,6 +900,31 @@ func codeOrchMultipartParts(ep *codeOrchEndpoint, params map[string]any) (map[st
 }
 
 {{- end}}
+// codeOrchUnpagedReadGET reports a GET with no paging profile that is safe
+// to refetch. Mutating GETs are excluded because every page fetches again.
+func codeOrchUnpagedReadGET(ep *codeOrchEndpoint, method string) bool {
+	return method == "GET" && ep != nil && !ep.Mutating && ep.Page.CursorParam == "" && ep.Page.NextCursorPath == ""
+}
+
+// codeOrchTakeLocalPageCursor removes the local-offset param before routing.
+// Only an unpaged read GET keeps the value, and only when it carries no
+// upstream token. Every other call drops it so the API never sees it.
+func codeOrchTakeLocalPageCursor(ep *codeOrchEndpoint, method string, params map[string]any) (string, error) {
+	raw, ok := params[bound.LocalPageCursorParam]
+	delete(params, bound.LocalPageCursorParam)
+	if !ok || raw == nil || !codeOrchUnpagedReadGET(ep, method) {
+		return "", nil
+	}
+	cursor := strings.TrimSpace(formatMCPParamValue(raw))
+	if cursor == "" {
+		return "", nil
+	}
+	if err := bound.LocalPageCursor(cursor); err != nil {
+		return "", err
+	}
+	return cursor, nil
+}
+
 // codeOrchWriteBody returns the value handed to the client layer as the
 // request body for write methods (POST/PUT/PATCH). It MUST be the structured
 // params map, never pre-marshaled bytes.
