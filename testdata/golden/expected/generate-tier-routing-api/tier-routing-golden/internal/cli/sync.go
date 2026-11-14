@@ -155,6 +155,14 @@ Resource scoping:
 				sinceTS = ts.UTC().Format(time.RFC3339)
 			}
 
+			if err := userParams.validateResourceNames(knownSyncResourceNames()); err != nil {
+				return usageErr(err)
+			}
+			// Preview before config/credentials or a writable store are opened.
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "sync (resource eligibility and checkpoints not checked)")
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -181,15 +189,6 @@ Resource scoping:
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {
 				resources = defaultSyncResources()
-			}
-
-			// Reject --resource-param keys that don't match a known resource.
-			// Validates against the full top-level + dependent set, not the
-			// user-filtered `resources` slice, so legitimate cases like
-			// "filter to A, but apply param to B if it gets synced" still
-			// catch typos without false positives.
-			if err := userParams.validateResourceNames(knownSyncResourceNames()); err != nil {
-				return usageErr(err)
 			}
 
 			// --full drops the resume cursor for the scope this run will walk.
