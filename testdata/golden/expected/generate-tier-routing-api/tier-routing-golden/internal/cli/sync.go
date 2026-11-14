@@ -587,14 +587,13 @@ func syncResource(ctx context.Context, c interface {
 	anomalyEmitted := false
 
 	// Flat reconcile bookkeeping (mirrors the dependent loop's partitionOutcome
-	// machinery). flatReconcilable gates all of it: only resources classified
-	// "flat" (tenant partition) or "flat_global" (whole table) collect seen IDs
-	// and prune. outcome.complete is set ONLY at proven natural ends; any
-	// abnormal break sets outcome.reason and leaves complete=false so the
-	// reconcile SKIPS.
+	// machinery). flatReconcilable gates seen-ID collection and prune. A
+	// declared row count can also mark the walk complete for the store, but
+	// that end is not an absence proof: prune uses pruneAllowed.
 	reconcileMode := resourceReconcileMode(resource)
 	flatReconcilable := resourceIsFlatReconcilable(reconcileMode)
 	outcome := partitionOutcome{}
+	totalProof := newDeclaredTotalProof()
 	var seenIDs []string
 
 	for {
@@ -823,7 +822,8 @@ func syncResource(ctx context.Context, c interface {
 				}
 			}
 		}
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && fetchedThisPage >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
+		totalProof.observe(resource, data, items)
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && fetchedThisPage >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) && !totalProof.reached() {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -887,11 +887,12 @@ func syncResource(ctx context.Context, c interface {
 			// the operator's page ceiling fired on that same request.
 			if capResumed {
 				outcome.reason = "max_pages_cap"
-			} else if paginationEndUnprovable(resourceSupportsPagination(resource), nextCursor, fetchedThisPage, capPageLimit, data, responsePathForResource(resource, path)...) {
+			} else if unprovable := paginationEndUnprovable(resourceSupportsPagination(resource), nextCursor, fetchedThisPage, capPageLimit, data, responsePathForResource(resource, path)...); unprovable && !totalProof.reached() {
 				outcome.reason = "cursor_unavailable"
 			} else if !hasMore ||
 				shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, capPageLimit) {
 				outcome.complete = true
+				outcome.countProven = unprovable && totalProof.reached()
 			} else {
 				outcome.reason = "max_pages_cap"
 			}
@@ -923,8 +924,11 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 		if paginationEndUnprovable(true, nextCursor, fetchedThisPage, pageSize.limit, data, responsePathForResource(resource, path)...) {
-			outcome.reason = "cursor_unavailable"
-			break
+			if !totalProof.reached() {
+				outcome.reason = "cursor_unavailable"
+				break
+			}
+			outcome.countProven = true
 		}
 		if !hasMore || shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
 			outcome.complete = true
@@ -962,9 +966,10 @@ func syncResource(ctx context.Context, c interface {
 	//     zero deletes. This is the OPPOSITE of the dependent fan-out fallback
 	//     (which enumerates unscoped): a tenant-scoped delete cannot be safely
 	//     scoped without a tenant, so we never delete on unknown.
-	//   - Incomplete sync (outcome.complete==false) ⇒ SKIP with the recorded
-	//     reason; an abnormal or unprovable end never proves the partition was
-	//     enumerated.
+	//   - Incomplete sync (outcome.complete==false) skips with the recorded
+	//     reason. A count-proven end is complete for the store but skips with
+	//     end_proven_by_count: the count is not evidence a missing row is gone.
+	//     An abnormal or unprovable end never proves the partition was enumerated.
 	if prune && flatReconcilable {
 		if reason := syncPruneSkipReason(resource, false, effectiveSince, "", userParams, reconcileMode, scopeKey); reason != "" {
 			if reconcileMode == "flat_global" {
@@ -975,7 +980,7 @@ func syncResource(ctx context.Context, c interface {
 				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, reason)
 			}
 		} else if reconcileMode == "flat_global" {
-			if outcome.complete {
+			if outcome.pruneAllowed() {
 				deleted, rerr := db.ReconcileAll(
 					resource, seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
 				)
@@ -988,14 +993,14 @@ func syncResource(ctx context.Context, c interface {
 					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"*","deleted":%d}`+"\n", resource, deleted)
 				}
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":%q}`+"\n", resource, outcome.reason)
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"*","reason":%q}`+"\n", resource, outcome.pruneSkipReason())
 			}
 		} else {
 			def := flatReconcileDef(resource)
 			tenantUUID := resolveTenantID()
 			if tenantUUID == "" {
 				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unknown-tenant"}`+"\n", resource)
-			} else if outcome.complete {
+			} else if outcome.pruneAllowed() {
 				deleted, rerr := db.ReconcilePartition(
 					resource, "$."+def.BodyField, tenantUUID,
 					seenIDs, reconcileTypedTable(resource), store.CascadeJunctionsFor(resource),
@@ -1009,7 +1014,7 @@ func syncResource(ctx context.Context, c interface {
 					fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", resource, tenantUUID, deleted)
 				}
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.reason)
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.pruneSkipReason())
 			}
 		}
 	} else if prune {
@@ -1136,6 +1141,118 @@ func paginationEndUnprovable(declared bool, nextCursor string, fetched, limit in
 		return false
 	}
 	return pageMayHaveMore(data, responsePaths...)
+}
+
+// declaredTotalProof proves a cursor walk ended when every page declared the
+// same positive row count and the walk saw at least that many distinct record
+// ids (the same key extraction storage uses). A repeated id does not stand in
+// for a missing one. A count that changes mid-walk voids the proof. The count
+// is not evidence a missing row is gone.
+type declaredTotalProof struct {
+	total  int // -1 until the first page; 0 once a page lacks a positive count
+	stable bool
+	ids    map[string]struct{}
+}
+
+func newDeclaredTotalProof() *declaredTotalProof {
+	return &declaredTotalProof{total: -1, stable: true, ids: map[string]struct{}{}}
+}
+
+func (p *declaredTotalProof) observe(resource string, data json.RawMessage, items []json.RawMessage) {
+	n := declaredTotalCount(data)
+	if p.total == -1 {
+		p.total = n
+	} else if n != p.total {
+		p.stable = false
+	}
+	for _, it := range items {
+		if o, err := store.DecodeJSONObject(it); err == nil {
+			if id := extractID(resource, o); id != "" {
+				p.ids[id] = struct{}{}
+			}
+		}
+	}
+}
+
+func (p *declaredTotalProof) reached() bool {
+	return p.stable && p.total > 0 && len(p.ids) >= p.total
+}
+
+// declaredTotalCount reads a positive integer row count. Top-level total_count
+// and totalCount count; total counts only under pagination, meta, paging, or
+// page_info. A bare top-level total is ignored. Zero, negative, fractional,
+// and non-numeric values count as absent.
+func declaredTotalCount(data json.RawMessage) int {
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(data, &envelope) != nil {
+		return 0
+	}
+	if n := declaredCountAt(envelope, "total_count", "totalCount"); n > 0 {
+		return n
+	}
+	for _, key := range []string{"pagination", "meta", "paging", "page_info", "pageInfo"} {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) != nil {
+			continue
+		}
+		if n := declaredCountAt(inner, "total_count", "totalCount", "total"); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func declaredCountAt(m map[string]json.RawMessage, keys ...string) int {
+	for _, key := range keys {
+		raw, ok := m[key]
+		if !ok {
+			continue
+		}
+		if n := positiveDeclaredCount(raw); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func positiveDeclaredCount(raw json.RawMessage) int {
+	if isJSONNull(raw) {
+		return 0
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		return positiveDeclaredNumber(number)
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return 0
+	}
+	return positiveDeclaredNumber(json.Number(strings.TrimSpace(text)))
+}
+
+func positiveDeclaredNumber(number json.Number) int {
+	if number == "" {
+		return 0
+	}
+	if i, err := number.Int64(); err == nil {
+		if i <= 0 || i > int64(^uint(0)>>1) {
+			return 0
+		}
+		return int(i)
+	}
+	f, err := number.Float64()
+	if err != nil || f <= 0 || f > float64(int(^uint(0)>>1)) {
+		return 0
+	}
+	i := int64(f)
+	if i <= 0 || float64(i) != f {
+		return 0
+	}
+	return int(i)
 }
 
 func syncPageItemsEqual(previous, current []json.RawMessage) bool {
@@ -2293,15 +2410,29 @@ func syncClientForResource(c *client.Client, resource string) *client.Client {
 var resourceIDFieldOverrides = map[string]string{}
 
 // partitionOutcome tracks whether a sync loop (flat tenant-scoped, single-tenant
-// whole-table, OR dependent per-parent) enumerated its partition completely.
-// complete is set ONLY at proven natural ends; any abnormal or unprovable break
-// records a reason and leaves complete=false so the gated reconcile SKIPS.
-// scopeVal carries the dependent loop's parent scope value (unused by the flat
-// path).
+// whole-table, OR dependent per-parent) enumerated its partition.
+// complete is set at a proven natural end or when a declared row count proves
+// the walk saw every row. countProven is that second case: the store checkpoint
+// may advance, but prune must skip because the count is not evidence a missing
+// row is gone. scopeVal carries the dependent loop's parent scope value.
 type partitionOutcome struct {
-	complete bool
-	reason   string
-	scopeVal string
+	complete    bool
+	countProven bool
+	reason      string
+	scopeVal    string
+}
+
+// pruneAllowed is true only for a complete walk whose end was proven without
+// trusting a declared count.
+func (o partitionOutcome) pruneAllowed() bool {
+	return o.complete && !o.countProven
+}
+
+func (o partitionOutcome) pruneSkipReason() string {
+	if o.complete && o.countProven {
+		return "end_proven_by_count"
+	}
+	return o.reason
 }
 
 func syncActivePathContext() map[string]string {
