@@ -1469,6 +1469,68 @@ func TestEndpointLocalPageResponsePreservesAPIFields(t *testing.T) {
 	}
 }
 
+func TestEndpointLocalPageResponsePreservesLargeNumericIDs(t *testing.T) {
+	const snowflake = "9007199254740993"
+	const rounded = "9007199254740992"
+	items := make([]json.RawMessage, 60)
+	for i := range items {
+		items[i] = json.RawMessage(`{"id":` + snowflake + `,"seq":` + strconv.Itoa(i) + `,"blob":"` + strings.Repeat("n", 1200) + `"}`)
+	}
+	rawItems, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"count":` + snowflake + `,"note":"api note","extra":` + snowflake + `,"value":` + string(rawItems) + `}`)
+	assertExactIDs := func(page string) {
+		t.Helper()
+		if strings.Contains(page, rounded) {
+			t.Fatalf("large id was rounded: %s", page)
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(page), &obj); err != nil {
+			t.Fatalf("page must remain valid JSON: %v\n%s", err, page)
+		}
+		if string(obj["count"]) != snowflake || string(obj["extra"]) != snowflake || string(obj["note"]) != `"api note"` {
+			t.Fatalf("api fields changed: count=%s extra=%s note=%s", obj["count"], obj["extra"], obj["note"])
+		}
+		if string(obj["_pp_total_count"]) != "60" {
+			t.Fatalf("paging count = %s", obj["_pp_total_count"])
+		}
+		var listed []json.RawMessage
+		if err := json.Unmarshal(obj["value"], &listed); err != nil || len(listed) == 0 {
+			t.Fatalf("value = %s err=%v", obj["value"], err)
+		}
+		for _, item := range listed {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(item, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if string(fields["id"]) != snowflake {
+				t.Fatalf("item id = %s", fields["id"])
+			}
+		}
+	}
+	first := EndpointLocalPageResponse("GET", data, "")
+	assertExactIDs(first)
+	next := localPageNextCursor(t, first)
+	if next == "" {
+		t.Fatalf("expected a continuation: %s", first)
+	}
+	assertExactIDs(EndpointLocalPageResponse("GET", data, next))
+
+	wrapped := WithMetadata(first, map[string]any{"truncated": false})
+	if strings.Contains(wrapped, rounded) {
+		t.Fatalf("platform wrapper rounded a large id: %s", wrapped)
+	}
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(wrapped), &envelope); err != nil {
+		t.Fatalf("wrapped page must remain valid JSON: %v\n%s", err, wrapped)
+	}
+	assertExactIDs(string(envelope.Data))
+}
+
 func TestWithMetadataKeepsLocalPageCursor(t *testing.T) {
 	items := make([]map[string]string, 40)
 	for i := range items {

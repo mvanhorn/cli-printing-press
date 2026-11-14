@@ -257,8 +257,12 @@ func WithMetadata(result string, metadata any) string {
 	if json.Unmarshal(metadataRaw, &meta) != nil {
 		return result
 	}
+	// UseNumber keeps numeric IDs above 2^53 intact. Decoding the page into
+	// float64 would round them before this envelope is written back.
+	dec := json.NewDecoder(strings.NewReader(result))
+	dec.UseNumber()
 	var payload any
-	if json.Unmarshal([]byte(result), &payload) != nil {
+	if err := dec.Decode(&payload); err != nil || dec.More() {
 		payload = result
 	}
 	if obj, ok := payload.(map[string]any); ok {
@@ -603,9 +607,11 @@ func endpointLocalPage(data json.RawMessage, cursor string) (string, bool) {
 
 // preserveAPIPageFields keeps API-owned siblings when the page envelope uses
 // the same names for its own metadata. The continuation cursor stays
-// next_cursor. Untruncated objects never reach this path.
+// next_cursor. Untruncated objects never reach this path. Both objects stay
+// raw JSON: decoding the page into map[string]any would round numeric IDs
+// above 2^53 when the page is written back.
 func preserveAPIPageFields(paged []byte, original json.RawMessage) []byte {
-	var page map[string]any
+	var page map[string]json.RawMessage
 	var base map[string]json.RawMessage
 	if json.Unmarshal(paged, &page) != nil || json.Unmarshal(original, &base) != nil {
 		return paged
