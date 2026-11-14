@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"github.com/spf13/cobra"
 	"io"
+	"math/big"
 	"os"
 	"regexp"
 	"sort"
@@ -1225,11 +1226,20 @@ func newDeclaredTotalProof() *declaredTotalProof {
 }
 
 func (p *declaredTotalProof) observe(resource string, data json.RawMessage, items []json.RawMessage) {
+	if !p.stable {
+		return
+	}
 	n := declaredTotalCount(data)
 	if p.total == -1 {
 		p.total = n
 	} else if n != p.total {
 		p.stable = false
+	}
+	// A missing or moving count can never be reached, so the id set is not
+	// kept for the rest of the walk.
+	if !p.stable || p.total <= 0 {
+		p.ids = nil
+		return
 	}
 	for _, it := range items {
 		if o, err := store.DecodeJSONObject(it); err == nil {
@@ -1304,18 +1314,18 @@ func positiveDeclaredNumber(number json.Number) int {
 	if number == "" {
 		return 0
 	}
-	if i, err := number.Int64(); err == nil {
-		if i <= 0 || i > int64(^uint(0)>>1) {
-			return 0
-		}
-		return int(i)
-	}
-	f, err := number.Float64()
-	if err != nil || f <= 0 || f > float64(int(^uint(0)>>1)) {
+	// Rat keeps the original decimal. Float64 would round a long fraction
+	// such as 10.0000000000000001 onto an integer and accept it.
+	value, ok := new(big.Rat).SetString(string(number))
+	if !ok || !value.IsInt() {
 		return 0
 	}
-	i := int64(f)
-	if i <= 0 || float64(i) != f {
+	n := value.Num()
+	if !n.IsInt64() {
+		return 0
+	}
+	i := n.Int64()
+	if i <= 0 || i > int64(^uint(0)>>1) {
 		return 0
 	}
 	return int(i)

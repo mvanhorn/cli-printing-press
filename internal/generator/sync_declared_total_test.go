@@ -193,6 +193,8 @@ func flatCountCases() []countCase {
 		{name: "padded string count", pages: countPages("pagination", "total_count", `" 20 "`, idRange(1, 10), idRange(11, 20)), complete: true, ids: idTexts(1, 20), deleted: -1},
 		{name: "float count", pages: countPages("pagination", "total_count", "20.0", idRange(1, 10), idRange(11, 20)), complete: true, ids: idTexts(1, 20), deleted: -1},
 		{name: "fractional count", pages: []countPage{counted("", "", idRange(1, 11), "pagination", "total_count", "10.5")}, deleted: -1},
+		{name: "near integer fraction", pages: []countPage{counted("", "", idRange(1, 10), "pagination", "total_count", "10.0000000000000001")}, deleted: -1},
+		{name: "exponent integer count", pages: countPages("pagination", "total_count", "2e1", idRange(1, 10), idRange(11, 20)), complete: true, ids: idTexts(1, 20), deleted: -1},
 		{name: "zero count", pages: []countPage{counted("", "", idRange(1, 10), "pagination", "total_count", "0")}, deleted: -1},
 		{name: "negative count", pages: []countPage{counted("", "", idRange(1, 10), "pagination", "total_count", "-10")}, deleted: -1},
 		{name: "bool count", pages: []countPage{counted("", "", idRange(1, 10), "pagination", "total_count", "true")}, deleted: -1},
