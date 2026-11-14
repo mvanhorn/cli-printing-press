@@ -1302,7 +1302,25 @@ func positiveDeclaredCount(raw json.RawMessage) int {
 	if json.Unmarshal(raw, &text) != nil {
 		return 0
 	}
-	return positiveDeclaredNumber(json.Number(strings.TrimSpace(text)))
+	text = strings.TrimSpace(text)
+	// SetString also accepts rationals and hex. A string count is only a
+	// decimal integer; 20.0 and 2e1 stay on the JSON number path.
+	if !decimalIntegerText(text) {
+		return 0
+	}
+	return positiveDeclaredNumber(json.Number(text))
+}
+
+func decimalIntegerText(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func positiveDeclaredNumber(number json.Number) int {
