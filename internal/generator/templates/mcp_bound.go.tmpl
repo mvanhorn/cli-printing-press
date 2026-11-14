@@ -31,11 +31,17 @@ const (
 
 const SQLResultBoundNote = "SQL result was bounded during row scanning to stay within the MCP tool result budget. Narrow the query with WHERE, GROUP BY, or an aggregate."
 
+// LocalPageCursorParam is a local offset. It is not an upstream query parameter.
+const LocalPageCursorParam = "_pp_cursor"
+
 const (
 	endpointListNote = "Typed MCP endpoint response was bounded for MCP output. Narrow the request with limit, offset, filters, search/sql, or a command-mirror tool with --agent/--compact/--select."
 	endpointPreviewNote = "Typed MCP endpoint response exceeded the tool result budget and was not a recognized list envelope. Narrow the request with filters, search/sql, or a command-mirror tool with --agent/--compact/--select."
 	jsonResultNote = "MCP JSON result exceeded the tool result budget. Narrow the request with limit, filters, search/sql, or --select/--compact where available."
 	textResultNote = "MCP command output exceeded the tool result budget. Rerun with narrower flags, --agent, --compact, --select, or --limit where available."
+	// Unpaged endpoints have no limit or offset parameter. The note names the
+	// local cursor and the refetch, and does not mention those parameters.
+	localPageListNote = "Typed MCP endpoint response was bounded for MCP output. Pass next_cursor back as params." + LocalPageCursorParam + " to read the next page. This endpoint has no upstream paging, so each page fetches the list again."
 )
 
 // PageOptions describes resumable list context for typed MCP endpoint results.
@@ -78,6 +84,37 @@ func EndpointPageResponse(method string, data json.RawMessage, opts PageOptions)
 		return endpointResponse(method, data, PageOptions{})
 	}
 	return endpointResponse(method, data, opts)
+}
+
+// EndpointLocalPageResponse pages a GET list that has no upstream paging
+// profile. Responses that already fit the MCP budget match EndpointResponse.
+// A cursor that is not a local offset is dropped so an upstream token cannot
+// be copied into the next page.
+func EndpointLocalPageResponse(method string, data json.RawMessage, cursor string) string {
+	cursor = strings.TrimSpace(cursor)
+	if err := LocalPageCursor(cursor); err != nil {
+		cursor = ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(method), "GET") {
+		return EndpointResponse(method, data)
+	}
+	if out, ok := endpointLocalPage(data, cursor); ok {
+		return out
+	}
+	return EndpointResponse(method, data)
+}
+
+// LocalPageCursor accepts an empty cursor or a local offset. A cursor that
+// carries an upstream API token is rejected.
+func LocalPageCursor(cursor string) error {
+	state, err := decodeEndpointCursor(strings.TrimSpace(cursor))
+	if err != nil {
+		return err
+	}
+	if state.UpstreamCursor != "" {
+		return fmt.Errorf("invalid MCP cursor: unpaged lists only accept a local next_cursor")
+	}
+	return nil
 }
 
 // UpstreamCursor unwraps the upstream API cursor embedded in an opaque MCP
@@ -335,6 +372,10 @@ func boundedSingleArrayObjectWithNote(data json.RawMessage, note string) ([]byte
 }
 
 func boundedSingleArrayPageObject(data json.RawMessage, opts PageOptions) ([]byte, bool) {
+	return boundedSingleArrayPageObjectNote(data, opts, endpointListNote)
+}
+
+func boundedSingleArrayPageObjectNote(data json.RawMessage, opts PageOptions, note string) ([]byte, bool) {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
 		return nil, false
@@ -368,7 +409,91 @@ func boundedSingleArrayPageObject(data json.RawMessage, opts PageOptions) ([]byt
 	if nextUpstream != "" && explicitHasMoreFalse(data, opts) {
 		nextUpstream = ""
 	}
-	return boundedPageListEnvelope(arrayField, items, data, endpointListNote, opts, obj, nextUpstream), true
+	return boundedPageListEnvelope(arrayField, items, data, note, opts, obj, nextUpstream), true
+}
+
+func endpointLocalPage(data json.RawMessage, cursor string) (string, bool) {
+	trimmed := strings.TrimSpace(string(data))
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var items []json.RawMessage
+		if json.Unmarshal(data, &items) != nil {
+			return "", false
+		}
+		opts := PageOptions{Cursor: cursor}
+		paged := boundedPageListEnvelope("items", items, data, localPageListNote, opts, nil, "")
+		if localCursorAtStart(cursor) && !localPageDroppedItems(paged, "items", len(items)) {
+			return string(boundedListEnvelope("items", items, len(data), endpointListNote)), true
+		}
+		return string(paged), true
+	}
+	if localCursorAtStart(cursor) && len(data) <= MaxBytes {
+		return "", false
+	}
+	paged, ok := boundedSingleArrayPageObjectNote(data, PageOptions{Cursor: cursor}, localPageListNote)
+	if !ok {
+		return "", false
+	}
+	if localCursorAtStart(cursor) {
+		field, total := loneArrayField(data)
+		if field != "" && !localPageDroppedItems(paged, field, total) {
+			if historical, historicalOK := boundedSingleArrayObject(data); historicalOK && !localPageDroppedItems(historical, field, total) {
+				return string(historical), true
+			}
+		}
+	}
+	return string(paged), true
+}
+
+func localCursorAtStart(cursor string) bool {
+	if strings.TrimSpace(cursor) == "" {
+		return true
+	}
+	state, err := decodeEndpointCursor(strings.TrimSpace(cursor))
+	if err != nil {
+		return false
+	}
+	return state.Offset == 0 && state.UpstreamCursor == ""
+}
+
+func localPageDroppedItems(envelope []byte, field string, total int) bool {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(envelope, &obj) != nil {
+		return true
+	}
+	raw, ok := obj[field]
+	if !ok {
+		return total > 0
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return true
+	}
+	return len(items) < total
+}
+
+func loneArrayField(data json.RawMessage) (string, int) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return "", 0
+	}
+	field := ""
+	total := 0
+	for key, raw := range obj {
+		trimmed := strings.TrimSpace(string(raw))
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			continue
+		}
+		if field != "" {
+			return "", 0
+		}
+		field = key
+		total = len(items)
+	}
+	return field, total
 }
 
 func boundedListEnvelope(field string, items []json.RawMessage, originalBytes int, note string) []byte {
