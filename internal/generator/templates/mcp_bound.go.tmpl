@@ -290,6 +290,12 @@ func marshalMetadataEnvelope(envelope map[string]any, meta map[string]any, origi
 			"observed": len(original), "more_available": true,
 		},
 	}
+	// A page that already fit on its own can overflow once platform metadata
+	// is wrapped around it. Shrink that page and keep its cursor. Replacing
+	// it with a non-resumable preview would drop the rest of the list.
+	if out, ok := fitMetadataPage(envelope, meta); ok {
+		return out
+	}
 	limit := maxPreviewBytes
 	if limit > len(original) {
 		limit = len(original)
@@ -313,6 +319,152 @@ func marshalMetadataEnvelope(envelope map[string]any, meta map[string]any, origi
 	}
 	out, _ := json.Marshal(map[string]any{"data": map[string]any{"resumable": false}, "meta": meta})
 	return string(out)
+}
+
+// fitMetadataPage keeps a resumable page inside the MCP budget after the
+// platform wrapper is added. The cursor is rewound by the number of items
+// removed so the next call does not skip them. A cursor that does not point
+// just past this page is left alone.
+func fitMetadataPage(envelope map[string]any, meta map[string]any) (string, bool) {
+	payload, ok := envelope["data"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	cursor, _ := payload["next_cursor"].(string)
+	if strings.TrimSpace(cursor) == "" {
+		return "", false
+	}
+	if preview, ok := payload["item_preview"].(string); ok && preview != "" {
+		if out, ok := fitMetadataPreview(payload, meta, preview); ok {
+			return out, true
+		}
+	}
+	field, items := metadataPageArray(payload)
+	if field == "" || len(items) == 0 {
+		return "", false
+	}
+	state, err := decodeEndpointCursor(cursor)
+	if err != nil || state.Offset < len(items) {
+		return "", false
+	}
+	start := state.Offset - len(items)
+	for n := len(items) - 1; n >= 1; n-- {
+		clone := cloneMetadataMap(payload)
+		clone[field] = items[:n]
+		if _, exists := clone["returned_count"]; exists {
+			clone["returned_count"] = n
+		}
+		next := encodeEndpointCursor(endpointCursor{
+			Version:        state.Version,
+			Offset:         start + n,
+			UpstreamCursor: state.UpstreamCursor,
+		})
+		if next == "" {
+			return "", false
+		}
+		clone["next_cursor"] = next
+		if out, ok := marshalMetadataWithinBudget(clone, meta); ok {
+			return out, true
+		}
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		return "", false
+	}
+	return fitMetadataItemPreview(payload, meta, field, raw, start+1, state, cursor)
+}
+
+func fitMetadataPreview(payload map[string]any, meta map[string]any, preview string) (string, bool) {
+	limit := len(preview)
+	for {
+		clone := cloneMetadataMap(payload)
+		clone["item_preview"] = previewString([]byte(preview), limit)
+		if out, ok := marshalMetadataWithinBudget(clone, meta); ok {
+			return out, true
+		}
+		if limit == 0 {
+			return "", false
+		}
+		if limit < 512 {
+			limit = 0
+			continue
+		}
+		limit -= 512
+	}
+}
+
+func fitMetadataItemPreview(payload map[string]any, meta map[string]any, field string, item []byte, nextOffset int, state endpointCursor, fallback string) (string, bool) {
+	next := encodeEndpointCursor(endpointCursor{
+		Version:        state.Version,
+		Offset:         nextOffset,
+		UpstreamCursor: state.UpstreamCursor,
+	})
+	if next == "" {
+		next = fallback
+	}
+	limit := maxPreviewBytes
+	if limit > len(item) {
+		limit = len(item)
+	}
+	for {
+		clone := cloneMetadataMap(payload)
+		clone[field] = []any{}
+		clone["item_preview"] = previewString(item, limit)
+		clone["next_cursor"] = next
+		if _, exists := clone["returned_count"]; exists {
+			clone["returned_count"] = 0
+		}
+		if out, ok := marshalMetadataWithinBudget(clone, meta); ok {
+			return out, true
+		}
+		if limit == 0 {
+			return "", false
+		}
+		if limit < 512 {
+			limit = 0
+			continue
+		}
+		limit -= 512
+	}
+}
+
+func marshalMetadataWithinBudget(payload map[string]any, meta map[string]any) (string, bool) {
+	out, err := json.Marshal(map[string]any{"data": payload, "meta": meta})
+	if err != nil || len(out) > MaxBytes {
+		return "", false
+	}
+	return string(out), true
+}
+
+func cloneMetadataMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func metadataPageArray(payload map[string]any) (string, []any) {
+	field := ""
+	var items []any
+	for key, value := range payload {
+		arr, ok := value.([]any)
+		if !ok {
+			continue
+		}
+		if field != "" {
+			if key == "items" {
+				return "items", arr
+			}
+			if field == "items" {
+				return field, items
+			}
+			return "", nil
+		}
+		field = key
+		items = arr
+	}
+	return field, items
 }
 
 func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
@@ -419,12 +571,17 @@ func endpointLocalPage(data json.RawMessage, cursor string) (string, bool) {
 		if json.Unmarshal(data, &items) != nil {
 			return "", false
 		}
-		opts := PageOptions{Cursor: cursor}
-		paged := boundedPageListEnvelope("items", items, data, localPageListNote, opts, nil, "")
-		if localCursorAtStart(cursor) && !localPageDroppedItems(paged, "items", len(items)) {
-			return string(boundedListEnvelope("items", items, len(data), endpointListNote)), true
+		// The historical envelope is smaller than a page envelope. Prefer it
+		// when it already holds every item, so page metadata cannot turn a
+		// fitting item into a preview.
+		if localCursorAtStart(cursor) {
+			historical := boundedListEnvelope("items", items, len(data), endpointListNote)
+			if !localPageDroppedItems(historical, "items", len(items)) {
+				return string(historical), true
+			}
 		}
-		return string(paged), true
+		opts := PageOptions{Cursor: cursor}
+		return string(boundedPageListEnvelope("items", items, data, localPageListNote, opts, nil, "")), true
 	}
 	if localCursorAtStart(cursor) && len(data) <= MaxBytes {
 		return "", false
@@ -441,7 +598,44 @@ func endpointLocalPage(data json.RawMessage, cursor string) (string, bool) {
 			}
 		}
 	}
-	return string(paged), true
+	return string(preserveAPIPageFields(paged, data)), true
+}
+
+// preserveAPIPageFields keeps API-owned siblings when the page envelope uses
+// the same names for its own metadata. The continuation cursor stays
+// next_cursor. Untruncated objects never reach this path.
+func preserveAPIPageFields(paged []byte, original json.RawMessage) []byte {
+	var page map[string]any
+	var base map[string]json.RawMessage
+	if json.Unmarshal(paged, &page) != nil || json.Unmarshal(original, &base) != nil {
+		return paged
+	}
+	moved := false
+	relocate := func(apiKey, kept string) {
+		raw, ok := base[apiKey]
+		if !ok {
+			return
+		}
+		if value, exists := page[apiKey]; exists {
+			page[kept] = value
+		}
+		page[apiKey] = raw
+		moved = true
+	}
+	relocate("count", "_pp_total_count")
+	relocate("returned_count", "_pp_returned_count")
+	relocate("note", "_pp_note")
+	relocate("original_bytes", "_pp_original_bytes")
+	relocate("max_bytes", "_pp_max_bytes")
+	relocate("truncated", "_pp_truncated")
+	if !moved {
+		return paged
+	}
+	out, err := json.Marshal(page)
+	if err != nil || len(out) > MaxBytes {
+		return paged
+	}
+	return out
 }
 
 func localCursorAtStart(cursor string) bool {

@@ -531,7 +531,9 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			NextCursorPath: ep.Page.NextCursorPath,
 			RequestCursor:  requestCursor,
 		})
-	} else if codeOrchUnpagedReadGET(ep, method) {
+	} else if !gated && codeOrchUnpagedReadGET(ep, method) {
+		// A resolved gated call is not paged. The next page would refetch,
+		// and that refetch would repeat the write.
 		text = bound.EndpointLocalPageResponse(method, data, localPageCursor)
 	} else {
 		text = bound.EndpointResponse(method, data)

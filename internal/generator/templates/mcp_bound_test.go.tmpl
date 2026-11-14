@@ -1405,6 +1405,108 @@ func TestEndpointLocalPageResponseHonorsLocalOffsetOnly(t *testing.T) {
 	}
 }
 
+func TestEndpointLocalPageResponseKeepsFittingHistoricalList(t *testing.T) {
+	var data []byte
+	for n := 59980; n >= 59000; n -= 10 {
+		payload := []byte("[" + strconv.Quote(strings.Repeat("a", n)) + "]")
+		historical := EndpointResponse("GET", payload)
+		if strings.Contains(historical, "item_preview") || strings.Contains(historical, `"truncated"`) {
+			continue
+		}
+		data = payload
+		break
+	}
+	if data == nil {
+		t.Fatal("expected a single-item list that fits the historical envelope")
+	}
+	got := EndpointLocalPageResponse("GET", data, "")
+	if got != EndpointResponse("GET", data) {
+		t.Fatalf("fitting list changed shape: %s", got)
+	}
+	if strings.Contains(got, "item_preview") {
+		t.Fatalf("fitting item became a preview: %s", got)
+	}
+}
+
+func TestEndpointLocalPageResponsePreservesAPIFields(t *testing.T) {
+	items := make([]map[string]string, 60)
+	for i := range items {
+		items[i] = map[string]string{"id": fmtLocalID("c", i), "blob": strings.Repeat("c", 1200)}
+	}
+	body := map[string]any{
+		"count": 7,
+		"note":  "api note",
+		"value": items,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := EndpointLocalPageResponse("GET", data, "")
+	var page struct {
+		Count      float64 `json:"count"`
+		Note       string  `json:"note"`
+		PPNote     string  `json:"_pp_note"`
+		Total      float64 `json:"_pp_total_count"`
+		NextCursor string  `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &page); err != nil {
+		t.Fatalf("page must remain valid JSON: %v\n%s", err, text)
+	}
+	if page.Count != 7 || page.Note != "api note" || page.Total != 60 || page.NextCursor == "" {
+		t.Fatalf("api fields changed: %+v\n%s", page, text)
+	}
+	if !strings.Contains(page.PPNote, LocalPageCursorParam) || strings.Contains(page.PPNote, "limit") {
+		t.Fatalf("paging note = %q", page.PPNote)
+	}
+	state, err := decodeEndpointCursor(page.NextCursor)
+	if err != nil || state.Offset == 0 || state.UpstreamCursor != "" {
+		t.Fatalf("cursor = %+v err=%v", state, err)
+	}
+	second := EndpointLocalPageResponse("GET", data, page.NextCursor)
+	if ids := localPageIDs(t, second, "value"); len(ids) == 0 || ids[0] != fmtLocalID("c", state.Offset) {
+		t.Fatalf("continuation = %v, offset %d", ids, state.Offset)
+	}
+}
+
+func TestWithMetadataKeepsLocalPageCursor(t *testing.T) {
+	items := make([]map[string]string, 40)
+	for i := range items {
+		items[i] = map[string]string{"id": fmtLocalID("m", i), "blob": strings.Repeat("m", 2000)}
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := EndpointLocalPageResponse("GET", data, "")
+	if localPageNextCursor(t, page) == "" {
+		t.Fatalf("fixture page did not need a cursor: %s", page)
+	}
+	wrapped := WithMetadata(page, map[string]any{
+		"truncated": false,
+		"warnings":  []string{strings.Repeat("w", 4000)},
+	})
+	if len(wrapped) > MaxBytes {
+		t.Fatalf("wrapped length = %d", len(wrapped))
+	}
+	var envelope struct {
+		Data struct {
+			NextCursor string           `json:"next_cursor"`
+			Items      []map[string]any `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(wrapped), &envelope); err != nil {
+		t.Fatalf("wrapped page must remain valid JSON: %v\n%s", err, wrapped)
+	}
+	if envelope.Data.NextCursor == "" || len(envelope.Data.Items) == 0 {
+		t.Fatalf("platform wrapper dropped the page: %s", wrapped)
+	}
+	state, err := decodeEndpointCursor(envelope.Data.NextCursor)
+	if err != nil || state.UpstreamCursor != "" || state.Offset != len(envelope.Data.Items) {
+		t.Fatalf("wrapped cursor = %+v err=%v items=%d", state, err, len(envelope.Data.Items))
+	}
+}
+
 func TestEndpointLocalPageResponseByteBudgetAndOversizedItemAdvance(t *testing.T) {
 	items := make([]map[string]string, 5)
 	want := make([]string, len(items))

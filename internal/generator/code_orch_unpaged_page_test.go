@@ -68,6 +68,7 @@ func TestCodeOrchestrationPagesUnpagedLists(t *testing.T) {
 					Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor", NextCursorPath: "nextCursor"},
 				},
 				"create": {Method: "POST", Path: "/items", Description: "Create item"},
+				"reboot": {Method: "GET", Path: "/items/reboot", Description: "Reboot item", Mutation: &mut},
 			},
 		},
 		"ops": {
@@ -127,6 +128,8 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_, _ = w.Write([]byte(numberedList("p", 131)))
 		case "/items/abc":
 			_, _ = w.Write([]byte(` + "`" + `{"id":"abc"}` + "`" + `))
+		case "/items/reboot":
+			_, _ = w.Write([]byte(numberedList("a", 131)))
 		default:
 			http.NotFound(w, r)
 		}
@@ -489,6 +492,31 @@ func TestUnpagedReadPagedEndpointKeepsItsCursor(t *testing.T) {
 	if !sawRaw {
 		t.Fatalf("paged endpoint did not send the raw upstream cursor: %v", api.hits)
 	}
+}
+
+func TestUnpagedReadResolvedWriteIsNotPaged(t *testing.T) {
+	api := newFakeAPI(t)
+	_, text, isErr := callTool(t, false, "items.get", false, map[string]any{"id": "reboot", "_pp_cursor": rawCursor("{\"v\":1,\"o\":50}")})
+	if !isErr || !strings.Contains(text, "changes state") {
+		t.Fatalf("read of a resolved write = err:%v %s", isErr, text)
+	}
+	if len(api.hits) != 0 {
+		t.Fatalf("read dialed a resolved write: %v", api.hits)
+	}
+	out, text, isErr := callTool(t, true, "items.get", true, map[string]any{"id": "reboot", "_pp_cursor": rawCursor("{\"v\":1,\"o\":50}")})
+	if isErr {
+		t.Fatal(text)
+	}
+	if out["next_cursor"] != nil {
+		t.Fatalf("resolved write returned a cursor: %s", text)
+	}
+	if out["truncated"] != true {
+		t.Fatalf("resolved write was not bounded: %s", text)
+	}
+	if len(api.hits) != 1 || api.hits[0] != "GET /items/reboot" {
+		t.Fatalf("resolved write request = %v", api.hits)
+	}
+	api.assertNoCursor(t)
 }
 
 func TestUnpagedReadDropsCursorFromWritePreview(t *testing.T) {
