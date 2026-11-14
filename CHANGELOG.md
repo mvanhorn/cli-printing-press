@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.35.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.5...v4.35.6) (2026-11-14)
+
+
+### Bug Fixes
+
+* **cli:** prove cursor sync ends from a declared row count ([#5393](https://github.com/mvanhorn/cli-printing-press/issues/5393)) ([29d7bcf](https://github.com/mvanhorn/cli-printing-press/commit/29d7bcf1f94e5f251855851f19cc85c81b55ae40))
+
 ## [4.35.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.4...v4.35.5) (2026-11-12)
 
 
