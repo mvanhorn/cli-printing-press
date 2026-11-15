@@ -64,17 +64,36 @@ func novelHookRootFactories(src string) (factories []string, masked string) {
 	}
 	fileScope := fileCommandScope(file)
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil || fn.Type == nil {
-			continue
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			if decl.Body == nil || decl.Type == nil {
+				continue
+			}
+			// Ordinary parameters must not reuse the hook-root id. Each
+			// function has its own scope chain, so the counter can restart.
+			fnScope := fileScope.child()
+			next := hookRootBinding + 1
+			bindFieldList(decl.Type.Params, fnScope, &next)
+			bindFieldList(decl.Type.Results, fnScope, &next)
+			walkHookNode(decl.Body, fnScope, &factories, &next)
+		case *ast.GenDecl:
+			if decl.Tok != token.VAR {
+				continue
+			}
+			// Masking blanks every hook, including one inside a package
+			// variable initializer. Walk those expressions too, or the
+			// registration disappears from both passes.
+			for _, spec := range decl.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				next := hookRootBinding + 1
+				for _, value := range vs.Values {
+					walkHookNode(value, fileScope, &factories, &next)
+				}
+			}
 		}
-		// Ordinary parameters must not reuse the hook-root id. Each
-		// function has its own scope chain, so the counter can restart.
-		fnScope := fileScope.child()
-		next := hookRootBinding + 1
-		bindFieldList(fn.Type.Params, fnScope, &next)
-		bindFieldList(fn.Type.Results, fnScope, &next)
-		walkHookNode(fn.Body, fnScope, &factories, &next)
 	}
 	var blanks [][2]int
 	ast.Inspect(file, func(n ast.Node) bool {
