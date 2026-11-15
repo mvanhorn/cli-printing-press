@@ -22,6 +22,20 @@ func initHooks() {
 		addNovelCommandIfAbsent(root, kept)
 		if root := (&cobra.Command{}); root != nil {
 			root.AddCommand(newIfShadowCmd())
+		} else {
+			root.AddCommand(newElseShadowCmd())
+		}
+		if other := 1; other == 0 {
+		} else {
+			root.AddCommand(newElseKeptCmd())
+		}
+		if root := (&cobra.Command{}); false {
+		} else if other := 1; other == 1 {
+			root.AddCommand(newElseIfShadowCmd())
+		}
+		if other := 1; other == 0 {
+		} else if root != nil {
+			root.AddCommand(newElseIfKeptCmd())
 		}
 		for root := range []int{1} {
 			rootCmd := &cobra.Command{}
@@ -41,11 +55,30 @@ func initHooks() {
 	})
 }
 
+func wireCaptured() {
+	cmd := newCapturedCmd(nil)
+	registerNovelCommand(func(root *cobra.Command) {
+		root.AddCommand(cmd)
+	})
+	outer := newOuterCmd(nil)
+	registerNovelCommand(func(root *cobra.Command) {
+		outer := newInnerCaptureCmd(nil)
+		root.AddCommand(outer)
+	})
+}
+
 func registerNovelCommand(fn func(*cobra.Command)) { _ = fn }
 func addNovelCommandIfAbsent(parent, cmd *cobra.Command) { _, _ = parent, cmd }
 func newKeptCmd(flags any) *cobra.Command { return &cobra.Command{Use: "kept"} }
 func newLocalCmd(flags any) *cobra.Command { return &cobra.Command{Use: "local"} }
 func newIfShadowCmd() *cobra.Command { return &cobra.Command{Use: "if-shadow"} }
+func newElseShadowCmd() *cobra.Command { return &cobra.Command{Use: "else-shadow"} }
+func newElseKeptCmd() *cobra.Command { return &cobra.Command{Use: "else-kept"} }
+func newElseIfShadowCmd() *cobra.Command { return &cobra.Command{Use: "else-if-shadow"} }
+func newElseIfKeptCmd() *cobra.Command { return &cobra.Command{Use: "else-if-kept"} }
+func newCapturedCmd(flags any) *cobra.Command { return &cobra.Command{Use: "captured"} }
+func newOuterCmd(flags any) *cobra.Command { return &cobra.Command{Use: "outer"} }
+func newInnerCaptureCmd(flags any) *cobra.Command { return &cobra.Command{Use: "inner-capture"} }
 func newRangeShadowCmd() *cobra.Command { return &cobra.Command{Use: "range-shadow"} }
 func newAfterCmd() *cobra.Command { return &cobra.Command{Use: "after"} }
 func newOtherCmd() *cobra.Command { return &cobra.Command{Use: "other"} }
@@ -56,15 +89,19 @@ func newInnerCmd() *cobra.Command { return &cobra.Command{Use: "inner"} }
 `
 	got, masked := novelHookRootFactories(src)
 	want := map[string]int{
-		"newKeptCmd":  2, // direct call plus the package-level variable
-		"newLocalCmd": 1,
-		"newAfterCmd": 1,
-		"newOneCmd":   1,
-		"newTwoCmd":   1,
-		"newInnerCmd": 1,
+		"newKeptCmd":         2, // direct call plus the package-level variable
+		"newLocalCmd":        1,
+		"newAfterCmd":        1,
+		"newOneCmd":          1,
+		"newTwoCmd":          1,
+		"newInnerCmd":        1,
+		"newElseKeptCmd":     1,
+		"newElseIfKeptCmd":   1,
+		"newCapturedCmd":     1,
+		"newInnerCaptureCmd": 1,
 	}
-	if len(got) != 7 {
-		t.Fatalf("factories = %v, want seven registrations", got)
+	if len(got) != 11 {
+		t.Fatalf("factories = %v, want eleven registrations", got)
 	}
 	counts := map[string]int{}
 	for _, name := range got {
@@ -75,7 +112,7 @@ func newInnerCmd() *cobra.Command { return &cobra.Command{Use: "inner"} }
 			t.Errorf("%s count = %d, want %d; got %v", name, counts[name], n, got)
 		}
 	}
-	for _, absent := range []string{"newIfShadowCmd", "newRangeShadowCmd", "newOtherCmd", "newClosureCmd"} {
+	for _, absent := range []string{"newIfShadowCmd", "newElseShadowCmd", "newElseIfShadowCmd", "newRangeShadowCmd", "newOtherCmd", "newClosureCmd", "newOuterCmd"} {
 		if counts[absent] != 0 {
 			t.Errorf("shadowed registration %s was treated as the hook root: %v", absent, got)
 		}
@@ -86,7 +123,7 @@ func newInnerCmd() *cobra.Command { return &cobra.Command{Use: "inner"} }
 	if len(masked) != len(src) {
 		t.Fatalf("masked length %d, src length %d", len(masked), len(src))
 	}
-	for _, call := range []string{"AddCommand(newIfShadowCmd", "AddCommand(newRangeShadowCmd", "AddCommand(newClosureCmd", "AddCommand(newInnerCmd"} {
+	for _, call := range []string{"AddCommand(newIfShadowCmd", "AddCommand(newElseShadowCmd", "AddCommand(newElseIfShadowCmd", "AddCommand(newRangeShadowCmd", "AddCommand(newClosureCmd", "AddCommand(newInnerCmd"} {
 		if strings.Contains(masked, call) {
 			t.Errorf("masked source still contains %s", call)
 		}
@@ -118,7 +155,9 @@ func Execute() {
 	rootCmd := &cobra.Command{Use: "tool"}
 	rootCmd.AddCommand(newLearningsCmd())
 	addNovelCommandIfAbsent(rootCmd, newDirectCmd())
+	captured := newCapturedCmd()
 	registerNovelCommand(func(rootCmd *cobra.Command) {
+		rootCmd.AddCommand(captured)
 		rootCmd.AddCommand(newSellersCmd())
 		{
 			rootCmd := &cobra.Command{Use: "nested"}
@@ -143,10 +182,11 @@ func newSellerStatsCmd() *cobra.Command { return &cobra.Command{Use: "stats"} }
 func newShadowCmd() *cobra.Command { return &cobra.Command{Use: "shadow"} }
 func newShadowHelperCmd() *cobra.Command { return &cobra.Command{Use: "shadow-helper"} }
 func newAfterCmd() *cobra.Command { return &cobra.Command{Use: "after"} }
+func newCapturedCmd() *cobra.Command { return &cobra.Command{Use: "captured"} }
 `)
 
 	paths, _ := collectRegisteredCommands(dir)
-	for _, want := range []string{"learnings", "direct", "sellers", "sellers stats", "after"} {
+	for _, want := range []string{"learnings", "direct", "sellers", "sellers stats", "after", "captured"} {
 		if !paths[want] {
 			t.Errorf("expected path %q, got %v", want, paths)
 		}

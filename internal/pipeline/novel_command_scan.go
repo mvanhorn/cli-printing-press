@@ -63,21 +63,25 @@ func novelHookRootFactories(src string) (factories []string, masked string) {
 		return nil, src
 	}
 	fileScope := fileCommandScope(file)
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Type == nil {
+			continue
+		}
+		// Ordinary parameters must not reuse the hook-root id. Each
+		// function has its own scope chain, so the counter can restart.
+		fnScope := fileScope.child()
+		next := hookRootBinding + 1
+		bindFieldList(fn.Type.Params, fnScope, &next)
+		bindFieldList(fn.Type.Results, fnScope, &next)
+		walkHookNode(fn.Body, fnScope, &factories, &next)
+	}
 	var blanks [][2]int
 	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		name, ok := call.Fun.(*ast.Ident)
-		if !ok || name.Name != "registerNovelCommand" || len(call.Args) != 1 {
-			return true
-		}
-		hook, ok := call.Args[0].(*ast.FuncLit)
+		hook, ok := novelHookLiteral(n)
 		if !ok || hook.Body == nil {
 			return true
 		}
-		factories = append(factories, factoriesInHook(hook, fileScope)...)
 		start := fset.Position(hook.Body.Lbrace).Offset
 		end := fset.Position(hook.Body.Rbrace).Offset
 		if start >= 0 && end > start+1 && end <= len(src) {
@@ -127,12 +131,15 @@ func fileCommandScope(file *ast.File) *commandScope {
 	return s
 }
 
-func factoriesInHook(hook *ast.FuncLit, fileScope *commandScope) []string {
+func factoriesInHook(hook *ast.FuncLit, outer *commandScope) []string {
 	root := hookRootIdent(hook)
-	if root == nil || hook.Body == nil || hook.Type == nil {
+	if root == nil || hook.Body == nil || hook.Type == nil || outer == nil {
 		return nil
 	}
-	fnScope := fileScope.child()
+	// The hook is a nested function. Its parent scope is the function
+	// that contains the literal, so a command variable captured from
+	// there still resolves.
+	fnScope := outer.child()
 	next := hookRootBinding + 1
 	if hook.Type.Params != nil {
 		for _, field := range hook.Type.Params.List {
@@ -150,6 +157,22 @@ func factoriesInHook(hook *ast.FuncLit, fileScope *commandScope) []string {
 	var out []string
 	walkHookNode(hook.Body, fnScope, &out, &next)
 	return out
+}
+
+func novelHookLiteral(n ast.Node) (*ast.FuncLit, bool) {
+	call, ok := n.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return nil, false
+	}
+	name, ok := call.Fun.(*ast.Ident)
+	if !ok || name.Name != "registerNovelCommand" {
+		return nil, false
+	}
+	hook, ok := call.Args[0].(*ast.FuncLit)
+	if !ok {
+		return nil, false
+	}
+	return hook, true
 }
 
 func hookRootIdent(hook *ast.FuncLit) *ast.Ident {
@@ -244,7 +267,8 @@ func walkHookNode(n ast.Node, s *commandScope, out *[]string, next *int) {
 		walkHookNode(n.Init, child, out, next)
 		walkHookNode(n.Cond, child, out, next)
 		walkHookNode(n.Body, child, out, next)
-		walkHookNode(n.Else, s, out, next)
+		// The init statement's scope includes the else branch.
+		walkHookNode(n.Else, child, out, next)
 	case *ast.ForStmt:
 		child := s.child()
 		walkHookNode(n.Init, child, out, next)
@@ -284,6 +308,10 @@ func walkHookNode(n ast.Node, s *commandScope, out *[]string, next *int) {
 			walkHookNode(stmt, child, out, next)
 		}
 	case *ast.CallExpr:
+		if hook, ok := novelHookLiteral(n); ok {
+			*out = append(*out, factoriesInHook(hook, s)...)
+			return
+		}
 		if recordHookRegistration(n, s, out) {
 			return
 		}
