@@ -997,13 +997,16 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 	leaves = map[string]bool{}
 
 	// Root detection scans the full file because the wiring function
-	// (Execute / helpers) isn't a new*Cmd constructor.
-	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\s*\(`)
-	rootVarAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\b`)
+	// (Execute / helpers) isn't a new*Cmd constructor. Novel commands
+	// register through addNovelCommandIfAbsent as well as AddCommand.
+	// Hook bodies are masked before these regexes run: a nested
+	// declaration of the same name must not look like rootCmd.
+	rootAddRe := regexp.MustCompile(`(?:rootCmd\.AddCommand\(|addNovelCommandIfAbsent\(\s*rootCmd\s*,)\s*(\w+)\s*\(`)
+	rootVarAddRe := regexp.MustCompile(`(?:rootCmd\.AddCommand\(|addNovelCommandIfAbsent\(\s*rootCmd\s*,)\s*(\w+)\b`)
 	funcHeaderRe := regexp.MustCompile(`func\s+(\w+)\s*\(`)
 	useRe := cobraUseLeafRe
-	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\s*\(`)
-	addChildVarRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\b`)
+	addChildRe := regexp.MustCompile(`(?:\.AddCommand\(|addNovelCommandIfAbsent\(\s*\w+\s*,)\s*(\w+)\s*\(`)
+	addChildVarRe := regexp.MustCompile(`(?:\.AddCommand\(|addNovelCommandIfAbsent\(\s*\w+\s*,)\s*(\w+)\b`)
 
 	for _, file := range files {
 		data, err := os.ReadFile(file)
@@ -1012,6 +1015,8 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 		}
 		src := string(data)
 		packageVars := packageCommandFactoryVars(src)
+		hookFactories, masked := novelHookRootFactories(src)
+		rootFuncs = append(rootFuncs, hookFactories...)
 		for _, u := range useRe.FindAllStringSubmatch(src, -1) {
 			if name := strings.Fields(u[1])[0]; name != "" {
 				leaves[name] = true
@@ -1023,11 +1028,17 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			if body == "" {
 				continue
 			}
+			// Masked hook bodies keep the same offsets, so root regexes
+			// skip registrations whose parent only looks like rootCmd.
+			rootBody := body
+			if len(masked) == len(src) {
+				rootBody = extractFuncBody(masked, m[1])
+			}
 			bodyVars := commandFactoryVars(body)
-			for _, rm := range rootAddRe.FindAllStringSubmatch(body, -1) {
+			for _, rm := range rootAddRe.FindAllStringSubmatch(rootBody, -1) {
 				rootFuncs = append(rootFuncs, rm[1])
 			}
-			for _, rm := range rootVarAddRe.FindAllStringSubmatch(body, -1) {
+			for _, rm := range rootVarAddRe.FindAllStringSubmatch(rootBody, -1) {
 				fn := bodyVars[rm[1]]
 				if fn == "" {
 					fn = packageVars[rm[1]]
@@ -1041,10 +1052,10 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			if u := useRe.FindStringSubmatch(body); u != nil {
 				entry.use = strings.Fields(u[1])[0]
 			}
-			for _, cm := range addChildRe.FindAllStringSubmatch(body, -1) {
+			for _, cm := range addChildRe.FindAllStringSubmatch(rootBody, -1) {
 				entry.children = append(entry.children, cm[1])
 			}
-			for _, cm := range addChildVarRe.FindAllStringSubmatch(body, -1) {
+			for _, cm := range addChildVarRe.FindAllStringSubmatch(rootBody, -1) {
 				fn := bodyVars[cm[1]]
 				if fn == "" {
 					fn = packageVars[cm[1]]

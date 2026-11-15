@@ -1,0 +1,159 @@
+package pipeline
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestNovelHookRootFactoriesScope(t *testing.T) {
+	src := `package cli
+
+import "github.com/spf13/cobra"
+
+var kept = newKeptCmd(nil)
+
+func initHooks() {
+	registerNovelCommand(func(root *cobra.Command) {
+		root.AddCommand(newKeptCmd())
+		keptLocal := newLocalCmd(nil)
+		root.AddCommand(keptLocal)
+		addNovelCommandIfAbsent(root, kept)
+		if root := (&cobra.Command{}); root != nil {
+			root.AddCommand(newIfShadowCmd())
+		}
+		for root := range []int{1} {
+			rootCmd := &cobra.Command{}
+			_ = root
+			rootCmd.AddCommand(newRangeShadowCmd())
+		}
+		root.AddCommand(newAfterCmd())
+		var other = &cobra.Command{}
+		other.AddCommand(newOtherCmd())
+		root.AddCommand(newOneCmd(), newTwoCmd())
+		go func(root *cobra.Command) {
+			root.AddCommand(newClosureCmd())
+		}(root)
+		registerNovelCommand(func(root *cobra.Command) {
+			root.AddCommand(newInnerCmd())
+		})
+	})
+}
+
+func registerNovelCommand(fn func(*cobra.Command)) { _ = fn }
+func addNovelCommandIfAbsent(parent, cmd *cobra.Command) { _, _ = parent, cmd }
+func newKeptCmd(flags any) *cobra.Command { return &cobra.Command{Use: "kept"} }
+func newLocalCmd(flags any) *cobra.Command { return &cobra.Command{Use: "local"} }
+func newIfShadowCmd() *cobra.Command { return &cobra.Command{Use: "if-shadow"} }
+func newRangeShadowCmd() *cobra.Command { return &cobra.Command{Use: "range-shadow"} }
+func newAfterCmd() *cobra.Command { return &cobra.Command{Use: "after"} }
+func newOtherCmd() *cobra.Command { return &cobra.Command{Use: "other"} }
+func newOneCmd() *cobra.Command { return &cobra.Command{Use: "one"} }
+func newTwoCmd() *cobra.Command { return &cobra.Command{Use: "two"} }
+func newClosureCmd() *cobra.Command { return &cobra.Command{Use: "closure"} }
+func newInnerCmd() *cobra.Command { return &cobra.Command{Use: "inner"} }
+`
+	got, masked := novelHookRootFactories(src)
+	want := map[string]int{
+		"newKeptCmd":  2, // direct call plus the package-level variable
+		"newLocalCmd": 1,
+		"newAfterCmd": 1,
+		"newOneCmd":   1,
+		"newTwoCmd":   1,
+		"newInnerCmd": 1,
+	}
+	if len(got) != 7 {
+		t.Fatalf("factories = %v, want seven registrations", got)
+	}
+	counts := map[string]int{}
+	for _, name := range got {
+		counts[name]++
+	}
+	for name, n := range want {
+		if counts[name] != n {
+			t.Errorf("%s count = %d, want %d; got %v", name, counts[name], n, got)
+		}
+	}
+	for _, absent := range []string{"newIfShadowCmd", "newRangeShadowCmd", "newOtherCmd", "newClosureCmd"} {
+		if counts[absent] != 0 {
+			t.Errorf("shadowed registration %s was treated as the hook root: %v", absent, got)
+		}
+	}
+	if masked == src {
+		t.Fatal("hook body was not masked")
+	}
+	if len(masked) != len(src) {
+		t.Fatalf("masked length %d, src length %d", len(masked), len(src))
+	}
+	for _, call := range []string{"AddCommand(newIfShadowCmd", "AddCommand(newRangeShadowCmd", "AddCommand(newClosureCmd", "AddCommand(newInnerCmd"} {
+		if strings.Contains(masked, call) {
+			t.Errorf("masked source still contains %s", call)
+		}
+	}
+	if !strings.Contains(src, "AddCommand(newIfShadowCmd") {
+		t.Fatal("fixture lost the shadow call")
+	}
+}
+
+func TestNovelHookRootFactoriesParseError(t *testing.T) {
+	src := "package cli\nfunc ("
+	got, masked := novelHookRootFactories(src)
+	if len(got) != 0 || masked != src {
+		t.Fatalf("got %v, masked changed: %v", got, masked != src)
+	}
+}
+
+func TestCollectRegisteredCommandsNovelHookScope(t *testing.T) {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cli, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(cli, "root.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "tool"}
+	rootCmd.AddCommand(newLearningsCmd())
+	addNovelCommandIfAbsent(rootCmd, newDirectCmd())
+	registerNovelCommand(func(rootCmd *cobra.Command) {
+		rootCmd.AddCommand(newSellersCmd())
+		{
+			rootCmd := &cobra.Command{Use: "nested"}
+			rootCmd.AddCommand(newShadowCmd())
+			addNovelCommandIfAbsent(rootCmd, newShadowHelperCmd())
+		}
+		rootCmd.AddCommand(newAfterCmd())
+	})
+}
+
+func registerNovelCommand(fn func(*cobra.Command)) { _ = fn }
+func addNovelCommandIfAbsent(parent, cmd *cobra.Command) { _, _ = parent, cmd }
+
+func newLearningsCmd() *cobra.Command { return &cobra.Command{Use: "learnings"} }
+func newDirectCmd() *cobra.Command { return &cobra.Command{Use: "direct"} }
+func newSellersCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "sellers"}
+	addNovelCommandIfAbsent(cmd, newSellerStatsCmd())
+	return cmd
+}
+func newSellerStatsCmd() *cobra.Command { return &cobra.Command{Use: "stats"} }
+func newShadowCmd() *cobra.Command { return &cobra.Command{Use: "shadow"} }
+func newShadowHelperCmd() *cobra.Command { return &cobra.Command{Use: "shadow-helper"} }
+func newAfterCmd() *cobra.Command { return &cobra.Command{Use: "after"} }
+`)
+
+	paths, _ := collectRegisteredCommands(dir)
+	for _, want := range []string{"learnings", "direct", "sellers", "sellers stats", "after"} {
+		if !paths[want] {
+			t.Errorf("expected path %q, got %v", want, paths)
+		}
+	}
+	for _, absent := range []string{"shadow", "shadow-helper", "stats", "nested", "tool shadow"} {
+		if paths[absent] {
+			t.Errorf("did not expect path %q, got %v", absent, paths)
+		}
+	}
+}
