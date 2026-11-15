@@ -104,14 +104,8 @@ func TestFrameworkCommandsHonorDryRun(t *testing.T) {
 	before := hits.Load()
 	stdout, stderr := run("sync", "--dry-run", "--json", "--db", syncDB)
 	require.Equal(t, before, hits.Load(), "sync --dry-run must not dial the API\nstderr:\n%s", stderr)
-	require.Contains(t, stderr, "dry run - no request sent")
-	preview := decodeJSONObject(t, stdout)
-	require.Equal(t, true, preview["dry_run"])
-	require.Equal(t, "sync", preview["action"])
-	for _, key := range []string{"total_records", "resources", "success", "warned", "errored", "duration_ms"} {
-		_, ok := preview[key]
-		require.True(t, ok, "sync dry-run preview missing %s: %s", key, stdout)
-	}
+	assertDryRunEnvelope(t, stdout, "sync (resource eligibility and checkpoints not checked)")
+	require.NoFileExists(t, syncDB)
 
 	archiveDB := filepath.Join(t.TempDir(), "archive.db")
 	sentinel := []byte("not-a-database")

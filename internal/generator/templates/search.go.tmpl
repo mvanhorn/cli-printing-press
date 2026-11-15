@@ -142,8 +142,27 @@ Run sync first to populate the local search index.`,
 				return cmd.Help()
 			}
 			query := args[0]
+			// results[:limit] panics on a negative limit. Reject it before
+			// any client, network, or store work.
+			if limit < 0 {
+				return usageErr(fmt.Errorf("--limit must be 0 or greater, got %d", limit))
+			}
+{{- if not .SearchEndpointPath}}
+			if flags.dataSource == "live" {
+				return fmt.Errorf("this API has no search endpoint. Use --data-source local or --data-source auto to search locally synced data")
+			}
+			// Opening the store creates and migrates the database.
+			if dryRunOK(flags) {
+				return writeDryRun(cmd.OutOrStdout(), flags, "search")
+			}
+{{- end}}
 
 {{- if .SearchEndpointPath}}
+			// Local search opens the store. Live and auto preview the request
+			// through the client, which does not dial and does not open the store.
+			if dryRunOK(flags) && flags.dataSource == "local" {
+				return writeDryRun(cmd.OutOrStdout(), flags, "search")
+			}
 			// This API has a search endpoint: {{.SearchEndpointMethod}} {{.SearchEndpointPath}}
 			if flags.dataSource != "local" {
 				c, err := flags.newClient()
@@ -176,16 +195,11 @@ Run sync first to populate the local search index.`,
 				fmt.Fprintf(cmd.ErrOrStderr(), "API unreachable, falling back to local search.\n")
 			}
 {{- else}}
-			// This API has no search endpoint.
-			if flags.dataSource == "live" {
-				return fmt.Errorf("this API has no search endpoint. Use --data-source local or --data-source auto to search locally synced data")
-			}
 			if flags.dataSource == "auto" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "This API has no search endpoint. Searching local data.\n")
 			}
 {{- end}}
 
-			// Local FTS search
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
