@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.35.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.5...v4.35.6) (2026-11-15)
+
+
+### Bug Fixes
+
+* **cli:** keep dry-run off files, stores, and profiles ([#5398](https://github.com/mvanhorn/cli-printing-press/issues/5398)) ([36b5c64](https://github.com/mvanhorn/cli-printing-press/commit/36b5c6441f89b6a69ed2e9d98bfbebe7e75fa0d1))
+* **cli:** page unpaged MCP read lists with a local cursor ([#5396](https://github.com/mvanhorn/cli-printing-press/issues/5396)) ([36e35e7](https://github.com/mvanhorn/cli-printing-press/commit/36e35e7f5f4812b7d8f06b6ec941984a16e6b9d0))
+* **cli:** prove cursor sync ends from a declared row count ([#5393](https://github.com/mvanhorn/cli-printing-press/issues/5393)) ([29d7bcf](https://github.com/mvanhorn/cli-printing-press/commit/29d7bcf1f94e5f251855851f19cc85c81b55ae40))
+
 ## [4.35.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.4...v4.35.5) (2026-11-12)
 
 
