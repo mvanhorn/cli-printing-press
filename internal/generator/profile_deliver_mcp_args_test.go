@@ -289,12 +289,16 @@ func TestProfileDeliverContract(t *testing.T) {
 	})
 
 	t.Run("profile dry-run matches typed dry-run", func(t *testing.T) {
-		stdout, stderr, err := runCLI(t, "profile", "save", "safe", "--dry-run")
+		store, err := loadProfileStore()
 		if err != nil {
-			t.Fatalf("save: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+			t.Fatal(err)
+		}
+		store.Profiles["safe"] = Profile{Name: "safe", Values: map[string]string{"dry-run": "true"}}
+		if err := saveProfileStore(store); err != nil {
+			t.Fatal(err)
 		}
 		take()
-		stdout, stderr, err = runCLI(t, "devices", "retire", "7", "--profile", "safe", "--no-cache")
+		stdout, stderr, err := runCLI(t, "devices", "retire", "7", "--profile", "safe", "--no-cache")
 		reqs := take()
 		if err != nil {
 			t.Fatalf("profile retire: %v\nstdout:\n%s\nstderr:\n%s\nreqs:%v", err, stdout, stderr, reqs)
@@ -405,7 +409,11 @@ func TestProfileDeliverContract(t *testing.T) {
 	})
 
 	t.Run("profile save does not recapture applied flags", func(t *testing.T) {
-		stdout, stderr, err := runCLI(t, "profile", "save", "derived", "--profile", "safe", "--json")
+		stdout, stderr, err := runCLI(t, "profile", "save", "overlay", "--compact")
+		if err != nil {
+			t.Fatalf("save overlay: %v\n%s\n%s", err, stdout, stderr)
+		}
+		stdout, stderr, err = runCLI(t, "profile", "save", "derived", "--profile", "overlay", "--json")
 		if err != nil {
 			t.Fatalf("save derived: %v\n%s\n%s", err, stdout, stderr)
 		}
@@ -414,20 +422,35 @@ func TestProfileDeliverContract(t *testing.T) {
 			t.Fatalf("show derived: %v\n%s\n%s", err, shown, stderr)
 		}
 		values := profileValues(t, shown)
-		if _, ok := values["dry-run"]; ok {
-			t.Fatalf("profile save recaptured applied dry-run: %s", shown)
+		if _, ok := values["compact"]; ok {
+			t.Fatalf("profile save recaptured applied compact: %s", shown)
 		}
 		if values["json"] != "true" {
 			t.Fatalf("profile save dropped the typed --json: %s", shown)
 		}
-		stdout, stderr, err = runCLI(t, "profile", "save", "empty", "--profile", "safe")
+		stdout, stderr, err = runCLI(t, "profile", "save", "empty", "--profile", "overlay")
 		if err == nil {
 			t.Fatalf("profile save of only applied flags succeeded:\n%s", stdout)
 		}
 		if !strings.Contains(stdout+stderr, "no non-default flags") {
 			t.Fatalf("empty overlay error = %v\n%s\n%s", err, stdout, stderr)
 		}
-		stdout, stderr, err = runCLI(t, "profile", "save", "typed", "--dry-run")
+		stdout, stderr, err = runCLI(t, "profile", "save", "typed", "--json", "--dry-run")
+		if err != nil {
+			t.Fatalf("dry-run save: %v\n%s\n%s", err, stdout, stderr)
+		}
+		stored, loadErr := loadProfileStore()
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if _, ok := stored.Profiles["typed"]; ok {
+			t.Fatal("dry-run save persisted a profile")
+		}
+		shown, stderr, err = runCLI(t, "profile", "show", "typed")
+		if err == nil {
+			t.Fatalf("dry-run save persisted a profile:\n%s", shown)
+		}
+		stdout, stderr, err = runCLI(t, "profile", "save", "typed", "--json", "--dry-run=false")
 		if err != nil {
 			t.Fatalf("save typed: %v\n%s\n%s", err, stdout, stderr)
 		}
@@ -435,8 +458,12 @@ func TestProfileDeliverContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if profileValues(t, shown)["dry-run"] != "true" {
-			t.Fatalf("user-typed --dry-run was not saved: %s", shown)
+		saved := profileValues(t, shown)
+		if _, ok := saved["dry-run"]; ok {
+			t.Fatalf("profile save stored dry-run: %s", shown)
+		}
+		if saved["json"] != "true" {
+			t.Fatalf("profile save dropped --json: %s", shown)
 		}
 	})
 

@@ -169,12 +169,13 @@ func TestDryRunLeavesLearnStoreUntouched(t *testing.T) {
 	t.Run("profile dry-run", func(t *testing.T) {
 		home := t.TempDir()
 		env := dryRunStoreEnv(t, home, prefix)
-		stdout, stderr, code := runDryRunCLI(t, binaryPath, env,
-			"--home", home, "profile", "save", "preview", "--dry-run")
-		require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
-		assertNoStoreOrJournal(t, home, cliName)
+		// A saved profile may still apply dry-run. Saving --dry-run itself
+		// must not be how that profile is created.
+		configDir := filepath.Join(home, "config")
+		require.NoError(t, os.MkdirAll(configDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "profiles.json"), []byte(`{"profiles":{"preview":{"name":"preview","values":{"dry-run":"true"}}}}`), 0o600))
 
-		stdout, stderr, code = runDryRunCLI(t, binaryPath, env,
+		stdout, stderr, code := runDryRunCLI(t, binaryPath, env,
 			"--home", home, "items", "create", "--name", "sample", "--profile", "preview")
 		require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 		require.Contains(t, stdout, "dry_run")
