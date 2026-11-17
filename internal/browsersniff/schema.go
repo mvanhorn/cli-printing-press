@@ -20,10 +20,24 @@ var (
 	emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 )
 
+// containerKind records whether every observed value of a field was the same
+// empty container. containerUntracked means this field was copied from an
+// already-inferred param (the multi-sample request merge) rather than walked
+// as raw JSON.
+type containerKind int
+
+const (
+	containerUntracked containerKind = iota
+	containerEmptyArray
+	containerEmptyObject
+	containerValue
+)
+
 type inferredField struct {
-	count  int
-	param  spec.Param
-	nested map[string]*inferredField
+	count     int
+	param     spec.Param
+	nested    map[string]*inferredField
+	container containerKind
 }
 
 func InferResponseSchema(bodies []string) []spec.Param {
@@ -166,6 +180,7 @@ func mergeObject(fields map[string]*inferredField, object map[string]any, depth 
 		}
 
 		field.count++
+		field.observe(value)
 		field.param = inferParam(name, value, depth)
 
 		if (field.param.Type == "object" || field.param.Type == "array") && len(field.param.Fields) > 0 {
@@ -241,7 +256,14 @@ func inferObjectFields(object map[string]any, depth int) []spec.Param {
 		}
 
 		child := inferParam(name, value, depth)
-		child.Required = true
+		if kind := classifyContainer(value); kind == containerEmptyArray || kind == containerEmptyObject {
+			// One empty container is not evidence the caller must supply the field.
+			// buildParams repeats the check across every sample.
+			child.Required = false
+			child.Default = emptyContainerValue(kind)
+		} else {
+			child.Required = true
+		}
 		params = append(params, child)
 	}
 
@@ -257,8 +279,17 @@ func buildParams(fields map[string]*inferredField, sampleCount int) []spec.Param
 		param := field.param
 		param.Name = name
 		param.Required = field.count == sampleCount
-		if (field.param.Type == "object" || field.param.Type == "array") && field.nested != nil {
+		if (field.param.Type == "object" || field.param.Type == "array") && field.nested != nil && field.observedEmptyKind() == containerUntracked {
 			param.Fields = buildParams(field.nested, field.count)
+		}
+		// Present in every sample is not enough when every value was [].
+		// The generated flag stays optional and the body keeps that shape.
+		if kind := field.observedEmptyKind(); kind != containerUntracked {
+			param.Required = false
+			param.Default = emptyContainerValue(kind)
+			param.Fields = nil
+		} else if kind := stampedEmptyContainerKind(param); kind != containerUntracked {
+			param.Required = false
 		}
 		params = append(params, param)
 	}
@@ -295,6 +326,175 @@ func isURL(value string) bool {
 		return false
 	}
 	return parsed.Scheme != "" && parsed.Host != ""
+}
+
+func (f *inferredField) observe(value any) {
+	kind := classifyContainer(value)
+	if f.container == containerUntracked {
+		f.container = kind
+		return
+	}
+	if f.container != kind {
+		f.container = containerValue
+	}
+}
+
+func (f *inferredField) observedEmptyKind() containerKind {
+	switch f.container {
+	case containerEmptyArray, containerEmptyObject:
+		return f.container
+	default:
+		return containerUntracked
+	}
+}
+
+func classifyContainer(value any) containerKind {
+	switch typed := value.(type) {
+	case []any:
+		if len(typed) == 0 {
+			return containerEmptyArray
+		}
+	case map[string]any:
+		if len(typed) == 0 {
+			return containerEmptyObject
+		}
+	}
+	return containerValue
+}
+
+func emptyContainerValue(kind containerKind) any {
+	switch kind {
+	case containerEmptyArray:
+		return []any{}
+	case containerEmptyObject:
+		return map[string]any{}
+	default:
+		return nil
+	}
+}
+
+func stampedEmptyContainerKind(param spec.Param) containerKind {
+	if param.Default == nil || len(param.Fields) > 0 {
+		return containerUntracked
+	}
+	data, err := json.Marshal(param.Default)
+	if err != nil {
+		return containerUntracked
+	}
+	switch string(data) {
+	case "[]":
+		if param.Type == "array" {
+			return containerEmptyArray
+		}
+	case "{}":
+		if param.Type == "object" {
+			return containerEmptyObject
+		}
+	}
+	return containerUntracked
+}
+
+// mergeObservedRequestParam combines two single-sample inferences of one
+// field. An empty container stays optional only when every sample was that
+// same empty container. A later [] must not erase an earlier real value.
+func mergeObservedRequestParam(prev, next spec.Param, first bool) spec.Param {
+	if first {
+		return next
+	}
+	prevKind := stampedEmptyContainerKind(prev)
+	nextKind := stampedEmptyContainerKind(next)
+	if prevKind != containerUntracked && nextKind != containerUntracked && prevKind != nextKind {
+		next.Default = nil
+		next.Required = true
+		return next
+	}
+	if prevKind == containerUntracked && nextKind != containerUntracked {
+		// An empty object has no fields. Merging them in would drop the real
+		// children, but this sample did omit every one of them.
+		if nextKind == containerEmptyObject {
+			prev.Fields = markFieldsAbsent(prev.Fields)
+		}
+		return prev
+	}
+	next.Fields = preserveNonEmptyOverEmpty(prev.Fields, next.Fields)
+	return keepNotedAbsence(prev, next)
+}
+
+func preserveNonEmptyOverEmpty(prev, next []spec.Param) []spec.Param {
+	if len(next) == 0 || len(prev) == 0 {
+		return next
+	}
+	prevByName := make(map[string]spec.Param, len(prev))
+	for _, param := range prev {
+		prevByName[param.Name] = param
+	}
+	out := make([]spec.Param, 0, len(next)+len(prev))
+	seen := make(map[string]bool, len(next))
+	for _, param := range next {
+		seen[param.Name] = true
+		earlier, ok := prevByName[param.Name]
+		if !ok {
+			out = append(out, param)
+			continue
+		}
+		earlierKind := stampedEmptyContainerKind(earlier)
+		nextKind := stampedEmptyContainerKind(param)
+		switch {
+		case nextKind != containerUntracked && earlierKind != containerUntracked && nextKind != earlierKind:
+			param.Default = nil
+			param.Required = true
+			param.Fields = nil
+			out = append(out, keepNotedAbsence(earlier, param))
+		case nextKind != containerUntracked && earlierKind == containerUntracked:
+			out = append(out, earlier)
+		case nextKind == containerUntracked && earlierKind == containerUntracked:
+			param.Fields = preserveNonEmptyOverEmpty(earlier.Fields, param.Fields)
+			out = append(out, keepNotedAbsence(earlier, param))
+		default:
+			if nextKind == containerUntracked && earlierKind != containerUntracked {
+				param.Fields = preserveNonEmptyOverEmpty(earlier.Fields, param.Fields)
+			}
+			out = append(out, keepNotedAbsence(earlier, param))
+		}
+	}
+	// A sample that omits a child must not erase a real value seen earlier.
+	// The next sample may show that child as [], and that [] is not evidence
+	// the field is an empty default. The omission does disprove required.
+	for _, earlier := range prev {
+		if seen[earlier.Name] || stampedEmptyContainerKind(earlier) != containerUntracked {
+			continue
+		}
+		out = append(out, markFieldAbsent(earlier))
+	}
+	return out
+}
+
+// A real field left out of a sample stays in the schema so a later [] cannot
+// become its default, but that sample is evidence the caller can omit it.
+// Children stay required: the generator checks them only when this object is supplied.
+func markFieldAbsent(param spec.Param) spec.Param {
+	if stampedEmptyContainerKind(param) == containerUntracked {
+		param.Required = false
+		param.Default = nil
+	}
+	return param
+}
+
+func markFieldsAbsent(fields []spec.Param) []spec.Param {
+	out := make([]spec.Param, len(fields))
+	for i, param := range fields {
+		out[i] = markFieldAbsent(param)
+	}
+	return out
+}
+
+func keepNotedAbsence(earlier, param spec.Param) spec.Param {
+	if earlier.Required || stampedEmptyContainerKind(earlier) != containerUntracked {
+		return param
+	}
+	param.Required = false
+	param.Default = nil
+	return param
 }
 
 func inferScalarStringType(value string) string {
