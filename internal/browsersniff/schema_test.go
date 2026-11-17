@@ -356,6 +356,38 @@ func TestInferRequestBodyEmptyContainers(t *testing.T) {
 	require.NotNil(t, omittedName)
 	assert.True(t, omittedName.Required)
 
+	omittedObject := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"config":{"name":"a","mode":"x"},"label":"a"}}`,
+		`{"filter":{"label":"b"}}`,
+	), nil)
+	omittedConfig := findBodyParam(findBodyParam(omittedObject, "filter").Fields, "config")
+	require.NotNil(t, omittedConfig)
+	assert.False(t, omittedConfig.Required)
+	assert.Nil(t, omittedConfig.Default)
+	omittedConfigName := findBodyParam(omittedConfig.Fields, "name")
+	omittedConfigMode := findBodyParam(omittedConfig.Fields, "mode")
+	require.NotNil(t, omittedConfigName)
+	require.NotNil(t, omittedConfigMode)
+	assert.True(t, omittedConfigName.Required)
+	assert.True(t, omittedConfigMode.Required)
+	omittedLabel := findBodyParam(findBodyParam(omittedObject, "filter").Fields, "label")
+	require.NotNil(t, omittedLabel)
+	assert.True(t, omittedLabel.Required)
+
+	omittedByEmpty := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"config":{"name":"a","mode":"x"},"label":"a"}}`,
+		`{"filter":{}}`,
+	), nil)
+	emptyConfig := findBodyParam(findBodyParam(omittedByEmpty, "filter").Fields, "config")
+	require.NotNil(t, emptyConfig)
+	assert.False(t, emptyConfig.Required)
+	emptyConfigName := findBodyParam(emptyConfig.Fields, "name")
+	emptyConfigMode := findBodyParam(emptyConfig.Fields, "mode")
+	require.NotNil(t, emptyConfigName)
+	require.NotNil(t, emptyConfigMode)
+	assert.True(t, emptyConfigName.Required)
+	assert.True(t, emptyConfigMode.Required)
+
 	gapped := inferRequestBody(jsonRequestEntries(
 		`{"filter":{"ids":[1],"name":"a"}}`,
 		`{"filter":{"name":"b"}}`,

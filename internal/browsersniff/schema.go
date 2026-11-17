@@ -471,13 +471,11 @@ func preserveNonEmptyOverEmpty(prev, next []spec.Param) []spec.Param {
 
 // A real field left out of a sample stays in the schema so a later [] cannot
 // become its default, but that sample is evidence the caller can omit it.
+// Children stay required: the generator checks them only when this object is supplied.
 func markFieldAbsent(param spec.Param) spec.Param {
 	if stampedEmptyContainerKind(param) == containerUntracked {
 		param.Required = false
 		param.Default = nil
-	}
-	if len(param.Fields) > 0 {
-		param.Fields = markFieldsAbsent(param.Fields)
 	}
 	return param
 }

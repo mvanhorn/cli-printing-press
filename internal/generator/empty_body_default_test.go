@@ -225,6 +225,66 @@ func TestOptionalObjectTwoEmptyContainersCompile(t *testing.T) {
 	assert.Equal(t, map[string]any{}, settings["extra"])
 }
 
+func TestOmittedObjectKeepsChildRequirements(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("omitted-object")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/items", Description: "List items"},
+			"create": {
+				Method:      "POST",
+				Path:        "/items",
+				Description: "Create an item",
+				Body: []spec.Param{{
+					Name:     "filter",
+					Type:     "object",
+					Required: true,
+					Fields: []spec.Param{
+						{Name: "label", Type: "string", Required: true},
+						{
+							Name: "config",
+							Type: "object",
+							Fields: []spec.Param{
+								{Name: "name", Type: "string", Required: true},
+								{Name: "mode", Type: "string", Required: true},
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	env := decoyCLIEnv(t)
+
+	omitted := dryRunRequestBody(t, binaryPath, env, "items", "create", "--dry-run", "--filter-label", "b")
+	filter, ok := omitted["filter"].(map[string]any)
+	require.True(t, ok, "filter = %#v", omitted["filter"])
+	assert.Equal(t, "b", filter["label"])
+	_, present := filter["config"]
+	assert.False(t, present, "config = %#v", filter["config"])
+
+	code, out := runPrintedCLI(t, binaryPath, env, "items", "create", "--dry-run", "--filter-label", "b", "--filter-config-mode", "y")
+	require.NotEqual(t, 0, code, out)
+	assert.Contains(t, out, `required flag "filter-config-name" not set`)
+
+	supplied := dryRunRequestBody(t, binaryPath, env, "items", "create", "--dry-run", "--filter-label", "b", "--filter-config-name", "a", "--filter-config-mode", "y")
+	filter, ok = supplied["filter"].(map[string]any)
+	require.True(t, ok, "filter = %#v", supplied["filter"])
+	config, ok := filter["config"].(map[string]any)
+	require.True(t, ok, "config = %#v", filter["config"])
+	assert.Equal(t, "a", config["name"])
+	assert.Equal(t, "y", config["mode"])
+}
+
 func decoyCLIEnv(t *testing.T) []string {
 	t.Helper()
 	decoy := t.TempDir()
