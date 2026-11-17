@@ -12,7 +12,7 @@
 {{- $documentedFields := compactFieldMapLiteral .Endpoint.Response.Item .Types}}
 {{- $skipLiveJSONGuard := or .Endpoint.UsesHTMLResponse .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse}}
 {{- $replaySafe := endpointReplaySafe .Endpoint}}
-{{- $hasHeaderOverrides := or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse .Endpoint.UsesHTMLResponse (endpointHasHeaderParams .Endpoint) $replaySafe}}
+{{- $hasHeaderOverrides := or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse .Endpoint.UsesTextResponse .Endpoint.UsesHTMLResponse .Endpoint.UsesXMLResponse (endpointHasHeaderParams .Endpoint) $replaySafe}}
 
 package cli
 
@@ -272,6 +272,9 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if .Endpoint.UsesHTMLResponse}}
 				"X-Printing-Press-HTML-Response": "true",
+{{- end}}
+{{- if .Endpoint.UsesXMLResponse}}
+				"X-Printing-Press-XML-Response": "true",
 {{- end}}
 {{- if $replaySafe}}
 				"X-Printing-Press-Replay-Safe": "{{$replaySafe}}",
