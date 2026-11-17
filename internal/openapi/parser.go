@@ -769,6 +769,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	// here so OpenAPI-parsed specs get the same guarantee.
 	result.EnrichPathParams()
 	result.PromoteGlobalPathTemplateVars()
+	result.EnsureXMLAcceptHeaders()
 
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
@@ -3677,12 +3678,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.ResponseFormat = spec.ResponseFormatText
 				endpoint.HeaderOverrides = upsertHeaderOverride(endpoint.HeaderOverrides, "Accept", accept)
 			} else if responseUsesXML(op) {
-				// XML-only success bodies are normalized to JSON by the
-				// generated client (response_format: xml). Pin Accept so the
-				// server returns XML instead of 406-ing the default
-				// application/json.
+				// XML-only success bodies normalize to JSON (response_format: xml).
+				// Accept is pinned later by EnsureXMLAcceptHeaders, after header
+				// merges, so an explicit Accept override is preserved.
 				endpoint.ResponseFormat = spec.ResponseFormatXML
-				endpoint.HeaderOverrides = upsertHeaderOverride(endpoint.HeaderOverrides, "Accept", "application/xml")
 			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride

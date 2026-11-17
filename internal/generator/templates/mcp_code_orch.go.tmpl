@@ -216,8 +216,8 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if and $endpoint.UsesRawRequestBody $isReadOnly}}
 		ReadOnly: true,
 {{- end}}
-{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
+{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse $endpoint.UsesXMLResponse (endpointReplaySafe $endpoint)}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{if $endpoint.UsesXMLResponse}}"X-Printing-Press-XML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}),
 	},
@@ -261,8 +261,8 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- if and $endpoint.UsesRawRequestBody $isReadOnly}}
 		ReadOnly: true,
 {{- end}}
-{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse (endpointReplaySafe $endpoint)}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
+{{- if or $endpoint.HeaderOverrides $endpoint.UsesTextResponse $endpoint.UsesHTMLResponse $endpoint.UsesXMLResponse (endpointReplaySafe $endpoint)}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}}{{if $endpoint.UsesTextResponse}}"X-Printing-Press-Text-Response": "true",{{end}}{{if $endpoint.UsesHTMLResponse}}"X-Printing-Press-HTML-Response": "true",{{end}}{{if $endpoint.UsesXMLResponse}}"X-Printing-Press-XML-Response": "true",{{end}}{{with endpointReplaySafe $endpoint}}"X-Printing-Press-Replay-Safe": {{printf "%q" .}},{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" $summary}}, {{printf "%q" $path}}),
 	},

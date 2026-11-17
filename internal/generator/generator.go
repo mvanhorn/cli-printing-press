@@ -184,6 +184,7 @@ type Generator struct {
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
+	s.EnsureXMLAcceptHeaders()
 	normalizeGoogleServiceAccountAuth(s)
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	s.EnrichPathParams()

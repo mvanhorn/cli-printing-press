@@ -2582,6 +2582,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return env, resp.StatusCode, nil
 			}
 			if !htmlResponse {
+				// Binary endpoints keep XML bytes (a sitemap served as
+				// application/xml). Only a request that expected JSON reports
+				// a misdeclared XML body.
+				if !binaryResponse {
+					if label, ok := misdeclaredXMLResponse(resp.Header.Get("Content-Type"), respBody); ok {
+						return nil, resp.StatusCode, fmt.Errorf("%s %s: expected JSON, API returned XML (%s); declare response_format: xml", method, c.displayURL(path, authHeader), label)
+					}
+				}
 				if summary, ok := summarizeHTMLDocument(respBody); ok {
 					return nil, resp.StatusCode, fmt.Errorf("%s %s: expected JSON, API returned HTML instead of JSON: %s", method, c.displayURL(path, authHeader), summary)
 				}
@@ -2593,7 +2601,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			respBody = sanitizeJSONResponse(respBody)
 		}
 
-		bodyText := truncateBody(respBody)
+		bodyText := truncateErrorBody(resp.Header.Get("Content-Type"), respBody)
 		if resp.StatusCode == http.StatusForbidden {
 			bodyText = cliutil.AnnotateTransportBlock(bodyText, resp.Header, respBody)
 		}
@@ -2880,6 +2888,152 @@ func isBinaryResponseContentType(ct string) bool {
 		return false
 	}
 	return true
+}
+
+// isXMLResponseContentType reports an XML media type. application/xhtml+xml
+// is excluded: it is HTML-shaped and belongs to the html response path.
+func isXMLResponseContentType(ct string) bool {
+	return xmlMediaType(ct)
+}
+
+func xmlMediaType(ct string) bool {
+	mt := strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	if mt == "" || mt == "application/xhtml+xml" {
+		return false
+	}
+	return mt == "application/xml" || mt == "text/xml" || strings.HasSuffix(mt, "+xml")
+}
+
+// misdeclaredXMLResponse reports a success body that is XML on a request that
+// did not opt into response_format: xml. RSS and Atom feeds match the HTML
+// title heuristic, so this check runs first.
+func misdeclaredXMLResponse(contentType string, body []byte) (string, bool) {
+	if !isXMLResponseContentType(contentType) && !looksLikeXMLDocument(body) {
+		return "", false
+	}
+	label := strings.TrimSpace(contentType)
+	if label == "" {
+		label = "unspecified"
+	}
+	return label, true
+}
+
+// looksLikeXMLDocument reports an XML prolog whose root element is not html.
+// XHTML documents start with a prolog and an html root and stay on the HTML path.
+func looksLikeXMLDocument(b []byte) bool {
+	scan := b
+	if len(scan) > maxErrorBodyBytes {
+		scan = scan[:maxErrorBodyBytes]
+	}
+	body := strings.TrimPrefix(strings.TrimSpace(strings.ToValidUTF8(string(scan), "")), "\uFEFF")
+	body = strings.TrimSpace(body)
+	if !hasXMLDeclaration(body) {
+		return false
+	}
+	name, ok := firstXMLElementName(body)
+	return ok && !strings.EqualFold(name, "html")
+}
+
+func hasXMLDeclaration(body string) bool {
+	lower := strings.ToLower(body)
+	const marker = "<?xml"
+	if !strings.HasPrefix(lower, marker) || len(lower) == len(marker) {
+		return false
+	}
+	switch lower[len(marker)] {
+	case '?', ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func firstXMLElementName(body string) (string, bool) {
+	rest := body
+	for {
+		rest = strings.TrimSpace(rest)
+		if rest == "" || rest[0] != '<' {
+			return "", false
+		}
+		lower := strings.ToLower(rest)
+		switch {
+		case strings.HasPrefix(lower, "<?"):
+			end := strings.Index(lower, "?>")
+			if end < 0 {
+				return "", false
+			}
+			rest = rest[end+2:]
+		case strings.HasPrefix(lower, "<!--"):
+			end := strings.Index(lower, "-->")
+			if end < 0 {
+				return "", false
+			}
+			rest = rest[end+3:]
+		case strings.HasPrefix(lower, "<!"):
+			next, ok := skipMarkupDeclaration(rest)
+			if !ok {
+				return "", false
+			}
+			rest = next
+		default:
+			return xmlStartTagName(rest)
+		}
+	}
+}
+
+// skipMarkupDeclaration consumes a <! declaration. A '>' inside a DOCTYPE
+// internal subset, or inside a quoted external identifier, does not end it.
+func skipMarkupDeclaration(rest string) (string, bool) {
+	if len(rest) < 2 || rest[0] != '<' || rest[1] != '!' {
+		return "", false
+	}
+	depth := 0
+	var quote byte
+	for i := 2; i < len(rest); i++ {
+		c := rest[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		case '>':
+			if depth == 0 {
+				return rest[i+1:], true
+			}
+		}
+	}
+	return "", false
+}
+
+func xmlStartTagName(rest string) (string, bool) {
+	if len(rest) < 2 || rest[0] != '<' {
+		return "", false
+	}
+	i := 1
+	for i < len(rest) {
+		switch rest[i] {
+		case ' ', '\t', '\n', '\r', '>', '/':
+			if i == 1 {
+				return "", false
+			}
+			return rest[1:i], true
+		}
+		i++
+	}
+	return "", false
 }
 
 // wrapBinaryResponse marshals body into a self-describing base64 envelope.
@@ -4330,6 +4484,17 @@ func truncateBody(b []byte) string {
 	if summary, ok := collapseHTMLErrorBody(b); ok {
 		return summary
 	}
+	return limitErrorBody(b)
+}
+
+func truncateErrorBody(contentType string, b []byte) string {
+	if isXMLResponseContentType(contentType) || looksLikeXMLDocument(b) {
+		return limitErrorBody(b)
+	}
+	return truncateBody(b)
+}
+
+func limitErrorBody(b []byte) string {
 	if len(b) <= maxErrorBodyBytes {
 		return string(b)
 	}

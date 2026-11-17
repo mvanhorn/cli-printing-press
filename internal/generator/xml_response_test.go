@@ -137,8 +137,10 @@ func TestGenerateMixedXMLJSONScopesNormalizationToXMLRequests(t *testing.T) {
 
 	client, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(client), `isXMLRequest(req.Header.Get("Accept")) && isXMLResponseContentType`,
+	require.Contains(t, string(client), `(xmlResponse || isXMLRequest(req.Header.Get("Accept"))) && (isXMLResponseContentType(resp.Header.Get("Content-Type")) || looksLikeXMLDocument(respBody))`,
 		"mixed specs should scope normalization to each XML request")
+	require.Contains(t, string(client), `const XMLResponseHeader = "X-Printing-Press-XML-Response"`)
 	require.NotContains(t, string(client), `req.Header.Set("Accept", "application/xml")`,
 		"mixed specs should keep the application/json Accept default")
+	requireGeneratedCompiles(t, outputDir)
 }
