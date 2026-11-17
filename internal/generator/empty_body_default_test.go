@@ -110,23 +110,7 @@ func TestSniffedEmptyContainerBodyDryRun(t *testing.T) {
 	binaryPath := filepath.Join(outputDir, naming.CLI(loaded.Name))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(loaded.Name))
 
-	decoy := t.TempDir()
-	for _, dir := range []string{
-		filepath.Join(decoy, ".config"),
-		filepath.Join(decoy, ".local", "share"),
-		filepath.Join(decoy, ".local", "state"),
-		filepath.Join(decoy, ".cache"),
-	} {
-		require.NoError(t, os.MkdirAll(dir, 0o755))
-	}
-	env := harnessFreeEnv(
-		"HOME="+decoy,
-		"USERPROFILE="+decoy,
-		"XDG_CONFIG_HOME="+filepath.Join(decoy, ".config"),
-		"XDG_DATA_HOME="+filepath.Join(decoy, ".local", "share"),
-		"XDG_STATE_HOME="+filepath.Join(decoy, ".local", "state"),
-		"XDG_CACHE_HOME="+filepath.Join(decoy, ".cache"),
-	)
+	env := decoyCLIEnv(t)
 
 	omitted := dryRunRequestBody(t, binaryPath, env, "incentivemanager", "create-filtered-incentives", "--dry-run")
 	assert.Equal(t, []any{}, omitted["anticipatedAdvance"])
@@ -141,6 +125,76 @@ func TestSniffedEmptyContainerBodyDryRun(t *testing.T) {
 	overriddenFilters, ok := overridden["filters"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{}, overriddenFilters["tags"])
+}
+
+func TestOptionalObjectEmptyContainerDryRun(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("optional-settings")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/items", Description: "List items"},
+			"create": {
+				Method:      "POST",
+				Path:        "/items",
+				Description: "Create an item",
+				Body: []spec.Param{{
+					Name: "settings",
+					Type: "object",
+					Fields: []spec.Param{
+						{Name: "name", Type: "string", Required: true},
+						{Name: "tags", Type: "array", Default: []any{}},
+					},
+				}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	commandSrc := readGeneratedCLIFileContaining(t, outputDir, `"settings-tags"`)
+	assert.Contains(t, commandSrc, `cmd.Flags().Changed("settings-tags")`)
+	assert.NotContains(t, commandSrc, `bodySettingsTags != ""`)
+	assert.Contains(t, commandSrc, `StringVar(&bodySettingsTags, "settings-tags", "[]"`)
+	assert.Contains(t, commandSrc, `nestedSettings["tags"] = asArray`)
+
+	requireGeneratedCompiles(t, outputDir)
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	env := decoyCLIEnv(t)
+
+	omitted := dryRunRequestBody(t, binaryPath, env, "items", "create", "--dry-run")
+	_, present := omitted["settings"]
+	assert.False(t, present, "settings = %#v", omitted["settings"])
+
+	supplied := dryRunRequestBody(t, binaryPath, env, "items", "create", "--dry-run", "--settings-name", "ada")
+	settings, ok := supplied["settings"].(map[string]any)
+	require.True(t, ok, "settings = %#v", supplied["settings"])
+	assert.Equal(t, "ada", settings["name"])
+	assert.Equal(t, []any{}, settings["tags"])
+}
+
+func decoyCLIEnv(t *testing.T) []string {
+	t.Helper()
+	decoy := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(decoy, ".config"),
+		filepath.Join(decoy, ".local", "share"),
+		filepath.Join(decoy, ".local", "state"),
+		filepath.Join(decoy, ".cache"),
+	} {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	return harnessFreeEnv(
+		"HOME="+decoy,
+		"USERPROFILE="+decoy,
+		"XDG_CONFIG_HOME="+filepath.Join(decoy, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(decoy, ".local", "share"),
+		"XDG_STATE_HOME="+filepath.Join(decoy, ".local", "state"),
+		"XDG_CACHE_HOME="+filepath.Join(decoy, ".cache"),
+	)
 }
 
 func filteredIncentivesEntry(body string) browsersniff.EnrichedEntry {

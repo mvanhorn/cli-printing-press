@@ -8971,7 +8971,7 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
-			if !p.Required && optionalObjectHasRequiredDefault(p.Fields, depth+1) {
+			if !p.Required && optionalObjectDefersUntilSupplied(p.Fields, depth+1) {
 				renderSuppliedOptionalObject(b, p, depth, indent, mapVar, identPrefix, flagPrefix)
 				continue
 			}
@@ -8987,8 +8987,12 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 		}
 		// The flag is a string even when the wire value is a JSON object or
 		// array. Copying that text would send a string the API rejects.
-		forceDefault := parentSupplied && bodyScalarRequiredDefault(p)
-		if forceDefault && !bodyLeafDecodesJSON(p) {
+		// An empty-container prefill is included once the caller has supplied
+		// the parent; until then it must not create the object by itself.
+		forceScalar := parentSupplied && bodyScalarRequiredDefault(p)
+		_, forceEmpty := emptyContainerBodyDefault(p)
+		forceEmpty = parentSupplied && forceEmpty
+		if forceScalar && !bodyLeafDecodesJSON(p) {
 			fmt.Fprintf(b, "%s%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			continue
 		}
@@ -9007,7 +9011,7 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 			continue
 		}
 		if isJSONOrScalarParam(p) {
-			renderBodyLeafBlock(b, indent, bodyLeafPresenceExpr(p, ident, flag), !forceDefault, func(in string) {
+			renderBodyLeafBlock(b, indent, bodyLeafPresenceExpr(p, ident, flag), !forceScalar && !forceEmpty, func(in string) {
 				fmt.Fprintf(b, "%sif looksLikeJSONComposite(body%s) {\n", in, ident)
 				fmt.Fprintf(b, "%s\tvar parsed%s any\n", in, ident)
 				fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", in, ident, ident)
@@ -9037,7 +9041,7 @@ func renderBodyMapMode(b *strings.Builder, body []spec.Param, depth int, indent,
 			if isEncodedJSONStringParam(p) {
 				rhs = "body" + ident
 			}
-			renderBodyLeafBlock(b, indent, bodyLeafPresenceExpr(p, ident, flag), !forceDefault, func(in string) {
+			renderBodyLeafBlock(b, indent, bodyLeafPresenceExpr(p, ident, flag), !forceScalar && !forceEmpty, func(in string) {
 				fmt.Fprintf(b, "%svar parsed%s any\n", in, ident)
 				fmt.Fprintf(b, "%sif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", in, ident, ident)
 				fmt.Fprintf(b, "%s\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", in, flag)
@@ -9498,6 +9502,25 @@ func renderSuppliedOptionalObject(b *strings.Builder, p spec.Param, depth int, i
 	fmt.Fprintf(b, "%s}\n", indent)
 }
 
+func optionalObjectDefersUntilSupplied(fields []spec.Param, depth int) bool {
+	return optionalObjectHasRequiredDefault(fields, depth) || optionalObjectHasEmptyContainerDefault(fields, depth)
+}
+
+func optionalObjectHasEmptyContainerDefault(fields []spec.Param, depth int) bool {
+	for _, p := range fields {
+		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
+			if optionalObjectHasEmptyContainerDefault(p.Fields, depth+1) {
+				return true
+			}
+			continue
+		}
+		if _, ok := emptyContainerBodyDefault(p); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func optionalObjectHasRequiredDefault(fields []spec.Param, depth int) bool {
 	for _, p := range fields {
 		if p.Type == "object" && len(p.Fields) > 0 && depth+1 < maxBodyFlagDepth {
@@ -9537,6 +9560,9 @@ func bodyLeafDecodesJSON(p spec.Param) bool {
 // `value != zero` even though the caller never set the flag. Treating
 // that as presence would send an optional object the caller left alone.
 func bodyDefaultForcesPresence(p spec.Param) bool {
+	if _, ok := emptyContainerBodyDefault(p); ok {
+		return true
+	}
 	if !bodyScalarRequiredDefault(p) {
 		return false
 	}

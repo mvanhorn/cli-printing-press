@@ -409,7 +409,7 @@ func mergeObservedRequestParam(prev, next spec.Param, first bool) spec.Param {
 		return next
 	}
 	if prevKind == containerUntracked && nextKind != containerUntracked {
-		prev.Fields = preserveNonEmptyOverEmpty(prev.Fields, next.Fields)
+		// {} has no fields. Merging them in would drop the real children.
 		return prev
 	}
 	next.Fields = preserveNonEmptyOverEmpty(prev.Fields, next.Fields)
@@ -424,11 +424,13 @@ func preserveNonEmptyOverEmpty(prev, next []spec.Param) []spec.Param {
 	for _, param := range prev {
 		prevByName[param.Name] = param
 	}
-	out := make([]spec.Param, len(next))
-	for i, param := range next {
+	out := make([]spec.Param, 0, len(next)+len(prev))
+	seen := make(map[string]bool, len(next))
+	for _, param := range next {
+		seen[param.Name] = true
 		earlier, ok := prevByName[param.Name]
 		if !ok {
-			out[i] = param
+			out = append(out, param)
 			continue
 		}
 		earlierKind := stampedEmptyContainerKind(earlier)
@@ -438,18 +440,27 @@ func preserveNonEmptyOverEmpty(prev, next []spec.Param) []spec.Param {
 			param.Default = nil
 			param.Required = true
 			param.Fields = nil
-			out[i] = param
+			out = append(out, param)
 		case nextKind != containerUntracked && earlierKind == containerUntracked:
-			out[i] = earlier
+			out = append(out, earlier)
 		case nextKind == containerUntracked && earlierKind == containerUntracked:
 			param.Fields = preserveNonEmptyOverEmpty(earlier.Fields, param.Fields)
-			out[i] = param
+			out = append(out, param)
 		default:
 			if nextKind == containerUntracked && earlierKind != containerUntracked {
 				param.Fields = preserveNonEmptyOverEmpty(earlier.Fields, param.Fields)
 			}
-			out[i] = param
+			out = append(out, param)
 		}
+	}
+	// A sample that omits a child must not erase a real value seen earlier.
+	// The next sample may show that child as [], and that [] is not evidence
+	// the field is an empty default.
+	for _, earlier := range prev {
+		if seen[earlier.Name] || stampedEmptyContainerKind(earlier) != containerUntracked {
+			continue
+		}
+		out = append(out, earlier)
 	}
 	return out
 }

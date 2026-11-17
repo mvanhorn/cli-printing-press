@@ -1360,6 +1360,53 @@ func TestBodyMap_RequiredNestedObjectDefaultFollowsOptionalAncestor(t *testing.T
 	require.Contains(t, got, `nestedSettings["config"] = nestedSettingsConfig`)
 }
 
+func TestBodyMap_OptionalObjectEmptyContainerDoesNotForceParent(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "name", Type: "string", Required: true},
+			{Name: "tags", Type: "array", Default: []any{}},
+		},
+	}}, "\t")
+	require.Contains(t, got, `if (cmd.Flags().Changed("settings-name") || bodySettingsName != "") || cmd.Flags().Changed("settings-tags") {`)
+	require.NotContains(t, got, `bodySettingsTags != ""`)
+	require.Contains(t, got, `nestedSettings["tags"] = asArray`)
+	require.Contains(t, got, `body["settings"] = nestedSettings`)
+}
+
+func TestBodyMap_RequiredObjectStillSendsEmptyContainerDefault(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name:     "filters",
+		Type:     "object",
+		Required: true,
+		Fields: []spec.Param{
+			{Name: "tags", Type: "array", Default: []any{}},
+		},
+	}}, "\t")
+	require.Contains(t, got, `bodyFiltersTags != ""`)
+	require.Contains(t, got, `nestedFilters["tags"] = asArray`)
+	require.Contains(t, got, `body["filters"] = nestedFilters`)
+	require.Contains(t, got, `if len(nestedFilters) > 0 {`)
+}
+
+func TestBodyRequiredChecks_EmptyContainerDefaultDoesNotForceOptionalObject(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{Body: []spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "name", Type: "string", Required: true},
+			{Name: "tags", Type: "array", Default: []any{}},
+		},
+	}}}, "\t\t\t")
+	require.Contains(t, got, `if (cmd.Flags().Changed("settings-name") || bodySettingsName != "") || cmd.Flags().Changed("settings-tags") {`)
+	require.NotContains(t, got, `bodySettingsTags != ""`)
+	require.Contains(t, got, `bodySettingsName == ""`)
+}
+
 func TestBodyRequiredChecks_RequiredDefaultDoesNotForceOptionalObject(t *testing.T) {
 	t.Parallel()
 	got := bodyRequiredChecks(spec.Endpoint{Body: []spec.Param{{

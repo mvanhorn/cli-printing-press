@@ -342,6 +342,42 @@ func TestInferRequestBodyEmptyContainers(t *testing.T) {
 		assert.Nil(t, nestedBox.Default)
 		assert.Empty(t, nestedBox.Fields)
 	}
+
+	gapped := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"ids":[1],"name":"a"}}`,
+		`{"filter":{"name":"b"}}`,
+		`{"filter":{"ids":[],"name":"c"}}`,
+	), nil)
+	gappedFilter := findBodyParam(gapped, "filter")
+	require.NotNil(t, gappedFilter)
+	gappedIDs := findBodyParam(gappedFilter.Fields, "ids")
+	require.NotNil(t, gappedIDs)
+	assert.True(t, gappedIDs.Required)
+	assert.Nil(t, gappedIDs.Default)
+	gappedName := findBodyParam(gappedFilter.Fields, "name")
+	require.NotNil(t, gappedName)
+	assert.True(t, gappedName.Required)
+	assert.Nil(t, gappedName.Default)
+
+	gappedEmptyObject := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"ids":[1],"name":"a"}}`,
+		`{"filter":{}}`,
+		`{"filter":{"ids":[],"name":"c"}}`,
+	), nil)
+	gappedEmptyIDs := findBodyParam(findBodyParam(gappedEmptyObject, "filter").Fields, "ids")
+	require.NotNil(t, gappedEmptyIDs)
+	assert.True(t, gappedEmptyIDs.Required)
+	assert.Nil(t, gappedEmptyIDs.Default)
+
+	gappedEmpty := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"ids":[],"name":"a"}}`,
+		`{"filter":{"name":"b"}}`,
+		`{"filter":{"ids":[],"name":"c"}}`,
+	), nil)
+	stillEmpty := findBodyParam(findBodyParam(gappedEmpty, "filter").Fields, "ids")
+	require.NotNil(t, stillEmpty)
+	assert.False(t, stillEmpty.Required)
+	assertContainerDefault(t, stillEmpty.Default, "[]")
 }
 
 func TestInferRequestSchemaFormValueThatLooksEmptyStaysRequiredString(t *testing.T) {
