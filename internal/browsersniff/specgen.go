@@ -1166,7 +1166,9 @@ func inferRequestBody(entries []EnrichedEntry, responseFields []spec.Param) []sp
 				fields[param.Name] = field
 			}
 			field.count++
-			field.param = param
+			// Last sample must not turn a real value into an empty default,
+			// or an always-empty field back into a required flag.
+			field.param = mergeObservedRequestParam(field.param, param, field.count == 1)
 		}
 	}
 
