@@ -9173,7 +9173,11 @@ func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
 // has already supplied the parent, and the API would reject the object.
 func renderBodyLeafBlock(b *strings.Builder, indent, presence string, guarded bool, emit func(indent string)) {
 	if !guarded {
-		emit(indent)
+		// Each forced leaf parses into asArray or asMap. Those names are
+		// shared, so two children of the same container type need their own block.
+		fmt.Fprintf(b, "%s{\n", indent)
+		emit(indent + "\t")
+		fmt.Fprintf(b, "%s}\n", indent)
 		return
 	}
 	fmt.Fprintf(b, "%sif %s {\n", indent, presence)

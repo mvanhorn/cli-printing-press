@@ -343,6 +343,19 @@ func TestInferRequestBodyEmptyContainers(t *testing.T) {
 		assert.Empty(t, nestedBox.Fields)
 	}
 
+	omitted := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"ids":[1],"name":"a"}}`,
+		`{"filter":{"name":"b"}}`,
+	), nil)
+	omittedIDs := findBodyParam(findBodyParam(omitted, "filter").Fields, "ids")
+	require.NotNil(t, omittedIDs)
+	assert.False(t, omittedIDs.Required)
+	assert.Nil(t, omittedIDs.Default)
+	assert.Equal(t, "array", omittedIDs.Type)
+	omittedName := findBodyParam(findBodyParam(omitted, "filter").Fields, "name")
+	require.NotNil(t, omittedName)
+	assert.True(t, omittedName.Required)
+
 	gapped := inferRequestBody(jsonRequestEntries(
 		`{"filter":{"ids":[1],"name":"a"}}`,
 		`{"filter":{"name":"b"}}`,
@@ -352,12 +365,22 @@ func TestInferRequestBodyEmptyContainers(t *testing.T) {
 	require.NotNil(t, gappedFilter)
 	gappedIDs := findBodyParam(gappedFilter.Fields, "ids")
 	require.NotNil(t, gappedIDs)
-	assert.True(t, gappedIDs.Required)
+	assert.False(t, gappedIDs.Required)
 	assert.Nil(t, gappedIDs.Default)
 	gappedName := findBodyParam(gappedFilter.Fields, "name")
 	require.NotNil(t, gappedName)
 	assert.True(t, gappedName.Required)
 	assert.Nil(t, gappedName.Default)
+
+	restored := inferRequestBody(jsonRequestEntries(
+		`{"filter":{"ids":[1],"name":"a"}}`,
+		`{"filter":{"name":"b"}}`,
+		`{"filter":{"ids":[2],"name":"c"}}`,
+	), nil)
+	restoredIDs := findBodyParam(findBodyParam(restored, "filter").Fields, "ids")
+	require.NotNil(t, restoredIDs)
+	assert.False(t, restoredIDs.Required)
+	assert.Nil(t, restoredIDs.Default)
 
 	gappedEmptyObject := inferRequestBody(jsonRequestEntries(
 		`{"filter":{"ids":[1],"name":"a"}}`,
@@ -366,7 +389,7 @@ func TestInferRequestBodyEmptyContainers(t *testing.T) {
 	), nil)
 	gappedEmptyIDs := findBodyParam(findBodyParam(gappedEmptyObject, "filter").Fields, "ids")
 	require.NotNil(t, gappedEmptyIDs)
-	assert.True(t, gappedEmptyIDs.Required)
+	assert.False(t, gappedEmptyIDs.Required)
 	assert.Nil(t, gappedEmptyIDs.Default)
 
 	gappedEmpty := inferRequestBody(jsonRequestEntries(

@@ -176,6 +176,55 @@ func TestOptionalObjectEmptyContainerDryRun(t *testing.T) {
 	assert.Equal(t, []any{}, settings["tags"])
 }
 
+func TestOptionalObjectTwoEmptyContainersCompile(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("paired-containers")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/items", Description: "List items"},
+			"create": {
+				Method:      "POST",
+				Path:        "/items",
+				Description: "Create an item",
+				Body: []spec.Param{{
+					Name: "settings",
+					Type: "object",
+					Fields: []spec.Param{
+						{Name: "name", Type: "string", Required: true},
+						{Name: "tags", Type: "array", Default: []any{}},
+						{Name: "labels", Type: "array", Default: []any{}},
+						{Name: "meta", Type: "object", Default: map[string]any{}},
+						{Name: "extra", Type: "object", Default: map[string]any{}},
+					},
+				}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	env := decoyCLIEnv(t)
+
+	omitted := dryRunRequestBody(t, binaryPath, env, "items", "create", "--dry-run")
+	_, present := omitted["settings"]
+	assert.False(t, present, "settings = %#v", omitted["settings"])
+
+	supplied := dryRunRequestBody(t, binaryPath, env, "items", "create", "--dry-run", "--settings-name", "ada")
+	settings, ok := supplied["settings"].(map[string]any)
+	require.True(t, ok, "settings = %#v", supplied["settings"])
+	assert.Equal(t, "ada", settings["name"])
+	assert.Equal(t, []any{}, settings["tags"])
+	assert.Equal(t, []any{}, settings["labels"])
+	assert.Equal(t, map[string]any{}, settings["meta"])
+	assert.Equal(t, map[string]any{}, settings["extra"])
+}
+
 func decoyCLIEnv(t *testing.T) []string {
 	t.Helper()
 	decoy := t.TempDir()

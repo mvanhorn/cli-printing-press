@@ -409,11 +409,15 @@ func mergeObservedRequestParam(prev, next spec.Param, first bool) spec.Param {
 		return next
 	}
 	if prevKind == containerUntracked && nextKind != containerUntracked {
-		// {} has no fields. Merging them in would drop the real children.
+		// An empty object has no fields. Merging them in would drop the real
+		// children, but this sample did omit every one of them.
+		if nextKind == containerEmptyObject {
+			prev.Fields = markFieldsAbsent(prev.Fields)
+		}
 		return prev
 	}
 	next.Fields = preserveNonEmptyOverEmpty(prev.Fields, next.Fields)
-	return next
+	return keepNotedAbsence(prev, next)
 }
 
 func preserveNonEmptyOverEmpty(prev, next []spec.Param) []spec.Param {
@@ -440,29 +444,59 @@ func preserveNonEmptyOverEmpty(prev, next []spec.Param) []spec.Param {
 			param.Default = nil
 			param.Required = true
 			param.Fields = nil
-			out = append(out, param)
+			out = append(out, keepNotedAbsence(earlier, param))
 		case nextKind != containerUntracked && earlierKind == containerUntracked:
 			out = append(out, earlier)
 		case nextKind == containerUntracked && earlierKind == containerUntracked:
 			param.Fields = preserveNonEmptyOverEmpty(earlier.Fields, param.Fields)
-			out = append(out, param)
+			out = append(out, keepNotedAbsence(earlier, param))
 		default:
 			if nextKind == containerUntracked && earlierKind != containerUntracked {
 				param.Fields = preserveNonEmptyOverEmpty(earlier.Fields, param.Fields)
 			}
-			out = append(out, param)
+			out = append(out, keepNotedAbsence(earlier, param))
 		}
 	}
 	// A sample that omits a child must not erase a real value seen earlier.
 	// The next sample may show that child as [], and that [] is not evidence
-	// the field is an empty default.
+	// the field is an empty default. The omission does disprove required.
 	for _, earlier := range prev {
 		if seen[earlier.Name] || stampedEmptyContainerKind(earlier) != containerUntracked {
 			continue
 		}
-		out = append(out, earlier)
+		out = append(out, markFieldAbsent(earlier))
 	}
 	return out
+}
+
+// A real field left out of a sample stays in the schema so a later [] cannot
+// become its default, but that sample is evidence the caller can omit it.
+func markFieldAbsent(param spec.Param) spec.Param {
+	if stampedEmptyContainerKind(param) == containerUntracked {
+		param.Required = false
+		param.Default = nil
+	}
+	if len(param.Fields) > 0 {
+		param.Fields = markFieldsAbsent(param.Fields)
+	}
+	return param
+}
+
+func markFieldsAbsent(fields []spec.Param) []spec.Param {
+	out := make([]spec.Param, len(fields))
+	for i, param := range fields {
+		out[i] = markFieldAbsent(param)
+	}
+	return out
+}
+
+func keepNotedAbsence(earlier, param spec.Param) spec.Param {
+	if earlier.Required || stampedEmptyContainerKind(earlier) != containerUntracked {
+		return param
+	}
+	param.Required = false
+	param.Default = nil
+	return param
 }
 
 func inferScalarStringType(value string) string {
