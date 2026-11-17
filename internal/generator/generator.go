@@ -7612,7 +7612,35 @@ func defaultValForBodyParam(p spec.Param) string {
 	if isStringBackedBoolParam(p) {
 		return `""`
 	}
+	// Query flags collapse [] and {} to zero so an omitted flag is left off
+	// the URL. A body field with that default is the shape the API received,
+	// so the flag is prefilled and the existing body map sends it.
+	if text, ok := emptyContainerBodyDefault(p); ok {
+		return strconv.Quote(text)
+	}
 	return defaultVal(p)
+}
+
+func emptyContainerBodyDefault(p spec.Param) (string, bool) {
+	if paramOmitsServerDefault(p) || p.Default == nil || isStringCSVArrayParam(p) {
+		return "", false
+	}
+	data, err := json.Marshal(p.Default)
+	if err != nil {
+		return "", false
+	}
+	text := string(data)
+	switch primitiveKind(p.Type) {
+	case "array":
+		if text == "[]" {
+			return text, true
+		}
+	case "object":
+		if text == "{}" {
+			return text, true
+		}
+	}
+	return "", false
 }
 
 func zeroValForParam(name, t string) string {
