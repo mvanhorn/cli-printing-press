@@ -2949,6 +2949,50 @@ func (e Endpoint) UsesXMLResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatXML
 }
 
+// xmlAcceptHeader is the Accept value pinned on XML endpoints that do not
+// already name Accept. The generated client treats this media type as an XML
+// request and normalizes the success body.
+const xmlAcceptHeader = "application/xml"
+
+// EnsureXMLAcceptHeaders pins Accept on every response_format: xml endpoint
+// that does not already override Accept. An explicit Accept value is left as
+// written so a feed-specific type (application/rss+xml, application/atom+xml)
+// still goes on the wire. Idempotent.
+func (s *APISpec) EnsureXMLAcceptHeaders() {
+	if s == nil {
+		return
+	}
+	for name, resource := range s.Resources {
+		s.Resources[name] = ensureResourceXMLAccept(resource)
+	}
+}
+
+func ensureResourceXMLAccept(resource Resource) Resource {
+	for name, endpoint := range resource.Endpoints {
+		if !endpoint.UsesXMLResponse() || hasHeaderOverride(endpoint.HeaderOverrides, "Accept") {
+			continue
+		}
+		endpoint.HeaderOverrides = append(endpoint.HeaderOverrides, RequiredHeader{
+			Name:  "Accept",
+			Value: xmlAcceptHeader,
+		})
+		resource.Endpoints[name] = endpoint
+	}
+	for name, sub := range resource.SubResources {
+		resource.SubResources[name] = ensureResourceXMLAccept(sub)
+	}
+	return resource
+}
+
+func hasHeaderOverride(headers []RequiredHeader, name string) bool {
+	for _, header := range headers {
+		if strings.EqualFold(strings.TrimSpace(header.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
 type HTMLExtract struct {
 	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`                   // page (default), links, or embedded-json
 	LinkPrefixes []string `yaml:"link_prefixes,omitempty" json:"link_prefixes,omitempty"` // path-segment prefixes to keep when extracting links (mode: links)
@@ -3658,6 +3702,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	s.PromoteGlobalPathTemplateVars()
 	s.promoteParamsToBodyForWriteEndpoints()
 	s.applyReservedResourceParentPrefixes()
+	s.EnsureXMLAcceptHeaders()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
