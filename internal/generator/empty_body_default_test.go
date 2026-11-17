@@ -9,6 +9,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,7 +108,7 @@ func TestSniffedEmptyContainerBodyDryRun(t *testing.T) {
 	assert.NotContains(t, commandSrc, `required flag \"filters-tags\" not set`)
 
 	requireGeneratedCompiles(t, outputDir)
-	binaryPath := filepath.Join(outputDir, naming.CLI(loaded.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(loaded.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(loaded.Name))
 
 	env := decoyCLIEnv(t)
@@ -161,7 +162,7 @@ func TestOptionalObjectEmptyContainerDryRun(t *testing.T) {
 	assert.Contains(t, commandSrc, `nestedSettings["tags"] = asArray`)
 
 	requireGeneratedCompiles(t, outputDir)
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 	env := decoyCLIEnv(t)
 
@@ -207,7 +208,7 @@ func TestOptionalObjectTwoEmptyContainersCompile(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	requireGeneratedCompiles(t, outputDir)
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 	env := decoyCLIEnv(t)
 
@@ -261,7 +262,7 @@ func TestOmittedObjectKeepsChildRequirements(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	requireGeneratedCompiles(t, outputDir)
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 	env := decoyCLIEnv(t)
 
