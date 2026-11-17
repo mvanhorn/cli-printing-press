@@ -190,7 +190,7 @@ func ApplyClientHooks(c *client.Client) error {
 }
 
 // defaultRateLimit is the --rate-limit default. Tests set it to 0 in TestMain
-// so commands run against httptest stubs are not paced (#5237).
+// so commands run against httptest stubs are not paced.
 {{- if or (eq .DefaultRateLimit "auto") (not .DefaultRateLimit)}}
 var defaultRateLimit = client.RateLimitAuto
 {{- else}}
