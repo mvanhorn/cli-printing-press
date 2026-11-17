@@ -158,7 +158,7 @@ func ApplyClientHooks(c *client.Client) error {
 }
 
 // defaultRateLimit is the --rate-limit default. Tests set it to 0 in TestMain
-// so commands run against httptest stubs are not paced (#5237).
+// so commands run against httptest stubs are not paced.
 var defaultRateLimit = client.RateLimitAuto
 
 // RootCmd returns the Cobra command tree without executing it. The MCP server

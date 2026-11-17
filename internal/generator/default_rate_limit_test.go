@@ -71,7 +71,7 @@ func TestRootDefaultRateLimitEmission(t *testing.T) {
 	}
 }
 
-// TestGeneratedTestsDisableRatePacing pins #5237: the emitted TestMain zeroes
+// TestGeneratedTestsDisableRatePacing checks that the emitted TestMain zeroes
 // the --rate-limit default, so command tests against httptest stubs are not
 // paced by the auto limiter. The shipped default is unchanged.
 func TestGeneratedTestsDisableRatePacing(t *testing.T) {
