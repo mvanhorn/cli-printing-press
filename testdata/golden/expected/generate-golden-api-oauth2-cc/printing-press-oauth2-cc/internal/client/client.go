@@ -3094,15 +3094,49 @@ func firstXMLElementName(body string) (string, bool) {
 			}
 			rest = rest[end+3:]
 		case strings.HasPrefix(lower, "<!"):
-			end := strings.IndexByte(rest, '>')
-			if end < 0 {
+			next, ok := skipMarkupDeclaration(rest)
+			if !ok {
 				return "", false
 			}
-			rest = rest[end+1:]
+			rest = next
 		default:
 			return xmlStartTagName(rest)
 		}
 	}
+}
+
+// skipMarkupDeclaration consumes a <! declaration. A '>' inside a DOCTYPE
+// internal subset, or inside a quoted external identifier, does not end it.
+func skipMarkupDeclaration(rest string) (string, bool) {
+	if len(rest) < 2 || rest[0] != '<' || rest[1] != '!' {
+		return "", false
+	}
+	depth := 0
+	var quote byte
+	for i := 2; i < len(rest); i++ {
+		c := rest[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		case '>':
+			if depth == 0 {
+				return rest[i+1:], true
+			}
+		}
+	}
+	return "", false
 }
 
 func xmlStartTagName(rest string) (string, bool) {

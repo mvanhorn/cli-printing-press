@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -165,7 +166,7 @@ func TestGeneratedRSSCommandNormalizesInternalSpecXML(t *testing.T) {
 	require.NoError(t, branchErr, branchOut)
 	require.Contains(t, branchOut, "--- PASS: TestXMLRequestNormalizationBranches")
 
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 	env := withoutEnvPrefixes(isolatedCLIEnv(t, t.TempDir()), "PRINTING_PRESS_", "MYAPI_", "RSS_FEED_")
 	env = append(env, "MYAPI_TOKEN=test-token", "RSS_FEED_BASE_URL="+server.URL)
@@ -360,6 +361,9 @@ func TestXMLRequestNormalizationBranches(t *testing.T) {
 		case "/prolog":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write([]byte("<?xml version='1.0'?><feed><title>Nope</title></feed>"))
+		case "/doctype":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("<?xml version='1.0'?><!DOCTYPE rss [<!ELEMENT rss ANY>]><rss><title>Feed</title></rss>"))
 		case "/missing":
 			w.Header().Set("Content-Type", "application/rss+xml")
 			w.WriteHeader(http.StatusNotFound)
@@ -412,6 +416,17 @@ func TestXMLRequestNormalizationBranches(t *testing.T) {
 		t.Fatalf("prolog on declared xml body = %s", got)
 	}
 
+	got, err = c.GetWithHeaders(ctx, "/doctype", nil, map[string]string{
+		"Accept":          "application/xml",
+		XMLResponseHeader: "true",
+	})
+	if err != nil {
+		t.Fatalf("doctype subset on declared xml: %v", err)
+	}
+	if strings.Contains(string(got), "<?xml") || strings.Contains(string(got), "HTML") || !strings.Contains(string(got), "Feed") {
+		t.Fatalf("doctype subset body = %s", got)
+	}
+
 	_, err = c.Get(ctx, "/rss-default", nil)
 	if err == nil || !strings.Contains(err.Error(), "API returned XML (application/rss+xml; charset=utf-8)") || strings.Contains(err.Error(), "HTML") {
 		t.Fatalf("undeclared rss error = %v", err)
@@ -455,6 +470,8 @@ func TestJSONSuccessClassifiesXMLAndHTML(t *testing.T) {
 		{path: "/plain", ct: "text/plain", body: "<?xml version='1.0'?><feed><title>Nope</title></feed>", errHas: "API returned XML (text/plain)", errSkip: "HTML document"},
 		{path: "/bom", body: "\uFEFF<?xml version='1.0'?><feed><title>Bom</title></feed>", errHas: "API returned XML (unspecified)", errSkip: "HTML document"},
 		{path: "/comment", body: "<?xml version='1.0'?><!-- note --><!DOCTYPE rss><rss><title>T</title></rss>", errHas: "API returned XML (unspecified)", errSkip: "HTML document"},
+		{path: "/doctype-subset", body: "<?xml version='1.0'?><!DOCTYPE rss [<!ELEMENT rss ANY>]><rss><title>Feed</title></rss>", errHas: "API returned XML (unspecified)", errSkip: "HTML document"},
+		{path: "/doctype-quote", body: "<?xml version='1.0'?><!DOCTYPE rss SYSTEM 'rss>feed.dtd'><rss><title>Quoted</title></rss>", errHas: "API returned XML (unspecified)", errSkip: "HTML document"},
 		{path: "/html", ct: "text/html; charset=utf-8", body: "<!doctype html><html><head><title>Sign in</title></head><body></body></html>", errHas: "returned HTML instead of JSON", errSkip: "API returned XML"},
 		{path: "/xhtml", ct: "application/xhtml+xml", body: "<?xml version='1.0'?><html><head><title>Page</title></head></html>", errHas: "returned HTML instead of JSON", errSkip: "API returned XML"},
 		{path: "/xhtml-root", body: "<?xml version='1.0'?><!-- c --><html><title>Page</title></html>", errHas: "returned HTML instead of JSON", errSkip: "API returned XML"},

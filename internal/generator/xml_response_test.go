@@ -142,4 +142,5 @@ func TestGenerateMixedXMLJSONScopesNormalizationToXMLRequests(t *testing.T) {
 	require.Contains(t, string(client), `const XMLResponseHeader = "X-Printing-Press-XML-Response"`)
 	require.NotContains(t, string(client), `req.Header.Set("Accept", "application/xml")`,
 		"mixed specs should keep the application/json Accept default")
+	requireGeneratedCompiles(t, outputDir)
 }
