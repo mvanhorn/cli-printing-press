@@ -321,6 +321,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"clientCredentialsTokenURLHasTenant":  clientCredentialsTokenURLHasTenant,
 		"hasNonCookieAuth":                    hasNonCookieAuth,
 		"authAgentEnvVars":                    authAgentEnvVars,
+		"sandboxClearedAuthEnvVars":           sandboxClearedAuthEnvVars,
 		"skillAuthNarrative":                  skillAuthNarrative,
 		"hasAuthEnvVarKind":                   hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":                 isRequestAuthEnvVar,
@@ -1989,6 +1990,40 @@ func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		add(header.EnvVar)
 	}
 	return envVars
+}
+
+// sandboxClearedAuthEnvVars lists declared auth env vars test isolation
+// clears, in declaration order. The CLI looks each name up verbatim, so
+// surrounding whitespace stays. Names os.Setenv rejects are omitted; the
+// process environment cannot hold them.
+func sandboxClearedAuthEnvVars(auth spec.AuthConfig) []string {
+	declared := auth.DeclaredEnvVarNames()
+	if len(declared) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(declared))
+	var out []string
+	for _, name := range declared {
+		if !sandboxAuthEnvVarClearable(name) {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sandboxAuthEnvVarClearable(name string) bool {
+	if name == "" || strings.Contains(name, "=") || strings.ContainsRune(name, 0) {
+		return false
+	}
+	return true
 }
 
 func credentialFields(auth spec.AuthConfig) []credentialField {

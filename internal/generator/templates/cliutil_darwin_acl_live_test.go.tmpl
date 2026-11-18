@@ -16,6 +16,10 @@ import (
 	"testing"
 )
 
+// darwinSystemChmod is macOS /bin/chmod. A PATH lookup of "chmod" can
+// select Homebrew GNU coreutils, which has no +a or -N.
+const darwinSystemChmod = "/bin/chmod"
+
 // chmod is the ACL writer. The fixture tests judge bytes this package
 // built; this one checks fgetattrlist returns bytes the decoder accepts.
 func TestDarwinACLLive(t *testing.T) {
@@ -47,7 +51,7 @@ func TestDarwinACLLive(t *testing.T) {
 		t.Fatalf("foreign = %v\n%s", err, darwinACLLiveDump(path))
 	}
 
-	clear := exec.Command("chmod", "-N", path) // #nosec G204 -- path is a temp file this test created.
+	clear := exec.Command(darwinSystemChmod, "-N", path) // #nosec G204 -- path is a temp file this test created.
 	if out, err := clear.CombinedOutput(); err != nil {
 		t.Fatalf("chmod -N: %v\n%s", err, out)
 	}
@@ -58,7 +62,7 @@ func TestDarwinACLLive(t *testing.T) {
 
 func darwinACLLiveChmod(t *testing.T, path, entry string) {
 	t.Helper()
-	cmd := exec.Command("chmod", "+a", entry, path) // #nosec G204 -- entry is a fixed ACL spec; path is a temp file this test created.
+	cmd := exec.Command(darwinSystemChmod, "+a", entry, path) // #nosec G204 -- entry is a fixed ACL spec; path is a temp file this test created.
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("chmod +a %q: %v\n%s", entry, err, out)
 	}
