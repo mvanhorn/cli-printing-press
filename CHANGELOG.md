@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.35.7](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.6...v4.35.7) (2026-11-18)
+
+
+### Bug Fixes
+
+* **cli:** keep empty sniffed request-body fields optional ([#5405](https://github.com/mvanhorn/cli-printing-press/issues/5405)) ([b59b7bd](https://github.com/mvanhorn/cli-printing-press/commit/b59b7bdb5ff5fc46f9835d09f48de5438874c895))
+* **cli:** keep generated tests isolated from exported auth env vars ([#5415](https://github.com/mvanhorn/cli-printing-press/issues/5415)) ([404c3a3](https://github.com/mvanhorn/cli-printing-press/commit/404c3a3cd7035a63530867bcd41df482db106f27))
+* **cli:** normalize internal-spec XML responses ([#5404](https://github.com/mvanhorn/cli-printing-press/issues/5404)) ([68d28c6](https://github.com/mvanhorn/cli-printing-press/commit/68d28c61f8294b409afdcc6827b995ad1af09d96))
+* **cli:** preserve library git history on path A promote ([#5414](https://github.com/mvanhorn/cli-printing-press/issues/5414)) ([6e16fb3](https://github.com/mvanhorn/cli-printing-press/commit/6e16fb38130b52c73a1633b7cf26bf429104002a))
+* **cli:** turn off rate pacing in printed CLI tests ([#5400](https://github.com/mvanhorn/cli-printing-press/issues/5400)) ([2444d37](https://github.com/mvanhorn/cli-printing-press/commit/2444d373b1ef58daa8d52904498f104a13e5b19e))
+
 ## [4.35.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.5...v4.35.6) (2026-11-15)
 
 
