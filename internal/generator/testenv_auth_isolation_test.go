@@ -263,7 +263,7 @@ func clearedVarLiterals(t *testing.T, src string) []string {
 	j := strings.Index(rest, "}")
 	require.NotEqual(t, -1, j, src)
 	var names []string
-	for _, line := range strings.Split(rest[:j], "\n") {
+	for line := range strings.SplitSeq(rest[:j], "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
