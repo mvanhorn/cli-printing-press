@@ -21,7 +21,9 @@ import (
 var homeVars = []string{"HOME", "USERPROFILE"}
 
 // clearedVars are the per-CLI and XDG overrides that would otherwise
-// point a lookup back out of the sandbox.
+// point a lookup back out of the sandbox, plus every declared auth env
+// var. A credential left in the environment selects data-<hash>.db, so
+// tests that expect the unscoped store fail on an operator machine.
 var clearedVars = []string{
 	"{{envName .Name}}_CONFIG",
 	"{{envName .Name}}_CONFIG_DIR",
@@ -33,7 +35,8 @@ var clearedVars = []string{
 	"XDG_DATA_HOME",
 	"XDG_STATE_HOME",
 	"XDG_CACHE_HOME",
-}
+{{range sandboxClearedAuthEnvVars .Auth}}	{{printf "%q" .}},
+{{end}}}
 
 // Isolate redirects user-directory lookups into a throwaway home and
 // returns it. Each resolver passed in is called and its result must
