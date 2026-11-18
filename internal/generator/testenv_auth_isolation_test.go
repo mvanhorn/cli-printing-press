@@ -175,14 +175,15 @@ func TestGeneratedMCPTestsIgnoreExportedAuthEnv(t *testing.T) {
 	require.Contains(t, acl, `exec.Command(darwinSystemChmod, "+a", entry, path)`)
 	require.NotContains(t, acl, `exec.Command("chmod"`)
 
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+
+	requireGeneratedCompiles(t, outputDir)
 	for _, goos := range []string{"linux", "darwin", "windows"} {
 		t.Run(goos, func(t *testing.T) {
 			runGoCommandWithEnv(t, outputDir, []string{"GOOS=" + goos, "CGO_ENABLED=0"}, "vet", "-mod=mod", "./internal/cliutil/...")
 		})
-	}
-
-	if testing.Short() {
-		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
 	}
 	// Values are real credentials, not ${...} placeholders: EffectiveEnv
 	// treats a placeholder as unset, which would hide a missed clear.
