@@ -21,6 +21,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	defaultRateLimit = 0
 	os.Exit(testenv.RunSandboxed(m))
 }
 

@@ -164,6 +164,10 @@ func ApplyClientHooks(c *client.Client) error {
 	return nil
 }
 
+// defaultRateLimit is the --rate-limit default. Tests set it to 0 in TestMain
+// so commands run against httptest stubs are not paced.
+var defaultRateLimit = client.RateLimitAuto
+
 // RootCmd returns the Cobra command tree without executing it. The MCP server
 // uses this to mirror every user-facing command as an agent tool.
 func RootCmd() *cobra.Command {
@@ -341,7 +345,7 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify connectivity.`,
 		}
 	}
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>, spacefast:<name> (live web page)")
-	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", client.RateLimitAuto, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", defaultRateLimit, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
 	if f := rootCmd.PersistentFlags().Lookup("rate-limit"); f != nil {
 		f.DefValue = "auto"
 	}
