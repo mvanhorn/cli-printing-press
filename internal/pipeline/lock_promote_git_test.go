@@ -83,7 +83,6 @@ func TestPromoteWorkingCLI_PathAFirstPrintCarriesWorkdirGit(t *testing.T) {
 	f := newPromoteGitFixture(t, false)
 	initGitRepository(t, f.workDir)
 	head := commitGitFile(t, f.workDir, "notes.txt", "notes\n", "second")
-	require.NoError(t, os.Symlink("HEAD", filepath.Join(f.workDir, ".git", "head-link")))
 	require.NoError(t, os.MkdirAll(filepath.Join(f.workDir, "vendor", "sub", ".git"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(f.workDir, "vendor", "sub", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(f.workDir, "vendor", "sub", "keep.go"), []byte("package sub\n"), 0o644))
@@ -109,9 +108,6 @@ func TestPromoteWorkingCLI_PathAFirstPrintCarriesWorkdirGit(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 	assert.Zero(t, info.Mode()&os.ModeSymlink)
-	link, err := os.Readlink(filepath.Join(f.libDir, ".git", "head-link"))
-	require.NoError(t, err)
-	assert.Equal(t, "HEAD", link)
 	assertGitHistory(t, f.libDir, head, "2")
 	assertGitHistory(t, f.workDir, head, "2")
 	assert.Equal(t, decoyHead, runGit(t, decoy, "rev-parse", "HEAD"))
@@ -129,6 +125,40 @@ func TestPromoteWorkingCLI_PathAFirstPrintCarriesWorkdirGit(t *testing.T) {
 	assertNoPromoteDebris(t, f.libDir)
 
 	require.NoError(t, os.RemoveAll(f.workDir))
+	assertGitHistory(t, f.libDir, head, "2")
+}
+
+func TestPromoteWorkingCLI_PathAFirstPrintRewritesInTreeGitSymlinks(t *testing.T) {
+	f := newPromoteGitFixture(t, false)
+	initGitRepository(t, f.workDir)
+	head := commitGitFile(t, f.workDir, "notes.txt", "notes\n", "second")
+	marker := filepath.Join(f.workDir, ".git", "marker")
+	require.NoError(t, os.WriteFile(marker, []byte("inside\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(f.workDir, ".git", "subdir"), 0o755))
+	if err := os.Symlink(marker, filepath.Join(f.workDir, ".git", "subdir", "abs-link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	require.NoError(t, os.Symlink("HEAD", filepath.Join(f.workDir, ".git", "head-link")))
+
+	require.NoError(t, f.promote(t))
+
+	absGot, err := os.Readlink(filepath.Join(f.libDir, ".git", "subdir", "abs-link"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("..", "marker"), absGot)
+	assert.False(t, filepath.IsAbs(absGot))
+	relGot, err := os.Readlink(filepath.Join(f.libDir, ".git", "head-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "HEAD", relGot)
+
+	require.NoError(t, os.RemoveAll(f.workDir))
+	data, err := os.ReadFile(filepath.Join(f.libDir, ".git", "subdir", "abs-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "inside\n", string(data))
+	headData, err := os.ReadFile(filepath.Join(f.libDir, ".git", "head-link"))
+	require.NoError(t, err)
+	wantHead, err := os.ReadFile(filepath.Join(f.libDir, ".git", "HEAD"))
+	require.NoError(t, err)
+	assert.Equal(t, string(wantHead), string(headData))
 	assertGitHistory(t, f.libDir, head, "2")
 }
 

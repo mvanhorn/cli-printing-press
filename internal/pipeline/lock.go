@@ -691,7 +691,17 @@ func copyGitDir(src, dst string) error {
 			if !inside {
 				return fmt.Errorf("symlink %s points outside git metadata", path)
 			}
-			if err := os.Symlink(link, target); err != nil {
+			// An absolute target that stays inside this .git still names the
+			// workdir. The target file is copied, so store a relative link or
+			// deleting the workdir breaks the library copy.
+			stored := link
+			if filepath.IsAbs(link) {
+				stored, err = relativeGitSymlink(path, link)
+				if err != nil {
+					return err
+				}
+			}
+			if err := os.Symlink(stored, target); err != nil {
 				return fmt.Errorf("copying git symlink %s: %w", path, err)
 			}
 			return nil
@@ -707,6 +717,25 @@ func copyGitDir(src, dst string) error {
 		}
 		return copyGitFile(path, target)
 	})
+}
+
+// relativeGitSymlink rewrites an absolute link as a path from the link's
+// directory. The caller has already required the target to stay inside the
+// copied metadata tree.
+func relativeGitSymlink(linkPath, link string) (string, error) {
+	absTarget, err := filepath.Abs(link)
+	if err != nil {
+		return "", fmt.Errorf("resolving git symlink %s: %w", linkPath, err)
+	}
+	absLink, err := filepath.Abs(linkPath)
+	if err != nil {
+		return "", fmt.Errorf("resolving git symlink %s: %w", linkPath, err)
+	}
+	rel, err := filepath.Rel(filepath.Dir(absLink), absTarget)
+	if err != nil {
+		return "", fmt.Errorf("relocating git symlink %s: %w", linkPath, err)
+	}
+	return rel, nil
 }
 
 func failPromoteBeforeSwap(cliName string, releaseLock bool, promoteErr error) (*PromoteResult, error) {
