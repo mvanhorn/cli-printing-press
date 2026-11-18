@@ -28,11 +28,26 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required for this test")
 	}
-	cmdArgs := append([]string{"-C", dir}, args...)
-	cmd := exec.Command("git", cmdArgs...)
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitTestEnv()
 	output, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "git %s failed: %s", strings.Join(args, " "), output)
 	return strings.TrimSpace(string(output))
+}
+
+// gitTestEnv drops process-wide git overrides so a test that sets GIT_DIR
+// still inspects the repository at dir.
+func gitTestEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && (key == "GIT_DIR" || key == "GIT_WORK_TREE" || key == "GIT_INDEX_FILE") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func initGitRepository(t *testing.T, dir string) string {
@@ -572,7 +587,7 @@ func TestPromoteWorkingCLI_InPlaceStagingFailureLeavesLibraryAndReleasesLock(t *
 	require.NoError(t, ReleaseLock("test-pp-cli"))
 }
 
-func TestPromoteWorkingCLI_WorkingDirWithoutGitStillReplacesLibraryGit(t *testing.T) {
+func TestPromoteWorkingCLI_PathAReprintPreservesLibraryGitWithoutWorkdirGit(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
 	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
@@ -582,7 +597,7 @@ func TestPromoteWorkingCLI_WorkingDirWithoutGitStillReplacesLibraryGit(t *testin
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, "go.mod"), []byte("module old\n\ngo 1.21\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, "old-file.txt"), []byte("old\n"), 0o644))
-	initGitRepository(t, libDir)
+	beforeHead := initGitRepository(t, libDir)
 
 	workDir := filepath.Join(tmp, "working", "test-pp-cli")
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
@@ -592,7 +607,11 @@ func TestPromoteWorkingCLI_WorkingDirWithoutGitStillReplacesLibraryGit(t *testin
 	_, err := PromoteWorkingCLIWithResult("test-pp-cli", workDir, NewMinimalState("test-pp-cli", workDir))
 	require.NoError(t, err)
 
-	assert.NoDirExists(t, filepath.Join(libDir, ".git"))
+	assert.DirExists(t, filepath.Join(libDir, ".git"))
+	assert.Equal(t, beforeHead, runGit(t, libDir, "rev-parse", "HEAD"))
+	assert.Equal(t, "1", runGit(t, libDir, "rev-list", "--count", "HEAD"))
+	assert.NoDirExists(t, libDir+".old")
+	assert.NoDirExists(t, libDir+".promoting")
 	assert.NoFileExists(t, filepath.Join(libDir, "old-file.txt"))
 	assert.FileExists(t, filepath.Join(libDir, "new-file.txt"))
 }
