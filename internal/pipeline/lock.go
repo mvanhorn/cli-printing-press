@@ -272,6 +272,9 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 			return nil, fmt.Errorf("checking existing library directory: %w", libErr)
 		}
 	}
+	if err := recoverBackupGitMetadata(backupDir, libraryDir); err != nil {
+		return nil, err
+	}
 
 	// Clean up any leftover staging dir from a previous failed promote.
 	_ = os.RemoveAll(stagingDir)
@@ -375,6 +378,21 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("recorded patches no longer match the tree being promoted: %w", err))
 	}
 
+	// CopyDir strips .git so a publish never ships one. The library's
+	// top-level .git is the local history, so it wins over the workdir's;
+	// a missing library .git is filled from the workdir before the swap.
+	keepLibraryGit, err := libraryHasTopLevelGit(libraryDir)
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return failPromoteBeforeSwap(cliName, sameTarget, err)
+	}
+	if !keepLibraryGit {
+		if err := copyWorkdirGitMetadata(workingDir, stagingDir); err != nil {
+			_ = os.RemoveAll(stagingDir)
+			return failPromoteBeforeSwap(cliName, sameTarget, err)
+		}
+	}
+
 	// Remove any stale backup from a prior successful swap before we create a
 	// fresh backup for the current library contents.
 	if _, err := os.Stat(backupDir); err == nil {
@@ -403,14 +421,14 @@ func promoteWorkingCLI(cliName, workingDir string, state *PipelineState) (*Promo
 		return failPromoteBeforeSwap(cliName, sameTarget, fmt.Errorf("promoting staging to library: %w", err))
 	}
 
-	if sameTarget {
-		if err := moveGitMetadataIntoPromotedLibrary(backupDir, libraryDir); err != nil {
-			_ = os.RemoveAll(libraryDir)
-			if _, statErr := os.Stat(backupDir); statErr == nil {
-				_ = os.Rename(backupDir, libraryDir)
-			}
-			return failPromoteBeforeSwap(cliName, sameTarget, err)
+	// Library history lives in the backup until this rename. Roll the swap
+	// back on failure so RemoveAll(backup) cannot delete that .git.
+	if err := moveGitMetadataIntoPromotedLibrary(backupDir, libraryDir); err != nil {
+		_ = os.RemoveAll(libraryDir)
+		if _, statErr := os.Stat(backupDir); statErr == nil {
+			_ = os.Rename(backupDir, libraryDir)
 		}
+		return failPromoteBeforeSwap(cliName, sameTarget, err)
 	}
 
 	// Swap succeeded — remove the backup.
@@ -542,6 +560,182 @@ func moveGitMetadataIntoPromotedLibrary(backupDir, libraryDir string) error {
 		return fmt.Errorf("moving git metadata into promoted library: %w", err)
 	}
 	return nil
+}
+
+// recoverBackupGitMetadata puts a .git that survived in the backup back on
+// the live library. Retrying a promote deletes that backup; the history has
+// to move first or the retry is what destroys it.
+func recoverBackupGitMetadata(backupDir, libraryDir string) error {
+	src := filepath.Join(backupDir, ".git")
+	dst := filepath.Join(libraryDir, ".git")
+	if _, err := os.Lstat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking backup git metadata: %w", err)
+	}
+	if _, err := os.Lstat(libraryDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking library directory before promote: %w", err)
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking library git metadata: %w", err)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("recovering git metadata from backup: %w", err)
+	}
+	return nil
+}
+
+func libraryHasTopLevelGit(libraryDir string) (bool, error) {
+	_, err := os.Lstat(filepath.Join(libraryDir, ".git"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("checking library git metadata: %w", err)
+}
+
+// A symlink is refused: following it would import an outside tree, and
+// copying the link would make the library alias that tree.
+func copyWorkdirGitMetadata(workingDir, stagingDir string) error {
+	src := filepath.Join(workingDir, ".git")
+	dst := filepath.Join(stagingDir, ".git")
+	info, err := os.Lstat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking working git metadata: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("working git metadata is a symlink: %s", src)
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("staged git metadata unexpectedly exists: %s", dst)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking staged git metadata: %w", err)
+	}
+	switch {
+	case info.IsDir():
+		if err := copyGitDir(src, dst); err != nil {
+			_ = os.RemoveAll(dst)
+			return fmt.Errorf("copying working git metadata: %w", err)
+		}
+		return nil
+	case info.Mode().IsRegular():
+		if err := copyGitFile(src, dst); err != nil {
+			_ = os.Remove(dst)
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("working git metadata is not a regular file or directory: %s", src)
+	}
+}
+
+func copyGitFile(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("reading git metadata %s: %w", src, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("git metadata %s is not a regular file", src)
+	}
+	if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("copying git metadata %s: %w", src, err)
+	}
+	return nil
+}
+
+func copyGitDir(src, dst string) error {
+	srcRoot, err := filepath.Abs(src)
+	if err != nil {
+		return fmt.Errorf("resolving git metadata: %w", err)
+	}
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode()
+		if path == src {
+			if mode&os.ModeSymlink != 0 || !mode.IsDir() {
+				return fmt.Errorf("git metadata %s is not a directory", path)
+			}
+			return os.MkdirAll(dst, mode.Perm())
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if mode&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("reading git symlink %s: %w", path, err)
+			}
+			inside, err := symlinkTargetWithinRoot(srcRoot, path, link)
+			if err != nil {
+				return err
+			}
+			if !inside {
+				return fmt.Errorf("symlink %s points outside git metadata", path)
+			}
+			// An absolute target that stays inside this .git still names the
+			// workdir. The target file is copied, so store a relative link or
+			// deleting the workdir breaks the library copy.
+			stored := link
+			if filepath.IsAbs(link) {
+				stored, err = relativeGitSymlink(path, link)
+				if err != nil {
+					return err
+				}
+			}
+			if err := os.Symlink(stored, target); err != nil {
+				return fmt.Errorf("copying git symlink %s: %w", path, err)
+			}
+			return nil
+		}
+		if mode.IsDir() {
+			if err := os.MkdirAll(target, mode.Perm()); err != nil {
+				return fmt.Errorf("creating git metadata directory %s: %w", path, err)
+			}
+			return nil
+		}
+		if !mode.IsRegular() {
+			return fmt.Errorf("git metadata entry %s is not a regular file or directory", path)
+		}
+		return copyGitFile(path, target)
+	})
+}
+
+// relativeGitSymlink rewrites an absolute link as a path from the link's
+// directory. The caller has already required the target to stay inside the
+// copied metadata tree.
+func relativeGitSymlink(linkPath, link string) (string, error) {
+	absTarget, err := filepath.Abs(link)
+	if err != nil {
+		return "", fmt.Errorf("resolving git symlink %s: %w", linkPath, err)
+	}
+	absLink, err := filepath.Abs(linkPath)
+	if err != nil {
+		return "", fmt.Errorf("resolving git symlink %s: %w", linkPath, err)
+	}
+	rel, err := filepath.Rel(filepath.Dir(absLink), absTarget)
+	if err != nil {
+		return "", fmt.Errorf("relocating git symlink %s: %w", linkPath, err)
+	}
+	return rel, nil
 }
 
 func failPromoteBeforeSwap(cliName string, releaseLock bool, promoteErr error) (*PromoteResult, error) {
