@@ -1181,6 +1181,207 @@ func TestSearch_LikeEscapesWildcards(t *testing.T) {
 	}
 }
 
+func TestSearch_ShortQuerySkipsIDsAndRanksContent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	long := "zz " + strings.Repeat("word ", 40)
+	// Insert best content last and id-only rows first. A missing ORDER BY
+	// returns rowid order, which is not this ranking.
+	batches := []struct {
+		resourceType string
+		items        []json.RawMessage
+	}{
+		{"notes", []json.RawMessage{
+			json.RawMessage(`{"id":"qq","note":"plain soil record"}`),
+			json.RawMessage(`{"id":"zz-hidden","note":"gardening and soil only"}`),
+			json.RawMessage(`{"id":"m-long","note":"` + long + `"}`),
+			json.RawMessage(`{"id":"m-tie","note":"zz note"}`),
+			json.RawMessage(`{"id":"a-tie","note":"zz note"}`),
+			json.RawMessage(`{"id":"b-twice","note":"zz zz"}`),
+		}},
+		{"zeta", []json.RawMessage{
+			json.RawMessage(`{"id":"tie","n":2,"note":"zz note"}`),
+		}},
+		{"alpha", []json.RawMessage{
+			json.RawMessage(`{"id":"tie","n":1,"note":"zz note"}`),
+		}},
+	}
+	for _, batch := range batches {
+		stored, failed, err := s.UpsertBatch(batch.resourceType, batch.items)
+		if err != nil {
+			t.Fatalf("UpsertBatch(%s): %v", batch.resourceType, err)
+		}
+		if failed != 0 || stored != len(batch.items) {
+			t.Fatalf("UpsertBatch(%s) stored=%d failed=%d, want stored=%d failed=0", batch.resourceType, stored, failed, len(batch.items))
+		}
+	}
+
+	type hit struct {
+		ID string `json:"id"`
+		N  int    `json:"n"`
+	}
+	decode := func(t *testing.T, raw json.RawMessage) hit {
+		t.Helper()
+		var got hit
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+		return got
+	}
+	searchHits := func(t *testing.T, query string, limit int, resourceType string) []hit {
+		t.Helper()
+		var (
+			results []json.RawMessage
+			err     error
+		)
+		if resourceType == "" {
+			results, err = s.Search(query, limit)
+		} else {
+			results, err = s.Search(query, limit, resourceType)
+		}
+		if err != nil {
+			t.Fatalf("Search(%q, %d, %q): %v", query, limit, resourceType, err)
+		}
+		hits := make([]hit, len(results))
+		for i, raw := range results {
+			hits[i] = decode(t, raw)
+		}
+		return hits
+	}
+
+	t.Run("short token only in ids", func(t *testing.T) {
+		if hits := searchHits(t, "qq", 10, ""); len(hits) != 0 {
+			t.Fatalf("Search(qq) = %+v, want no rows (exact id is not a content match)", hits)
+		}
+	})
+
+	wantRanked := []hit{
+		{ID: "b-twice"},
+		{ID: "tie", N: 1},
+		{ID: "a-tie"},
+		{ID: "m-tie"},
+		{ID: "tie", N: 2},
+		{ID: "m-long"},
+	}
+	t.Run("content rank then type and id", func(t *testing.T) {
+		hits := searchHits(t, "zz", 10, "")
+		if len(hits) != len(wantRanked) {
+			t.Fatalf("Search(zz) = %+v, want %+v", hits, wantRanked)
+		}
+		for i := range wantRanked {
+			if hits[i] != wantRanked[i] {
+				t.Fatalf("Search(zz) = %+v, want %+v", hits, wantRanked)
+			}
+		}
+		for _, id := range []string{"qq", "zz-hidden"} {
+			for _, h := range hits {
+				if h.ID == id {
+					t.Fatalf("Search(zz) included id-only row %s", id)
+				}
+			}
+		}
+	})
+
+	t.Run("order is stable", func(t *testing.T) {
+		first := searchHits(t, "zz", 10, "")
+		second := searchHits(t, "zz", 10, "")
+		if len(first) != len(second) {
+			t.Fatalf("repeat Search(zz) lengths %d and %d", len(first), len(second))
+		}
+		for i := range first {
+			if first[i] != second[i] {
+				t.Fatalf("repeat Search(zz) = %+v then %+v", first, second)
+			}
+		}
+	})
+
+	t.Run("limit keeps the best content match", func(t *testing.T) {
+		hits := searchHits(t, "zz", 1, "")
+		if len(hits) != 1 || hits[0].ID != "b-twice" {
+			t.Fatalf("Search(zz, 1) = %+v, want b-twice", hits)
+		}
+	})
+
+	t.Run("resource type filter", func(t *testing.T) {
+		hits := searchHits(t, "zz", 10, "alpha")
+		if len(hits) != 1 || hits[0] != (hit{ID: "tie", N: 1}) {
+			t.Fatalf("Search(zz, alpha) = %+v, want alpha tie", hits)
+		}
+		if hits := searchHits(t, "zz", 10, "missing"); len(hits) != 0 {
+			t.Fatalf("Search(zz, missing) = %+v, want no rows", hits)
+		}
+	})
+
+	t.Run("two token and", func(t *testing.T) {
+		hits := searchHits(t, "zz note", 10, "")
+		want := []hit{
+			{ID: "tie", N: 1},
+			{ID: "a-tie"},
+			{ID: "m-tie"},
+			{ID: "tie", N: 2},
+		}
+		if len(hits) != len(want) {
+			t.Fatalf("Search(zz note) = %+v, want %+v", hits, want)
+		}
+		for i := range want {
+			if hits[i] != want[i] {
+				t.Fatalf("Search(zz note) = %+v, want %+v", hits, want)
+			}
+		}
+	})
+
+	t.Run("three rune queries unchanged", func(t *testing.T) {
+		// "hid" is only a substring of the opaque id zz-hidden. MATCH still
+		// indexes that column; the LIKE fallback must not be what finds it.
+		hits := searchHits(t, "hid", 10, "")
+		if len(hits) != 1 || hits[0].ID != "zz-hidden" {
+			t.Fatalf("Search(hid) = %+v, want zz-hidden via MATCH on id", hits)
+		}
+		hits = searchHits(t, "soil", 10, "")
+		got := map[string]bool{}
+		for _, h := range hits {
+			got[h.ID] = true
+		}
+		if len(hits) != 2 || !got["qq"] || !got["zz-hidden"] {
+			t.Fatalf("Search(soil) = %+v, want the two content rows", hits)
+		}
+		hits = searchHits(t, "word", 10, "")
+		if len(hits) != 1 || hits[0].ID != "m-long" {
+			t.Fatalf("Search(word) = %+v, want m-long", hits)
+		}
+	})
+
+	t.Run("placeholders match", func(t *testing.T) {
+		clause, args := ftsLikeClause("f", nil)
+		if clause != "" || args != nil {
+			t.Fatalf("ftsLikeClause(nil) = %q, %#v", clause, args)
+		}
+		rank, rankArgs := ftsLikeRankExpr("f", nil)
+		if rank != "" || rankArgs != nil {
+			t.Fatalf("ftsLikeRankExpr(nil) = %q, %#v", rank, rankArgs)
+		}
+		clause, args = ftsLikeClause("f", []string{"zz", "a_"})
+		if strings.Contains(clause, ".id ") || strings.Contains(clause, ".id LIKE") {
+			t.Fatalf("LIKE clause matches id: %s", clause)
+		}
+		if strings.Count(clause, "?") != len(args) {
+			t.Fatalf("LIKE clause placeholders %d, args %d (%s)", strings.Count(clause, "?"), len(args), clause)
+		}
+		rank, rankArgs = ftsLikeRankExpr("f", []string{"zz", "a_"})
+		if strings.Count(rank, "?") != len(rankArgs) {
+			t.Fatalf("rank placeholders %d, args %d", strings.Count(rank, "?"), len(rankArgs))
+		}
+		if strings.Contains(rank, "zz") || strings.Contains(rank, "a_") {
+			t.Fatalf("rank SQL interpolates the token: %s", rank)
+		}
+	})
+}
+
 func TestFTSMatchQuerySanitizesPunctuation(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)

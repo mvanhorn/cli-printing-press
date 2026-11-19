@@ -1724,6 +1724,7 @@ func (s *Store) SearchContext(ctx context.Context, query string, limit int, reso
 		if clause == "" {
 			return nil, nil
 		}
+		rank, rankArgs := ftsLikeRankExpr("f", tokens)
 		q = `SELECT r.data FROM resources r
 			 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 			 WHERE ` + clause
@@ -1732,7 +1733,10 @@ func (s *Store) SearchContext(ctx context.Context, query string, limit int, reso
 			q += ` AND r.resource_type = ?`
 			args = append(args, resourceType)
 		}
-		q += ` LIMIT ?`
+		// f.rank is NULL without MATCH. Negated bm25 sorts the same
+		// direction as ORDER BY f.rank; type and id make ties stable.
+		q += ` ORDER BY ` + rank + `, r.resource_type, r.id LIMIT ?`
+		args = append(args, rankArgs...)
 		args = append(args, limit)
 	} else {
 		matchQuery := FTSMatchQuery(query)
@@ -1870,22 +1874,49 @@ func escapeLikePattern(s string) string {
 	return s
 }
 
-// ftsLikeClause AND-s LIKE predicates for the already-parsed FTS tokens.
-// Trigram MATCH cannot hit queries shorter than 3 runes (營造, phase-2).
+// ftsLikeClause AND-s content LIKE predicates for tokens shorter than
+// ftsTrigramMinRunes. Trigram MATCH cannot hit those tokens. Opaque ids
+// are not predicates: a short token inside an id is not a content match.
+// Queries of 3+ runes stay on MATCH, which still indexes the id column.
 func ftsLikeClause(alias string, tokens []string) (string, []any) {
 	if len(tokens) == 0 {
 		return "", nil
 	}
 	parts := make([]string, 0, len(tokens))
-	args := make([]any, 0, len(tokens)*2)
+	args := make([]any, 0, len(tokens))
 	contentCol := alias + ".content"
-	idCol := alias + ".id"
 	for _, token := range tokens {
 		pattern := "%" + escapeLikePattern(token) + "%"
-		parts = append(parts, "("+contentCol+" LIKE ? ESCAPE '\\' OR "+idCol+" LIKE ? ESCAPE '\\')")
-		args = append(args, pattern, pattern)
+		parts = append(parts, contentCol+" LIKE ? ESCAPE '\\'")
+		args = append(args, pattern)
 	}
 	return strings.Join(parts, " AND "), args
+}
+
+// ftsLikeRankExpr is negated FTS5 bm25 over content (k1=1.2, b=0.75, IDF
+// floored at 1e-6). f.rank is NULL without MATCH, so a short query cannot
+// ORDER BY f.rank. Each term binds the LIKE pattern twice, then the literal
+// token four times. Tokens are never interpolated.
+func ftsLikeRankExpr(alias string, tokens []string) (string, []any) {
+	if len(tokens) == 0 {
+		return "", nil
+	}
+	content := alias + ".content"
+	terms := make([]string, 0, len(tokens))
+	args := make([]any, 0, len(tokens)*6)
+	for _, token := range tokens {
+		pattern := "%" + escapeLikePattern(token) + "%"
+		terms = append(terms, ftsLikeBM25TermSQL(content))
+		args = append(args, pattern, pattern, token, token, token, token)
+	}
+	return "-(" + strings.Join(terms, " + ") + ")", args
+}
+
+func ftsLikeBM25TermSQL(content string) string {
+	tf := "(CAST((length(lower(" + content + ")) - length(replace(lower(" + content + "), lower(?), ''))) AS REAL) / length(?))"
+	idf := "MAX(1e-6, ln(((SELECT COUNT(*) FROM resources_fts) - (SELECT COUNT(*) FROM resources_fts WHERE content LIKE ? ESCAPE '\\') + 0.5) / ((SELECT COUNT(*) FROM resources_fts WHERE content LIKE ? ESCAPE '\\') + 0.5)))"
+	norm := "(0.25 + 0.75 * CAST(length(" + content + ") AS REAL) / NULLIF((SELECT AVG(length(content)) FROM resources_fts), 0))"
+	return idf + " * ((" + tf + " * 2.2) / (" + tf + " + 1.2 * " + norm + "))"
 }
 
 // A record filed under its own identifier often carries no id field inside the
