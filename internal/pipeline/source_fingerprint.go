@@ -454,10 +454,8 @@ func changedRecordedSourceFiles(expected, current, legacy map[string]string) []s
 	for path := range current {
 		seen[path] = struct{}{}
 	}
-	if legacy != nil {
-		for path := range legacy {
-			seen[path] = struct{}{}
-		}
+	for path := range legacy {
+		seen[path] = struct{}{}
 	}
 
 	changed := make([]string, 0)
