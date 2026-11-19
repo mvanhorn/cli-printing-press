@@ -42,8 +42,12 @@ func TestGeneratedPrintJSONFilteredAgentWrapsTypedOutputs(t *testing.T) {
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"path/filepath"
 	"testing"
+
+	"agent-envelope-pp-cli/internal/store"
 )
 
 func decodeAgentEnvelope(t *testing.T, raw []byte) map[string]json.RawMessage {
@@ -136,13 +140,31 @@ func TestPrintJSONFilteredJSONModeStaysBareObject(t *testing.T) {
 }
 
 func TestGeneratedAnalyticsCommandAgentUsesEnvelope(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if err := db.Upsert("items", "one", json.RawMessage("{\"id\":\"one\"}")); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
 
 	root := RootCmd()
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs([]string{"analytics", "--type", "items", "--agent"})
+	root.SetArgs([]string{"analytics", "--type", "items", "--agent", "--db", dbPath})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("analytics --agent failed: %v\nstderr=%s", err, stderr.String())
 	}
