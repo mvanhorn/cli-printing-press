@@ -286,7 +286,7 @@ func validatePhase5SourceFingerprint(marker Phase5GateMarker, sourceDir string) 
 	if strings.TrimSpace(marker.SourceFingerprint) == "" {
 		return []string{"phase5 marker missing source_fingerprint"}
 	}
-	if marker.SourceFingerprint == current.Digest {
+	if current.matchesRecorded(marker.SourceFingerprint) {
 		return nil
 	}
 
@@ -294,7 +294,7 @@ func validatePhase5SourceFingerprint(marker Phase5GateMarker, sourceDir string) 
 	if len(marker.SourceFiles) == 0 {
 		return issues
 	}
-	if changed := changedSourceFingerprintFiles(marker.SourceFiles, current.Files); len(changed) > 0 {
+	if changed := changedRecordedSourceFiles(marker.SourceFiles, current.Files, current.legacyFiles); len(changed) > 0 {
 		issues = append(issues, fmt.Sprintf("changed source files: %s", strings.Join(changed, ", ")))
 	}
 	return issues
