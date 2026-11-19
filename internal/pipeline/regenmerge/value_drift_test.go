@@ -510,10 +510,6 @@ func _strings() { _ = strings.ToUpper("") }
 	assert.Nil(t, detectValueDrift(pub, fresh))
 }
 
-// TestClassifyConstVarKindChange locks the issue #5418 repro table.
-// Cases A, C, and D (and the var→const reverse) must be value drift that
-// names both renderings. Cases B and E stay value-only drift. Identical
-// files and a same-token regroup stay clean.
 func TestClassifyConstVarKindChange(t *testing.T) {
 	t.Parallel()
 
@@ -737,14 +733,49 @@ func TestDeclKindConflict(t *testing.T) {
 		return path
 	}
 	broken := write("broken.go", "this is not go")
-	assert.False(t, declKindConflict(broken, broken))
+	assert.False(t, declKindConflict(broken, broken, ""))
 
 	constVal := write("const.go", "package x\n\nconst MaxBytes = 60000\n")
 	constOther := write("const_other.go", "package x\n\nconst MaxBytes = 32000\n")
 	varVal := write("var.go", "package x\n\nvar MaxBytes = 32000\n")
-	assert.False(t, declKindConflict(constVal, constOther))
-	assert.True(t, declKindConflict(varVal, constVal))
-	assert.True(t, declKindConflict(constVal, varVal))
+	assert.False(t, declKindConflict(constVal, constOther, ""))
+	assert.True(t, declKindConflict(varVal, constVal, ""))
+	assert.True(t, declKindConflict(constVal, varVal, ""))
+	assert.False(t, declKindConflict(constVal, varVal, constVal),
+		"a token change that still matches the original emission is template evolution")
+	assert.True(t, declKindConflict(varVal, constVal, constVal),
+		"a published token that differs from the original emission still conflicts")
+}
+
+func TestDeclKindConflictIgnoresBlankIdentifier(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		return path
+	}
+	pub := write("pub.go", "package x\n\nconst _ = 0\n\nvar _ = 1\n\nconst MaxBytes = 60000\n")
+	fresh := write("fresh.go", "package x\n\nvar _ = 1\n\nconst _ = 0\n\nconst MaxBytes = 32000\n")
+	assert.False(t, declKindConflict(pub, fresh, ""))
+	drift := detectValueDrift(pub, fresh)
+	require.NotNil(t, drift)
+	_, blank := drift.Decls["const:_"]
+	assert.False(t, blank, "blank identifier must not be a kind-change drift key; got %v", drift.Decls)
+	_, named := drift.Decls["const:MaxBytes"]
+	assert.True(t, named)
+}
+
+func TestDetectValueDriftIgnoresBlankOnlyKindChange(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub := filepath.Join(dir, "pub.go")
+	fresh := filepath.Join(dir, "fresh.go")
+	require.NoError(t, os.WriteFile(pub, []byte("package x\n\nconst _ = 0\n"), 0o644))
+	require.NoError(t, os.WriteFile(fresh, []byte("package x\n\nvar _ = 0\n"), 0o644))
+	assert.Nil(t, detectValueDrift(pub, fresh))
 }
 
 func classifyKindFixture(t *testing.T, pubSrc, freshSrc string) FileClassification {

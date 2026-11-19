@@ -387,20 +387,35 @@ func freshTextForKindChange(pubKey string, freshDecls map[string]string) (string
 	return strings.Join(parts, "\n"), true
 }
 
-// declKindConflict reports whether a bare name is declared in both files
-// under different tokens. Overlay keys decls by token plus names, so applying
-// the published decl would keep the fresh one and redeclare the name.
-func declKindConflict(pubPath, freshPath string) bool {
+// declKindConflict reports whether a bare name the operator changed is
+// declared under different tokens in published and fresh. Overlay keys decls
+// by token plus names, so applying the published decl would keep the fresh
+// one and redeclare the name. A token change whose published text still
+// matches the original emission is template evolution; overlay can take fresh.
+func declKindConflict(pubPath, freshPath, basePath string) bool {
 	pubDecls := canonicalDeclTexts(pubPath)
 	freshDecls := canonicalDeclTexts(freshPath)
 	if pubDecls == nil || freshDecls == nil {
 		return false
 	}
+	var baseTok map[string]string
+	if basePath != "" {
+		if baseDecls := canonicalDeclTexts(basePath); baseDecls != nil {
+			baseTok = tokenByBareName(baseDecls)
+		}
+	}
 	freshTok := tokenByBareName(freshDecls)
 	for name, tok := range tokenByBareName(pubDecls) {
-		if other, ok := freshTok[name]; ok && other != tok {
-			return true
+		other, ok := freshTok[name]
+		if !ok || other == tok {
+			continue
 		}
+		if baseTok != nil {
+			if base, ok := baseTok[name]; ok && base == tok {
+				continue
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -413,6 +428,9 @@ func tokenByBareName(decls map[string]string) map[string]string {
 			continue
 		}
 		for _, name := range names {
+			if !kindDeclName(name) {
+				continue
+			}
 			out[name] = tok
 		}
 	}
@@ -435,14 +453,22 @@ func splitDeclKey(key string) (string, []string, bool) {
 func declNamesOverlap(a, b []string) bool {
 	set := make(map[string]struct{}, len(a))
 	for _, name := range a {
-		set[name] = struct{}{}
+		if kindDeclName(name) {
+			set[name] = struct{}{}
+		}
 	}
 	for _, name := range b {
-		if _, ok := set[name]; ok {
+		if _, ok := set[name]; ok && kindDeclName(name) {
 			return true
 		}
 	}
 	return false
+}
+
+// kindDeclName reports whether name identifies one declaration. "_" can be
+// both a const and a var in the same file, so it is not a shared name.
+func kindDeclName(name string) bool {
+	return name != "_"
 }
 
 func shortenForDisplay(s string) string {
