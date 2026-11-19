@@ -22,7 +22,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "GET", "pp:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := listPageContext(cmd.Context(), "--cursor")
+			ctx := listPageContext(cmd.Context(), "")
 			path := "/items"
 			c, err := flags.newClient()
 			if err != nil {

@@ -1292,7 +1292,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if isDryRunResponseForClient(c, data) {
 			return data, nil
 		}
-		rememberListPage(ctx, data, cursorLookupPath, hasMoreField, paginationType, cursorParam, limitParam, clean)
+		rememberListPage(ctx, data, cursorLookupPath, hasMoreField, paginationType, cursorParam, limitParam, clean, path)
 		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType, cursorParam)
 		return data, nil
 	}
@@ -1479,14 +1479,8 @@ func paginatedGet(ctx context.Context, c interface {
 					}
 					if more {
 						nextPageSize := pageSize
-						if nextPageSize <= 0 && paginationType == "offset" {
-							nextPageSize = itemCount
-							if nextPageSize <= 0 {
-								// A server can truthfully report more data after an
-								// empty page. Advance by one so --all does not stall
-								// forever when no page size has been observed yet.
-								nextPageSize = 1
-							}
+						if paginationType == "offset" {
+							nextPageSize = offsetAdvancePageSize(pageSize, itemCount)
 						}
 						if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, nextPageSize); ok {
 							if page >= paginatedGetMaxPages {
@@ -1688,6 +1682,32 @@ func nextClientSidePaginationCursor(params map[string]string, cursorParam, pagin
 	}
 }
 
+// offsetAdvancePageSize is the step a single-page resume cursor and --all
+// share when the server, not the request, chooses the offset page length.
+func offsetAdvancePageSize(pageSize, itemCount int) int {
+	if pageSize > 0 {
+		return pageSize
+	}
+	if itemCount > 0 {
+		return itemCount
+	}
+	// A server can truthfully report more data after an empty page.
+	// Advance by one so the next offset does not stay put.
+	return 1
+}
+
+func fetchedPageItemCount(obj map[string]json.RawMessage, requestPath string) int {
+	field, preserve := paginatedCollectionEnvelopeField(obj, requestPath)
+	nested, ok := extractPaginatedItems(obj, requestPath)
+	if !ok && preserve {
+		ok = json.Unmarshal(obj[field], &nested) == nil
+	}
+	if !ok {
+		return 0
+	}
+	return len(nested)
+}
+
 // Silent page-1 truncation is the worst-possible mode for agents,
 // who otherwise compute totals against an incomplete set without
 // passing --all.
@@ -1830,12 +1850,12 @@ func listPageSlotFrom(ctx context.Context) (*listPageSlot, bool) {
 	return slot, ok && slot != nil
 }
 
-func rememberListPage(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string) {
+func rememberListPage(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) {
 	slot, ok := listPageSlotFrom(ctx)
 	if !ok {
 		return
 	}
-	fields, ok := listPageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params)
+	fields, ok := listPageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
 	if !ok {
 		return
 	}
@@ -1843,7 +1863,7 @@ func rememberListPage(ctx context.Context, data json.RawMessage, nextCursorPath,
 	slot.Set = true
 }
 
-func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string) (listPageFields, bool) {
+func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (listPageFields, bool) {
 	var items []json.RawMessage
 	if json.Unmarshal(data, &items) == nil {
 		return listPageFields{}, true
@@ -1904,6 +1924,9 @@ func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, pagi
 			if n, err := strconv.Atoi(params[limitParam]); err == nil && n > 0 {
 				pageSize = n
 			}
+		}
+		if explicitMore && paginationType == "offset" {
+			pageSize = offsetAdvancePageSize(pageSize, fetchedPageItemCount(obj, requestPath))
 		}
 		if advanced, ok := nextClientSidePaginationCursor(params, cursorParam, paginationType, pageSize); ok {
 			next = advanced

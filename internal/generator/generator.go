@@ -9765,9 +9765,6 @@ func paginationCursorFlag(endpoint spec.Endpoint) string {
 			}
 		}
 	}
-	if flag := naming.FlagName(want); flag != "" {
-		return "--" + flag
-	}
 	return ""
 }
 

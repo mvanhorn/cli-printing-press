@@ -58,6 +58,26 @@ func TestGenerateRejectsUndeterminablePageRequestParam(t *testing.T) {
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestPaginationCursorFlagOmitsUndeclaredParam(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "--page-cursor", paginationCursorFlag(spec.Endpoint{
+		Pagination: &spec.Pagination{CursorParam: "pageCursor"},
+		Params:     []spec.Param{{Name: "pageCursor", Type: "string"}},
+	}))
+	assert.Empty(t, paginationCursorFlag(spec.Endpoint{
+		Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor"},
+	}))
+	assert.Empty(t, paginationCursorFlag(spec.Endpoint{
+		Pagination: &spec.Pagination{CursorParam: "cursor"},
+		Params:     []spec.Param{{Name: "cursor", Type: "string", In: "header"}},
+	}))
+	assert.Empty(t, paginationCursorFlag(spec.Endpoint{
+		Pagination: &spec.Pagination{CursorParam: "cursor"},
+		Params:     []spec.Param{{Name: "cursor", Type: "string", Positional: true}},
+	}))
+}
+
 func TestGeneratedPageListWalksAndKeepsMeta(t *testing.T) {
 	t.Parallel()
 
@@ -506,6 +526,273 @@ func capturePageListStderr(t *testing.T, fn func()) string {
 }
 
 func pageListMeta(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	var envelope struct {
+		Meta map[string]any ` + "`" + `json:"meta"` + "`" + `
+	}
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("unmarshal meta: %v\n%s", err, stdout)
+	}
+	if envelope.Meta == nil {
+		t.Fatalf("missing meta: %s", stdout)
+	}
+	return envelope.Meta
+}
+`
+}
+
+func TestGeneratedServerSizedOffsetPageAndUndeclaredCursorFlag(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := serverSizedOffsetSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	rowsSrc := readGeneratedFile(t, outputDir, "internal", "cli", "rows_list.go")
+	marksSrc := readGeneratedFile(t, outputDir, "internal", "cli", "marks_list.go")
+	assert.Contains(t, rowsSrc, `listPageContext(cmd.Context(), "--offset")`)
+	assert.Contains(t, marksSrc, `listPageContext(cmd.Context(), "")`)
+	assert.NotContains(t, marksSrc, "--cursor")
+
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sized_page_behavior_test.go"), []byte(sizedPageBehaviorTest()), 0o644))
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestSizedPage", "-count=1")
+}
+
+func serverSizedOffsetSpec() *spec.APISpec {
+	apiSpec := minimalSpec("sizedpage")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Learn.Disabled = true
+	apiSpec.Owner = "test-owner"
+	apiSpec.OwnerName = "Test Author"
+	getID := []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}}
+	apiSpec.Resources = map[string]spec.Resource{
+		"rows": {
+			Description: "Rows",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/rows",
+					Description: "List rows",
+					Response:    spec.ResponseDef{Type: "array"},
+					Params:      []spec.Param{{Name: "offset", Type: "integer"}},
+					Pagination: &spec.Pagination{
+						Type:         "offset",
+						CursorParam:  "offset",
+						HasMoreField: "has_more",
+					},
+				},
+				"get": {Method: "GET", Path: "/rows/{id}", Description: "Get a row", Params: getID},
+			},
+		},
+		"marks": {
+			Description: "Marks",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/marks",
+					Description: "List marks",
+					Response:    spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{
+						Type:        "cursor",
+						CursorParam: "cursor",
+					},
+				},
+				"get": {Method: "GET", Path: "/marks/{id}", Description: "Get a mark", Params: getID},
+			},
+		},
+	}
+	return apiSpec
+}
+
+func sizedPageBehaviorTest() string {
+	return `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestSizedPageOffsetAdvancesByFetchedCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(sizedPageHandler))
+	t.Cleanup(server.Close)
+	t.Setenv("SIZEDPAGE_BASE_URL", server.URL)
+
+	allOut, allErr := runSizedPage(t, "rows", "list", "--all", "--json")
+	if !strings.Contains(allErr, "{\"event\":\"complete\",\"total\":6,\"pages\":3}") {
+		t.Fatalf("all stderr = %s\nstdout = %s", allErr, allOut)
+	}
+	for _, id := range []string{"r1", "r2", "r3", "r4", "r5", "r6"} {
+		if !strings.Contains(allOut, id) {
+			t.Fatalf("all output missing %s: %s", id, allOut)
+		}
+	}
+
+	pageOut, pageErr := runSizedPage(t, "rows", "list", "--json")
+	meta := sizedPageMeta(t, pageOut)
+	if meta["has_more"] != true || meta["next_cursor"] != "3" || meta["next_cursor_flag"] != "--offset" {
+		t.Fatalf("page meta = %#v\nstdout = %s", meta, pageOut)
+	}
+	if !strings.Contains(pageOut, "r1") || !strings.Contains(pageOut, "r3") || strings.Contains(pageOut, "r4") {
+		t.Fatalf("first page items = %s", pageOut)
+	}
+	wantHint := "{\"event\":\"truncated\",\"hint\":\"pass --all to fetch every page, or --offset <meta.next_cursor> for the next page\"}"
+	if !strings.Contains(pageErr, wantHint) {
+		t.Fatalf("stderr hint = %s", pageErr)
+	}
+
+	secondOut, _ := runSizedPage(t, "rows", "list", "--offset", "3", "--json")
+	second := sizedPageMeta(t, secondOut)
+	if second["next_cursor"] != "5" || second["has_more"] != true || !strings.Contains(secondOut, "r4") || strings.Contains(secondOut, "r1") {
+		t.Fatalf("second page = %s meta %#v", secondOut, second)
+	}
+
+	lastOut, lastErr := runSizedPage(t, "rows", "list", "--offset", "5", "--json")
+	last := sizedPageMeta(t, lastOut)
+	if last["has_more"] != false {
+		t.Fatalf("last meta = %#v", last)
+	}
+	if _, ok := last["next_cursor"]; ok {
+		t.Fatalf("last page has next_cursor: %#v", last)
+	}
+	if _, ok := last["next_cursor_flag"]; ok {
+		t.Fatalf("last page has next_cursor_flag: %#v", last)
+	}
+	if strings.Contains(lastErr, "\"event\":\"truncated\"") || !strings.Contains(lastOut, "r6") || strings.Contains(lastOut, "r5") {
+		t.Fatalf("last page = %s\nstderr = %s", lastOut, lastErr)
+	}
+}
+
+func TestSizedPageUndeclaredCursorFlagIsOmitted(t *testing.T) {
+	var flags rootFlags
+	root := newRootCmd(&flags)
+	list, _, err := root.Find([]string{"marks", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.Flags().Lookup("cursor") != nil {
+		t.Fatal("marks list registered --cursor")
+	}
+	if list.Flags().Lookup("all") == nil {
+		t.Fatal("marks list missing --all")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(sizedPageHandler))
+	t.Cleanup(server.Close)
+	t.Setenv("SIZEDPAGE_BASE_URL", server.URL)
+
+	out, stderr := runSizedPage(t, "marks", "list", "--json")
+	meta := sizedPageMeta(t, out)
+	if meta["has_more"] != true || meta["next_cursor"] != "abc" {
+		t.Fatalf("marks meta = %#v\nstdout = %s", meta, out)
+	}
+	if _, ok := meta["next_cursor_flag"]; ok {
+		t.Fatalf("marks meta includes next_cursor_flag: %#v", meta)
+	}
+	wantHint := "{\"event\":\"truncated\",\"hint\":\"pass --all to fetch every page\"}"
+	if !strings.Contains(stderr, wantHint) || strings.Contains(stderr, "--cursor") {
+		t.Fatalf("marks stderr = %s", stderr)
+	}
+}
+
+func sizedPageHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.URL.Path {
+	case "/rows":
+		if r.URL.Query().Get("limit") != "" {
+			http.Error(w, "unexpected limit", http.StatusBadRequest)
+			return
+		}
+		offset := 0
+		if raw := r.URL.Query().Get("offset"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil {
+				http.Error(w, "bad offset", http.StatusBadRequest)
+				return
+			}
+			offset = n
+		}
+		all := []map[string]string{
+			{"id": "r1"}, {"id": "r2"}, {"id": "r3"},
+			{"id": "r4"}, {"id": "r5"}, {"id": "r6"},
+		}
+		size := 0
+		switch offset {
+		case 0:
+			size = 3
+		case 3:
+			size = 2
+		case 5:
+			size = 1
+		default:
+			http.Error(w, "bad offset", http.StatusBadRequest)
+			return
+		}
+		end := offset + size
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"rows":     all[offset:end],
+			"extras":   []map[string]string{{"id": "extra"}},
+			"has_more": end < len(all),
+		})
+	case "/marks":
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]string{{"id": "m1"}},
+			"cursor":  "abc",
+		})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func runSizedPage(t *testing.T, args ...string) (string, string) {
+	t.Helper()
+	var stdout bytes.Buffer
+	var flags rootFlags
+	root := newRootCmd(&flags)
+	root.SetOut(&stdout)
+	root.SetErr(io.Discard)
+	root.SetArgs(append([]string{"--home", t.TempDir()}, args...))
+	var stderr string
+	execErr := error(nil)
+	stderr = captureSizedPageStderr(t, func() {
+		execErr = root.Execute()
+	})
+	if execErr != nil {
+		t.Fatalf("%v: %v\nstderr: %s\nstdout: %s", args, execErr, stderr, stdout.String())
+	}
+	return stdout.String(), stderr
+}
+
+func captureSizedPageStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = write
+	done := make(chan string, 1)
+	go func() {
+		buf := &bytes.Buffer{}
+		_, _ = io.Copy(buf, read)
+		done <- buf.String()
+	}()
+	fn()
+	_ = write.Close()
+	os.Stderr = old
+	return <-done
+}
+
+func sizedPageMeta(t *testing.T, stdout string) map[string]any {
 	t.Helper()
 	var envelope struct {
 		Meta map[string]any ` + "`" + `json:"meta"` + "`" + `
