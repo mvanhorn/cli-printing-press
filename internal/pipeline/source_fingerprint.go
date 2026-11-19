@@ -15,14 +15,33 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 // SourceFingerprint is the source snapshot recorded with a Phase 5 proof.
 // The per-file hashes let publish report the paths that drifted; Digest is the
 // compact binding used for the unchanged-tree fast path.
+//
+// legacyDigest and legacyFiles hash the same bytes without replacing the
+// stamped runtime version literal. Markers recorded before that replacement
+// still match them. New markers record Digest and Files.
 type SourceFingerprint struct {
-	Digest string
-	Files  map[string]string
+	Digest       string
+	Files        map[string]string
+	legacyDigest string
+	legacyFiles  map[string]string
+}
+
+func (fp SourceFingerprint) matchesRecorded(digest string) bool {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
+		return false
+	}
+	if digest == fp.Digest {
+		return true
+	}
+	return fp.legacyDigest != "" && digest == fp.legacyDigest
 }
 
 // CaptureSourceFingerprint records the relevant source files under root.
@@ -44,6 +63,7 @@ func CaptureSourceFingerprint(root string) (SourceFingerprint, error) {
 	modulePath, modulePlaceholder := sourceFingerprintModuleIdentity(root)
 
 	files := make(map[string]string)
+	legacyFiles := make(map[string]string)
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -74,18 +94,42 @@ func CaptureSourceFingerprint(root string) (SourceFingerprint, error) {
 		if err != nil {
 			return fmt.Errorf("read source file %q: %w", rel, err)
 		}
-		data, err = normalizeSourceFingerprintModulePath(rel, data, modulePath, modulePlaceholder)
+		// The version token has to be replaced while the file is still Go.
+		// Module-path normalization rewrites import blocks into non-Go text,
+		// and the version parser would then leave the literal in the hash.
+		// The legacy hash is that module-normalized original, which is what
+		// a marker recorded before the placeholder bound.
+		versionData := normalizeStampedRuntimeVersionLiteral(rel, data)
+		legacyData, err := normalizeSourceFingerprintModulePath(rel, data, modulePath, modulePlaceholder)
 		if err != nil {
 			return err
 		}
-		digest := sha256.Sum256(data)
+		normalized := legacyData
+		if !bytes.Equal(versionData, data) {
+			normalized, err = normalizeSourceFingerprintModulePath(rel, versionData, modulePath, modulePlaceholder)
+			if err != nil {
+				return err
+			}
+		}
+		digest := sha256.Sum256(normalized)
+		legacySum := sha256.Sum256(legacyData)
 		files[rel] = hex.EncodeToString(digest[:])
+		legacyFiles[rel] = hex.EncodeToString(legacySum[:])
 		return nil
 	})
 	if err != nil {
 		return SourceFingerprint{}, fmt.Errorf("walk CLI source directory: %w", err)
 	}
 
+	return SourceFingerprint{
+		Digest:       fingerprintDigest(files),
+		Files:        files,
+		legacyDigest: fingerprintDigest(legacyFiles),
+		legacyFiles:  legacyFiles,
+	}, nil
+}
+
+func fingerprintDigest(files map[string]string) string {
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)
@@ -99,11 +143,60 @@ func CaptureSourceFingerprint(root string) (SourceFingerprint, error) {
 		_, _ = hash.Write([]byte(files[path]))
 		_, _ = hash.Write([]byte{'\n'})
 	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
 
-	return SourceFingerprint{
-		Digest: hex.EncodeToString(hash.Sum(nil)),
-		Files:  files,
-	}, nil
+// stampedVersionFingerprintLiteral is the stand-in for the runtime version
+// string. ldflags override that string, and PreserveStampedRuntimeVersion
+// copies it after the Phase 5 marker is recorded. Only this token is omitted,
+// and only in the files that copy touches. The rest of the line stays hashed.
+const stampedVersionFingerprintLiteral = `"<printing-press-version>"`
+
+func normalizeStampedRuntimeVersionLiteral(rel string, data []byte) []byte {
+	if !isStampedRuntimeVersionFile(rel) {
+		return data
+	}
+	decl, err := parseVersionDeclSource(rel, data)
+	if err != nil || !decl.present {
+		return data
+	}
+	return replaceStampedVersionLiteral(data, decl)
+}
+
+func isStampedRuntimeVersionFile(rel string) bool {
+	rel = strings.ReplaceAll(filepath.ToSlash(rel), `\`, `/`)
+	switch rel {
+	case "internal/cli/root.go", "internal/cli/version.go":
+		return true
+	}
+	const prefix = "cmd/"
+	const suffix = "/main.go"
+	if !strings.HasPrefix(rel, prefix) || !strings.HasSuffix(rel, suffix) {
+		return false
+	}
+	name := strings.TrimSuffix(strings.TrimPrefix(rel, prefix), suffix)
+	if name == "" || strings.Contains(name, "/") {
+		return false
+	}
+	return strings.HasSuffix(name, naming.MCPSuffix)
+}
+
+func replaceStampedVersionLiteral(data []byte, decl versionDecl) []byte {
+	start, end := decl.litStart, decl.litEnd
+	if start < 0 || end > len(data) || start >= end {
+		return data
+	}
+	if string(data[start:end]) != decl.literal {
+		return data
+	}
+	if string(data[start:end]) == stampedVersionFingerprintLiteral {
+		return data
+	}
+	out := make([]byte, 0, len(data)-(end-start)+len(stampedVersionFingerprintLiteral))
+	out = append(out, data[:start]...)
+	out = append(out, stampedVersionFingerprintLiteral...)
+	out = append(out, data[end:]...)
+	return out
 }
 
 const publishedLibraryModulePrefix = "github.com/mvanhorn/printing-press-library/library/"
@@ -350,7 +443,10 @@ func isSourceFingerprintFile(path string) bool {
 	}
 }
 
-func changedSourceFingerprintFiles(expected, current map[string]string) []string {
+// A recorded hash matches when it equals the normalized hash or the legacy
+// hash of that path. Version-literal normalization then does not show up as
+// drift for a marker recorded either before or after it.
+func changedRecordedSourceFiles(expected, current, legacy map[string]string) []string {
 	seen := make(map[string]struct{}, len(expected)+len(current))
 	for path := range expected {
 		seen[path] = struct{}{}
@@ -358,12 +454,17 @@ func changedSourceFingerprintFiles(expected, current map[string]string) []string
 	for path := range current {
 		seen[path] = struct{}{}
 	}
+	for path := range legacy {
+		seen[path] = struct{}{}
+	}
 
 	changed := make([]string, 0)
 	for path := range seen {
-		if expected[path] != current[path] {
-			changed = append(changed, path)
+		got := expected[path]
+		if got == current[path] || (legacy != nil && got == legacy[path]) {
+			continue
 		}
+		changed = append(changed, path)
 	}
 	sort.Strings(changed)
 	return changed

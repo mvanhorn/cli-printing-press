@@ -273,8 +273,10 @@ Printing Press. Do not hand-author the marker and do not compute a digest.
 (`auth_env_vars`). The command refuses when that variable, or any manifest
 credential variable, is set, and it refuses this reason for `none`, `cookie`,
 `composed`, and `session_handshake` auth. The marker includes
-`source_fingerprint` and `source_files`. A later `.go` edit makes it stale;
-rerun the command after the tree is final.
+`source_fingerprint` and `source_files`. A later `.go` edit makes it stale.
+Replacing only the stamped `var version = "..."` string in `internal/cli/root.go`,
+`internal/cli/version.go`, or `cmd/<name>-pp-mcp/main.go` does not; any other
+edit in those files does. Rerun the command after the tree is final.
 
 ```bash
 "$PRINTING_PRESS_BIN" dogfood \

@@ -349,6 +349,61 @@ echo '[{"id":"123"}]'
 	assert.Contains(t, get.Reason, "held-back live happy path")
 }
 
+func TestLoadLiveHappyReuseAcceptsMarkerRecordedBeforeVersionNormalization(t *testing.T) {
+	dir := t.TempDir()
+	writeGoFile(t, filepath.Join(dir, "internal", "cli", "version.go"), runtimeVersionGo("1.0.0"))
+	source, err := CaptureSourceFingerprint(dir)
+	require.NoError(t, err)
+	require.NotEqual(t, source.Digest, source.legacyDigest)
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	body, err := json.Marshal(Phase5GateMarker{
+		SchemaVersion:     1,
+		APIName:           "widget",
+		RunID:             "run-1",
+		SourceFingerprint: source.legacyDigest,
+		SourceFiles:       source.legacyFiles,
+		LiveHappyPathRuns: []LiveHappyPathRun{{
+			Command:           "items list",
+			SourceFingerprint: source.legacyDigest,
+		}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(markerPath, body, 0o644))
+
+	reuse, err := loadLiveHappyReuse(markerPath, source, "widget", "run-1")
+	require.NoError(t, err)
+	assert.Empty(t, reuse.rejection)
+	_, ok := reuse.runs["items list"]
+	assert.True(t, ok)
+
+	report := &LiveDogfoodReport{}
+	recordLiveHappyPathRuns(report, []liveDogfoodCommand{{
+		Path:        []string{"items", "list"},
+		Annotations: map[string]string{liveHappyPathAnnotation: "true"},
+	}}, resolveCtx{liveHappyReuse: reuse}, source)
+	require.Len(t, report.LiveHappyPathRuns, 1)
+	assert.True(t, report.LiveHappyPathRuns[0].Reused)
+	assert.Equal(t, source.Digest, report.LiveHappyPathRuns[0].SourceFingerprint)
+	assert.Empty(t, validatePhase5LiveHappyRuns(Phase5GateMarker{
+		SourceFingerprint: source.Digest,
+		LiveHappyPathRuns: report.LiveHappyPathRuns,
+	}))
+
+	edited := source
+	edited.legacyDigest = "not-the-tree"
+	edited.legacyFiles = map[string]string{"internal/cli/version.go": "stale"}
+	rejection := liveHappyMarkerRejection(Phase5GateMarker{
+		SchemaVersion:     1,
+		APIName:           "widget",
+		RunID:             "run-1",
+		SourceFingerprint: source.legacyDigest,
+		SourceFiles:       source.legacyFiles,
+	}, edited, "widget", "run-1")
+	assert.Contains(t, rejection, "no longer matches")
+	assert.Contains(t, rejection, "internal/cli/version.go")
+}
+
 func TestValidatePhase5LiveHappyRuns(t *testing.T) {
 	marker := Phase5GateMarker{SourceFingerprint: "current"}
 	assert.Empty(t, validatePhase5LiveHappyRuns(marker))

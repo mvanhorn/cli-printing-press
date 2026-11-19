@@ -64,7 +64,7 @@ func loadLiveHappyReuse(path string, source SourceFingerprint, apiName, runID st
 	}
 	runs := make(map[string]LiveHappyPathRun, len(marker.LiveHappyPathRuns))
 	for _, run := range marker.LiveHappyPathRuns {
-		if strings.TrimSpace(run.Command) != "" && run.SourceFingerprint == source.Digest {
+		if strings.TrimSpace(run.Command) != "" && source.matchesRecorded(run.SourceFingerprint) {
 			runs[run.Command] = run
 		}
 	}
@@ -81,11 +81,11 @@ func liveHappyMarkerRejection(marker Phase5GateMarker, source SourceFingerprint,
 		return fmt.Sprintf("recorded live happy path is from run %q, not %q", marker.RunID, runID)
 	case marker.SourceFingerprint == "":
 		return "recorded live happy path marker has no source_fingerprint"
-	case marker.SourceFingerprint == source.Digest:
+	case source.matchesRecorded(marker.SourceFingerprint):
 		return ""
 	}
 	rejection := "recorded live happy path no longer matches the current CLI source"
-	if changed := changedSourceFingerprintFiles(marker.SourceFiles, source.Files); len(changed) > 0 {
+	if changed := changedRecordedSourceFiles(marker.SourceFiles, source.Files, source.legacyFiles); len(changed) > 0 {
 		rejection += fmt.Sprintf(" (changed: %s)", strings.Join(changed, ", "))
 	}
 	return rejection + "; rerun dogfood --live --allow-destructive with operator approval"
@@ -123,6 +123,10 @@ func recordLiveHappyPathRuns(report *LiveDogfoodReport, commands []liveDogfoodCo
 		name := strings.Join(command.Path, " ")
 		if run, recorded := ctx.reusedLiveHappyRun(command); recorded {
 			run.Reused = true
+			// The replacement marker binds source.Digest. A run accepted
+			// through the pre-placeholder digest has to be rewritten to it,
+			// or the next gate rejects the run as different source.
+			run.SourceFingerprint = source.Digest
 			report.LiveHappyPathRuns = append(report.LiveHappyPathRuns, run)
 			continue
 		}
