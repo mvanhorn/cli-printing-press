@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 
@@ -173,18 +172,57 @@ func analyticsMissingStoreError() error {
 }
 
 func validateAnalyticsResourceType(db *store.Store, resourceType string) error {
-	known, err := analyticsKnownResourceTypes(db)
+	exists, err := analyticsResourceTypeExists(db, resourceType)
 	if err != nil {
 		return fmt.Errorf("listing resource types: %w", err)
 	}
-	if slices.Contains(known, resourceType) {
+	if exists {
 		return nil
+	}
+	known, err := analyticsKnownResourceTypes(db)
+	if err != nil {
+		return fmt.Errorf("listing resource types: %w", err)
 	}
 	listed := "none"
 	if len(known) > 0 {
 		listed = strings.Join(known, ", ")
 	}
 	return usageErr(fmt.Errorf("unknown resource type %q; valid: %s", resourceType, listed))
+}
+
+func analyticsResourceTypeExists(db *store.Store, resourceType string) (bool, error) {
+	var found int
+	if err := db.DB().QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM resources WHERE resource_type = ?)`,
+		resourceType,
+	).Scan(&found); err != nil {
+		return false, err
+	}
+	if found > 0 {
+		return true, nil
+	}
+	hasSyncState, err := analyticsHasTable(db, "sync_state")
+	if err != nil || !hasSyncState {
+		return false, err
+	}
+	if err := db.DB().QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM sync_state WHERE resource_type = ?)`,
+		resourceType,
+	).Scan(&found); err != nil {
+		return false, err
+	}
+	return found > 0, nil
+}
+
+func analyticsHasTable(db *store.Store, name string) (bool, error) {
+	var tables int
+	if err := db.DB().QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		name,
+	).Scan(&tables); err != nil {
+		return false, err
+	}
+	return tables > 0, nil
 }
 
 func analyticsKnownResourceTypes(db *store.Store) ([]string, error) {
@@ -210,12 +248,9 @@ func analyticsKnownResourceTypes(db *store.Store) ([]string, error) {
 }
 
 func analyticsAddSyncStateTypes(db *store.Store, seen map[string]struct{}) error {
-	var tables int
-	if err := db.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sync_state'`).Scan(&tables); err != nil {
+	hasSyncState, err := analyticsHasTable(db, "sync_state")
+	if err != nil || !hasSyncState {
 		return err
-	}
-	if tables == 0 {
-		return nil
 	}
 	rows, err := db.DB().Query(`SELECT resource_type FROM sync_state`)
 	if err != nil {
