@@ -6,6 +6,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,7 +21,9 @@ const valueDriftDisplayLimit = 120
 // (with its Doc comment stripped and AddCommand statements scrubbed from
 // function bodies) via go/format, and compares the rendered text per-decl.
 // Returns nil if there's no drift. Conservative — fires only when both files
-// parse and a same-named decl exists in both.
+// parse. Same-key decls compare directly. A const↔var (or other token)
+// change for a bare name declared in both files is also drift: the decl-set
+// check keys by bare name, so it does not treat that edit as an addition.
 //
 // This catches what body-drift's call-target walker misses:
 //   - basic-literal value changes (const x = "Bearer " → "Token ")
@@ -47,12 +50,16 @@ func detectValueDrift(pubPath, freshPath string) *ValueDrift {
 	for name, pubText := range pubDecls {
 		freshText, ok := freshDecls[name]
 		if !ok {
-			// Decl exists only in pub. The decl-set check upstream already
-			// flagged this as TEMPLATED-WITH-ADDITIONS, so we shouldn't be
-			// here. Skip defensively.
-			continue
+			// No exact token+names key in fresh. Pair a different-token decl
+			// that still declares one of these names (const↔var, either vs
+			// type) so the delta names both renderings. A name absent from
+			// this fresh file was added, moved, or ignored upstream. A
+			// same-token regroup (a const block gaining a spec) keeps the
+			// old skip: that is how templates grow a block, and overlay
+			// cannot merge two GenDecl keys without redeclaring the name.
+			freshText, ok = freshTextForKindChange(name, freshDecls)
 		}
-		if pubText == freshText {
+		if !ok || pubText == freshText {
 			continue
 		}
 		drift[name] = ValueDriftDelta{
@@ -349,6 +356,93 @@ func genDeclName(decl *ast.GenDecl) string {
 		return ""
 	}
 	return decl.Tok.String() + ":" + strings.Join(names, ",")
+}
+
+// freshTextForKindChange returns the rendered fresh decl(s) that declare a
+// bare name from pubKey under a different token. The published key stays the
+// drift map key so a base filter can still drop a template-side token change
+// whose published text matches the original emission. Multiple partners are
+// joined in key order so the fresh side is deterministic.
+func freshTextForKindChange(pubKey string, freshDecls map[string]string) (string, bool) {
+	pubTok, pubNames, ok := splitDeclKey(pubKey)
+	if !ok {
+		return "", false
+	}
+	var keys []string
+	for freshKey := range freshDecls {
+		freshTok, freshNames, ok := splitDeclKey(freshKey)
+		if !ok || freshTok == pubTok || !declNamesOverlap(pubNames, freshNames) {
+			continue
+		}
+		keys = append(keys, freshKey)
+	}
+	if len(keys) == 0 {
+		return "", false
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, key := range keys {
+		parts[i] = freshDecls[key]
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+// declKindConflict reports whether a bare name is declared in both files
+// under different tokens. Overlay keys decls by token plus names, so applying
+// the published decl would keep the fresh one and redeclare the name.
+func declKindConflict(pubPath, freshPath string) bool {
+	pubDecls := canonicalDeclTexts(pubPath)
+	freshDecls := canonicalDeclTexts(freshPath)
+	if pubDecls == nil || freshDecls == nil {
+		return false
+	}
+	freshTok := tokenByBareName(freshDecls)
+	for name, tok := range tokenByBareName(pubDecls) {
+		if other, ok := freshTok[name]; ok && other != tok {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenByBareName(decls map[string]string) map[string]string {
+	out := make(map[string]string)
+	for key := range decls {
+		tok, names, ok := splitDeclKey(key)
+		if !ok {
+			continue
+		}
+		for _, name := range names {
+			out[name] = tok
+		}
+	}
+	return out
+}
+
+func splitDeclKey(key string) (string, []string, bool) {
+	tok, rest, ok := strings.Cut(key, ":")
+	if !ok || rest == "" {
+		return "", nil, false
+	}
+	switch tok {
+	case "const", "var", "type":
+		return tok, strings.Split(rest, ","), true
+	default:
+		return "", nil, false
+	}
+}
+
+func declNamesOverlap(a, b []string) bool {
+	set := make(map[string]struct{}, len(a))
+	for _, name := range a {
+		set[name] = struct{}{}
+	}
+	for _, name := range b {
+		if _, ok := set[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func shortenForDisplay(s string) string {

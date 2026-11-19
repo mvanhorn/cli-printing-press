@@ -34,6 +34,9 @@ func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) b
 	if !shouldOverlayOntoFresh(rel, pubPath, freshPath) {
 		return false
 	}
+	if declKindConflict(pubPath, freshPath) {
+		return false
+	}
 	basePath := ""
 	if baseDir != "" {
 		candidate := filepath.Join(baseDir, filepath.FromSlash(rel))
