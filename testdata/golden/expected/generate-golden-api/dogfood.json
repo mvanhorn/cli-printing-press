@@ -16,7 +16,7 @@
   },
   "dead_functions": {
     "dead": 0,
-    "total": 176
+    "total": 186
   },
   "dir": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden",
   "example_check": {

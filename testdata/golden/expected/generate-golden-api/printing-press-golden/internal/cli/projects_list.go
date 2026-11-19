@@ -26,6 +26,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "projects.list", "pp:method": "GET", "pp:path": "/projects", "mcp:read-only": "true", "pp:happy-args": "--x-api-version=2026-04-01"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := listPageContext(cmd.Context(), "--cursor")
 			if cmd.Flags().Changed("status") {
 				allowedStatus := []string{"draft", "active", "archived"}
 				validStatus := false
@@ -50,7 +51,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				headerOverrides["X-Api-Version"] = formatCLIParamValue(flagXApiVersion)
 			}
 
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "projects", path, retainCLIQueryParams(cmd, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(ctx, c, flags, "auto", "projects", path, retainCLIQueryParams(cmd, map[string]string{
 				"status": formatCLIParamValue(flagStatus),
 				"limit":  formatCLIParamValue(flagLimit),
 				"cursor": formatCLIParamValue(flagCursor),
@@ -87,6 +88,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
+				wrapped = applyListPageMeta(ctx, wrapped)
 				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
@@ -113,7 +115,9 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 			if flags.csv || flags.plain {
 				formatData = outputData
 			}
-			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, map[string]bool{"id": true, "name": true, "status": true})
+			liveMeta := map[string]any{"source": "live"}
+			applyListPageMetaMap(ctx, liveMeta)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, liveMeta, map[string]bool{"id": true, "name": true, "status": true})
 		},
 	}
 	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")

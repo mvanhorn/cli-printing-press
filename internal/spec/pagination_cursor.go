@@ -8,41 +8,67 @@ import (
 )
 
 // ResolveCursorRequestParams fills an empty Pagination.CursorParam from the
-// endpoint's declared query parameters when a response cursor path is set.
-// cursor_field and next_cursor_path name that response path. An empty request
-// slot makes --all repeat the first page and exit 0. An explicit cursor_param
-// is preserved, including values that do not match a declared query parameter.
-// A dotted response path is not guessed onto a differently named query
-// parameter. Offset and page pagination are left unchanged. When no request
-// parameter can be determined, every endpoint is left unchanged and the error
-// names each endpoint that still cannot send the cursor back.
+// endpoint's declared query parameters. Cursor and page-token pagination use
+// the response cursor path (cursor_field or next_cursor_path). Page pagination
+// uses a declared page, page_number, pageNumber, or page[number] query
+// parameter even when that response path is empty, because a top-level next
+// URL is not a request slot. An empty request slot makes --all stop after one
+// page and exit 0. An explicit cursor_param is preserved, including values
+// that do not match a declared query parameter. A dotted response path is not
+// guessed onto a differently named query parameter. Offset pagination is left
+// unchanged. When no request parameter can be determined, every endpoint is
+// left unchanged and the error names each endpoint that still cannot advance.
 func (s *APISpec) ResolveCursorRequestParams() error {
 	if s == nil {
 		return nil
 	}
-	var problems []string
+	var cursorProblems []string
+	var pageProblems []string
 	var fills []cursorParamFill
 	walkCursorPagination(s.Resources, "", nil, func(loc string, endpoint *Endpoint) {
 		param, err := resolveEndpointCursorRequestParam(endpoint)
 		if err != nil {
-			problems = append(problems, loc+": "+err.Error())
+			cursorProblems = append(cursorProblems, loc+": "+err.Error())
+		} else if param != "" && endpoint != nil && endpoint.Pagination != nil {
+			// The walk copies endpoint values out of the resource map. Pagination
+			// is a pointer, so the fill updates the spec rather than that copy.
+			fills = append(fills, cursorParamFill{pagination: endpoint.Pagination, param: param})
+		}
+		pageParam, pageErr := resolveEndpointPageRequestParam(endpoint)
+		if pageErr != nil {
+			pageProblems = append(pageProblems, loc+": "+pageErr.Error())
 			return
 		}
-		if param == "" || endpoint == nil || endpoint.Pagination == nil {
+		if pageParam == "" || endpoint == nil || endpoint.Pagination == nil {
 			return
 		}
-		// The walk copies endpoint values out of the resource map. Pagination
-		// is a pointer, so the fill updates the spec rather than that copy.
-		fills = append(fills, cursorParamFill{pagination: endpoint.Pagination, param: param})
+		fills = append(fills, cursorParamFill{pagination: endpoint.Pagination, param: pageParam})
 	})
-	if len(problems) > 0 {
-		slices.Sort(problems)
-		return fmt.Errorf("cursor pagination is missing a request parameter:\n%s", strings.Join(problems, "\n"))
+	if len(cursorProblems) > 0 || len(pageProblems) > 0 {
+		return paginationRequestParamError(cursorProblems, pageProblems)
 	}
 	for _, fill := range fills {
 		fill.pagination.CursorParam = fill.param
 	}
 	return nil
+}
+
+func paginationRequestParamError(cursorProblems, pageProblems []string) error {
+	slices.Sort(cursorProblems)
+	slices.Sort(pageProblems)
+	var b strings.Builder
+	if len(cursorProblems) > 0 {
+		b.WriteString("cursor pagination is missing a request parameter:\n")
+		b.WriteString(strings.Join(cursorProblems, "\n"))
+	}
+	if len(pageProblems) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("page pagination is missing a request parameter:\n")
+		b.WriteString(strings.Join(pageProblems, "\n"))
+	}
+	return fmt.Errorf("%s", b.String())
 }
 
 type cursorParamFill struct {
@@ -122,6 +148,60 @@ func paginationNeedsCursorRequestParam(p *Pagination) bool {
 	default:
 		return false
 	}
+}
+
+func paginationNeedsPageRequestParam(p *Pagination) bool {
+	if p == nil || strings.TrimSpace(p.CursorParam) != "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(p.Type), "page")
+}
+
+func resolveEndpointPageRequestParam(endpoint *Endpoint) (string, error) {
+	if endpoint == nil || !paginationNeedsPageRequestParam(endpoint.Pagination) {
+		return "", nil
+	}
+	switch wires := uniqueCursorWireNames(pageRequestParams(endpoint)); len(wires) {
+	case 0:
+		return "", missingPageRequestParam()
+	case 1:
+		return wires[0], nil
+	default:
+		return "", ambiguousPageRequestParam(wires)
+	}
+}
+
+func pageRequestParams(endpoint *Endpoint) []Param {
+	if endpoint == nil {
+		return nil
+	}
+	out := make([]Param, 0, len(endpoint.Params))
+	for _, p := range cursorRequestCandidates(endpoint) {
+		if isPageRequestParamName(p.Name) || isPageRequestParamName(p.WireName()) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func isPageRequestParamName(name string) bool {
+	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "$") {
+	case "page", "pagenumber", "page_number", "page[number]":
+		return true
+	default:
+		return false
+	}
+}
+
+func missingPageRequestParam() error {
+	return fmt.Errorf("page pagination has no request parameter; set cursor_param to the page, page_number, pageNumber, or page[number] query parameter that sends the page number")
+}
+
+func ambiguousPageRequestParam(wires []string) error {
+	names := append([]string(nil), wires...)
+	slices.Sort(names)
+	names = slices.Compact(names)
+	return fmt.Errorf("page pagination matches more than one query parameter (%s); set cursor_param explicitly", strings.Join(names, ", "))
 }
 
 func cursorResponseLeaf(path string) (string, bool) {
