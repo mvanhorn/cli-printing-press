@@ -40,7 +40,7 @@ func TestGenerateStoreTrigramFTS_EmittedCJKSearchPasses(t *testing.T) {
 			_, outputDir := generateLearnStore(t, name, enabled)
 			runGoCommandRequired(t, outputDir, "test", "-c", "-o", filepath.Join(t.TempDir(), "store.test"), "./internal/store/...")
 			runGoCommandRequired(t, outputDir, "test", "./internal/store",
-				"-run", "^(TestSearch_CJKSubstringAndASCII|TestSearch_LikeEscapesWildcards|TestSearch_LikeFallbackPreservesTokenBoundaries|TestMigrate_TokenizerRebuildsCJKSearch)$",
+				"-run", "^(TestSearch_CJKSubstringAndASCII|TestSearch_LikeEscapesWildcards|TestSearch_LikeFallbackPreservesTokenBoundaries|TestSearch_ShortQuerySkipsIDsAndRanksContent|TestMigrate_TokenizerRebuildsCJKSearch)$",
 				"-count=1")
 		})
 	}
