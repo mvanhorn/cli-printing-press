@@ -1222,6 +1222,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if isDryRunResponseForClient(c, data) {
 			return data, nil
 		}
+		rememberListPage(ctx, data, cursorLookupPath, hasMoreField, paginationType, cursorParam, limitParam, clean, path)
 		emitTruncationWarning(ctx, data, cursorLookupPath, hasMoreField, paginationType, cursorParam)
 		return data, nil
 	}
@@ -1258,6 +1259,7 @@ func paginatedGet(ctx context.Context, c interface {
 	reportedTotal := 0
 	page := 0
 	omitCompleteEvent := false
+	var lastPage map[string]json.RawMessage
 	for {
 		page++
 		if humanFriendly {
@@ -1300,6 +1302,7 @@ func paginatedGet(ctx context.Context, c interface {
 			// Response is an object - look for array inside
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
+				lastPage = obj
 				itemCount := 0
 				nextCursorToken := ""
 				field, preserve := paginatedCollectionEnvelopeField(obj, path)
@@ -1406,14 +1409,8 @@ func paginatedGet(ctx context.Context, c interface {
 					}
 					if more {
 						nextPageSize := pageSize
-						if nextPageSize <= 0 && paginationType == "offset" {
-							nextPageSize = itemCount
-							if nextPageSize <= 0 {
-								// A server can truthfully report more data after an
-								// empty page. Advance by one so --all does not stall
-								// forever when no page size has been observed yet.
-								nextPageSize = 1
-							}
+						if paginationType == "offset" {
+							nextPageSize = offsetAdvancePageSize(pageSize, itemCount)
 						}
 						if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, nextPageSize); ok {
 							if page >= paginatedGetMaxPages {
@@ -1455,6 +1452,12 @@ func paginatedGet(ctx context.Context, c interface {
 
 	if fetchAll && page == 1 && nextCursorPath == "" && !foundCursorField && hasMoreField == "" && paginationType != "offset" && paginationType != "page" {
 		emitMissingPaginationSignalWarning(ctx)
+	}
+	// An empty page request slot cannot follow a next URL. Completing here
+	// would report one page as the full result.
+	if !omitCompleteEvent && paginationType == "page" && strings.TrimSpace(cursorParam) == "" && pageWalkBlocked(lastPage, len(allItems)) {
+		emitMissingPaginationCursorWarning(ctx, pageWalkBlockedCursorPath(lastPage))
+		omitCompleteEvent = true
 	}
 	if !omitCompleteEvent {
 		if humanFriendly {
@@ -1609,10 +1612,53 @@ func nextClientSidePaginationCursor(params map[string]string, cursorParam, pagin
 	}
 }
 
+// offsetAdvancePageSize is the step a single-page resume cursor and --all
+// share when the server, not the request, chooses the offset page length.
+func offsetAdvancePageSize(pageSize, itemCount int) int {
+	if pageSize > 0 {
+		return pageSize
+	}
+	if itemCount > 0 {
+		return itemCount
+	}
+	// A server can truthfully report more data after an empty page.
+	// Advance by one so the next offset does not stay put.
+	return 1
+}
+
+func fetchedPageItemCount(obj map[string]json.RawMessage, requestPath string) int {
+	field, preserve := paginatedCollectionEnvelopeField(obj, requestPath)
+	nested, ok := extractPaginatedItems(obj, requestPath)
+	if !ok && preserve {
+		ok = json.Unmarshal(obj[field], &nested) == nil
+	}
+	if !ok {
+		return 0
+	}
+	return len(nested)
+}
+
 // Silent page-1 truncation is the worst-possible mode for agents,
 // who otherwise compute totals against an incomplete set without
 // passing --all.
 func emitTruncationWarning(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam string) {
+	if slot, ok := listPageSlotFrom(ctx); ok && slot.Set && slot.Meta.HasMore && slot.Meta.NextCursor != "" {
+		platform.MarkContextTruncated(ctx, platform.TruncationReason{Kind: "page_limit", Configured: 1, Observed: 1, MoreAvailable: true})
+		hint := "pass --all to fetch every page"
+		if slot.Flag != "" {
+			hint = fmt.Sprintf("pass --all to fetch every page, or %s <meta.next_cursor> for the next page", slot.Flag)
+		}
+		if humanFriendly {
+			if slot.Flag != "" {
+				fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page, or %s <meta.next_cursor> for the next page.\n", slot.Flag)
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page.\n")
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "{\"event\":\"truncated\",\"hint\":%s}\n", strconv.Quote(hint))
+		}
+		return
+	}
 	if nextCursorPath == "" && hasMoreField == "" {
 		return
 	}
@@ -1699,6 +1745,274 @@ func paginatedItemsEqual(previous, current []json.RawMessage) bool {
 		}
 	}
 	return true
+}
+
+type listPageSlot struct {
+	Flag string
+	Meta listPageFields
+	Set  bool
+}
+
+type listPageFields struct {
+	NextCursor string
+	HasMore    bool
+	Count      int
+	CountSet   bool
+}
+
+type listPageSlotKey struct{}
+
+func listPageContext(ctx context.Context, flag string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := listPageSlotFrom(ctx); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, listPageSlotKey{}, &listPageSlot{Flag: strings.TrimSpace(flag)})
+}
+
+func listPageSlotFrom(ctx context.Context) (*listPageSlot, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	slot, ok := ctx.Value(listPageSlotKey{}).(*listPageSlot)
+	return slot, ok && slot != nil
+}
+
+func rememberListPage(ctx context.Context, data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) {
+	slot, ok := listPageSlotFrom(ctx)
+	if !ok {
+		return
+	}
+	fields, ok := listPageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
+	if !ok {
+		return
+	}
+	slot.Meta = fields
+	slot.Set = true
+}
+
+func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (listPageFields, bool) {
+	var items []json.RawMessage
+	if json.Unmarshal(data, &items) == nil {
+		return listPageFields{}, true
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return listPageFields{}, false
+	}
+	fields := listPageFields{}
+	if n, ok := responseCollectionCount(obj); ok {
+		fields.Count = n
+		fields.CountSet = true
+	}
+	explicitNoMore := false
+	explicitMore := false
+	if nextCursorPath != "" {
+		raw, present := rawAtPath(obj, nextCursorPath)
+		if (!present || rawJSONNull(raw)) && hasMoreFieldIsNextLink(nextCursorPath) {
+			explicitNoMore = true
+		}
+	}
+	next := ""
+	if !explicitNoMore {
+		next = resolvePaginatedNextCursor(obj, nextCursorPath, cursorParam)
+	}
+	if hasMoreField != "" {
+		raw, present := rawAtPath(obj, hasMoreField)
+		reading := readHasMoreField(raw, present, cursorParam)
+		switch {
+		case !present || rawJSONNull(raw):
+			if hasMoreFieldIsNextLink(hasMoreField) {
+				explicitNoMore = true
+				next = ""
+			}
+		case reading.nonBool && !reading.more:
+			explicitNoMore = true
+			next = ""
+		case reading.nonBool && reading.more:
+			explicitMore = true
+			if next == "" {
+				next = reading.nextCursor
+			}
+		default:
+			var more bool
+			if json.Unmarshal(raw, &more) == nil {
+				if more {
+					explicitMore = true
+				} else {
+					explicitNoMore = true
+					next = ""
+				}
+			}
+		}
+	}
+	if next == "" && !explicitNoMore && (explicitMore || topLevelNextIsFollowable(obj)) {
+		pageSize := 0
+		if limitParam != "" && params != nil {
+			if n, err := strconv.Atoi(params[limitParam]); err == nil && n > 0 {
+				pageSize = n
+			}
+		}
+		if explicitMore && paginationType == "offset" {
+			pageSize = offsetAdvancePageSize(pageSize, fetchedPageItemCount(obj, requestPath))
+		}
+		if advanced, ok := nextClientSidePaginationCursor(params, cursorParam, paginationType, pageSize); ok {
+			next = advanced
+		}
+	}
+	if explicitNoMore {
+		next = ""
+	}
+	fields.NextCursor = next
+	fields.HasMore = next != ""
+	return fields, true
+}
+
+func responseCollectionCount(obj map[string]json.RawMessage) (int, bool) {
+	if obj == nil {
+		return 0, false
+	}
+	if raw, ok := obj["count"]; ok {
+		if n, ok := jsonNonNegativeInt(raw); ok {
+			return n, true
+		}
+	}
+	if n := reportedCollectionTotal(obj); n > 0 {
+		return n, true
+	}
+	return 0, false
+}
+
+func jsonNonNegativeInt(raw json.RawMessage) (int, bool) {
+	var n json.Number
+	if json.Unmarshal(raw, &n) != nil {
+		return 0, false
+	}
+	if v, err := n.Int64(); err == nil && v >= 0 {
+		return int(v), true
+	}
+	if v, err := n.Float64(); err == nil && v >= 0 && v == float64(int64(v)) {
+		return int(v), true
+	}
+	return 0, false
+}
+
+func pageWalkBlocked(obj map[string]json.RawMessage, fetched int) bool {
+	if len(obj) == 0 {
+		return false
+	}
+	if topLevelNextIsFollowable(obj) {
+		return true
+	}
+	if topLevelNextIsNull(obj) {
+		return false
+	}
+	if n, ok := responseCollectionCount(obj); ok && n > fetched {
+		return true
+	}
+	return false
+}
+
+func pageWalkBlockedCursorPath(obj map[string]json.RawMessage) string {
+	if obj == nil {
+		return ""
+	}
+	if raw, ok := obj["next"]; ok && !rawJSONNull(raw) {
+		return "next"
+	}
+	if raw, ok := obj["next_url"]; ok && !rawJSONNull(raw) {
+		return "next_url"
+	}
+	return ""
+}
+
+func topLevelNextIsFollowable(obj map[string]json.RawMessage) bool {
+	if obj == nil {
+		return false
+	}
+	for _, key := range []string{"next", "next_url"} {
+		raw, ok := obj[key]
+		if !ok || rawJSONNull(raw) {
+			continue
+		}
+		var nextURL string
+		if json.Unmarshal(raw, &nextURL) != nil || nextURL == "" {
+			continue
+		}
+		if isFollowableNextURL(nextURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func topLevelNextIsNull(obj map[string]json.RawMessage) bool {
+	if obj == nil {
+		return false
+	}
+	for _, key := range []string{"next", "next_url"} {
+		raw, ok := obj[key]
+		if ok && rawJSONNull(raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyListPageMeta(ctx context.Context, data json.RawMessage) json.RawMessage {
+	slot, ok := listPageSlotFrom(ctx)
+	if !ok || !slot.Set {
+		return data
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(data, &envelope) != nil {
+		return data
+	}
+	rawMeta, ok := envelope["meta"]
+	if !ok {
+		return data
+	}
+	var meta map[string]any
+	if json.Unmarshal(rawMeta, &meta) != nil || meta == nil {
+		return data
+	}
+	writeListPageMeta(meta, slot)
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return data
+	}
+	envelope["meta"] = encoded
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+func applyListPageMetaMap(ctx context.Context, meta map[string]any) {
+	slot, ok := listPageSlotFrom(ctx)
+	if !ok || !slot.Set || meta == nil {
+		return
+	}
+	writeListPageMeta(meta, slot)
+}
+
+func writeListPageMeta(meta map[string]any, slot *listPageSlot) {
+	meta["has_more"] = slot.Meta.HasMore && slot.Meta.NextCursor != ""
+	if slot.Meta.HasMore && slot.Meta.NextCursor != "" {
+		meta["next_cursor"] = slot.Meta.NextCursor
+		if slot.Flag != "" {
+			meta["next_cursor_flag"] = slot.Flag
+		}
+	} else {
+		delete(meta, "next_cursor")
+		delete(meta, "next_cursor_flag")
+	}
+	if slot.Meta.CountSet {
+		meta["count"] = slot.Meta.Count
+	}
 }
 
 func emitMissingPaginationCursorWarning(ctx context.Context, nextCursorPath string) {

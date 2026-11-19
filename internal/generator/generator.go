@@ -288,6 +288,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"paramPresenceExpr":                   paramPresenceExpr,
 		"endpointArgsExpr":                    endpointArgsExpr,
 		"queryParamFlagNamesLiteral":          queryParamFlagNamesLiteral,
+		"paginationCursorFlag":                paginationCursorFlag,
 		"endpointHasHeaderParams":             endpointHasHeaderParams,
 		"positionalArgs":                      positionalArgs,
 		"configTag":                           configTag,
@@ -9744,6 +9745,27 @@ func queryParamFlagNamesLiteral(endpoint spec.Endpoint) string {
 	}
 	b.WriteByte('}')
 	return b.String()
+}
+
+func paginationCursorFlag(endpoint spec.Endpoint) string {
+	if endpoint.Pagination == nil {
+		return ""
+	}
+	want := strings.TrimSpace(endpoint.Pagination.CursorParam)
+	if want == "" {
+		return ""
+	}
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam || paramIsHeader(p) || isArrayQueryParam(p) || isDeepObjectQueryParam(p) {
+			continue
+		}
+		if p.WireName() == want || strings.TrimSpace(p.Name) == want {
+			if flag := publicFlagName(p); flag != "" {
+				return "--" + flag
+			}
+		}
+	}
+	return ""
 }
 
 func endpointHasHeaderParams(endpoint spec.Endpoint) bool {

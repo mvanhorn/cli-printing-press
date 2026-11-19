@@ -92,9 +92,9 @@ func TestGeneratedPaginatedCommandsEmitResponsePath(t *testing.T) {
 	noStoreGen.VisionSet = VisionTemplateSet{MCP: true}
 	require.NoError(t, noStoreGen.Generate())
 	noStorePromotedSrc := readGeneratedFile(t, noStoreOutputDir, "internal", "cli", "promoted_items.go")
-	assert.Contains(t, noStorePromotedSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path`)
+	assert.Contains(t, noStorePromotedSrc, `paginatedGetWithResponsePath(ctx, c, path`)
 	noStoreEndpointSrc := readGeneratedFile(t, noStoreOutputDir, "internal", "cli", "catalog_lookup.go")
-	assert.Contains(t, noStoreEndpointSrc, `paginatedGetWithResponsePath(cmd.Context(), c, path`)
+	assert.Contains(t, noStoreEndpointSrc, `paginatedGetWithResponsePath(ctx, c, path`)
 	requireGeneratedCompiles(t, noStoreOutputDir)
 
 	behaviorTest := `package cli

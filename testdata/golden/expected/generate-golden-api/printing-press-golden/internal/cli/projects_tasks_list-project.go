@@ -28,6 +28,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 		},
 		Annotations: map[string]string{"pp:endpoint": "tasks.list-project", "pp:method": "GET", "pp:path": "/projects/{projectId}/tasks", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := listPageContext(cmd.Context(), "--cursor")
 			if len(args) == 0 {
 				// A missing required positional is a usage error in every output
 				// mode (matches command_promoted.go.tmpl). Machine callers
@@ -71,7 +72,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				headerOverrides["X-Api-Version"] = formatCLIParamValue(flagXApiVersion)
 			}
 
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "live", "tasks", path, retainCLIQueryParams(cmd, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(ctx, c, flags, "live", "tasks", path, retainCLIQueryParams(cmd, map[string]string{
 				"priority": formatCLIParamValue(flagPriority),
 				"limit":    formatCLIParamValue(flagLimit),
 				"cursor":   formatCLIParamValue(flagCursor),
@@ -108,6 +109,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
+				wrapped = applyListPageMeta(ctx, wrapped)
 				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
@@ -134,7 +136,9 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 			if flags.csv || flags.plain {
 				formatData = outputData
 			}
-			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, map[string]bool{"due_at": true, "id": true, "priority": true, "project_id": true, "title": true})
+			liveMeta := map[string]any{"source": "live"}
+			applyListPageMetaMap(ctx, liveMeta)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, liveMeta, map[string]bool{"due_at": true, "id": true, "priority": true, "project_id": true, "title": true})
 		},
 	}
 	cmd.Flags().StringVar(&flagXApiVersion, "x-api-version", "2026-04-01", "Required API version header.")

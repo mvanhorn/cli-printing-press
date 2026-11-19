@@ -82,6 +82,9 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Args: {{endpointArgsExpr .Endpoint}},
 		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointHasRequiredInput .Endpoint}}, "pp:requires-input": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if $happyArgs}}, "pp:happy-args": {{printf "%q" $happyArgs}}{{end}}{{if .Endpoint.HappyStdin}}, "pp:happy-stdin": {{printf "%q" .Endpoint.HappyStdin}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}{{if .Endpoint.Deprecated}}, "pp:deprecated": "true"{{end}}{{if $isRaw}}, "mcp:read-flags": "file"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
+{{- if $supportsAllPagination}}
+			ctx := listPageContext(cmd.Context(), {{printf "%q" (paginationCursorFlag .Endpoint)}})
+{{- end}}
 {{- if endpointHasRequiredInput .Endpoint}}
 			// Bare invocation of a command with a required flag/body prints help
 			// instead of pflag's terse "required flag not set" error. Optional-
@@ -269,7 +272,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- if .HasStore}}
-			{{if $skipLiveJSONGuard}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", {{printf "%q" .ResourceName}}, path, retainCLIQueryParams(cmd, map[string]string{
+			{{if $skipLiveJSONGuard}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(ctx, c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", {{printf "%q" .ResourceName}}, path, retainCLIQueryParams(cmd, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -287,7 +290,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
 			}
 {{- end}}
-			data, err := paginatedGetWithResponsePath(cmd.Context(), c, path, retainCLIQueryParams(cmd, map[string]string{
+			data, err := paginatedGetWithResponsePath(ctx, c, path, retainCLIQueryParams(cmd, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -701,6 +704,9 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
+{{- if $supportsAllPagination}}
+				wrapped = applyListPageMeta(ctx, wrapped)
+{{- end}}
 				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
@@ -748,7 +754,13 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if flags.csv || flags.plain {
 				formatData = outputData
 			}
+{{- if $supportsAllPagination}}
+			liveMeta := map[string]any{"source": "live"}
+			applyListPageMetaMap(ctx, liveMeta)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, liveMeta, {{$documentedFields}})
+{{- else}}
 			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, {{$documentedFields}})
+{{- end}}
 {{- end}}
 		},
 	}
