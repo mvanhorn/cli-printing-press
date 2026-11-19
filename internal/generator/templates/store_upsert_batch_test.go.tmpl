@@ -1366,13 +1366,19 @@ func TestSearch_ShortQuerySkipsIDsAndRanksContent(t *testing.T) {
 			t.Fatalf("ftsLikeRankExpr(nil) = %q, %#v", rank, rankArgs)
 		}
 		clause, args = ftsLikeClause("f", []string{"zz", "a_"})
-		if strings.Contains(clause, ".id ") || strings.Contains(clause, ".id LIKE") {
+		if strings.Contains(clause, ".id ") || strings.Contains(clause, ".id LIKE") || strings.Contains(clause, `"id"`) {
 			t.Fatalf("LIKE clause matches id: %s", clause)
+		}
+		if !strings.Contains(clause, `"f"."content"`) {
+			t.Fatalf("LIKE clause must quote the content column: %s", clause)
 		}
 		if strings.Count(clause, "?") != len(args) {
 			t.Fatalf("LIKE clause placeholders %d, args %d (%s)", strings.Count(clause, "?"), len(args), clause)
 		}
 		rank, rankArgs = ftsLikeRankExpr("f", []string{"zz", "a_"})
+		if !strings.Contains(rank, `"resources_fts"`) || !strings.Contains(rank, `"content"`) || !strings.Contains(rank, `"f"."content"`) {
+			t.Fatalf("rank SQL must quote identifiers: %s", rank)
+		}
 		if strings.Count(rank, "?") != len(rankArgs) {
 			t.Fatalf("rank placeholders %d, args %d", strings.Count(rank, "?"), len(rankArgs))
 		}

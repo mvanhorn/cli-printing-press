@@ -1735,7 +1735,7 @@ func (s *Store) SearchContext(ctx context.Context, query string, limit int, reso
 		}
 		// f.rank is NULL without MATCH. Negated bm25 sorts the same
 		// direction as ORDER BY f.rank; type and id make ties stable.
-		q += ` ORDER BY ` + rank + `, r.resource_type, r.id LIMIT ?`
+		q += ` ORDER BY ` + rank + `, ` + quoteSQLQual("r", "resource_type") + `, ` + quoteSQLQual("r", "id") + ` LIMIT ?`
 		args = append(args, rankArgs...)
 		args = append(args, limit)
 	} else {
@@ -1884,7 +1884,7 @@ func ftsLikeClause(alias string, tokens []string) (string, []any) {
 	}
 	parts := make([]string, 0, len(tokens))
 	args := make([]any, 0, len(tokens))
-	contentCol := alias + ".content"
+	contentCol := quoteSQLQual(alias, "content")
 	for _, token := range tokens {
 		pattern := "%" + escapeLikePattern(token) + "%"
 		parts = append(parts, contentCol+" LIKE ? ESCAPE '\\'")
@@ -1901,7 +1901,7 @@ func ftsLikeRankExpr(alias string, tokens []string) (string, []any) {
 	if len(tokens) == 0 {
 		return "", nil
 	}
-	content := alias + ".content"
+	content := quoteSQLQual(alias, "content")
 	terms := make([]string, 0, len(tokens))
 	args := make([]any, 0, len(tokens)*6)
 	for _, token := range tokens {
@@ -1913,10 +1913,22 @@ func ftsLikeRankExpr(alias string, tokens []string) (string, []any) {
 }
 
 func ftsLikeBM25TermSQL(content string) string {
+	table := quoteSQLIdent("resources_fts")
+	col := quoteSQLIdent("content")
 	tf := "(CAST((length(lower(" + content + ")) - length(replace(lower(" + content + "), lower(?), ''))) AS REAL) / length(?))"
-	idf := "MAX(1e-6, ln(((SELECT COUNT(*) FROM resources_fts) - (SELECT COUNT(*) FROM resources_fts WHERE content LIKE ? ESCAPE '\\') + 0.5) / ((SELECT COUNT(*) FROM resources_fts WHERE content LIKE ? ESCAPE '\\') + 0.5)))"
-	norm := "(0.25 + 0.75 * CAST(length(" + content + ") AS REAL) / NULLIF((SELECT AVG(length(content)) FROM resources_fts), 0))"
+	idf := "MAX(1e-6, ln(((SELECT COUNT(*) FROM " + table + ") - (SELECT COUNT(*) FROM " + table + " WHERE " + col + " LIKE ? ESCAPE '\\') + 0.5) / ((SELECT COUNT(*) FROM " + table + " WHERE " + col + " LIKE ? ESCAPE '\\') + 0.5)))"
+	norm := "(0.25 + 0.75 * CAST(length(" + content + ") AS REAL) / NULLIF((SELECT AVG(length(" + col + ")) FROM " + table + "), 0))"
 	return idf + " * ((" + tf + " * 2.2) / (" + tf + " + 1.2 * " + norm + "))"
+}
+
+// quoteSQLIdent double-quotes a fixed SQL identifier. Emitted SQL does not
+// rely on a keyword allowlist.
+func quoteSQLIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func quoteSQLQual(qualifier, name string) string {
+	return quoteSQLIdent(qualifier) + "." + quoteSQLIdent(name)
 }
 
 // A record filed under its own identifier often carries no id field inside the
