@@ -5,13 +5,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/store"
 )
 
@@ -42,13 +45,20 @@ Null or missing --group-by values are JSON null. Table output labels them (none)
 			if dbPath == "" {
 				dbPath = defaultDBPath("printing-press-golden-pp-cli")
 			}
+			flags := analyticsOutputFlags(cmd, flags)
 
-			db, err := store.OpenWithContext(cmd.Context(), dbPath)
+			db, err := openAnalyticsStore(cmd.Context(), dbPath)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun 'printing-press-golden-pp-cli sync' first.", err)
+				return err
 			}
 			defer db.Close()
 			maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)
+
+			if resourceType != "" {
+				if err := validateAnalyticsResourceType(db, resourceType); err != nil {
+					return err
+				}
+			}
 
 			if resourceType == "" {
 				// Show summary of all resource types
@@ -108,6 +118,148 @@ Null or missing --group-by values are JSON null. Table output labels them (none)
 	cmd.Flags().IntVar(&limit, "limit", 25, "Max groups to show")
 
 	return cmd
+}
+
+func analyticsOutputFlags(cmd *cobra.Command, flags *rootFlags) *rootFlags {
+	if flags == nil || !cliutil.IsMCPChildEnv() || analyticsOutputExplicit(cmd) {
+		return flags
+	}
+	copied := *flags
+	copied.agent = true
+	copied.asJSON = true
+	copied.compact = true
+	return &copied
+}
+
+func analyticsOutputExplicit(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	for _, name := range []string{"agent", "json", "csv", "compact", "quiet", "plain", "select"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil && flag.Changed {
+			return true
+		}
+	}
+	return false
+}
+
+func openAnalyticsStore(ctx context.Context, dbPath string) (*store.Store, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, analyticsMissingStoreError()
+		}
+		return nil, fmt.Errorf("opening local database: %w", err)
+	}
+	db, err := store.OpenReadOnlyContext(ctx, dbPath)
+	if err != nil {
+		if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+			return nil, analyticsMissingStoreError()
+		}
+		return nil, fmt.Errorf("opening local database: %w\nRun 'printing-press-golden-pp-cli sync' first.", err)
+	}
+	return db, nil
+}
+
+func analyticsMissingStoreError() error {
+	return fmt.Errorf("local store has not been synced yet. Run '%s' before trusting local results", "printing-press-golden-pp-cli sync")
+}
+
+func validateAnalyticsResourceType(db *store.Store, resourceType string) error {
+	exists, err := analyticsResourceTypeExists(db, resourceType)
+	if err != nil {
+		return fmt.Errorf("listing resource types: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	known, err := analyticsKnownResourceTypes(db)
+	if err != nil {
+		return fmt.Errorf("listing resource types: %w", err)
+	}
+	listed := "none"
+	if len(known) > 0 {
+		listed = strings.Join(known, ", ")
+	}
+	return usageErr(fmt.Errorf("unknown resource type %q; valid: %s", resourceType, listed))
+}
+
+func analyticsResourceTypeExists(db *store.Store, resourceType string) (bool, error) {
+	var found int
+	if err := db.DB().QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM resources WHERE resource_type = ?)`,
+		resourceType,
+	).Scan(&found); err != nil {
+		return false, err
+	}
+	if found > 0 {
+		return true, nil
+	}
+	hasSyncState, err := analyticsHasTable(db, "sync_state")
+	if err != nil || !hasSyncState {
+		return false, err
+	}
+	if err := db.DB().QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM sync_state WHERE resource_type = ?)`,
+		resourceType,
+	).Scan(&found); err != nil {
+		return false, err
+	}
+	return found > 0, nil
+}
+
+func analyticsHasTable(db *store.Store, name string) (bool, error) {
+	var tables int
+	if err := db.DB().QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		name,
+	).Scan(&tables); err != nil {
+		return false, err
+	}
+	return tables > 0, nil
+}
+
+func analyticsKnownResourceTypes(db *store.Store) ([]string, error) {
+	status, err := db.Status()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(status))
+	for name := range status {
+		if name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	if err := analyticsAddSyncStateTypes(db, seen); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func analyticsAddSyncStateTypes(db *store.Store, seen map[string]struct{}) error {
+	hasSyncState, err := analyticsHasTable(db, "sync_state")
+	if err != nil || !hasSyncState {
+		return err
+	}
+	rows, err := db.DB().Query(`SELECT resource_type FROM sync_state`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	return rows.Err()
 }
 
 func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limit int, flags *rootFlags) error {
