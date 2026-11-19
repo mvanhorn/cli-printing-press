@@ -261,7 +261,7 @@ func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
 					Path:        "/uncursored",
 					Description: "List uncursored pages",
 					Params:      []spec.Param{{Name: "limit", Type: "integer", Default: 1}},
-					Pagination:  &spec.Pagination{Type: "page", LimitParam: "limit"},
+					Pagination:  &spec.Pagination{Type: "offset", LimitParam: "limit"},
 					Response:    spec.ResponseDef{Type: "array", Item: "Uncursored"},
 				},
 			},

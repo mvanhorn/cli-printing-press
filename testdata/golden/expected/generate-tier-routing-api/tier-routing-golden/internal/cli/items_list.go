@@ -22,13 +22,14 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "GET", "pp:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := listPageContext(cmd.Context(), "")
 			path := "/items"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 			c = c.WithTier("free")
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "items", path, retainCLIQueryParams(cmd, map[string]string{}, map[string][]string{}, "cursor", "cursor"), nil, flagAll, "cursor", "cursor", "limit", 0, "", "", "", cmd.ErrOrStderr())
+			data, prov, err := resolvePaginatedReadWithStrategy(ctx, c, flags, "auto", "items", path, retainCLIQueryParams(cmd, map[string]string{}, map[string][]string{}, "cursor", "cursor"), nil, flagAll, "cursor", "cursor", "limit", 0, "", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(cmd.OutOrStdout(), err, flags)
 			}
@@ -61,6 +62,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 				if wrapErr != nil {
 					return wrapErr
 				}
+				wrapped = applyListPageMeta(ctx, wrapped)
 				wrapped, wrapErr = wrapPlatformStructuredOutput(wrapped, flags, "results", true)
 				if wrapErr != nil {
 					return wrapErr
@@ -87,7 +89,9 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			if flags.csv || flags.plain {
 				formatData = outputData
 			}
-			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, map[string]any{"source": "live"}, nil)
+			liveMeta := map[string]any{"source": "live"}
+			applyListPageMetaMap(ctx, liveMeta)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), formatData, flags, liveMeta, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")

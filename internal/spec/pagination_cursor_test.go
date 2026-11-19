@@ -134,11 +134,88 @@ func TestResolveCursorRequestParams(t *testing.T) {
 			},
 		},
 		{
-			name: "page pagination is unchanged",
-			pag:  Pagination{Type: "page", NextCursorPath: "page"},
+			name: "page pagination fills the page param",
+			pag:  Pagination{Type: "page", NextCursorPath: "next"},
 			params: []Param{
-				{Name: "page", Type: "string"},
+				{Name: "limit", Type: "integer"},
+				{Name: "page", Type: "integer"},
 			},
+			want: "page",
+		},
+		{
+			name: "page pagination without a response path",
+			pag:  Pagination{Type: "page", LimitParam: "limit"},
+			params: []Param{
+				{Name: "limit", Type: "integer"},
+				{Name: "pageNumber", Type: "integer"},
+			},
+			want: "pageNumber",
+		},
+		{
+			name: "page_number param",
+			pag:  Pagination{Type: " Page ", LimitParam: "per_page"},
+			params: []Param{
+				{Name: "page_number", Type: "integer"},
+			},
+			want: "page_number",
+		},
+		{
+			name: "json:api page number wire",
+			pag:  Pagination{Type: "page"},
+			params: []Param{
+				{Name: "page[number]", Type: "integer"},
+			},
+			want: "page[number]",
+		},
+		{
+			name: "page wire name wins over flag name",
+			pag:  Pagination{Type: "page"},
+			params: []Param{
+				{Name: "pageNumber", URLName: "$page", Type: "integer"},
+			},
+			want: "$page",
+		},
+		{
+			name: "explicit page cursor param stays",
+			pag:  Pagination{Type: "page", CursorParam: "p"},
+			params: []Param{
+				{Name: "page", Type: "integer"},
+				{Name: "p", Type: "integer"},
+			},
+			want: "p",
+		},
+		{
+			name: "whitespace page cursor param is empty",
+			pag:  Pagination{Type: "page", CursorParam: "   "},
+			params: []Param{
+				{Name: "page", Type: "integer"},
+			},
+			want: "page",
+		},
+		{
+			name:    "page pagination without a page param",
+			pag:     Pagination{Type: "page", LimitParam: "limit"},
+			params:  []Param{{Name: "limit", Type: "integer"}},
+			wantErr: "no request parameter",
+		},
+		{
+			name:    "page header is not a query param",
+			pag:     Pagination{Type: "page"},
+			params:  []Param{{Name: "page", In: "header", Type: "integer"}},
+			wantErr: "no request parameter",
+		},
+		{
+			name:    "page path param is not a query param",
+			pag:     Pagination{Type: "page"},
+			params:  []Param{{Name: "page", PathParam: true, Type: "integer"}},
+			wantErr: "no request parameter",
+		},
+		{
+			name:     "ambiguous page params",
+			pag:      Pagination{Type: "page"},
+			params:   []Param{{Name: "page", Type: "integer"}, {Name: "page_number", Type: "integer"}},
+			wantErr:  "page",
+			wantErr2: "page, page_number",
 		},
 		{
 			name: "id walk is unchanged",
@@ -486,6 +563,44 @@ func TestResolveCursorRequestParamsSubresource(t *testing.T) {
 	assert.Empty(t, bad.CursorParam)
 }
 
+func TestResolvePageRequestParamsDoesNotPartiallyFill(t *testing.T) {
+	t.Parallel()
+
+	good := &Pagination{Type: "cursor", NextCursorPath: "cursor"}
+	missing := &Pagination{Type: "page", LimitParam: "limit"}
+	ambiguous := &Pagination{Type: "page"}
+	spec := &APISpec{Resources: map[string]Resource{
+		"alpha": {Endpoints: map[string]Endpoint{
+			"list": {
+				Pagination: good,
+				Params:     []Param{{Name: "cursor", Type: "string"}},
+			},
+		}},
+		"photos": {Endpoints: map[string]Endpoint{
+			"list": {
+				Pagination: missing,
+				Params:     []Param{{Name: "limit", Type: "integer"}},
+			},
+		}},
+		"zeta": {Endpoints: map[string]Endpoint{
+			"list": {
+				Pagination: ambiguous,
+				Params:     []Param{{Name: "page", Type: "integer"}, {Name: "pageNumber", Type: "integer"}},
+			},
+		}},
+	}}
+
+	err := spec.ResolveCursorRequestParams()
+	require.EqualError(t, err, strings.Join([]string{
+		"page pagination is missing a request parameter:",
+		`resource "photos" endpoint "list": page pagination has no request parameter; set cursor_param to the page, page_number, pageNumber, or page[number] query parameter that sends the page number`,
+		`resource "zeta" endpoint "list": page pagination matches more than one query parameter (page, pageNumber); set cursor_param explicitly`,
+	}, "\n"))
+	assert.Empty(t, good.CursorParam)
+	assert.Empty(t, missing.CursorParam)
+	assert.Empty(t, ambiguous.CursorParam)
+}
+
 func TestResolveCursorRequestParamsDoesNotPartiallyFill(t *testing.T) {
 	t.Parallel()
 
@@ -551,6 +666,83 @@ resources:
 	assert.Equal(t, "offset", pag.CursorParam)
 	assert.Equal(t, "offset", pag.NextCursorPath)
 	assert.Equal(t, "cursor", pag.Type)
+}
+
+func TestParsePagePaginationFillsRequestParam(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := ParseBytes([]byte(`
+name: pagefill
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  widgets:
+    endpoints:
+      list:
+        method: GET
+        path: /widgets
+        params:
+          - name: page
+            type: integer
+          - name: limit
+            type: integer
+        pagination:
+          type: page
+          cursor_field: next
+          limit_param: limit
+`))
+	require.NoError(t, err)
+	pag := parsed.Resources["widgets"].Endpoints["list"].Pagination
+	require.NotNil(t, pag)
+	assert.Equal(t, "page", pag.CursorParam)
+	assert.Equal(t, "next", pag.NextCursorPath)
+	assert.Equal(t, "page", pag.Type)
+}
+
+func TestResolvePageRequestParamIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	pag := &Pagination{Type: "page", LimitParam: "limit"}
+	spec := &APISpec{Resources: map[string]Resource{
+		"widgets": {Endpoints: map[string]Endpoint{
+			"list": {
+				Pagination: pag,
+				Params:     []Param{{Name: "limit", Type: "integer"}, {Name: "page", Type: "integer"}},
+			},
+		}},
+	}}
+	require.NoError(t, spec.ResolveCursorRequestParams())
+	require.NoError(t, spec.ResolveCursorRequestParams())
+	assert.Equal(t, "page", pag.CursorParam)
+}
+
+func TestResolveCursorAndPageProblemsStayUnfilled(t *testing.T) {
+	t.Parallel()
+
+	cursorPag := &Pagination{Type: "cursor", NextCursorPath: "pageInfo.endCursor"}
+	pagePag := &Pagination{Type: "page", LimitParam: "limit"}
+	spec := &APISpec{Resources: map[string]Resource{
+		"nodes": {Endpoints: map[string]Endpoint{
+			"list": {
+				Pagination: cursorPag,
+				Params:     []Param{{Name: "after", Type: "string"}},
+			},
+		}},
+		"widgets": {Endpoints: map[string]Endpoint{
+			"list": {
+				Pagination: pagePag,
+				Params:     []Param{{Name: "limit", Type: "integer"}},
+			},
+		}},
+	}}
+	err := spec.ResolveCursorRequestParams()
+	require.ErrorContains(t, err, "cursor pagination is missing a request parameter:")
+	require.ErrorContains(t, err, "page pagination is missing a request parameter:")
+	require.ErrorContains(t, err, `resource "nodes" endpoint "list"`)
+	require.ErrorContains(t, err, `resource "widgets" endpoint "list"`)
+	assert.Empty(t, cursorPag.CursorParam)
+	assert.Empty(t, pagePag.CursorParam)
 }
 
 func TestParseOmittedPaginationTypeFillsRequestParam(t *testing.T) {
