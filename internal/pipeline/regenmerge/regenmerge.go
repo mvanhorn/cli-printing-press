@@ -44,10 +44,10 @@ const (
 	// VerdictTemplatedValueDrift marks a file whose decl-set matches fresh's
 	// and whose body-call-targets match (so body-drift didn't fire) but
 	// whose top-level decls render to different go/printer text. Catches
-	// literal-value drift (e.g., const authPrefix = "Bearer " → "Token ")
-	// and identifier-rename drift in selector positions (e.g., cfg.Bearer
-	// → cfg.Token) — the cases body-drift's call-target walker misses.
-	// Preserve published; surface for human review.
+	// literal-value drift (e.g., const authPrefix = "Bearer " → "Token "),
+	// identifier-rename drift in selector positions (e.g., cfg.Bearer
+	// → cfg.Token), and a const↔var (or other token) kind change for a
+	// name both trees declare. Preserve published; surface for human review.
 	VerdictTemplatedValueDrift Verdict = "TEMPLATED-VALUE-DRIFT"
 
 	// VerdictPublishedOnlyTemplated marks a file present only in published
