@@ -41,6 +41,9 @@ func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) b
 			basePath = candidate
 		}
 	}
+	if declKindConflict(pubPath, freshPath, basePath) {
+		return false
+	}
 	return overlayHandEditedDecls(pubPath, freshPath, basePath, destPath) == nil
 }
 
