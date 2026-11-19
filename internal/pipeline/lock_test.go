@@ -1141,6 +1141,55 @@ func TestPromoteWorkingCLI_ReleasesLockWhenStateSaveFails(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+func TestPromoteWorkingCLI_Phase5MatchesAfterStampedVersion(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "tmchow", "Trevin Chow")
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	writeGoFile(t, filepath.Join(workDir, "go.mod"), "module test-pp-cli\n\ngo 1.21\n")
+	writeGoFile(t, filepath.Join(workDir, "internal", "cli", "version.go"), runtimeVersionGo("0.0.0-dev"))
+	writeGoFile(t, filepath.Join(workDir, "internal", "cli", "root.go"), "package cli\n\nfunc root() {}\n")
+	require.NoError(t, WriteCLIManifest(workDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         "run-stamped-version",
+	}))
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	writeGoFile(t, filepath.Join(libDir, "internal", "cli", "version.go"), runtimeVersionGo("1.0.0"))
+
+	state := NewStateWithRun("test", workDir, "run-stamped-version", "test-scope")
+	writePhase5PassForState(t, state, "none")
+	before, err := CaptureSourceFingerprint(workDir)
+	require.NoError(t, err)
+
+	require.NoError(t, PromoteWorkingCLI("test-pp-cli", workDir, state))
+
+	stamped, err := os.ReadFile(filepath.Join(libDir, "internal", "cli", "version.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(stamped), `"1.0.0"`)
+	assert.NotContains(t, string(stamped), "0.0.0-dev")
+
+	after, err := CaptureSourceFingerprint(libDir)
+	require.NoError(t, err)
+	assert.Equal(t, before.Digest, after.Digest)
+
+	proofs := filepath.Join(libDir, ".manuscripts", state.RunID, "proofs")
+	manifest := CLIManifest{APIName: state.APIName, CLIName: "test-pp-cli", RunID: state.RunID, AuthType: "none"}
+	result := ValidatePhase5Gate(proofs, manifest, libDir)
+	require.True(t, result.Passed, result.Detail)
+
+	writeGoFile(t, filepath.Join(libDir, "internal", "cli", "root.go"), "package cli\n\nfunc root() { println(1) }\n")
+	result = ValidatePhase5Gate(proofs, manifest, libDir)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "internal/cli/root.go")
+	assert.NotContains(t, result.Detail, "internal/cli/version.go")
+}
+
 func TestPromoteWorkingCLI_RequiresPhase5GateForRunstatePromote(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

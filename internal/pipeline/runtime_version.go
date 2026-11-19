@@ -163,6 +163,10 @@ type versionDecl struct {
 	literal string
 	line    string
 	lineIdx int
+	// litStart and litEnd bound the string token in the original source,
+	// including its quotes.
+	litStart int
+	litEnd   int
 }
 
 func parseVersionDecl(path string) (versionDecl, error) {
@@ -212,10 +216,12 @@ func parseVersionDeclSource(filename string, data []byte) (versionDecl, error) {
 			return versionDecl{}, fmt.Errorf("%s var version line is out of range", filename)
 		}
 		return versionDecl{
-			present: true,
-			literal: lit.Value,
-			line:    lines[idx],
-			lineIdx: idx,
+			present:  true,
+			literal:  lit.Value,
+			line:     lines[idx],
+			lineIdx:  idx,
+			litStart: fset.Position(lit.Pos()).Offset,
+			litEnd:   fset.Position(lit.End()).Offset,
 		}, nil
 	}
 	return versionDecl{}, nil

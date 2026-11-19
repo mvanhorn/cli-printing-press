@@ -511,7 +511,10 @@ hollow with that reason. Stop and ask the operator to approve a new
 
 **Marker invalidation and sync.** The acceptance marker carries a source
 fingerprint; any `.go` edit after it was written makes `publish package` fail
-with "phase5 marker source fingerprint does not match". Re-run this live gate
+with "phase5 marker source fingerprint does not match". Replacing only the
+stamped `var version = "..."` string in `internal/cli/root.go`,
+`internal/cli/version.go`, or `cmd/<name>-pp-mcp/main.go` does not; any other
+edit in those files does. Re-run this live gate
 after every source change and write the marker to **both** copies: the embedded
 `$CLI_DIR/.manuscripts/<run>/proofs/` and the archived
 `$PRESS_MANUSCRIPTS/<api>/<run>/proofs/` (manuscript lookup is archive-first;
