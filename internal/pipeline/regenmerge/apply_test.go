@@ -432,6 +432,7 @@ func TestApplyKindChangeBesideOtherEdit(t *testing.T) {
 	baseSrc := header + "const MaxBytes = 60000\n\nconst Other = \"orig\"\n"
 	tests := []struct {
 		name   string
+		base   string
 		pub    string
 		fresh  string
 		want   []string
@@ -451,6 +452,14 @@ func TestApplyKindChangeBesideOtherEdit(t *testing.T) {
 			want:   []string{"var MaxBytes = 32000", "Other = \"kept\""},
 			absent: []string{"const MaxBytes", "\"fresh\""},
 		},
+		{
+			name:   "value edit on a template kind change stays published",
+			base:   header + "const MaxBytes = 60000\n",
+			pub:    header + "const MaxBytes = 32000\n",
+			fresh:  header + "var MaxBytes = 60000\n",
+			want:   []string{"const MaxBytes = 32000"},
+			absent: []string{"var MaxBytes"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -462,10 +471,14 @@ func TestApplyKindChangeBesideOtherEdit(t *testing.T) {
 				"go.mod":          gomod,
 				"internal/x/a.go": tc.fresh,
 			})
+			base := tc.base
+			if base == "" {
+				base = baseSrc
+			}
 			baseDir := filepath.Join(filepath.Dir(stagedPub), "base")
 			for rel, content := range map[string]string{
 				"go.mod":          gomod,
-				"internal/x/a.go": baseSrc,
+				"internal/x/a.go": base,
 			} {
 				full := filepath.Join(baseDir, rel)
 				require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))

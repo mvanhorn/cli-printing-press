@@ -742,9 +742,11 @@ func TestDeclKindConflict(t *testing.T) {
 	assert.True(t, declKindConflict(varVal, constVal, ""))
 	assert.True(t, declKindConflict(constVal, varVal, ""))
 	assert.False(t, declKindConflict(constVal, varVal, constVal),
-		"a token change that still matches the original emission is template evolution")
+		"a token change whose published text still matches the original emission is template evolution")
 	assert.True(t, declKindConflict(varVal, constVal, constVal),
 		"a published token that differs from the original emission still conflicts")
+	assert.True(t, declKindConflict(constOther, varVal, constVal),
+		"a value edit on the same name as a template kind change must not overlay")
 }
 
 func TestDeclKindConflictIgnoresBlankIdentifier(t *testing.T) {

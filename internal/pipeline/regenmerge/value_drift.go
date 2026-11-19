@@ -387,35 +387,43 @@ func freshTextForKindChange(pubKey string, freshDecls map[string]string) (string
 	return strings.Join(parts, "\n"), true
 }
 
-// declKindConflict reports whether a bare name the operator changed is
-// declared under different tokens in published and fresh. Overlay keys decls
-// by token plus names, so applying the published decl would keep the fresh
-// one and redeclare the name. A token change whose published text still
-// matches the original emission is template evolution; overlay can take fresh.
+// declKindConflict reports whether overlay would copy a published decl whose
+// token differs from the fresh decl of the same name. Overlay keys decls by
+// token plus names, so copying that published decl keeps the fresh one and
+// redeclares the name. A published decl whose text still matches the original
+// emission is not copied, so a template-only kind change can take fresh.
 func declKindConflict(pubPath, freshPath, basePath string) bool {
 	pubDecls := canonicalDeclTexts(pubPath)
 	freshDecls := canonicalDeclTexts(freshPath)
 	if pubDecls == nil || freshDecls == nil {
 		return false
 	}
-	var baseTok map[string]string
+	var baseDecls map[string]string
 	if basePath != "" {
-		if baseDecls := canonicalDeclTexts(basePath); baseDecls != nil {
-			baseTok = tokenByBareName(baseDecls)
-		}
+		baseDecls = canonicalDeclTexts(basePath)
 	}
 	freshTok := tokenByBareName(freshDecls)
-	for name, tok := range tokenByBareName(pubDecls) {
-		other, ok := freshTok[name]
-		if !ok || other == tok {
+	for key, pubText := range pubDecls {
+		tok, names, ok := splitDeclKey(key)
+		if !ok || !declTokenConflicts(tok, names, freshTok) {
 			continue
 		}
-		if baseTok != nil {
-			if base, ok := baseTok[name]; ok && base == tok {
-				continue
-			}
+		if baseDecls != nil && baseDecls[key] != "" && pubText == baseDecls[key] {
+			continue
 		}
 		return true
+	}
+	return false
+}
+
+func declTokenConflicts(tok string, names []string, freshTok map[string]string) bool {
+	for _, name := range names {
+		if !kindDeclName(name) {
+			continue
+		}
+		if other, ok := freshTok[name]; ok && other != tok {
+			return true
+		}
 	}
 	return false
 }
