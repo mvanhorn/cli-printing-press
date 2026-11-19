@@ -643,6 +643,41 @@ func TestValidatePhase5GateAcceptsStampedLiteralForNormalizedMarker(t *testing.T
 	assert.Contains(t, result.Detail, "internal/cli/added.go")
 }
 
+func TestCaptureSourceFingerprintIgnoresVersionLiteralBesideImports(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "sendfox-pp-mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"api_name":"sendfox","cli_name":"sendfox-pp-cli"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module sendfox-pp-cli\n\ngo 1.26\n"), 0o644))
+	writeGoFile(t, filepath.Join(dir, "internal", "cli", "version.go"), printedVersionGo("0.0.0-dev"))
+	writeGoFile(t, filepath.Join(dir, "cmd", "sendfox-pp-mcp", "main.go"), printedMCPVersionGo("0.0.0-dev"))
+
+	before, err := CaptureSourceFingerprint(dir)
+	require.NoError(t, err)
+	require.NotEqual(t, before.Digest, before.legacyDigest, "import canonicalization must not keep the version literal in the hash")
+
+	writeGoFile(t, filepath.Join(dir, "internal", "cli", "version.go"), printedVersionGo("1.2.3"))
+	writeGoFile(t, filepath.Join(dir, "cmd", "sendfox-pp-mcp", "main.go"), printedMCPVersionGo("1.2.3"))
+	after, err := CaptureSourceFingerprint(dir)
+	require.NoError(t, err)
+	assert.Equal(t, before.Digest, after.Digest)
+	assert.NotEqual(t, before.legacyDigest, after.legacyDigest)
+
+	proofs := t.TempDir()
+	manifest := CLIManifest{APIName: "sendfox", CLIName: "sendfox-pp-cli", RunID: "run-imports", AuthType: "none"}
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, phase5PassMarker(manifest, before.legacyDigest, before.legacyFiles))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"api_name":"sendfox","cli_name":"sendfox-pp-cli","run_id":"run-imports"}`), 0o644))
+	writeGoFile(t, filepath.Join(dir, "internal", "cli", "version.go"), printedVersionGo("0.0.0-dev"))
+	writeGoFile(t, filepath.Join(dir, "cmd", "sendfox-pp-mcp", "main.go"), printedMCPVersionGo("0.0.0-dev"))
+	result := ValidatePhase5Gate(proofs, manifest, dir)
+	require.True(t, result.Passed, result.Detail)
+
+	writeGoFile(t, filepath.Join(dir, "internal", "cli", "version.go"), strings.Replace(printedVersionGo("0.0.0-dev"), "fmt.Println(version)", "fmt.Println(version, 1)", 1))
+	drifted, err := CaptureSourceFingerprint(dir)
+	require.NoError(t, err)
+	assert.NotEqual(t, before.Digest, drifted.Digest)
+}
+
 func TestCaptureSourceFingerprintStableAcrossModuleRewriteAndVersionStamp(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
@@ -682,6 +717,14 @@ func runtimeVersionGo(lit string) string {
 
 func mcpVersionGo(lit string) string {
 	return "package main\n\nvar version = \"" + lit + "\"\n\nfunc main() { println(version) }\n"
+}
+
+func printedVersionGo(lit string) string {
+	return "package cli\n\nimport (\n\t\"fmt\"\n\n\t\"github.com/spf13/cobra\"\n)\n\n// version is the printed CLI's version, overridable at build time via ldflags.\nvar version = \"" + lit + "\"\n\nfunc newVersionCmd() {\n\tfmt.Println(version)\n\t_ = cobra.Command{}\n}\n"
+}
+
+func printedMCPVersionGo(lit string) string {
+	return "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\n// version is the printed MCP server's version, overridable at build time via ldflags.\nvar version = \"" + lit + "\"\n\nfunc main() { fmt.Fprintln(os.Stderr, version) }\n"
 }
 
 func phase5PassMarker(manifest CLIManifest, digest string, files map[string]string) Phase5GateMarker {

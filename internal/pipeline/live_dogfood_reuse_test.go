@@ -377,6 +377,19 @@ func TestLoadLiveHappyReuseAcceptsMarkerRecordedBeforeVersionNormalization(t *te
 	_, ok := reuse.runs["items list"]
 	assert.True(t, ok)
 
+	report := &LiveDogfoodReport{}
+	recordLiveHappyPathRuns(report, []liveDogfoodCommand{{
+		Path:        []string{"items", "list"},
+		Annotations: map[string]string{liveHappyPathAnnotation: "true"},
+	}}, resolveCtx{liveHappyReuse: reuse}, source)
+	require.Len(t, report.LiveHappyPathRuns, 1)
+	assert.True(t, report.LiveHappyPathRuns[0].Reused)
+	assert.Equal(t, source.Digest, report.LiveHappyPathRuns[0].SourceFingerprint)
+	assert.Empty(t, validatePhase5LiveHappyRuns(Phase5GateMarker{
+		SourceFingerprint: source.Digest,
+		LiveHappyPathRuns: report.LiveHappyPathRuns,
+	}))
+
 	edited := source
 	edited.legacyDigest = "not-the-tree"
 	edited.legacyFiles = map[string]string{"internal/cli/version.go": "stale"}

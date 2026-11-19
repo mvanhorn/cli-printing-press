@@ -94,13 +94,25 @@ func CaptureSourceFingerprint(root string) (SourceFingerprint, error) {
 		if err != nil {
 			return fmt.Errorf("read source file %q: %w", rel, err)
 		}
-		data, err = normalizeSourceFingerprintModulePath(rel, data, modulePath, modulePlaceholder)
+		// The version token has to be replaced while the file is still Go.
+		// Module-path normalization rewrites import blocks into non-Go text,
+		// and the version parser would then leave the literal in the hash.
+		// The legacy hash is that module-normalized original, which is what
+		// a marker recorded before the placeholder bound.
+		versionData := normalizeStampedRuntimeVersionLiteral(rel, data)
+		legacyData, err := normalizeSourceFingerprintModulePath(rel, data, modulePath, modulePlaceholder)
 		if err != nil {
 			return err
 		}
-		legacySum := sha256.Sum256(data)
-		data = normalizeStampedRuntimeVersionLiteral(rel, data)
-		digest := sha256.Sum256(data)
+		normalized := legacyData
+		if !bytes.Equal(versionData, data) {
+			normalized, err = normalizeSourceFingerprintModulePath(rel, versionData, modulePath, modulePlaceholder)
+			if err != nil {
+				return err
+			}
+		}
+		digest := sha256.Sum256(normalized)
+		legacySum := sha256.Sum256(legacyData)
 		files[rel] = hex.EncodeToString(digest[:])
 		legacyFiles[rel] = hex.EncodeToString(legacySum[:])
 		return nil

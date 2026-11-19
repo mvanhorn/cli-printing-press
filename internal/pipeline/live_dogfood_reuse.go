@@ -123,6 +123,10 @@ func recordLiveHappyPathRuns(report *LiveDogfoodReport, commands []liveDogfoodCo
 		name := strings.Join(command.Path, " ")
 		if run, recorded := ctx.reusedLiveHappyRun(command); recorded {
 			run.Reused = true
+			// The replacement marker binds source.Digest. A run accepted
+			// through the pre-placeholder digest has to be rewritten to it,
+			// or the next gate rejects the run as different source.
+			run.SourceFingerprint = source.Digest
 			report.LiveHappyPathRuns = append(report.LiveHappyPathRuns, run)
 			continue
 		}

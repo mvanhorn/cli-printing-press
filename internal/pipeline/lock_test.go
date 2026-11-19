@@ -1150,7 +1150,7 @@ func TestPromoteWorkingCLI_Phase5MatchesAfterStampedVersion(t *testing.T) {
 
 	workDir := filepath.Join(tmp, "working", "test-pp-cli")
 	writeGoFile(t, filepath.Join(workDir, "go.mod"), "module test-pp-cli\n\ngo 1.21\n")
-	writeGoFile(t, filepath.Join(workDir, "internal", "cli", "version.go"), runtimeVersionGo("0.0.0-dev"))
+	writeGoFile(t, filepath.Join(workDir, "internal", "cli", "version.go"), printedVersionGo("0.0.0-dev"))
 	writeGoFile(t, filepath.Join(workDir, "internal", "cli", "root.go"), "package cli\n\nfunc root() {}\n")
 	require.NoError(t, WriteCLIManifest(workDir, CLIManifest{
 		SchemaVersion: CurrentCLIManifestSchemaVersion,
