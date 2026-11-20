@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -29,7 +30,8 @@ func TestGeneratedAnalyticsReadOnlyContract(t *testing.T) {
 	require.NotContains(t, src, "channel_id")
 	require.Contains(t, src, "analyticsCompiledResourceTypes")
 
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "analytics_readonly_test.go"), []byte(analyticsReadOnlyRuntimeTest), 0o644))
+	runtimeTest := strings.ReplaceAll(analyticsReadOnlyRuntimeTest, "__BAKED_EXAMPLE_ARGS__", generatedAnalyticsExampleArgsLiteral(t, outputDir))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "analytics_readonly_test.go"), []byte(runtimeTest), 0o644))
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestAnalytics", "-count=1")
 }
@@ -319,7 +321,7 @@ func TestAnalyticsEmptyStoreStillHintsNotSynced(t *testing.T) {
 		t.Fatalf("empty store changed bytes or journal")
 	}
 
-	examples := analyticsHelpArgs(t)
+	examples := __BAKED_EXAMPLE_ARGS__
 	if len(examples) == 0 {
 		t.Fatalf("analytics help has no examples")
 	}
@@ -721,42 +723,6 @@ func decodeAnalyticsObject(t *testing.T, stdout string) map[string]any {
 		t.Fatalf("mcp results = %#v\n%s", payload["results"], stdout)
 	}
 	return results
-}
-
-func analyticsHelpArgs(t *testing.T) [][]string {
-	t.Helper()
-	root := RootCmd()
-	var buf strings.Builder
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"analytics", "--help"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("--help: %v\n%s", err, buf.String())
-	}
-	var in bool
-	var cmds [][]string
-	for _, line := range strings.Split(buf.String(), "\n") {
-		if strings.TrimSpace(line) == "Examples:" {
-			in = true
-			continue
-		}
-		if !in {
-			continue
-		}
-		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			break
-		}
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		fields := strings.Fields(trim)
-		if len(fields) < 2 || fields[1] != "analytics" {
-			t.Fatalf("example %q", trim)
-		}
-		cmds = append(cmds, fields[2:])
-	}
-	return cmds
 }
 
 func seedAnalyticsItemsRow(t *testing.T, dbPath string) {

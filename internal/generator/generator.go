@@ -6102,8 +6102,11 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 		HTMLSyncStub:                 g.htmlSyncStubSelected,
 		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
-		AnalyticsExample:             analyticsHelpExample(g.Spec.Name, analyticsExampleFor(g.Spec, syncable, dependent)),
-		AnalyticsCompiledTypes:       analyticsCompiledResourceTypes(syncable, dependent),
+		// Original profile paths, not the BaseURL-prefixed copies above.
+		// Group-by fields come from the list response; a prefixed path misses
+		// that endpoint and the name-only fallback can pick another method.
+		AnalyticsExample:       analyticsHelpExample(g.Spec.Name, analyticsExampleFor(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources)),
+		AnalyticsCompiledTypes: analyticsCompiledResourceTypes(syncable, dependent),
 	}
 }
 

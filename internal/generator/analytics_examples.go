@@ -87,14 +87,7 @@ func firstSortedAnalyticsExample(candidates []analyticsExampleResource) (analyti
 }
 
 func analyticsExampleGroupFields(api *spec.APISpec, resource analyticsExampleResource) []string {
-	if api == nil {
-		return nil
-	}
-	endpoint, ok := endpointForSyncableResource(api.Resources, profiler.SyncableResource{
-		Name:   resource.name,
-		Path:   resource.path,
-		Method: resource.method,
-	})
+	endpoint, ok := analyticsExampleEndpoint(api, resource)
 	if !ok {
 		return nil
 	}
@@ -176,4 +169,74 @@ func analyticsHelpExample(cliName string, example analyticsExample) string {
 
 func safeAnalyticsExampleToken(name string) bool {
 	return safeGeneratedExampleField(name) && !strings.HasPrefix(name, "-")
+}
+
+// analyticsExampleEndpoint returns the list (or other sync) endpoint for a
+// stored type. The path may be the spec path or the same path with a resource
+// BaseURL prefix. A different method on the same resource is not a match:
+// its response fields are not what sync stores.
+func analyticsExampleEndpoint(api *spec.APISpec, want analyticsExampleResource) (spec.Endpoint, bool) {
+	if api == nil {
+		return spec.Endpoint{}, false
+	}
+	wantName := strings.TrimSpace(want.name)
+	wantPath := strings.TrimSpace(want.path)
+	wantMethod := strings.ToUpper(strings.TrimSpace(want.method))
+	if wantName == "" {
+		return spec.Endpoint{}, false
+	}
+	var found spec.Endpoint
+	ok := false
+	var walk func(parent spec.Resource, resources map[string]spec.Resource, isSub bool)
+	walk = func(parent spec.Resource, resources map[string]spec.Resource, isSub bool) {
+		if ok || len(resources) == 0 {
+			return
+		}
+		names := make([]string, 0, len(resources))
+		for name := range resources {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			resource := resources[name]
+			if analyticsResourceNameMatches(name, wantName) {
+				endpointNames := make([]string, 0, len(resource.Endpoints))
+				for endpointName := range resource.Endpoints {
+					endpointNames = append(endpointNames, endpointName)
+				}
+				sort.Strings(endpointNames)
+				for _, endpointName := range endpointNames {
+					endpoint := resource.Endpoints[endpointName]
+					if wantMethod != "" && strings.ToUpper(strings.TrimSpace(endpoint.Method)) != wantMethod {
+						continue
+					}
+					raw := strings.TrimSpace(endpoint.Path)
+					effective := analyticsEndpointPath(parent, resource, endpoint, isSub)
+					if wantPath != "" && wantPath != raw && wantPath != effective {
+						continue
+					}
+					found = endpoint
+					ok = true
+					return
+				}
+			}
+			walk(resource, resource.SubResources, true)
+			if ok {
+				return
+			}
+		}
+	}
+	walk(spec.Resource{}, api.Resources, false)
+	return found, ok
+}
+
+func analyticsResourceNameMatches(specName, want string) bool {
+	return specName == want || strings.EqualFold(specName, want) || spec.ToSnakeCase(specName) == want
+}
+
+func analyticsEndpointPath(parent, resource spec.Resource, endpoint spec.Endpoint, isSub bool) string {
+	if isSub {
+		return strings.TrimSpace(spec.EffectiveSubEndpointPath(parent, resource, endpoint))
+	}
+	return strings.TrimSpace(spec.EffectiveEndpointPath(resource, endpoint))
 }

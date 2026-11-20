@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -63,6 +64,37 @@ func TestAnalyticsExampleUsesResponseFieldsAndOmitsUnknownOnes(t *testing.T) {
 	assert.NotContains(t, text, "channel_id")
 	assert.NotContains(t, text, "owner_id")
 	assertAnalyticsHelpParses(t, "widgets-pp-cli", text)
+}
+
+func TestAnalyticsExampleGroupFieldsStayOnTheSyncMethodWhenBaseURLChangesThePath(t *testing.T) {
+	t.Parallel()
+
+	api := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				BaseURL: "https://widgets.example.com/v1",
+				Endpoints: map[string]spec.Endpoint{
+					"create": {Method: "POST", Path: "/widgets", Response: spec.ResponseDef{Item: "Created"}},
+					"list":   {Method: "GET", Path: "/widgets", Response: spec.ResponseDef{Type: "array", Item: "Widget"}},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Widget":  {Fields: []spec.TypeField{{Name: "id"}, {Name: "status"}}},
+			"Created": {Fields: []spec.TypeField{{Name: "receipt"}}},
+		},
+	}
+	withBase := []profiler.SyncableResource{{
+		Name: "widgets", Path: "https://widgets.example.com/v1/widgets", Method: "GET",
+	}}
+	assert.Equal(t, []string{"id", "status"}, analyticsExampleFor(api, withBase, nil).GroupBy)
+
+	original := []profiler.SyncableResource{{Name: "widgets", Path: "/widgets", Method: "GET"}}
+	assert.Equal(t, []string{"id", "status"}, analyticsExampleFor(api, original, nil).GroupBy)
+
+	miss := []profiler.SyncableResource{{Name: "widgets", Path: "/other", Method: "GET"}}
+	assert.Empty(t, analyticsExampleFor(api, miss, nil).GroupBy)
+	assert.NotContains(t, analyticsHelpExample("widgets", analyticsExampleFor(api, miss, nil)), "receipt")
 }
 
 func TestAnalyticsExampleRepeatsTheOnlyKnownGroupField(t *testing.T) {
@@ -157,9 +189,11 @@ func TestGeneratedAnalyticsExamplesRunWithoutMessagesResource(t *testing.T) {
 	require.Contains(t, src, `"widgets":`)
 	require.Regexp(t, `(?s)analyticsCompiledResourceTypes\(\) map\[string\]struct\{\} \{.*?"widgets": \{\},`, src)
 
+	runtimeTest := strings.ReplaceAll(analyticsExampleRuntimeTest, "__MODULE_PATH__", generatedModulePath(t, outputDir))
+	runtimeTest = strings.ReplaceAll(runtimeTest, "__BAKED_EXAMPLE_ARGS__", generatedAnalyticsExampleArgsLiteral(t, outputDir))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "cli", "analytics_examples_runtime_test.go"),
-		[]byte(strings.ReplaceAll(analyticsExampleRuntimeTest, "__MODULE_PATH__", generatedModulePath(t, outputDir))),
+		[]byte(runtimeTest),
 		0o644,
 	))
 	requireGeneratedCompiles(t, outputDir)
@@ -191,9 +225,11 @@ func TestGeneratedAnalyticsExamplesWithoutSafeResourceName(t *testing.T) {
 	_, err := parser.ParseFile(token.NewFileSet(), "analytics.go", src, parser.AllErrors)
 	require.NoError(t, err)
 
+	runtimeTest := strings.ReplaceAll(analyticsNoTypeExampleRuntimeTest, "__MODULE_PATH__", generatedModulePath(t, outputDir))
+	runtimeTest = strings.ReplaceAll(runtimeTest, "__BAKED_EXAMPLE_ARGS__", generatedAnalyticsExampleArgsLiteral(t, outputDir))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "cli", "analytics_examples_runtime_test.go"),
-		[]byte(strings.ReplaceAll(analyticsNoTypeExampleRuntimeTest, "__MODULE_PATH__", generatedModulePath(t, outputDir))),
+		[]byte(runtimeTest),
 		0o644,
 	))
 	requireGeneratedCompiles(t, outputDir)
@@ -244,6 +280,60 @@ func assertAnalyticsHelpParses(t *testing.T, bin, text string) {
 	require.True(t, saw, "help text had no commands:\n%s", text)
 }
 
+func generatedAnalyticsExampleArgsLiteral(t *testing.T, outputDir string) string {
+	t.Helper()
+	bin := filepath.Base(outputDir)
+	out, err := runGoCommandOutput(t, outputDir, "run", "-mod=mod", "./cmd/"+bin, "analytics", "--help")
+	require.NoError(t, err, out)
+	return goArgRowsLiteral(analyticsHelpCommandArgs(t, out))
+}
+
+func analyticsHelpCommandArgs(t *testing.T, help string) [][]string {
+	t.Helper()
+	var in bool
+	var cmds [][]string
+	for line := range strings.SplitSeq(help, "\n") {
+		if strings.TrimSpace(line) == "Examples:" {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		args, err := shellargs.ArgsAfterBinary(trim)
+		require.NoError(t, err, trim)
+		require.NotEmpty(t, args, trim)
+		require.Equal(t, "analytics", args[0], trim)
+		cmds = append(cmds, args[1:])
+	}
+	require.NotEmpty(t, cmds, "analytics help has no examples:\n%s", help)
+	return cmds
+}
+
+func goArgRowsLiteral(rows [][]string) string {
+	var b strings.Builder
+	b.WriteString("[][]string{\n")
+	for _, row := range rows {
+		b.WriteString("\t\t{")
+		for i, arg := range row {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(strconv.Quote(arg))
+		}
+		b.WriteString("},\n")
+	}
+	b.WriteString("\t}")
+	return b.String()
+}
+
 const analyticsExampleRuntimeTest = `package cli
 
 import (
@@ -268,7 +358,7 @@ func TestAnalyticsExamplesExitZero(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	examples := analyticsExampleArgs(t)
+	examples := __BAKED_EXAMPLE_ARGS__
 	if len(examples) == 0 {
 		t.Fatal("analytics help has no examples")
 	}
@@ -357,42 +447,6 @@ func TestAnalyticsExamplesExitZero(t *testing.T) {
 	}
 }
 
-func analyticsExampleArgs(t *testing.T) [][]string {
-	t.Helper()
-	root := RootCmd()
-	var buf strings.Builder
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"analytics", "--help"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("--help: %v\n%s", err, buf.String())
-	}
-	var in bool
-	var cmds [][]string
-	for _, line := range strings.Split(buf.String(), "\n") {
-		if strings.TrimSpace(line) == "Examples:" {
-			in = true
-			continue
-		}
-		if !in {
-			continue
-		}
-		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			break
-		}
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		fields := strings.Fields(trim)
-		if len(fields) < 2 || fields[1] != "analytics" {
-			t.Fatalf("example %q", trim)
-		}
-		cmds = append(cmds, fields[2:])
-	}
-	return cmds
-}
-
 func runAnalyticsExample(t *testing.T, dbPath string, args ...string) (string, string, error) {
 	t.Helper()
 	root := RootCmd()
@@ -479,50 +533,24 @@ func TestAnalyticsSummaryExamplesExitZero(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	root := RootCmd()
-	var help strings.Builder
-	root.SetOut(&help)
-	root.SetErr(&help)
-	root.SetArgs([]string{"analytics", "--help"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("--help: %v\n%s", err, help.String())
+	examples := __BAKED_EXAMPLE_ARGS__
+	if len(examples) == 0 {
+		t.Fatal("analytics help has no examples")
 	}
-	var in bool
-	var ran int
-	for _, line := range strings.Split(help.String(), "\n") {
-		if strings.TrimSpace(line) == "Examples:" {
-			in = true
-			continue
-		}
-		if !in {
-			continue
-		}
-		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			break
-		}
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if strings.Contains(trim, "--type") {
-			t.Fatalf("summary example passed --type: %s", trim)
-		}
-		fields := strings.Fields(trim)
-		if len(fields) < 2 || fields[1] != "analytics" {
-			t.Fatalf("example %q", trim)
+	for _, args := range examples {
+		for _, arg := range args {
+			if arg == "--type" {
+				t.Fatalf("summary example passed --type: %v", args)
+			}
 		}
 		cmd := RootCmd()
 		var stdout, stderr strings.Builder
 		cmd.SetOut(&stdout)
 		cmd.SetErr(&stderr)
-		cmd.SetArgs(append(fields[1:], "--db", dbPath))
+		cmd.SetArgs(append(append([]string{"analytics"}, args...), "--db", dbPath))
 		if err := cmd.Execute(); err != nil {
-			t.Fatalf("example %q: %v\nstderr=%s\nstdout=%s", trim, err, stderr.String(), stdout.String())
+			t.Fatalf("example %v: %v\nstderr=%s\nstdout=%s", args, err, stderr.String(), stdout.String())
 		}
-		ran++
-	}
-	if ran == 0 {
-		t.Fatal("analytics help has no examples")
 	}
 
 	cmd := RootCmd()
