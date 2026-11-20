@@ -218,6 +218,27 @@ func opaqueCredentialPattern(kind, keyPattern string) vendorPrefixSecretPattern 
 	}
 }
 
+// PackageSecretKindsOnLine reports publish-scan kinds for one source line
+// when no cookie names are declared. Callers that emit Go use it to keep a
+// field selector out of a colon-keyed literal the same scan would flag.
+func PackageSecretKindsOnLine(line string) []string {
+	patterns := append([]vendorPrefixSecretPattern(nil), vendorPrefixSecretPatterns...)
+	patterns = append(patterns, opaqueCredentialPatterns...)
+	var kinds []string
+	seen := map[string]bool{}
+	for _, pattern := range patterns {
+		for _, candidate := range vendorPrefixSecretLineMatches(pattern, line) {
+			fingerprint := secretFingerprint(candidate)
+			if seen[fingerprint] {
+				continue
+			}
+			seen[fingerprint] = true
+			kinds = append(kinds, pattern.kind)
+		}
+	}
+	return kinds
+}
+
 func FindVendorPrefixSecrets(root string) ([]VendorPrefixSecretFinding, error) {
 	result, err := findSecrets(root, vendorPrefixSecretPatterns)
 	return result.Findings, err
