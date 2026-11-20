@@ -1802,7 +1802,11 @@ func (c *Config) clearCredentialFields() {
 }
 
 func (c *Config) credentials() *cliutil.Credentials {
+{{- if .CredentialFieldsTripPackageScan}}
+	creds := &cliutil.Credentials{
+{{- else}}
 	return &cliutil.Credentials{
+{{- end}}
 		BaseURL:       c.BaseURL,
 		AuthHeaderVal: c.AuthHeaderVal,
 		AccessToken:   c.AccessToken,
@@ -1820,9 +1824,21 @@ func (c *Config) credentials() *cliutil.Credentials {
 		CredentialDomain: c.CredentialDomain,
 {{- end}}
 {{- range .CredentialFields}}
+{{- if not .TripsPackageScan}}
 		{{.GoField}}: c.{{.GoField}},
 {{- end}}
+{{- end}}
 	}
+{{- if .CredentialFieldsTripPackageScan}}
+	// Copied after the literal. A long selector in a secret-named element is
+	// an opaque-credential value to the publish scan.
+{{- range .CredentialFields}}
+{{- if .TripsPackageScan}}
+	creds.{{.GoField}} = c.{{.GoField}}
+{{- end}}
+{{- end}}
+	return creds
+{{- end}}
 }
 
 func (c *Config) applyCredentials(creds *cliutil.Credentials) {

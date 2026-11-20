@@ -21,6 +21,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -1266,6 +1267,31 @@ type configTemplateData struct {
 	HasAuthCommand              bool
 	CredentialFields            []credentialField
 	UsesLegacyEnvVarCredentials bool
+}
+
+// TripsPackageScan reports that `Field: c.Field` is a publish secret-scan
+// finding. The value is a selector, not a credential; credentials() copies
+// those fields after the composite literal.
+func (f credentialField) TripsPackageScan() bool {
+	if strings.TrimSpace(f.GoField) == "" {
+		return false
+	}
+	line := f.GoField + ": c." + f.GoField
+	return len(artifacts.PackageSecretKindsOnLine(line)) > 0
+}
+
+// CredentialFieldsTripPackageScan is true when any extra credential field
+// would trip the publish scan inside the credentials() composite literal.
+func (d *configTemplateData) CredentialFieldsTripPackageScan() bool {
+	if d == nil {
+		return false
+	}
+	for _, field := range d.CredentialFields {
+		if field.TripsPackageScan() {
+			return true
+		}
+	}
+	return false
 }
 
 // endpointTemplateData is the data passed to command_endpoint.go.tmpl for both

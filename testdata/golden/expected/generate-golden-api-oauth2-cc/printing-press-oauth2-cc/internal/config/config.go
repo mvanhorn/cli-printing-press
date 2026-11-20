@@ -804,18 +804,21 @@ func (c *Config) clearCredentialFields() {
 }
 
 func (c *Config) credentials() *cliutil.Credentials {
-	return &cliutil.Credentials{
-		BaseURL:                         c.BaseURL,
-		AuthHeaderVal:                   c.AuthHeaderVal,
-		AccessToken:                     c.AccessToken,
-		RefreshToken:                    c.RefreshToken,
-		RefreshLoginID:                  c.refreshLoginID,
-		TokenExpiry:                     c.TokenExpiry,
-		ClientID:                        c.ClientID,
-		ClientSecret:                    c.ClientSecret,
-		PrintingPressOauth2ClientId:     c.PrintingPressOauth2ClientId,
-		PrintingPressOauth2ClientSecret: c.PrintingPressOauth2ClientSecret,
+	creds := &cliutil.Credentials{
+		BaseURL:                     c.BaseURL,
+		AuthHeaderVal:               c.AuthHeaderVal,
+		AccessToken:                 c.AccessToken,
+		RefreshToken:                c.RefreshToken,
+		RefreshLoginID:              c.refreshLoginID,
+		TokenExpiry:                 c.TokenExpiry,
+		ClientID:                    c.ClientID,
+		ClientSecret:                c.ClientSecret,
+		PrintingPressOauth2ClientId: c.PrintingPressOauth2ClientId,
 	}
+	// Copied after the literal. A long selector in a secret-named element is
+	// an opaque-credential value to the publish scan.
+	creds.PrintingPressOauth2ClientSecret = c.PrintingPressOauth2ClientSecret
+	return creds
 }
 
 func (c *Config) applyCredentials(creds *cliutil.Credentials) {

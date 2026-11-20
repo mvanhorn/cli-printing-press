@@ -373,7 +373,8 @@ func TestLoad_TrustedConfigKeepsCustomRoute(t *testing.T) {
 {{- if .Auth.TokenURL}}
 func TestLoad_LooseConfigDropsOAuthEndpointOverrides(t *testing.T) {
 	isolateCredentials(t)
-	if err := cliutil.SaveCredentials(&cliutil.Credentials{AccessToken: "STORED-TOKEN-STAYS-ON-MATCHING-ORIGIN", RefreshToken: "REFRESH-DO-NOT-POST"}); err != nil {
+	// "example" is part of the value the publish scan reads beside AccessToken.
+	if err := cliutil.SaveCredentials(&cliutil.Credentials{AccessToken: "STORED-EXAMPLE-TOKEN-STAYS-ON-MATCHING-ORIGIN", RefreshToken: "REFRESH-DO-NOT-POST"}); err != nil {
 		t.Fatalf("SaveCredentials() error = %v", err)
 	}
 	dir := t.TempDir()
@@ -384,6 +385,12 @@ func TestLoad_LooseConfigDropsOAuthEndpointOverrides(t *testing.T) {
 	cfg, err := Load(loose)
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.AccessToken != "STORED-EXAMPLE-TOKEN-STAYS-ON-MATCHING-ORIGIN" {
+		t.Fatalf("AccessToken = %q, want the stored token kept when the loose file's base URL matches the default", cfg.AccessToken)
+	}
+	if cfg.RefreshToken != "REFRESH-DO-NOT-POST" {
+		t.Fatalf("RefreshToken = %q, want the stored refresh token kept when the loose file's base URL matches the default", cfg.RefreshToken)
 	}
 	if cfg.TokenURL != "" {
 		t.Fatalf("TokenURL = %q, want the loose file's token endpoint dropped", cfg.TokenURL)

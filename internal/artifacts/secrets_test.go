@@ -205,6 +205,26 @@ func TestFindVendorPrefixSecretsDetectsMailchimpLinearAndAnthropic(t *testing.T)
 	require.False(t, anthropicShortFlagged, "anthropic payload one char short of 40 must not match")
 }
 
+func TestPackageSecretKindsOnLine(t *testing.T) {
+	longSecret := "PrintingPressOauth2ClientSecret: c.PrintingPressOauth2ClientSecret"
+	shortSecret := "RichAuthClientSecret: c.RichAuthClientSecret"
+	longID := "PrintingPressOauth2ClientId: c.PrintingPressOauth2ClientId"
+	longOther := "PrintingPressOauth2Oauth2AuthCode: c.PrintingPressOauth2Oauth2AuthCode"
+	realToken := `AccessToken: "` + strings.Join([]string{"pQr7sT9u", "V1wX3yZ5", "aB2cD4eF", "6gH8jK0m"}, "") + `"`
+	oldFixture := `AccessToken: "` + strings.Join([]string{"STORED-TOKEN-", "STAYS-ON-", "MATCHING-ORIGIN"}, "") + `"`
+	commentOnly := oldFixture + " // example"
+	allowlisted := `AccessToken: "STORED-EXAMPLE-TOKEN-STAYS-ON-MATCHING-ORIGIN"`
+
+	require.Equal(t, []string{"opaque-credential:secret"}, PackageSecretKindsOnLine(longSecret))
+	require.Empty(t, PackageSecretKindsOnLine(shortSecret))
+	require.Empty(t, PackageSecretKindsOnLine(longID))
+	require.Empty(t, PackageSecretKindsOnLine(longOther))
+	require.Equal(t, []string{"opaque-credential:token"}, PackageSecretKindsOnLine(realToken))
+	require.Equal(t, []string{"opaque-credential:token"}, PackageSecretKindsOnLine(oldFixture))
+	require.Equal(t, []string{"opaque-credential:token"}, PackageSecretKindsOnLine(commentOnly))
+	require.Empty(t, PackageSecretKindsOnLine(allowlisted))
+}
+
 func TestFindPackageSecretsDetectsCredentialNamedOpaqueValues(t *testing.T) {
 	root := t.TempDir()
 	content := strings.Join([]string{
