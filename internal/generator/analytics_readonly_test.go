@@ -23,6 +23,11 @@ func TestGeneratedAnalyticsReadOnlyContract(t *testing.T) {
 	require.Contains(t, src, "cliutil.IsMCPChildEnv()")
 	require.Contains(t, src, `unknown resource type %q; valid: %s`)
 	require.Contains(t, src, "local store has not been synced yet. Run '%s' before trusting local results")
+	require.Contains(t, src, "analytics --type items")
+	require.NotContains(t, src, "--type messages")
+	require.NotContains(t, src, "author_id")
+	require.NotContains(t, src, "channel_id")
+	require.Contains(t, src, "analyticsCompiledResourceTypes")
 
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "analytics_readonly_test.go"), []byte(analyticsReadOnlyRuntimeTest), 0o644))
 	requireGeneratedCompiles(t, outputDir)
@@ -162,6 +167,15 @@ func TestAnalyticsReadOnlyLeavesDeleteModeStoreUnchanged(t *testing.T) {
 		t.Fatalf("empty type count = %#v, want 0", counted)
 	}
 
+	stdout, stderr, err = runAnalyticsCmd(t, dbPath, "--type", "items", "--json")
+	if err != nil {
+		t.Fatalf("compiled-in type with no rows: %v\nstderr=%s\nstdout=%s", err, stderr, stdout)
+	}
+	counted = decodeBareAnalyticsJSON(t, stdout)
+	if counted["resource_type"] != "items" || counted["count"] != float64(0) {
+		t.Fatalf("unsynced compiled-in count = %#v, want 0", counted)
+	}
+
 	stdout, stderr, err = runAnalyticsCmd(t, dbPath, "--type", "issues", "--group-by", "status")
 	if err != nil {
 		t.Fatalf("group-by: %v\nstderr=%s", err, stderr)
@@ -177,8 +191,8 @@ func TestAnalyticsReadOnlyLeavesDeleteModeStoreUnchanged(t *testing.T) {
 	if code := ExitCode(err); code != 2 {
 		t.Fatalf("unknown type exit = %d, want 2; err=%v", code, err)
 	}
-	if !strings.Contains(err.Error(), "unknown resource type \"nope\"") || !strings.Contains(err.Error(), "empty_kind") || !strings.Contains(err.Error(), "issues") {
-		t.Fatalf("unknown type error = %q, want both valid types", err.Error())
+	if !strings.Contains(err.Error(), "unknown resource type \"nope\"") || !strings.Contains(err.Error(), "empty_kind") || !strings.Contains(err.Error(), "issues") || !strings.Contains(err.Error(), "items") {
+		t.Fatalf("unknown type error = %q, want store and compiled-in types", err.Error())
 	}
 
 	stdout, stderr, err = runAnalyticsCmd(t, dbPath, "--type", "nope", "--group-by", "status")
@@ -305,9 +319,87 @@ func TestAnalyticsEmptyStoreStillHintsNotSynced(t *testing.T) {
 		t.Fatalf("empty store changed bytes or journal")
 	}
 
+	examples := analyticsHelpArgs(t)
+	if len(examples) == 0 {
+		t.Fatalf("analytics help has no examples")
+	}
+	sawItems := false
+	for _, args := range examples {
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--type" && i+1 < len(args) && args[i+1] == "messages" {
+				t.Fatalf("example still uses placeholder type: %v", args)
+			}
+			if args[i] == "--group-by" {
+				t.Fatalf("items spec has no response fields; example = %v", args)
+			}
+			if args[i] == "--type" && i+1 < len(args) && args[i+1] == "items" {
+				sawItems = true
+			}
+		}
+		stdout, stderr, err = runAnalyticsCmd(t, dbPath, args...)
+		if err != nil {
+			t.Fatalf("empty example %v: %v\nstderr=%s\nstdout=%s", args, err, stderr, stdout)
+		}
+	}
+	if !sawItems {
+		t.Fatalf("examples = %v, want --type items", examples)
+	}
+	after = snapshotAnalyticsDB(t, dbPath)
+	if before.sum != after.sum || !strings.EqualFold(before.journal, after.journal) {
+		t.Fatalf("examples changed the empty store")
+	}
+
+	stdout, stderr, err = runAnalyticsCmd(t, dbPath, "--type", "items", "--json")
+	if err != nil {
+		t.Fatalf("compiled-in type on empty store: %v\nstderr=%s\nstdout=%s", err, stderr, stdout)
+	}
+	counted := decodeBareAnalyticsJSON(t, stdout)
+	if counted["resource_type"] != "items" || counted["count"] != float64(0) {
+		t.Fatalf("empty compiled-in count = %#v, want items/0", counted)
+	}
+	if !strings.Contains(stderr, "has not been synced yet") {
+		t.Fatalf("empty compiled-in stderr = %q, want not synced hint", stderr)
+	}
+
+	_, _, err = runAnalyticsCmd(t, dbPath, "--type", "messages")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "unknown resource type \"messages\"") || !strings.Contains(err.Error(), "items") {
+		t.Fatalf("placeholder type on empty store = %v", err)
+	}
+	_, _, err = runAnalyticsCmd(t, dbPath, "--type", "ITEMS")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("case-mismatched type = %v", err)
+	}
+	_, _, err = runAnalyticsCmd(t, dbPath, "--type", "item")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "unknown resource type \"item\"") {
+		t.Fatalf("prefix type = %v", err)
+	}
+
 	_, _, err = runAnalyticsCmd(t, dbPath, "--type", "issues")
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "valid: none") {
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "valid: items") {
 		t.Fatalf("unknown type on empty store = %v", err)
+	}
+	if strings.Contains(err.Error(), "valid: none") {
+		t.Fatalf("empty store hid compiled-in types: %v", err)
+	}
+
+	seedAnalyticsItemsRow(t, dbPath)
+	sqlCount := analyticsSQLCount(t, dbPath, "items")
+	if sqlCount != 1 {
+		t.Fatalf("seeded items count = %d, want 1", sqlCount)
+	}
+	for _, args := range examples {
+		stdout, stderr, err = runAnalyticsCmd(t, dbPath, args...)
+		if err != nil {
+			t.Fatalf("seeded example %v: %v\nstderr=%s\nstdout=%s", args, err, stderr, stdout)
+		}
+	}
+	stdout, stderr, err = runAnalyticsCmd(t, dbPath, "--type", "items", "--json")
+	if err != nil {
+		t.Fatalf("seeded count: %v\nstderr=%s", err, stderr)
+	}
+	counted = decodeBareAnalyticsJSON(t, stdout)
+	if counted["count"] != float64(sqlCount) {
+		t.Fatalf("command count = %#v, SELECT COUNT(*) = %d", counted, sqlCount)
 	}
 }
 
@@ -629,6 +721,54 @@ func decodeAnalyticsObject(t *testing.T, stdout string) map[string]any {
 		t.Fatalf("mcp results = %#v\n%s", payload["results"], stdout)
 	}
 	return results
+}
+
+func analyticsHelpArgs(t *testing.T) [][]string {
+	t.Helper()
+	root := RootCmd()
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"analytics", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--help: %v\n%s", err, buf.String())
+	}
+	var in bool
+	var cmds [][]string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.TrimSpace(line) == "Examples:" {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		fields := strings.Fields(trim)
+		if len(fields) < 2 || fields[1] != "analytics" {
+			t.Fatalf("example %q", trim)
+		}
+		cmds = append(cmds, fields[2:])
+	}
+	return cmds
+}
+
+func seedAnalyticsItemsRow(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+	if err := db.Upsert("items", "item-1", json.RawMessage("{\"id\":\"item-1\"}")); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
 }
 
 func isolateAnalyticsHome(t *testing.T) {

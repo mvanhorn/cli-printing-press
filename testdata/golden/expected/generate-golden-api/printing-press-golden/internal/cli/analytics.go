@@ -32,14 +32,7 @@ func newAnalyticsCmd(flags *rootFlags) *cobra.Command {
 Data must be synced first with the sync command.
 
 Null or missing --group-by values are JSON null. Table output labels them (none); a literal (none) value is quoted.`,
-		Example: `  # Count records by type
-  printing-press-golden-pp-cli analytics --type messages
-
-  # Group by a field
-  printing-press-golden-pp-cli analytics --type messages --group-by author_id
-
-  # Top 10 most frequent values
-  printing-press-golden-pp-cli analytics --type messages --group-by channel_id --limit 10 --json`,
+		Example: "  # Count records by type\n  printing-press-golden-pp-cli analytics --type currencies\n\n  # Group by a field\n  printing-press-golden-pp-cli analytics --type currencies --group-by code\n\n  # Top 10 most frequent values\n  printing-press-golden-pp-cli analytics --type currencies --group-by decimals --limit 10 --json",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
 			if dbPath == "" {
@@ -164,12 +157,28 @@ func analyticsMissingStoreError() error {
 	return fmt.Errorf("local store has not been synced yet. Run '%s' before trusting local results", "printing-press-golden-pp-cli sync")
 }
 
+// Compiled names stay valid before any rows exist. Help examples name them,
+// and an empty store would otherwise report every type as unknown.
+func analyticsCompiledResourceTypes() map[string]struct{} {
+	return map[string]struct{}{
+		"currencies": {},
+		"projects":   {},
+		"tasks":      {},
+		"tickets":    {},
+	}
+}
+
+func analyticsCompiledResourceType(resourceType string) bool {
+	_, ok := analyticsCompiledResourceTypes()[resourceType]
+	return ok
+}
+
 func validateAnalyticsResourceType(db *store.Store, resourceType string) error {
 	exists, err := analyticsResourceTypeExists(db, resourceType)
 	if err != nil {
 		return fmt.Errorf("listing resource types: %w", err)
 	}
-	if exists {
+	if exists || analyticsCompiledResourceType(resourceType) {
 		return nil
 	}
 	known, err := analyticsKnownResourceTypes(db)
@@ -231,6 +240,11 @@ func analyticsKnownResourceTypes(db *store.Store) ([]string, error) {
 	}
 	if err := analyticsAddSyncStateTypes(db, seen); err != nil {
 		return nil, err
+	}
+	for name := range analyticsCompiledResourceTypes() {
+		if name != "" {
+			seen[name] = struct{}{}
+		}
 	}
 	names := make([]string, 0, len(seen))
 	for name := range seen {
