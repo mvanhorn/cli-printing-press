@@ -108,6 +108,8 @@ func TestGeneratedOAuthTokenURLCLIPassesPublishSecretScan(t *testing.T) {
 			require.Empty(t, findings, "generated %s package must not trip the publish secret scan:\n%s",
 				fixture, artifacts.FormatVendorPrefixSecretFindings(findings))
 
+			requireGeneratedCompiles(t, outputDir)
+
 			if fixture == "golden-api-oauth2-cc.yaml" && !testing.Short() {
 				runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoad_LooseConfigDropsOAuthEndpointOverrides", "-count=1")
 				for _, goos := range []string{"linux", "darwin", "windows"} {
