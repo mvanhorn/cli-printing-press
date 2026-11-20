@@ -5467,6 +5467,11 @@ type visionRenderData struct {
 	AgentMoneyWorkflow           AgentMoneyWorkflow
 	HTMLSyncStub                 bool
 	HTMLPageModeResources        []criticalResourceEntry
+	// AnalyticsExample is the help Example body. It names a resource this
+	// CLI can store, or a summary with no --type when none is safe to show.
+	AnalyticsExample string
+	// AnalyticsCompiledTypes are accepted by --type before any rows exist.
+	AnalyticsCompiledTypes []string
 	// SyncSinceNeedsTZData is true when a since value is rewritten into a
 	// named zone. The sync template blank-imports time/tzdata only then, so
 	// Windows and minimal images can load the zone and other CLIs do not
@@ -6097,6 +6102,11 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 		HTMLSyncStub:                 g.htmlSyncStubSelected,
 		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
+		// Original profile paths, not the BaseURL-prefixed copies above.
+		// Group-by fields come from the list response; a prefixed path misses
+		// that endpoint and the name-only fallback can pick another method.
+		AnalyticsExample:       analyticsHelpExample(g.Spec.Name, analyticsExampleFor(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources)),
+		AnalyticsCompiledTypes: analyticsCompiledResourceTypes(syncable, dependent),
 	}
 }
 
