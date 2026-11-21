@@ -116,6 +116,7 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		plans[plan.name] = plan
 	}
 	var installed []dst.Decl
+	var pendingImports []dst.Spec
 	for i, d := range freshFile.Decls {
 		name := overlayDeclName(d)
 		if !fromPub[name] {
@@ -132,12 +133,14 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 				conflictList = append(conflictList, c)
 				continue
 			}
-			if err := bindStableImportSelectors(decl, freshFile, pubFile, basePath); err != nil {
+			specs, err := bindStableImportSelectors(decl, freshFile, pubFile, basePath)
+			if err != nil {
 				c := DeclConflict{Name: name, Fresh: clipDeclSnippet(plan.merged)}
 				conflictList = append(conflictList, c)
 				continue
 			}
 			freshFile.Decls[i] = decl
+			pendingImports = append(pendingImports, specs...)
 			continue
 		}
 		repl, ok := pubByName[name]
@@ -165,6 +168,7 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		installed = append(installed, d)
 		freshByName[name] = d
 	}
+	installImportSpecs(freshFile, pendingImports)
 	addImportsUsedByDecls(freshFile, pubFile, installed)
 	rewriteInstalledSelectorsToDestAliases(freshFile, pubFile, installed)
 	dropUnusedImports(freshFile)
@@ -611,9 +615,9 @@ func renderDSTDecl(decl dst.Decl) (string, error) {
 
 // bindStableImportSelectors rewrites merge idents back to the destination
 // file's aliases and adds any import the merged function still needs.
-func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath string) error {
+func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath string) ([]dst.Spec, error) {
 	if decl == nil || dest == nil {
-		return nil
+		return nil, nil
 	}
 	known := map[string]string{}
 	remember := func(file *dst.File) {
@@ -623,20 +627,24 @@ func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath stri
 	}
 	remember(dest)
 	remember(pub)
+	destAlias := importAliasMap(dest)
+	pubAlias := importAliasMap(pub)
+	var baseAlias map[string]string
 	if basePath != "" {
 		if base, err := parseOverlayFile(basePath); err == nil {
 			remember(base)
+			baseAlias = importAliasMap(base)
 		}
 	}
-	destAlias := importAliasMap(dest)
-	pathAlias := map[string]string{}
-	for alias, quoted := range destAlias {
-		if _, ok := pathAlias[quoted]; !ok {
-			pathAlias[quoted] = alias
-		}
+	// A new import name has to stay clear of locals in this function and of
+	// top-level names in the destination file. The default package name is
+	// often one of those (`os := ...` beside `os.Getenv`).
+	blocked := boundNames(decl)
+	for name := range fileTopLevelNames(dest) {
+		blocked[name] = true
 	}
 	var missing []string
-	haveMissing := map[string]bool{}
+	chosen := map[string]string{}
 	unknown := false
 	forEachPackageSelector(decl, func(id *dst.Ident) {
 		quoted, ok := known[id.Name]
@@ -646,41 +654,211 @@ func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath stri
 			}
 			return
 		}
-		alias, ok := pathAlias[quoted]
-		if !ok {
-			alias = unusedImportAlias(destAlias, importPathDefaultAlias(quoted), quoted)
+		alias := chooseImportAlias(quoted, destAlias, pubAlias, baseAlias, blocked)
+		if destAlias[alias] != quoted {
 			destAlias[alias] = quoted
-			pathAlias[quoted] = alias
-			if !haveMissing[quoted] {
+			if _, seen := chosen[quoted]; !seen {
 				missing = append(missing, quoted)
-				haveMissing[quoted] = true
 			}
+			chosen[quoted] = alias
 		}
 		id.Name = alias
 	})
 	if unknown {
-		return fmt.Errorf("merged function uses an unresolved import alias")
+		return nil, fmt.Errorf("merged function uses an unresolved import alias")
 	}
 	if len(missing) == 0 {
-		return nil
+		return nil, nil
 	}
 	sort.Strings(missing)
 	specs := make([]dst.Spec, 0, len(missing))
 	for _, quoted := range missing {
 		specs = append(specs, importSpecWithAlias(&dst.ImportSpec{
 			Path: &dst.BasicLit{Kind: token.STRING, Value: quoted},
-		}, pathAlias[quoted]))
+		}, chosen[quoted]))
 	}
-	for _, d := range dest.Decls {
+	return specs, nil
+}
+
+// installImportSpecs adds imports after declaration replacement. Doing it
+// inside that loop would shift the indexes the loop still assigns.
+func installImportSpecs(file *dst.File, specs []dst.Spec) {
+	if file == nil || len(specs) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var uniq []dst.Spec
+	for _, spec := range specs {
+		is, ok := spec.(*dst.ImportSpec)
+		if !ok || is.Path == nil {
+			continue
+		}
+		key := importSpecAlias(is) + " " + is.Path.Value
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		uniq = append(uniq, spec)
+	}
+	if len(uniq) == 0 {
+		return
+	}
+	for _, d := range file.Decls {
 		gd, ok := d.(*dst.GenDecl)
 		if !ok || gd.Tok != token.IMPORT {
 			continue
 		}
-		gd.Specs = append(gd.Specs, specs...)
-		return nil
+		gd.Specs = append(gd.Specs, uniq...)
+		return
 	}
-	dest.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: specs}}, dest.Decls...)
-	return nil
+	file.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: uniq}}, file.Decls...)
+}
+
+func chooseImportAlias(quoted string, destAlias, pubAlias, baseAlias map[string]string, blocked map[string]bool) string {
+	var existing []string
+	for alias, path := range destAlias {
+		if path == quoted && !blocked[alias] {
+			existing = append(existing, alias)
+		}
+	}
+	sort.Strings(existing)
+	if len(existing) > 0 {
+		return existing[0]
+	}
+	for _, alias := range append(aliasesForPath(pubAlias, quoted), aliasesForPath(baseAlias, quoted)...) {
+		if alias == "" || alias == "_" || alias == "." || blocked[alias] {
+			continue
+		}
+		if bound, ok := destAlias[alias]; !ok || bound == quoted {
+			return alias
+		}
+	}
+	return unusedImportAliasAvoiding(destAlias, importPathDefaultAlias(quoted), quoted, blocked)
+}
+
+func aliasesForPath(aliasToPath map[string]string, quoted string) []string {
+	var out []string
+	for alias, path := range aliasToPath {
+		if path == quoted {
+			out = append(out, alias)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func unusedImportAliasAvoiding(bound map[string]string, preferred, path string, blocked map[string]bool) string {
+	if preferred != "" && !blocked[preferred] && (bound[preferred] == "" || bound[preferred] == path) {
+		return preferred
+	}
+	def := importPathDefaultAlias(path)
+	if def != "" && !blocked[def] && (bound[def] == "" || bound[def] == path) {
+		return def
+	}
+	if def == "" {
+		def = "pkg"
+	}
+	for i := 2; ; i++ {
+		cand := def + strconv.Itoa(i)
+		if blocked[cand] || bound[cand] != "" {
+			continue
+		}
+		return cand
+	}
+}
+
+func boundNames(decl dst.Decl) map[string]bool {
+	out := map[string]bool{}
+	add := func(name string) {
+		if name != "" && name != "_" {
+			out[name] = true
+		}
+	}
+	addFields := func(fl *dst.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			for _, n := range f.Names {
+				add(n.Name)
+			}
+		}
+	}
+	dst.Inspect(decl, func(n dst.Node) bool {
+		switch x := n.(type) {
+		case *dst.FuncDecl:
+			addFields(x.Recv)
+			if x.Type != nil {
+				addFields(x.Type.TypeParams)
+				addFields(x.Type.Params)
+				addFields(x.Type.Results)
+			}
+		case *dst.FuncLit:
+			if x.Type != nil {
+				addFields(x.Type.TypeParams)
+				addFields(x.Type.Params)
+				addFields(x.Type.Results)
+			}
+		case *dst.AssignStmt:
+			if x.Tok == token.DEFINE {
+				for _, e := range x.Lhs {
+					if id, ok := e.(*dst.Ident); ok {
+						add(id.Name)
+					}
+				}
+			}
+		case *dst.ValueSpec:
+			for _, n := range x.Names {
+				add(n.Name)
+			}
+		case *dst.TypeSpec:
+			if x.Name != nil {
+				add(x.Name.Name)
+			}
+		case *dst.RangeStmt:
+			if x.Tok == token.DEFINE {
+				if id, ok := x.Key.(*dst.Ident); ok {
+					add(id.Name)
+				}
+				if id, ok := x.Value.(*dst.Ident); ok {
+					add(id.Name)
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func fileTopLevelNames(file *dst.File) map[string]bool {
+	out := map[string]bool{}
+	if file == nil {
+		return out
+	}
+	for _, d := range file.Decls {
+		switch x := d.(type) {
+		case *dst.FuncDecl:
+			if x.Recv == nil && x.Name != nil && x.Name.Name != "_" {
+				out[x.Name.Name] = true
+			}
+		case *dst.GenDecl:
+			for _, spec := range x.Specs {
+				switch s := spec.(type) {
+				case *dst.ValueSpec:
+					for _, n := range s.Names {
+						if n.Name != "_" {
+							out[n.Name] = true
+						}
+					}
+				case *dst.TypeSpec:
+					if s.Name != nil && s.Name.Name != "_" {
+						out[s.Name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 func importAliasMap(file *dst.File) map[string]string {
