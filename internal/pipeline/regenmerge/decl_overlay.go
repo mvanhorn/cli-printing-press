@@ -23,16 +23,16 @@ import (
 // shared decls that no longer match the original emission. Shared function
 // bodies stay on fresh when there is no base so a reprint cannot freeze
 // unpatched templated implementations.
-func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) bool {
+func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) (bool, error) {
 	if destDir == "" {
-		return false
+		return false, nil
 	}
 	rel = filepath.ToSlash(rel)
 	pubPath := filepath.Join(pubDir, filepath.FromSlash(rel))
 	freshPath := filepath.Join(freshDir, filepath.FromSlash(rel))
 	destPath := filepath.Join(destDir, filepath.FromSlash(rel))
 	if !shouldOverlayOntoFresh(rel, pubPath, freshPath) {
-		return false
+		return false, nil
 	}
 	basePath := ""
 	if baseDir != "" {
@@ -42,9 +42,17 @@ func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) b
 		}
 	}
 	if declKindConflict(pubPath, freshPath, basePath) {
-		return false
+		return false, nil
 	}
-	return overlayHandEditedDecls(pubPath, freshPath, basePath, destPath) == nil
+	err := overlayHandEditedDecls(pubPath, freshPath, basePath, destPath)
+	var conflict *bothSidesConflictError
+	if errors.As(err, &conflict) {
+		return true, conflict
+	}
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func shouldOverlayOntoFresh(rel, pubPath, freshPath string) bool {
@@ -94,10 +102,30 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 	baseSpecs := canonicalSpecTexts(basePath)
 	pubNameVals := canonicalNameValueTexts(pubPath)
 	baseNameVals := canonicalNameValueTexts(basePath)
+	plans := map[string]bothSidesFuncPlan{}
+	var conflictList []DeclConflict
+	for _, plan := range planBothSidesFuncs(pubPath, freshPath, basePath) {
+		plans[plan.name] = plan
+	}
 	var installed []dst.Decl
 	for i, d := range freshFile.Decls {
 		name := overlayDeclName(d)
 		if !fromPub[name] {
+			continue
+		}
+		if plan, ok := plans[name]; ok {
+			if plan.isConflict {
+				conflictList = append(conflictList, plan.conflict)
+				continue
+			}
+			decl, err := mergedDeclFromText(plan.merged)
+			if err != nil || overlayDeclName(decl) != name {
+				c := DeclConflict{Name: name, Fresh: clipDeclSnippet(plan.merged)}
+				conflictList = append(conflictList, c)
+				continue
+			}
+			freshFile.Decls[i] = decl
+			installed = append(installed, decl)
 			continue
 		}
 		repl, ok := pubByName[name]
@@ -140,7 +168,10 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomic(destPath, formatted)
+	if err := writeFileAtomic(destPath, formatted); err != nil {
+		return err
+	}
+	return conflictError(conflictList)
 }
 
 func handEditedDeclNames(pubPath, freshPath, basePath string) map[string]bool {

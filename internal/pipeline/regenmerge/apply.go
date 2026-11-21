@@ -46,6 +46,11 @@ func Apply(report *MergeReport, opts Options) error {
 	if report == nil {
 		return errors.New("nil report")
 	}
+	if !opts.AllowDeclConflicts {
+		if err := declConflictRefusal(report.Files); err != nil {
+			return err
+		}
+	}
 	cliDir := report.CLIDir
 	freshDir := report.FreshDir
 
@@ -106,7 +111,17 @@ func Apply(report *MergeReport, opts Options) error {
 			}
 			fc.Applied = true
 		case VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift, VerdictTemplatedWithAdditions:
-			if tryOverlayHandEditedDecls(cliDir, freshDir, opts.BaseDir, tempDir, fc.Path) {
+			wrote, oerr := tryOverlayHandEditedDecls(cliDir, freshDir, opts.BaseDir, tempDir, fc.Path)
+			var conflict *bothSidesConflictError
+			if errors.As(oerr, &conflict) {
+				if !opts.AllowDeclConflicts {
+					cleanup()
+					return oerr
+				}
+				fc.Applied = true
+				continue
+			}
+			if wrote {
 				fc.Applied = true
 				continue
 			}

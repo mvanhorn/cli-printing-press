@@ -14,11 +14,12 @@ import (
 
 func newRegenMergeCmd() *cobra.Command {
 	var (
-		freshDir string
-		baseDir  string
-		apply    bool
-		asJSON   bool
-		force    bool
+		freshDir           string
+		baseDir            string
+		apply              bool
+		asJSON             bool
+		force              bool
+		allowDeclConflicts bool
 	)
 	cmd := &cobra.Command{
 		Use:           "regen-merge <cli-dir>",
@@ -43,7 +44,13 @@ never lost.
 
 Supported on macOS and Linux. Windows is not supported (rename semantics
 differ when files are held by editors). --apply requires a clean git
-tree at <cli-dir> by default; --force overrides.`,
+tree at <cli-dir> by default; --force overrides.
+
+When --base is available (or synthesized), a function changed on both
+the published side and the fresh side is line-merged when those edits
+do not overlap. An overlapping edit is listed under both_sides and
+--apply refuses it. --allow-decl-conflicts continues by keeping the
+fresh body for those functions.`,
 		Example: `  # Dry-run classification report against a fresh-generated tree:
   cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman
 
@@ -84,7 +91,7 @@ tree at <cli-dir> by default; --force overrides.`,
 				resolvedBase = absBase
 			}
 
-			opts := regenmerge.Options{Force: force, BaseDir: resolvedBase}
+			opts := regenmerge.Options{Force: force, BaseDir: resolvedBase, AllowDeclConflicts: allowDeclConflicts}
 			report, err := regenmerge.Classify(cliDir, freshAbs, opts)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
@@ -107,6 +114,7 @@ tree at <cli-dir> by default; --force overrides.`,
 	cmd.Flags().BoolVar(&apply, "apply", false, "Apply safe changes (default: dry-run)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON instead of the human report")
 	cmd.Flags().BoolVar(&force, "force", false, "Override path-containment and dirty-tree safety checks")
+	cmd.Flags().BoolVar(&allowDeclConflicts, "allow-decl-conflicts", false, "Keep the fresh body for shared functions that changed on both sides and did not merge cleanly")
 	return cmd
 }
 
@@ -135,7 +143,11 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 	}
 	fmt.Fprintf(w, "regen-merge %s\n", mode)
 	fmt.Fprintf(w, "  cli:   %s\n", report.CLIDir)
-	fmt.Fprintf(w, "  fresh: %s\n\n", report.FreshDir)
+	fmt.Fprintf(w, "  fresh: %s\n", report.FreshDir)
+	if report.BothSidesNote != "" {
+		fmt.Fprintf(w, "  note:  %s\n", report.BothSidesNote)
+	}
+	fmt.Fprintln(w)
 
 	counts := map[regenmerge.Verdict]int{}
 	for _, fc := range report.Files {
@@ -187,6 +199,17 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 			if fc.ValueDrift != nil {
 				for declName := range fc.ValueDrift.Decls {
 					fmt.Fprintf(w, "    value_drift in %s\n", declName)
+				}
+			}
+			if fc.BothSides != nil {
+				for _, name := range fc.BothSides.Merged {
+					fmt.Fprintf(w, "    both_sides merged: %s\n", name)
+				}
+				for _, c := range fc.BothSides.Conflicts {
+					fmt.Fprintf(w, "    both_sides conflict: %s\n", c.Name)
+					fmt.Fprintf(w, "      base: %s\n", c.Base)
+					fmt.Fprintf(w, "      fresh: %s\n", c.Fresh)
+					fmt.Fprintf(w, "      published: %s\n", c.Published)
 				}
 			}
 		}

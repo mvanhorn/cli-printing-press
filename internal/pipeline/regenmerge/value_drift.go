@@ -86,7 +86,18 @@ func canonicalDeclTexts(filename string) map[string]string {
 	return declTextsFromFile(filename, nil)
 }
 
+// bodyDeclTexts is canonical decl text that still contains statements the
+// drift comparison strips (AddCommand calls, root highlights). Both-sides
+// merges use this form so a clean merge does not drop those lines.
+func bodyDeclTexts(filename string) map[string]string {
+	return declTextsFromFileMode(filename, false, nil)
+}
+
 func declTextsFromFile(filename string, rewrite func(*ast.File)) map[string]string {
+	return declTextsFromFileMode(filename, true, rewrite)
+}
+
+func declTextsFromFileMode(filename string, stripGenerated bool, rewrite func(*ast.File)) map[string]string {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -103,7 +114,7 @@ func declTextsFromFile(filename string, rewrite func(*ast.File)) map[string]stri
 		case *ast.FuncDecl:
 			name = canonicalFuncName(decl)
 			decl.Doc = nil
-			if decl.Body != nil {
+			if stripGenerated && decl.Body != nil {
 				decl.Body.List = stripAddCommandStmts(decl.Body.List)
 				if isCLIRootGo(filename) {
 					stripGeneratedHighlights(decl.Body)

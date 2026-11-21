@@ -36,7 +36,7 @@ func HandPatched() string { return "orig" }
 func HandPatched() string { return "kept" }
 `)
 	write(fresh, `func credentialAppliesToURL(u string) bool { return u == "https://bound.example" }
-func HandPatched() string { return "fresh" }
+func HandPatched() string { return "orig" }
 `)
 
 	report, err := Classify(snap, fresh, Options{Force: true, BaseDir: base})
@@ -98,7 +98,7 @@ func TestMergeIntoFreshTreeKeepsHandEditedFuncWhenSnapshotDiffersFromOriginal(t 
 `)
 	write(snap, `func Shared() string { return "kept" }
 `)
-	write(fresh, `func Shared() string { return "fresh" }
+	write(fresh, `func Shared() string { return "orig" }
 `)
 
 	report, err := Classify(snap, fresh, Options{Force: true, BaseDir: base})
