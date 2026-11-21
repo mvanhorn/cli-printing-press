@@ -91,6 +91,21 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	if _, err := os.Stat(freshDir); err != nil {
 		return fmt.Errorf("fresh dir %s: %w", freshDir, err)
 	}
+	if !opts.AllowDeclConflicts {
+		var blocking []FileClassification
+		for _, fc := range report.Files {
+			if fc.BothSides == nil || len(fc.BothSides.Conflicts) == 0 {
+				continue
+			}
+			if !shouldPreserveFromSnapshot(fc, snapshotDir, freshDir, opts) {
+				continue
+			}
+			blocking = append(blocking, fc)
+		}
+		if err := declConflictRefusal(blocking); err != nil {
+			return err
+		}
+	}
 
 	for i := range report.Files {
 		fc := &report.Files[i]
@@ -104,10 +119,24 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 		if !shouldPreserveFromSnapshot(*fc, snapshotDir, freshDir, opts) {
 			continue
 		}
-		if (fc.Verdict == VerdictTemplatedWithAdditions || fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift) &&
-			tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path) {
-			fc.Applied = true
-			continue
+		if fc.Verdict == VerdictTemplatedWithAdditions || fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift {
+			wrote, oerr := tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path)
+			var unsafe *bothSidesUnsafeError
+			if errors.As(oerr, &unsafe) {
+				return oerr
+			}
+			var conflict *bothSidesConflictError
+			if errors.As(oerr, &conflict) {
+				if !opts.AllowDeclConflicts {
+					return oerr
+				}
+				fc.Applied = true
+				continue
+			}
+			if wrote {
+				fc.Applied = true
+				continue
+			}
 		}
 		if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
 			return err

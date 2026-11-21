@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/dave/dst"
 )
 
 // valueDriftDisplayLimit caps the per-side rendered text length surfaced in
@@ -87,6 +89,10 @@ func canonicalDeclTexts(filename string) map[string]string {
 }
 
 func declTextsFromFile(filename string, rewrite func(*ast.File)) map[string]string {
+	return declTextsFromFileMode(filename, true, rewrite)
+}
+
+func declTextsFromFileMode(filename string, stripGenerated bool, rewrite func(*ast.File)) map[string]string {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -103,7 +109,7 @@ func declTextsFromFile(filename string, rewrite func(*ast.File)) map[string]stri
 		case *ast.FuncDecl:
 			name = canonicalFuncName(decl)
 			decl.Doc = nil
-			if decl.Body != nil {
+			if stripGenerated && decl.Body != nil {
 				decl.Body.List = stripAddCommandStmts(decl.Body.List)
 				if isCLIRootGo(filename) {
 					stripGeneratedHighlights(decl.Body)
@@ -168,6 +174,41 @@ func canonicalRender(fset *token.FileSet, node ast.Node) (string, error) {
 		text = strings.ReplaceAll(text, "\n\n", "\n")
 	}
 	return text, nil
+}
+
+// bodyDeclTexts is decl text that still contains statements the drift
+// comparison strips, plus comments and raw-string bytes. Both-sides merges
+// install this form, so it must not run through canonicalRender: that
+// collapses every blank line, including ones inside raw strings, and
+// formatting a single go/ast node drops comments that are not doc comments.
+func bodyDeclTexts(filename string) map[string]string {
+	file, err := parseOverlayFile(filename)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(file.Decls))
+	for _, d := range file.Decls {
+		fn, ok := d.(*dst.FuncDecl)
+		if !ok || fn.Name == nil {
+			continue
+		}
+		text, err := renderDSTDecl(fn)
+		if err != nil {
+			continue
+		}
+		out[dstFuncName(fn)] = text
+	}
+	return out
+}
+
+func dstFuncName(fn *dst.FuncDecl) string {
+	name := fn.Name.Name
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		if recv := dstReceiverTypeName(fn.Recv.List[0].Type); recv != "" {
+			name = "(" + recv + ")." + name
+		}
+	}
+	return name
 }
 
 // stripAddCommandStmts removes top-level AddCommand and

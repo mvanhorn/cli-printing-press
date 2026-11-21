@@ -240,6 +240,9 @@ func classifyFiles(publishedDir, freshDir, baseDir string) ([]FileClassification
 			pubMarker := hasTemplatedMarker(pubPath)
 			freshMarker := hasTemplatedMarker(freshPath)
 			fc = decideBothPresent(rel, pubPath, freshPath, basePath, pubDecls, freshDecls, pubMarker, freshMarker, freshGlobalDecls)
+			if basePath != "" && verdictOverlaysHandEdits(fc.Verdict) {
+				fc.BothSides = bothSidesFromPlans(planBothSidesFuncs(pubPath, freshPath, basePath))
+			}
 		}
 		out = append(out, fc)
 	}
@@ -264,6 +267,15 @@ func stringSet(s []string) map[string]struct{} {
 		out[v] = struct{}{}
 	}
 	return out
+}
+
+func verdictOverlaysHandEdits(v Verdict) bool {
+	switch v {
+	case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
+		return true
+	default:
+		return false
+	}
 }
 
 // decideBothPresent runs the in-both branch of the classification decision

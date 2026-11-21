@@ -30,7 +30,7 @@ func Moved() { os.Exit(1) }
 `)
 	fresh := write("fresh.go", `package client
 
-func HandPatched() string { return "fresh" }
+func HandPatched() string { return "orig" }
 func Rewritten() bool { return true }
 `)
 	base := write("base.go", `package client
@@ -68,7 +68,7 @@ func Other() {}
 
 import "fmt"
 
-func HandPatched() string { return fmt.Sprint("fresh") }
+func HandPatched() string { return "orig" }
 func Other() {}
 `)
 	base := write("base.go", `package client
@@ -107,7 +107,7 @@ func Other() {}
 
 import f "fmt"
 
-func HandPatched() string { return f.Sprint("fresh") }
+func HandPatched() string { return "orig" }
 func Other() { _ = f.Sprint("other") }
 `)
 	base := write("base.go", `package client
@@ -149,7 +149,7 @@ import (
 	"os"
 )
 
-func HandPatched() string { return f.Sprint("fresh") }
+func HandPatched() string { return "orig" }
 func Other() string { return f.Sprint("other") + os.Getenv("x") }
 `)
 	base := write("base.go", `package client
@@ -187,7 +187,7 @@ func Other() {}
 
 import f "fmt"
 
-func HandPatched() string { return f.Sprint("fresh") }
+func HandPatched() string { return "orig" }
 func Other() string { return f.Sprint("other") }
 `)
 	base := write("base.go", `package client
@@ -228,7 +228,7 @@ func HandPatched(f interface{ Close() error }) string {
 
 import pkgos "os"
 
-func HandPatched() string { return pkgos.Getenv("fresh") }
+func HandPatched() string { return "orig" }
 func Other() string { return pkgos.Getenv("other") }
 `)
 	base := write("base.go", `package client
@@ -264,7 +264,7 @@ func Other() {}
 `)
 	fresh := write("fresh.go", `package client
 
-func HandPatched() string { return "fresh" }
+func HandPatched() string { return "orig" }
 func Other() {}
 `)
 	base := write("base.go", `package client
@@ -302,7 +302,7 @@ func Other() {}
 
 import pkgos "os"
 
-func HandPatched() string { return pkgos.Getenv("fresh") }
+func HandPatched() string { return "orig" }
 func Other() string { return pkgos.Getenv("other") }
 `)
 	base := write("base.go", `package client
@@ -342,7 +342,7 @@ func Other() {}
 `)
 	fresh := write("fresh.go", `package client
 
-func HandPatched() string { return "fresh" }
+func HandPatched() string { return "orig" }
 func Other() {}
 `)
 	base := write("base.go", `package client
@@ -387,7 +387,7 @@ func Other() {}
 `)
 	fresh := write("fresh.go", `package client
 
-func HandPatched() string { return "fresh" }
+func HandPatched() string { return "orig" }
 func Other() {}
 `)
 	base := write("base.go", `package client
@@ -430,7 +430,7 @@ func Other() {}
 `)
 	fresh := write("fresh.go", `package client
 
-func HandPatched() string { return "fresh" }
+func HandPatched() string { return "orig" }
 func Other() {}
 `)
 	base := write("base.go", `package client
@@ -542,7 +542,7 @@ import (
 `
 	pub := write("pub.go", header+`func HandPatched() string { return "kept" }
 `+load)
-	fresh := write("fresh.go", header+`func HandPatched() string { return "fresh" }
+	fresh := write("fresh.go", header+`func HandPatched() string { return "orig" }
 `+load+`
 func Save() []byte {
 	b, _ := toml.Marshal(struct{ Name string }{Name: "x"})
@@ -607,7 +607,7 @@ func TestOverlayKeepsHandEditedFuncWhenSnapshotDiffersFromOriginal(t *testing.T)
 `)
 	pub := write("pub.go", header+`func Shared() string { return "kept" }
 `)
-	fresh := write("fresh.go", header+`func Shared() string { return "fresh" }
+	fresh := write("fresh.go", header+`func Shared() string { return "orig" }
 `)
 	dest := filepath.Join(dir, "dest.go")
 	require.NoError(t, overlayHandEditedDecls(pub, fresh, orig, dest))
@@ -662,9 +662,11 @@ func TestTryOverlayRefusesKindConflict(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(pubDir, rel), []byte(header+"var MaxBytes = 32000\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(freshDir, rel), []byte(header+"const MaxBytes = 60000\n"), 0o644))
 
-	assert.False(t, tryOverlayHandEditedDecls(pubDir, freshDir, "", destDir, filepath.ToSlash(rel)))
-	_, err := os.Stat(filepath.Join(destDir, rel))
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	wrote, err := tryOverlayHandEditedDecls(pubDir, freshDir, "", destDir, filepath.ToSlash(rel))
+	assert.False(t, wrote)
+	assert.NoError(t, err)
+	_, statErr := os.Stat(filepath.Join(destDir, rel))
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestTryOverlayAllowsSameTokenValueEdit(t *testing.T) {
@@ -682,7 +684,9 @@ func TestTryOverlayAllowsSameTokenValueEdit(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(pubDir, rel), []byte(header+"const MaxBytes = 32000\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(freshDir, rel), []byte(header+"const MaxBytes = 60000\n"), 0o644))
 
-	require.True(t, tryOverlayHandEditedDecls(pubDir, freshDir, "", destDir, filepath.ToSlash(rel)))
+	wrote, err := tryOverlayHandEditedDecls(pubDir, freshDir, "", destDir, filepath.ToSlash(rel))
+	require.NoError(t, err)
+	require.True(t, wrote)
 	got := readFileString(t, filepath.Join(destDir, rel))
 	assert.Contains(t, got, "const MaxBytes = 32000")
 	assert.NotContains(t, got, "60000")
