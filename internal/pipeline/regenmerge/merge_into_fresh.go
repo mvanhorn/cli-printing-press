@@ -121,6 +121,10 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 		}
 		if fc.Verdict == VerdictTemplatedWithAdditions || fc.Verdict == VerdictTemplatedBodyDrift || fc.Verdict == VerdictTemplatedValueDrift {
 			wrote, oerr := tryOverlayHandEditedDecls(snapshotDir, freshDir, opts.BaseDir, freshDir, fc.Path)
+			var unsafe *bothSidesUnsafeError
+			if errors.As(oerr, &unsafe) {
+				return oerr
+			}
 			var conflict *bothSidesConflictError
 			if errors.As(oerr, &conflict) {
 				if !opts.AllowDeclConflicts {

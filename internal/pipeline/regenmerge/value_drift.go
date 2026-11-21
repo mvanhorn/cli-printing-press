@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/dave/dst"
 )
 
 // valueDriftDisplayLimit caps the per-side rendered text length surfaced in
@@ -84,13 +86,6 @@ func detectValueDrift(pubPath, freshPath string) *ValueDrift {
 // rendering.
 func canonicalDeclTexts(filename string) map[string]string {
 	return declTextsFromFile(filename, nil)
-}
-
-// bodyDeclTexts is canonical decl text that still contains statements the
-// drift comparison strips (AddCommand calls, root highlights). Both-sides
-// merges use this form so a clean merge does not drop those lines.
-func bodyDeclTexts(filename string) map[string]string {
-	return declTextsFromFileMode(filename, false, nil)
 }
 
 func declTextsFromFile(filename string, rewrite func(*ast.File)) map[string]string {
@@ -179,6 +174,41 @@ func canonicalRender(fset *token.FileSet, node ast.Node) (string, error) {
 		text = strings.ReplaceAll(text, "\n\n", "\n")
 	}
 	return text, nil
+}
+
+// bodyDeclTexts is decl text that still contains statements the drift
+// comparison strips, plus comments and raw-string bytes. Both-sides merges
+// install this form, so it must not run through canonicalRender: that
+// collapses every blank line, including ones inside raw strings, and
+// formatting a single go/ast node drops comments that are not doc comments.
+func bodyDeclTexts(filename string) map[string]string {
+	file, err := parseOverlayFile(filename)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(file.Decls))
+	for _, d := range file.Decls {
+		fn, ok := d.(*dst.FuncDecl)
+		if !ok || fn.Name == nil {
+			continue
+		}
+		text, err := renderDSTDecl(fn)
+		if err != nil {
+			continue
+		}
+		out[dstFuncName(fn)] = text
+	}
+	return out
+}
+
+func dstFuncName(fn *dst.FuncDecl) string {
+	name := fn.Name.Name
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		if recv := dstReceiverTypeName(fn.Recv.List[0].Type); recv != "" {
+			name = "(" + recv + ")." + name
+		}
+	}
+	return name
 }
 
 // stripAddCommandStmts removes top-level AddCommand and

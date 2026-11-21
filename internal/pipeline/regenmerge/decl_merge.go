@@ -41,6 +41,21 @@ func (e *bothSidesConflictError) Error() string {
 	return e.msg
 }
 
+// bothSidesUnsafeError means a both-sides function cannot be installed, and
+// keeping the published file would put that function's published body back.
+// --allow-decl-conflicts does not bypass it: the flag keeps the fresh body,
+// which this file cannot do.
+type bothSidesUnsafeError struct {
+	msg string
+}
+
+func (e *bothSidesUnsafeError) Error() string {
+	if e == nil || e.msg == "" {
+		return "refusing to apply: a shared function changed on both sides and the fresh body cannot be kept"
+	}
+	return e.msg
+}
+
 func planBothSidesFuncs(pubPath, freshPath, basePath string) []bothSidesFuncPlan {
 	if basePath == "" {
 		return nil
@@ -74,12 +89,34 @@ func planBothSidesFuncs(pubPath, freshPath, basePath string) []bothSidesFuncPlan
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	dotImport := fileUsesDotImport(pubPath) || fileUsesDotImport(freshPath) || fileUsesDotImport(basePath)
+	pubAlias := loadImportAliases(pubPath)
+	freshAlias := loadImportAliases(freshPath)
+	baseAlias := loadImportAliases(basePath)
 	plans := make([]bothSidesFuncPlan, 0, len(names))
 	for _, name := range names {
 		baseBody := bodyBase[name]
 		pubBody := bodyPub[name]
 		freshBody := bodyFresh[name]
-		merged, hunk, ok := merge3(baseBody, pubBody, freshBody)
+		var merged string
+		var hunk mergeHunk
+		ok := !dotImport
+		if ok {
+			var qerr error
+			baseBody, qerr = qualifyFuncSelectors(baseBody, baseAlias)
+			if qerr == nil {
+				pubBody, qerr = qualifyFuncSelectors(pubBody, pubAlias)
+			}
+			if qerr == nil {
+				freshBody, qerr = qualifyFuncSelectors(freshBody, freshAlias)
+			}
+			if qerr != nil {
+				ok = false
+			}
+		}
+		if ok {
+			merged, hunk, ok = merge3(baseBody, pubBody, freshBody)
+		}
 		plan := bothSidesFuncPlan{name: name}
 		if ok && !acceptMergedFunc(name, merged) {
 			ok = false

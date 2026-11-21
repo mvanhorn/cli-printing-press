@@ -486,6 +486,244 @@ func TestDeclConflictRefusalIgnoresFilesWithoutConflicts(t *testing.T) {
 	assert.Contains(t, err.Error(), "preRun")
 }
 
+func TestBothSidesMergeResolvesConflictingImportAliases(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `import f "os"
+
+func preRun() string {
+	keep := f.Getenv("keep")
+	if flag {
+		return f.Getenv("yes")
+	}
+	return keep
+}
+`
+	pubSrc := bothSidesHeader + `import f "os"
+
+func preRun() string {
+	keep := f.Getenv("keep")
+	hand := f.Getenv("hand")
+	if flag {
+		return f.Getenv("yes")
+	}
+	return keep
+}
+`
+	freshSrc := bothSidesHeader + `import f "fmt"
+
+func preRun() string {
+	keep := f.Sprint("keep")
+	if flag {
+		return f.Sprint("json")
+	}
+	return keep
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, `f.Sprint("keep")`)
+	assert.Contains(t, got, `f.Sprint("json")`)
+	assert.Contains(t, got, `.Getenv("hand")`)
+	assert.NotContains(t, got, `f.Getenv`)
+	assert.NotContains(t, got, "os.Sprint")
+	assert.NotContains(t, got, "fmt.Getenv")
+	assert.Regexp(t, `(?m)^import \(`, got)
+	assert.Contains(t, got, `"os"`)
+	assert.Contains(t, got, `f "fmt"`)
+}
+
+func TestBothSidesMergeKeepsRawStringBlankLines(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + "func preRun() string {\n\thelp := `line1\n\nline2`\n\tif flag {\n\t\treturn \"yes\"\n\t}\n\treturn help\n}\n"
+	pubSrc := bothSidesHeader + "func preRun() string {\n\thelp := `line1\n\nline2`\n\thand := true\n\tif flag {\n\t\treturn \"yes\"\n\t}\n\treturn help\n}\n"
+	freshSrc := bothSidesHeader + "func preRun() string {\n\thelp := `line1\n\nline2`\n\tif flag {\n\t\treturn \"json\"\n\t}\n\treturn help\n}\n"
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, "line1\n\nline2")
+	assert.Contains(t, got, "hand := true")
+	assert.NotContains(t, got, `"yes"`)
+	assert.Contains(t, got, `"json"`)
+}
+
+func TestBothSidesMergeKeepsFunctionComments(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `func preRun(f *flags) {
+	// keep this explanation
+	if f.agent {
+		f.yes = true
+		f.json = true
+	}
+}
+`
+	pubSrc := bothSidesHeader + `func preRun(f *flags) {
+	// keep this explanation
+	if f.agent {
+		f.yes = true
+		f.json = true
+	}
+	// hand note
+	f.handAdded = true
+}
+`
+	freshSrc := bothSidesHeader + `func preRun(f *flags) {
+	// keep this explanation
+	if f.agent {
+		f.json = true
+	}
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, "keep this explanation")
+	assert.Contains(t, got, "hand note")
+	assert.Contains(t, got, "f.handAdded = true")
+	assert.NotContains(t, got, "f.yes = true")
+}
+
+func TestBothSidesKindChangeDoesNotKeepPublishedFunction(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `const MaxBytes = 1
+
+func preRun(f *flags) {
+	f.mode = "base"
+}
+`
+	pubSrc := bothSidesHeader + `var MaxBytes = 2
+
+func preRun(f *flags) {
+	f.mode = "hand"
+}
+`
+	freshSrc := bothSidesHeader + `const MaxBytes = 1
+
+func preRun(f *flags) {
+	f.mode = "template"
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	before := readFileString(t, filepath.Join(pubDir, rel))
+	freshBefore := readFileString(t, filepath.Join(freshDir, rel))
+	report := classifyBothSides(t, pubDir, freshDir, baseDir)
+
+	err := Apply(report, Options{Force: true, BaseDir: baseDir, AllowDeclConflicts: true})
+	require.Error(t, err)
+	var unsafe *bothSidesUnsafeError
+	require.ErrorAs(t, err, &unsafe)
+	assert.Equal(t, before, readFileString(t, filepath.Join(pubDir, rel)))
+
+	err = MergeIntoFreshTree(pubDir, freshDir, report, Options{Force: true, BaseDir: baseDir, AllowDeclConflicts: true})
+	require.Error(t, err)
+	require.ErrorAs(t, err, &unsafe)
+	assert.Equal(t, freshBefore, readFileString(t, filepath.Join(freshDir, rel)))
+	assert.NotContains(t, readFileString(t, filepath.Join(freshDir, rel)), `f.mode = "hand"`)
+}
+
+func TestBothSidesDotImportDoesNotMergeSelectors(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + "import . \"os\"\n\nfunc preRun() string {\n\tkeep := Getenv(\"keep\")\n\tif flag {\n\t\treturn \"yes\"\n\t}\n\treturn keep\n}\n"
+	pubSrc := bothSidesHeader + "import . \"os\"\n\nfunc preRun() string {\n\tkeep := Getenv(\"keep\")\n\thand := Getenv(\"hand\")\n\tif flag {\n\t\treturn \"yes\"\n\t}\n\treturn keep\n}\n"
+	freshSrc := bothSidesHeader + "import . \"fmt\"\n\nfunc preRun() string {\n\tkeep := Sprint(\"keep\")\n\tif flag {\n\t\treturn \"json\"\n\t}\n\treturn keep\n}\n"
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	report := classifyBothSides(t, pubDir, freshDir, baseDir)
+	fc := fileClass(t, report, rel)
+	require.NotNil(t, fc.BothSides)
+	require.NotEmpty(t, fc.BothSides.Conflicts)
+	assert.Empty(t, fc.BothSides.Merged)
+
+	dest := filepath.Join(t.TempDir(), "root.go")
+	err := overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	)
+	var conflict *bothSidesConflictError
+	require.ErrorAs(t, err, &conflict)
+	got := readFileString(t, dest)
+	assert.NotContains(t, got, `Getenv("hand")`)
+	assert.Contains(t, got, `Sprint("keep")`)
+}
+
+func TestBothSidesCleanMergeBesideKindChangeRefuses(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `const MaxBytes = 1
+
+func preRun(f *flags) {
+	if f.agent {
+		f.yes = true
+		f.json = true
+	}
+}
+`
+	pubSrc := bothSidesHeader + `var MaxBytes = 2
+
+func preRun(f *flags) {
+	if f.agent {
+		f.yes = true
+		f.json = true
+	}
+	f.handAdded = true
+}
+`
+	freshSrc := bothSidesHeader + `const MaxBytes = 1
+
+func preRun(f *flags) {
+	if f.agent {
+		f.json = true
+	}
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	before := readFileString(t, filepath.Join(pubDir, rel))
+	freshBefore := readFileString(t, filepath.Join(freshDir, rel))
+
+	err := Apply(classifyBothSides(t, pubDir, freshDir, baseDir), Options{Force: true, BaseDir: baseDir})
+	require.Error(t, err)
+	var unsafe *bothSidesUnsafeError
+	require.ErrorAs(t, err, &unsafe)
+	assert.Equal(t, before, readFileString(t, filepath.Join(pubDir, rel)))
+
+	err = MergeIntoFreshTree(pubDir, freshDir, classifyBothSides(t, pubDir, freshDir, baseDir), Options{Force: true, BaseDir: baseDir, AllowDeclConflicts: true})
+	require.Error(t, err)
+	require.ErrorAs(t, err, &unsafe)
+	assert.Equal(t, freshBefore, readFileString(t, filepath.Join(freshDir, rel)))
+	assert.NotContains(t, readFileString(t, filepath.Join(freshDir, rel)), "f.yes = true")
+	assert.NotContains(t, readFileString(t, filepath.Join(freshDir, rel)), "f.handAdded = true")
+}
+
 func writeBothSidesTrees(t *testing.T, rel, baseSrc, pubSrc, freshSrc string) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()

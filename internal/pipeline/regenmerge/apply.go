@@ -112,6 +112,11 @@ func Apply(report *MergeReport, opts Options) error {
 			fc.Applied = true
 		case VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift, VerdictTemplatedWithAdditions:
 			wrote, oerr := tryOverlayHandEditedDecls(cliDir, freshDir, opts.BaseDir, tempDir, fc.Path)
+			var unsafe *bothSidesUnsafeError
+			if errors.As(oerr, &unsafe) {
+				cleanup()
+				return oerr
+			}
 			var conflict *bothSidesConflictError
 			if errors.As(oerr, &conflict) {
 				if !opts.AllowDeclConflicts {

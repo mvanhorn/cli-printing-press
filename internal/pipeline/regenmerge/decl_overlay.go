@@ -2,6 +2,8 @@ package regenmerge
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"go/format"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -42,6 +45,11 @@ func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) (
 		}
 	}
 	if declKindConflict(pubPath, freshPath, basePath) {
+		if len(planBothSidesFuncs(pubPath, freshPath, basePath)) > 0 {
+			// Kind conflicts abort the whole overlay. Falling through would
+			// copy the published file and put the published function back.
+			return false, &bothSidesUnsafeError{msg: "refusing to apply: a shared function changed on both sides, but a const/var/type kind change in the same file blocks installing it\nthe published file was not used, because that would keep the published function body"}
+		}
 		return false, nil
 	}
 	err := overlayHandEditedDecls(pubPath, freshPath, basePath, destPath)
@@ -124,8 +132,12 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 				conflictList = append(conflictList, c)
 				continue
 			}
+			if err := bindStableImportSelectors(decl, freshFile, pubFile, basePath); err != nil {
+				c := DeclConflict{Name: name, Fresh: clipDeclSnippet(plan.merged)}
+				conflictList = append(conflictList, c)
+				continue
+			}
 			freshFile.Decls[i] = decl
-			installed = append(installed, decl)
 			continue
 		}
 		repl, ok := pubByName[name]
@@ -512,6 +524,163 @@ func dropUnusedImports(file *dst.File) {
 		decls = append(decls, gd)
 	}
 	file.Decls = decls
+}
+
+// stableImportIdent is the same Go identifier for an import path on every
+// side of a merge, so one local alias cannot stand for two packages.
+func stableImportIdent(quotedPath string) string {
+	sum := sha256.Sum256([]byte(quotedPath))
+	return "ppimp" + hex.EncodeToString(sum[:6])
+}
+
+func loadImportAliases(path string) map[string]string {
+	file, err := parseOverlayFile(path)
+	if err != nil {
+		return nil
+	}
+	return importAliasMap(file)
+}
+
+func fileUsesDotImport(path string) bool {
+	file, err := parseOverlayFile(path)
+	if err != nil {
+		return false
+	}
+	for _, d := range file.Decls {
+		gd, ok := d.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			is, ok := spec.(*dst.ImportSpec)
+			if ok && is.Name != nil && is.Name.Name == "." {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parseOverlayFile(path string) (*dst.File, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return decorator.NewDecorator(nil).ParseFile(path, data, parser.ParseComments)
+}
+
+func qualifyFuncSelectors(funcText string, aliasToPath map[string]string) (string, error) {
+	if len(aliasToPath) == 0 {
+		return funcText, nil
+	}
+	decl, err := mergedDeclFromText(funcText)
+	if err != nil {
+		return "", err
+	}
+	changed := false
+	forEachPackageSelector(decl, func(id *dst.Ident) {
+		quoted, ok := aliasToPath[id.Name]
+		if !ok {
+			return
+		}
+		id.Name = stableImportIdent(quoted)
+		changed = true
+	})
+	if !changed {
+		return funcText, nil
+	}
+	return renderDSTDecl(decl)
+}
+
+func renderDSTDecl(decl dst.Decl) (string, error) {
+	file := &dst.File{Name: dst.NewIdent("mergeddecl"), Decls: []dst.Decl{decl}}
+	var buf bytes.Buffer
+	if err := decorator.Fprint(&buf, file); err != nil {
+		return "", err
+	}
+	formatted, err := format.Source(buf.Bytes())
+	if err != nil {
+		formatted = buf.Bytes()
+	}
+	text := string(formatted)
+	if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+		text = text[nl+1:]
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// bindStableImportSelectors rewrites merge idents back to the destination
+// file's aliases and adds any import the merged function still needs.
+func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath string) error {
+	if decl == nil || dest == nil {
+		return nil
+	}
+	known := map[string]string{}
+	remember := func(file *dst.File) {
+		for _, quoted := range importAliasMap(file) {
+			known[stableImportIdent(quoted)] = quoted
+		}
+	}
+	remember(dest)
+	remember(pub)
+	if basePath != "" {
+		if base, err := parseOverlayFile(basePath); err == nil {
+			remember(base)
+		}
+	}
+	destAlias := importAliasMap(dest)
+	pathAlias := map[string]string{}
+	for alias, quoted := range destAlias {
+		if _, ok := pathAlias[quoted]; !ok {
+			pathAlias[quoted] = alias
+		}
+	}
+	var missing []string
+	haveMissing := map[string]bool{}
+	unknown := false
+	forEachPackageSelector(decl, func(id *dst.Ident) {
+		quoted, ok := known[id.Name]
+		if !ok {
+			if strings.HasPrefix(id.Name, "ppimp") {
+				unknown = true
+			}
+			return
+		}
+		alias, ok := pathAlias[quoted]
+		if !ok {
+			alias = unusedImportAlias(destAlias, importPathDefaultAlias(quoted), quoted)
+			destAlias[alias] = quoted
+			pathAlias[quoted] = alias
+			if !haveMissing[quoted] {
+				missing = append(missing, quoted)
+				haveMissing[quoted] = true
+			}
+		}
+		id.Name = alias
+	})
+	if unknown {
+		return fmt.Errorf("merged function uses an unresolved import alias")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	specs := make([]dst.Spec, 0, len(missing))
+	for _, quoted := range missing {
+		specs = append(specs, importSpecWithAlias(&dst.ImportSpec{
+			Path: &dst.BasicLit{Kind: token.STRING, Value: quoted},
+		}, pathAlias[quoted]))
+	}
+	for _, d := range dest.Decls {
+		gd, ok := d.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		gd.Specs = append(gd.Specs, specs...)
+		return nil
+	}
+	dest.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: specs}}, dest.Decls...)
+	return nil
 }
 
 func importAliasMap(file *dst.File) map[string]string {
