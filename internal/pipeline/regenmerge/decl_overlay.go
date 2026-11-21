@@ -2,14 +2,18 @@ package regenmerge
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"go/format"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -23,16 +27,16 @@ import (
 // shared decls that no longer match the original emission. Shared function
 // bodies stay on fresh when there is no base so a reprint cannot freeze
 // unpatched templated implementations.
-func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) bool {
+func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) (bool, error) {
 	if destDir == "" {
-		return false
+		return false, nil
 	}
 	rel = filepath.ToSlash(rel)
 	pubPath := filepath.Join(pubDir, filepath.FromSlash(rel))
 	freshPath := filepath.Join(freshDir, filepath.FromSlash(rel))
 	destPath := filepath.Join(destDir, filepath.FromSlash(rel))
 	if !shouldOverlayOntoFresh(rel, pubPath, freshPath) {
-		return false
+		return false, nil
 	}
 	basePath := ""
 	if baseDir != "" {
@@ -42,9 +46,22 @@ func tryOverlayHandEditedDecls(pubDir, freshDir, baseDir, destDir, rel string) b
 		}
 	}
 	if declKindConflict(pubPath, freshPath, basePath) {
-		return false
+		if len(planBothSidesFuncs(pubPath, freshPath, basePath)) > 0 {
+			// Kind conflicts abort the whole overlay. Falling through would
+			// copy the published file and put the published function back.
+			return false, &bothSidesUnsafeError{msg: "refusing to apply: a shared function changed on both sides, but a const/var/type kind change in the same file blocks installing it\nthe published file was not used, because that would keep the published function body"}
+		}
+		return false, nil
 	}
-	return overlayHandEditedDecls(pubPath, freshPath, basePath, destPath) == nil
+	err := overlayHandEditedDecls(pubPath, freshPath, basePath, destPath)
+	var conflict *bothSidesConflictError
+	if errors.As(err, &conflict) {
+		return true, conflict
+	}
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func shouldOverlayOntoFresh(rel, pubPath, freshPath string) bool {
@@ -94,10 +111,41 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 	baseSpecs := canonicalSpecTexts(basePath)
 	pubNameVals := canonicalNameValueTexts(pubPath)
 	baseNameVals := canonicalNameValueTexts(basePath)
+	plans := map[string]bothSidesFuncPlan{}
+	var conflictList []DeclConflict
+	for _, plan := range planBothSidesFuncs(pubPath, freshPath, basePath) {
+		plans[plan.name] = plan
+	}
 	var installed []dst.Decl
+	var pendingImports []dst.Spec
+	// Chosen aliases stay here until the loop finishes so a later function
+	// cannot reuse one for a different package. The file's decl list is
+	// unchanged until then.
+	reservedImports := importAliasMap(freshFile)
 	for i, d := range freshFile.Decls {
 		name := overlayDeclName(d)
 		if !fromPub[name] {
+			continue
+		}
+		if plan, ok := plans[name]; ok {
+			if plan.isConflict {
+				conflictList = append(conflictList, plan.conflict)
+				continue
+			}
+			decl, err := mergedDeclFromText(plan.merged)
+			if err != nil || overlayDeclName(decl) != name {
+				c := DeclConflict{Name: name, Fresh: clipDeclSnippet(plan.merged)}
+				conflictList = append(conflictList, c)
+				continue
+			}
+			specs, err := bindStableImportSelectors(decl, freshFile, pubFile, basePath, reservedImports)
+			if err != nil {
+				c := DeclConflict{Name: name, Fresh: clipDeclSnippet(plan.merged)}
+				conflictList = append(conflictList, c)
+				continue
+			}
+			freshFile.Decls[i] = decl
+			pendingImports = append(pendingImports, specs...)
 			continue
 		}
 		repl, ok := pubByName[name]
@@ -125,6 +173,7 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 		installed = append(installed, d)
 		freshByName[name] = d
 	}
+	installImportSpecs(freshFile, pendingImports)
 	addImportsUsedByDecls(freshFile, pubFile, installed)
 	rewriteInstalledSelectorsToDestAliases(freshFile, pubFile, installed)
 	dropUnusedImports(freshFile)
@@ -140,7 +189,10 @@ func overlayHandEditedDecls(pubPath, freshPath, basePath, destPath string) error
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomic(destPath, formatted)
+	if err := writeFileAtomic(destPath, formatted); err != nil {
+		return err
+	}
+	return conflictError(conflictList)
 }
 
 func handEditedDeclNames(pubPath, freshPath, basePath string) map[string]bool {
@@ -442,7 +494,6 @@ func dropUnusedImports(file *dst.File) {
 	if file == nil {
 		return
 	}
-	aliasToPath := importAliasMap(file)
 	var body []dst.Decl
 	for _, d := range file.Decls {
 		if gd, ok := d.(*dst.GenDecl); ok && gd.Tok == token.IMPORT {
@@ -450,7 +501,12 @@ func dropUnusedImports(file *dst.File) {
 		}
 		body = append(body, d)
 	}
-	needed := importPathsUsedByDecls(body, aliasToPath)
+	usedAlias := map[string]bool{}
+	for _, d := range body {
+		forEachPackageSelector(d, func(id *dst.Ident) {
+			usedAlias[id.Name] = true
+		})
+	}
 
 	var decls []dst.Decl
 	for _, d := range file.Decls {
@@ -466,11 +522,8 @@ func dropUnusedImports(file *dst.File) {
 				specs = append(specs, spec)
 				continue
 			}
-			if alias := importSpecAlias(is); alias == "_" || alias == "." {
-				specs = append(specs, spec)
-				continue
-			}
-			if needed[is.Path.Value] {
+			alias := importSpecAlias(is)
+			if alias == "_" || alias == "." || usedAlias[alias] {
 				specs = append(specs, spec)
 			}
 		}
@@ -481,6 +534,308 @@ func dropUnusedImports(file *dst.File) {
 		decls = append(decls, gd)
 	}
 	file.Decls = decls
+}
+
+// stableImportIdent is the same Go identifier for an import path on every
+// side of a merge, so one local alias cannot stand for two packages.
+func stableImportIdent(quotedPath string) string {
+	sum := sha256.Sum256([]byte(quotedPath))
+	return "ppimp" + hex.EncodeToString(sum[:6])
+}
+
+func loadImportAliases(path string) map[string]string {
+	file, err := parseOverlayFile(path)
+	if err != nil {
+		return nil
+	}
+	return importAliasMap(file)
+}
+
+func fileUsesDotImport(path string) bool {
+	file, err := parseOverlayFile(path)
+	if err != nil {
+		return false
+	}
+	for _, d := range file.Decls {
+		gd, ok := d.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			is, ok := spec.(*dst.ImportSpec)
+			if ok && is.Name != nil && is.Name.Name == "." {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parseOverlayFile(path string) (*dst.File, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return decorator.NewDecorator(nil).ParseFile(path, data, parser.ParseComments)
+}
+
+func qualifyFuncSelectors(funcText string, aliasToPath map[string]string) (string, error) {
+	if len(aliasToPath) == 0 {
+		return funcText, nil
+	}
+	decl, err := mergedDeclFromText(funcText)
+	if err != nil {
+		return "", err
+	}
+	changed := false
+	forEachPackageSelector(decl, func(id *dst.Ident) {
+		quoted, ok := aliasToPath[id.Name]
+		if !ok {
+			return
+		}
+		id.Name = stableImportIdent(quoted)
+		changed = true
+	})
+	if !changed {
+		return funcText, nil
+	}
+	return renderDSTDecl(decl)
+}
+
+func renderDSTDecl(decl dst.Decl) (string, error) {
+	file := &dst.File{Name: dst.NewIdent("mergeddecl"), Decls: []dst.Decl{decl}}
+	var buf bytes.Buffer
+	if err := decorator.Fprint(&buf, file); err != nil {
+		return "", err
+	}
+	formatted, err := format.Source(buf.Bytes())
+	if err != nil {
+		formatted = buf.Bytes()
+	}
+	text := string(formatted)
+	if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+		text = text[nl+1:]
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// bindStableImportSelectors rewrites merge idents back to the destination
+// file's aliases and adds any import the merged function still needs.
+func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath string, reserved map[string]string) ([]dst.Spec, error) {
+	if decl == nil || dest == nil {
+		return nil, nil
+	}
+	known := map[string]string{}
+	remember := func(file *dst.File) {
+		for _, quoted := range importAliasMap(file) {
+			known[stableImportIdent(quoted)] = quoted
+		}
+	}
+	remember(dest)
+	remember(pub)
+	// Copy so a failed bind does not reserve names the file never installs.
+	destAlias := cloneAliasMap(reserved)
+	pubAlias := importAliasMap(pub)
+	var baseAlias map[string]string
+	if basePath != "" {
+		if base, err := parseOverlayFile(basePath); err == nil {
+			remember(base)
+			baseAlias = importAliasMap(base)
+		}
+	}
+	// One alias per package has to be legal at every call to that package.
+	// A local that is not in scope at any of those calls does not rule it out.
+	topLevel := fileTopLevelNames(dest)
+	type selectorUse struct {
+		id      *dst.Ident
+		blocked map[string]bool
+	}
+	uses := map[string][]selectorUse{}
+	unknown := false
+	forEachPackageSelectorScoped(decl, func(id *dst.Ident, sc *bindingScopes) {
+		quoted, ok := known[id.Name]
+		if !ok {
+			if strings.HasPrefix(id.Name, "ppimp") {
+				unknown = true
+			}
+			return
+		}
+		blocked := map[string]bool{}
+		if sc != nil {
+			for _, frame := range sc.stack {
+				for name := range frame {
+					blocked[name] = true
+				}
+			}
+		}
+		for name := range topLevel {
+			blocked[name] = true
+		}
+		uses[quoted] = append(uses[quoted], selectorUse{id: id, blocked: blocked})
+	})
+	if unknown {
+		return nil, fmt.Errorf("merged function uses an unresolved import alias")
+	}
+	var missing []string
+	chosen := map[string]string{}
+	paths := make([]string, 0, len(uses))
+	for quoted := range uses {
+		paths = append(paths, quoted)
+	}
+	sort.Strings(paths)
+	for _, quoted := range paths {
+		blocked := map[string]bool{}
+		for _, use := range uses[quoted] {
+			for name := range use.blocked {
+				blocked[name] = true
+			}
+		}
+		alias := chooseImportAlias(quoted, destAlias, pubAlias, baseAlias, blocked)
+		if destAlias[alias] != quoted {
+			destAlias[alias] = quoted
+			missing = append(missing, quoted)
+			chosen[quoted] = alias
+		}
+		for _, use := range uses[quoted] {
+			use.id.Name = alias
+		}
+	}
+	maps.Copy(reserved, destAlias)
+	if len(missing) == 0 {
+		return nil, nil
+	}
+	sort.Strings(missing)
+	specs := make([]dst.Spec, 0, len(missing))
+	for _, quoted := range missing {
+		specs = append(specs, importSpecWithAlias(&dst.ImportSpec{
+			Path: &dst.BasicLit{Kind: token.STRING, Value: quoted},
+		}, chosen[quoted]))
+	}
+	return specs, nil
+}
+
+func cloneAliasMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	maps.Copy(out, in)
+	return out
+}
+
+// installImportSpecs adds imports after declaration replacement. Doing it
+// inside that loop would shift the indexes the loop still assigns.
+func installImportSpecs(file *dst.File, specs []dst.Spec) {
+	if file == nil || len(specs) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var uniq []dst.Spec
+	for _, spec := range specs {
+		is, ok := spec.(*dst.ImportSpec)
+		if !ok || is.Path == nil {
+			continue
+		}
+		key := importSpecAlias(is) + " " + is.Path.Value
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		uniq = append(uniq, spec)
+	}
+	if len(uniq) == 0 {
+		return
+	}
+	for _, d := range file.Decls {
+		gd, ok := d.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		gd.Specs = append(gd.Specs, uniq...)
+		return
+	}
+	file.Decls = append([]dst.Decl{&dst.GenDecl{Tok: token.IMPORT, Specs: uniq}}, file.Decls...)
+}
+
+func chooseImportAlias(quoted string, destAlias, pubAlias, baseAlias map[string]string, blocked map[string]bool) string {
+	var existing []string
+	for alias, path := range destAlias {
+		if path == quoted && !blocked[alias] {
+			existing = append(existing, alias)
+		}
+	}
+	sort.Strings(existing)
+	if len(existing) > 0 {
+		return existing[0]
+	}
+	for _, alias := range append(aliasesForPath(pubAlias, quoted), aliasesForPath(baseAlias, quoted)...) {
+		if alias == "" || alias == "_" || alias == "." || blocked[alias] {
+			continue
+		}
+		if bound, ok := destAlias[alias]; !ok || bound == quoted {
+			return alias
+		}
+	}
+	return unusedImportAliasAvoiding(destAlias, importPathDefaultAlias(quoted), quoted, blocked)
+}
+
+func aliasesForPath(aliasToPath map[string]string, quoted string) []string {
+	var out []string
+	for alias, path := range aliasToPath {
+		if path == quoted {
+			out = append(out, alias)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func unusedImportAliasAvoiding(bound map[string]string, preferred, path string, blocked map[string]bool) string {
+	if preferred != "" && !blocked[preferred] && (bound[preferred] == "" || bound[preferred] == path) {
+		return preferred
+	}
+	def := importPathDefaultAlias(path)
+	if def != "" && !blocked[def] && (bound[def] == "" || bound[def] == path) {
+		return def
+	}
+	if def == "" {
+		def = "pkg"
+	}
+	for i := 2; ; i++ {
+		cand := def + strconv.Itoa(i)
+		if blocked[cand] || bound[cand] != "" {
+			continue
+		}
+		return cand
+	}
+}
+
+func fileTopLevelNames(file *dst.File) map[string]bool {
+	out := map[string]bool{}
+	if file == nil {
+		return out
+	}
+	for _, d := range file.Decls {
+		switch x := d.(type) {
+		case *dst.FuncDecl:
+			if x.Recv == nil && x.Name != nil && x.Name.Name != "_" {
+				out[x.Name.Name] = true
+			}
+		case *dst.GenDecl:
+			for _, spec := range x.Specs {
+				switch s := spec.(type) {
+				case *dst.ValueSpec:
+					for _, n := range s.Names {
+						if n.Name != "_" {
+							out[n.Name] = true
+						}
+					}
+				case *dst.TypeSpec:
+					if s.Name != nil && s.Name.Name != "_" {
+						out[s.Name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 func importAliasMap(file *dst.File) map[string]string {
@@ -617,7 +972,7 @@ func (s *bindingScopes) isLocal(name string) bool {
 	return false
 }
 
-func walkFieldListTypes(fl *dst.FieldList, sc *bindingScopes, visit func(*dst.Ident)) {
+func walkFieldListTypes(fl *dst.FieldList, sc *bindingScopes, visit func(*dst.Ident, *bindingScopes)) {
 	if fl == nil {
 		return
 	}
@@ -642,6 +997,15 @@ func isPackageSelectorIdent(id *dst.Ident, sc *bindingScopes) bool {
 }
 
 func forEachPackageSelector(d dst.Decl, visit func(*dst.Ident)) {
+	if visit == nil {
+		return
+	}
+	forEachPackageSelectorScoped(d, func(id *dst.Ident, _ *bindingScopes) {
+		visit(id)
+	})
+}
+
+func forEachPackageSelectorScoped(d dst.Decl, visit func(*dst.Ident, *bindingScopes)) {
 	if d == nil || visit == nil {
 		return
 	}
@@ -672,13 +1036,13 @@ func forEachPackageSelector(d dst.Decl, visit func(*dst.Ident)) {
 		}
 		id, ok := sel.X.(*dst.Ident)
 		if ok && isPackageSelectorIdent(id, nil) {
-			visit(id)
+			visit(id, nil)
 		}
 		return true
 	})
 }
 
-func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
+func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident, *bindingScopes)) {
 	if s == nil {
 		return
 	}
@@ -722,11 +1086,13 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
 					sc.bind(n.Name)
 				}
 			case *dst.TypeSpec:
-				walkFieldListTypes(s.TypeParams, sc, visit)
-				walkOverlayExpr(s.Type, sc, visit)
+				// The type name is in scope in its own definition, so a
+				// field like pkgos.FileInfo must not be rewritten to that name.
 				if s.Name != nil {
 					sc.bind(s.Name.Name)
 				}
+				walkFieldListTypes(s.TypeParams, sc, visit)
+				walkOverlayExpr(s.Type, sc, visit)
 			}
 		}
 	case *dst.ExprStmt:
@@ -821,7 +1187,7 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
 	}
 }
 
-func walkTypeSwitchAssignRHS(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident)) {
+func walkTypeSwitchAssignRHS(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident, *bindingScopes)) {
 	switch x := s.(type) {
 	case *dst.AssignStmt:
 		for _, e := range x.Rhs {
@@ -859,7 +1225,7 @@ func typeSwitchCaseClauses(body *dst.BlockStmt) []*dst.CaseClause {
 	return out
 }
 
-func walkOverlayExpr(e dst.Expr, sc *bindingScopes, visit func(*dst.Ident)) {
+func walkOverlayExpr(e dst.Expr, sc *bindingScopes, visit func(*dst.Ident, *bindingScopes)) {
 	if e == nil {
 		return
 	}
@@ -880,7 +1246,7 @@ func walkOverlayExpr(e dst.Expr, sc *bindingScopes, visit func(*dst.Ident)) {
 			return false
 		case *dst.SelectorExpr:
 			if id, ok := x.X.(*dst.Ident); ok && isPackageSelectorIdent(id, sc) {
-				visit(id)
+				visit(id, sc)
 			}
 		}
 		return true

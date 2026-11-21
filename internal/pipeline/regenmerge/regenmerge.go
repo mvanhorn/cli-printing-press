@@ -88,6 +88,28 @@ type FileClassification struct {
 	// ValueDrift is populated for TEMPLATED-VALUE-DRIFT verdict. Lists
 	// per-decl the rendered text differences between published and fresh.
 	ValueDrift *ValueDrift `json:"value_drift,omitempty"`
+
+	// BothSides is set when a base tree is available and a shared function
+	// differs from that original emission on both the published side and the
+	// fresh side. Merged names were combined. Conflicts did not merge; Apply
+	// refuses them unless AllowDeclConflicts is set, and those functions then
+	// keep the fresh body.
+	BothSides *BothSides `json:"both_sides,omitempty"`
+}
+
+// BothSides records shared functions changed on both sides of the base tree.
+type BothSides struct {
+	Merged    []string       `json:"merged,omitempty"`
+	Conflicts []DeclConflict `json:"conflicts,omitempty"`
+}
+
+// DeclConflict is one shared function whose published and fresh edits did not
+// merge. The three snippets are the conflicting region, clipped for display.
+type DeclConflict struct {
+	Name      string `json:"name"`
+	Base      string `json:"base"`
+	Fresh     string `json:"fresh"`
+	Published string `json:"published"`
 }
 
 // ValueDrift records per-decl rendered-text differences between published and
@@ -182,6 +204,10 @@ type MergeReport struct {
 
 	LostRegistrations []LostRegistration `json:"lost_registrations,omitempty"`
 	GoMod             *GoModMerge        `json:"go_mod,omitempty"`
+
+	// BothSidesNote is set when no base tree was available, so a hand edit
+	// inside a shared declaration cannot be distinguished from a template change.
+	BothSidesNote string `json:"both_sides_note,omitempty"`
 }
 
 // Options configure Classify, Apply, and MergeIntoFreshTree behavior.
@@ -195,6 +221,11 @@ type Options struct {
 	// any difference from fresh is template version drift, not a hand edit, so
 	// fresh is authoritative.
 	BaseDir string
+
+	// AllowDeclConflicts lets Apply and MergeIntoFreshTree continue when a
+	// shared function changed on both sides and the line merge conflicted.
+	// Those functions keep the fresh body. The published body is not installed.
+	AllowDeclConflicts bool
 
 	// NovelOnly restricts MergeIntoFreshTree to preserve only NOVEL and
 	// NOVEL-COLLISION files; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT,
@@ -246,6 +277,9 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 	report := &MergeReport{
 		CLIDir:   pubAbs,
 		FreshDir: freshAbs,
+	}
+	if baseAbs == "" {
+		report.BothSidesNote = bothSidesUnavailableNote
 	}
 
 	files, err := classifyFiles(pubAbs, freshAbs, baseAbs)
