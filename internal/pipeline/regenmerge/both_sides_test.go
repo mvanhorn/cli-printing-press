@@ -788,6 +788,58 @@ func postRun() string {
 	requireTypeChecks(t, got)
 }
 
+func TestBothSidesMergeReusesAliasForTheSamePackage(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `func preRun() string {
+	keep := "keep"
+	return keep + "yes"
+}
+
+func postRun() string {
+	keep := "keep"
+	return keep
+}
+`
+	pubSrc := bothSidesHeader + `import "os"
+
+func preRun() string {
+	keep := os.Getenv("KEEP")
+	return keep + "yes"
+}
+
+func postRun() string {
+	keep := os.Getenv("OTHER")
+	return keep
+}
+`
+	freshSrc := bothSidesHeader + `func preRun() string {
+	keep := "keep"
+	return keep + "json"
+}
+
+func postRun() string {
+	keep := "keep"
+	return keep + "json"
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, `os.Getenv("KEEP")`)
+	assert.Contains(t, got, `os.Getenv("OTHER")`)
+	assert.NotContains(t, got, "os2")
+	assert.Equal(t, 1, strings.Count(got, `"os"`))
+	requireTypeChecks(t, got)
+}
+
 func TestBothSidesMergeKeepsImportUsedOutsideNestedLocal(t *testing.T) {
 	t.Parallel()
 

@@ -643,9 +643,8 @@ func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath stri
 			baseAlias = importAliasMap(base)
 		}
 	}
-	// One alias per package, legal at every use. A name blocked only inside
-	// a nested block still rules out that alias, because the same import
-	// has to compile at the other calls too.
+	// One alias per package has to be legal at every call to that package.
+	// A local that is not in scope at any of those calls does not rule it out.
 	topLevel := fileTopLevelNames(dest)
 	type selectorUse struct {
 		id      *dst.Ident
