@@ -724,6 +724,169 @@ func preRun() string {
 	requireTypeChecks(t, got)
 }
 
+func TestBothSidesMergeDoesNotReuseAliasAcrossFunctions(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `import (
+	pkgos "os"
+	os "strings"
+)
+
+func preRun() string {
+	tail := "keep"
+	return tail + "yes"
+}
+
+func postRun() string {
+	tail := "keep"
+	return tail + "yes"
+}
+`
+	pubSrc := bothSidesHeader + `import (
+	pkgos "os"
+	os "strings"
+)
+
+func preRun() string {
+	hand := pkgos.Getenv("hand")
+	_ = hand
+	tail := "keep"
+	return tail + "yes"
+}
+
+func postRun() string {
+	hand := os.TrimSpace("hand")
+	_ = hand
+	tail := "keep"
+	return tail + "yes"
+}
+`
+	freshSrc := bothSidesHeader + `func preRun(pkgos string) string {
+	tail := "keep"
+	return tail + pkgos
+}
+
+func postRun() string {
+	tail := "keep"
+	return tail + "json"
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, `Getenv("hand")`)
+	assert.Contains(t, got, `TrimSpace("hand")`)
+	assert.Contains(t, got, `return tail + pkgos`)
+	assert.Contains(t, got, `return tail + "json"`)
+	requireTypeChecks(t, got)
+}
+
+func TestBothSidesMergeKeepsImportUsedOutsideNestedLocal(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `import "os"
+
+func preRun() string {
+	keep := os.Getenv("keep")
+	if keep == "" {
+		os := "local"
+		_ = os
+	}
+	tail := keep
+	return tail + "yes"
+}
+`
+	pubSrc := bothSidesHeader + `import "os"
+
+func preRun() string {
+	keep := os.Getenv("keep")
+	hand := os.Getenv("hand")
+	_ = hand
+	if keep == "" {
+		os := "local"
+		_ = os
+	}
+	tail := keep
+	return tail + "yes"
+}
+`
+	freshSrc := bothSidesHeader + `import "os"
+
+func preRun() string {
+	keep := os.Getenv("keep")
+	if keep == "" {
+		os := "local"
+		_ = os
+	}
+	tail := keep
+	return tail + "json"
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, `os.Getenv("keep")`)
+	assert.Contains(t, got, `os.Getenv("hand")`)
+	assert.NotContains(t, got, "os2")
+	requireTypeChecks(t, got)
+}
+
+func TestBothSidesMergeDropsAliasShadowedByParameter(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `import "os"
+
+func preRun() string {
+	tail := "keep"
+	return tail + "yes"
+}
+`
+	pubSrc := bothSidesHeader + `import "os"
+
+func preRun() string {
+	hand := os.Getenv("hand")
+	_ = hand
+	tail := "keep"
+	return tail + "yes"
+}
+`
+	freshSrc := bothSidesHeader + `import "os"
+
+func preRun(os string) string {
+	tail := "keep"
+	return tail + os
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, "func preRun(os string) string")
+	assert.Contains(t, got, `Getenv("hand")`)
+	assert.NotRegexp(t, `(?m)^\tos "os"$`, got)
+	requireTypeChecks(t, got)
+}
+
 func requireTypeChecks(t *testing.T, src string) {
 	t.Helper()
 	fset := token.NewFileSet()
