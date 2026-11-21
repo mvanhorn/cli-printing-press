@@ -784,3 +784,252 @@ func TestMirrorLiveDogfoodAcceptanceToRunstate(t *testing.T) {
 	require.NoError(t, mirrorLiveDogfoodAcceptanceToRunstate(LiveDogfoodOptions{CLIDir: workDir}, src, marker))
 	assert.FileExists(t, filepath.Join(state.ProofsDir(), Phase5AcceptanceFilename))
 }
+
+func phase5CoveragePassMarker() Phase5GateMarker {
+	return Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	}
+}
+
+func TestValidatePhase5Gate_LegacyMarkerIgnoresNovelFeatureCount(t *testing.T) {
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, root))
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, phase5CoveragePassMarker())
+
+	result := ValidatePhase5Gate(proofs, CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"})
+	require.True(t, result.Passed, result.Detail)
+}
+
+func TestValidatePhase5Gate_RejectsZeroCheckedWhenResearchListsFeatures(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, root))
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "checked 0 novel features")
+	assert.Contains(t, result.Detail, "lists 1")
+}
+
+func TestValidatePhase5Gate_RejectsZeroCheckedWhenFeaturesLiveUnderResearchSubdir(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, filepath.Join(root, "research")))
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "lists 1")
+}
+
+func TestValidatePhase5Gate_ZeroCheckedPassesWhenResearchListsNone(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, writeResearchJSON(&ResearchResult{APIName: "test"}, root))
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.True(t, result.Passed, result.Detail)
+}
+
+func TestValidatePhase5Gate_ZeroCheckedPassesWhenNoResearchFile(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.True(t, result.Passed, result.Detail)
+}
+
+func TestValidatePhase5Gate_RunRootResearchWinsOverSubdirectory(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, writeResearchJSON(&ResearchResult{APIName: "test"}, root))
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, filepath.Join(root, "research")))
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.True(t, result.Passed, result.Detail)
+}
+
+func TestValidatePhase5Gate_DirectoryNamedResearchJSONRejectsZeroChecked(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, os.Mkdir(filepath.Join(root, "research.json"), 0o755))
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, filepath.Join(root, "research")))
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "could not be read")
+}
+
+func TestValidatePhase5Gate_UnparseableResearchRejectsZeroChecked(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "research.json"), []byte("{"), 0o644))
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, filepath.Join(root, "research")))
+	marker := phase5CoveragePassMarker()
+	zero := 0
+	marker.NovelFeaturesChecked = &zero
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "could not be read")
+}
+
+func TestValidatePhase5Gate_PositiveCheckedCountDoesNotRequireCurrentLength(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	root := t.TempDir()
+	proofs := filepath.Join(root, "proofs")
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Command: "digest"}, {Command: "triage"}},
+	}, root))
+	marker := phase5CoveragePassMarker()
+	checked := 1
+	marker.NovelFeaturesChecked = &checked
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.True(t, result.Passed, result.Detail)
+}
+
+func TestValidatePhase5Gate_SkippedCoverageCannotBeFlippedToPass(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	proofs := t.TempDir()
+	marker := phase5CoveragePassMarker()
+	marker.NovelFeatureCoverageSkipped = true
+	checked := 3
+	marker.NovelFeaturesChecked = &checked
+	writePhase5GateMarker(t, proofs, Phase5AcceptanceFilename, marker)
+
+	result := ValidatePhase5Gate(proofs, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "skipped novel-feature coverage")
+}
+
+func TestPhase5NovelFeatureCoverageIssueRejectsMalformedSkippedFlag(t *testing.T) {
+	issue := phase5NovelFeatureCoverageIssue([]byte(`{"novel_feature_coverage_skipped":"yes","novel_features_checked":1}`), t.TempDir())
+	assert.Contains(t, issue, "skipped novel-feature coverage")
+	assert.Empty(t, phase5NovelFeatureCoverageIssue([]byte(`{"novel_features_checked":1}`), t.TempDir()))
+}
+
+func TestValidatePhase5Gate_RejectsNonCountNovelFeaturesChecked(t *testing.T) {
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	for _, value := range []string{"null", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			proofs := t.TempDir()
+			marker := phase5CoveragePassMarker()
+			data, err := json.Marshal(marker)
+			require.NoError(t, err)
+			var raw map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(data, &raw))
+			raw["novel_features_checked"] = json.RawMessage(value)
+			body, err := json.Marshal(raw)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(proofs, Phase5AcceptanceFilename), body, 0o644))
+
+			result := ValidatePhase5Gate(proofs, manifest)
+			require.False(t, result.Passed)
+			assert.Contains(t, result.Detail, "not a count")
+		})
+	}
+
+	t.Run("skipped flag false still honors the count", func(t *testing.T) {
+		proofs := t.TempDir()
+		marker := phase5CoveragePassMarker()
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		raw["novel_feature_coverage_skipped"] = false
+		raw["novel_features_checked"] = 1
+		body, err := json.Marshal(raw)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(proofs, Phase5AcceptanceFilename), body, 0o644))
+
+		result := ValidatePhase5Gate(proofs, manifest)
+		require.True(t, result.Passed, result.Detail)
+	})
+
+	t.Run("non-bool skipped flag", func(t *testing.T) {
+		proofs := t.TempDir()
+		marker := phase5CoveragePassMarker()
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		var raw map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(data, &raw))
+		raw["novel_feature_coverage_skipped"] = json.RawMessage(`"yes"`)
+		body, err := json.Marshal(raw)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(proofs, Phase5AcceptanceFilename), body, 0o644))
+
+		result := ValidatePhase5Gate(proofs, manifest)
+		require.False(t, result.Passed)
+		assert.Contains(t, result.Detail, "parsing phase5 marker")
+	})
+
+	t.Run("string", func(t *testing.T) {
+		proofs := t.TempDir()
+		marker := phase5CoveragePassMarker()
+		data, err := json.Marshal(marker)
+		require.NoError(t, err)
+		var raw map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(data, &raw))
+		raw["novel_features_checked"] = json.RawMessage(`"1"`)
+		body, err := json.Marshal(raw)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(proofs, Phase5AcceptanceFilename), body, 0o644))
+
+		result := ValidatePhase5Gate(proofs, manifest)
+		require.False(t, result.Passed)
+		assert.Contains(t, result.Detail, "parsing phase5 marker")
+	})
+}
