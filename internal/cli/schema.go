@@ -226,6 +226,8 @@ const phase5MarkerSchemaJSON = `{
     "coverage_hollow": {"type": "boolean"},
     "hollow_features": {"type": "array", "items": {"type": "string"}},
     "hollow_reasons": {"type": "object", "additionalProperties": {"type": "string"}},
+    "novel_features_checked": {"type": "integer", "minimum": 0},
+    "novel_feature_coverage_skipped": {"type": "boolean"},
     "proof_covered_features": {"type": "array", "items": {"$ref": "#/$defs/proof_covered_feature"}},
     "live_happy_path_runs": {"type": "array", "items": {"$ref": "#/$defs/live_happy_path_run"}},
     "skip_reason": {"type": "string"},

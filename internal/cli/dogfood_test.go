@@ -302,6 +302,88 @@ func TestPrintLiveDogfoodReportDistinguishesPassWithSkips(t *testing.T) {
 	assert.NotContains(t, withSkips, "PASS (all tests run)")
 }
 
+func TestPrintLiveDogfoodReportOmitsHeadlineWhenCoverageDidNotRun(t *testing.T) {
+	unchecked := captureStdout(t, func() {
+		printLiveDogfoodReport(&pipeline.LiveDogfoodReport{
+			Dir:      t.TempDir(),
+			Level:    "full",
+			Verdict:  "PASS",
+			Passed:   1,
+			Commands: []string{"digest"},
+		})
+	})
+	assert.NotContains(t, unchecked, "headline novel features executed")
+	assert.Contains(t, unchecked, "SKIPPED - novel-feature coverage was not checked")
+
+	checked := 1
+	executed := captureStdout(t, func() {
+		printLiveDogfoodReport(&pipeline.LiveDogfoodReport{
+			Dir:                  t.TempDir(),
+			Level:                "full",
+			Verdict:              "PASS",
+			Passed:               1,
+			NovelFeaturesChecked: &checked,
+			Commands:             []string{"digest"},
+		})
+	})
+	assert.Contains(t, executed, "headline novel features executed")
+
+	skipped := captureStdout(t, func() {
+		printLiveDogfoodReport(&pipeline.LiveDogfoodReport{
+			Dir:                         t.TempDir(),
+			Level:                       "full",
+			Verdict:                     pipeline.DogfoodVerdictFail,
+			NovelFeatureCoverageSkipped: true,
+			ResearchLoadError:           "novel-feature coverage skipped: research.json not found",
+			Commands:                    []string{"digest"},
+		})
+	})
+	assert.NotContains(t, skipped, "headline novel features executed")
+	assert.Contains(t, skipped, "SKIPPED - novel-feature coverage skipped: research.json not found")
+}
+
+func TestDogfoodLiveMissingResearchDoesNotClaimCoverage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := writeDogfoodQuickSkipFixture(t)
+	researchDir := t.TempDir()
+	markerPath := filepath.Join(t.TempDir(), pipeline.Phase5AcceptanceFilename)
+	cmd := newDogfoodCmd()
+	cmd.SetArgs([]string{
+		"--dir", dir,
+		"--live",
+		"--level", "quick",
+		"--timeout", "2s",
+		"--research-dir", researchDir,
+		"--write-acceptance", markerPath,
+	})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	var exit *ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, ExitGenerationError, exit.Code)
+	assert.ErrorContains(t, err, "research.json")
+	assert.NotContains(t, output, "headline novel features executed")
+	assert.Contains(t, output, "SKIPPED")
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker pipeline.Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "fail", marker.Status)
+	assert.True(t, marker.NovelFeatureCoverageSkipped)
+	assert.Nil(t, marker.NovelFeaturesChecked)
+
+	validation := pipeline.ValidatePhase5Gate(filepath.Dir(markerPath), pipeline.CLIManifest{
+		APIName:  marker.APIName,
+		RunID:    marker.RunID,
+		AuthType: "none",
+	})
+	assert.False(t, validation.Passed, validation.Detail)
+}
+
 func TestPrintLiveDogfoodReportNamesHappyArgsOnHollowCoverage(t *testing.T) {
 	reason := `non-id positional "dimension" at depth 0; set pp:happy-args`
 	out := captureStdout(t, func() {

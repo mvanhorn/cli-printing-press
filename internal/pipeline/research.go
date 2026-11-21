@@ -349,6 +349,37 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 	return decodeResearch(data)
 }
 
+// loadResearchNearDir reads research.json from dir. When that file is
+// absent, it reads the parent directory: the run root holds research.json,
+// and callers have also passed the research subdirectory one level down.
+// A file that is present but unreadable or unparseable is an error; the
+// parent is not consulted.
+func loadResearchNearDir(dir string) (*ResearchResult, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil, fmt.Errorf("research directory is empty")
+	}
+	research, err := LoadResearch(dir)
+	if err == nil {
+		return research, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("loading research.json in %s: %w", dir, err)
+	}
+	parent := filepath.Dir(filepath.Clean(dir))
+	if filepath.Clean(parent) == filepath.Clean(dir) {
+		return nil, fmt.Errorf("research.json not found in %s", dir)
+	}
+	parentResearch, parentErr := LoadResearch(parent)
+	if parentErr == nil {
+		return parentResearch, nil
+	}
+	if os.IsNotExist(parentErr) {
+		return nil, fmt.Errorf("research.json not found in %s or %s", dir, parent)
+	}
+	return nil, fmt.Errorf("research.json not found in %s; loading %s: %w", dir, parent, parentErr)
+}
+
 func decodeResearch(data []byte) (*ResearchResult, error) {
 	var r ResearchResult
 	if err := json.Unmarshal(data, &r); err != nil {

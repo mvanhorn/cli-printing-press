@@ -108,6 +108,13 @@ func newDogfoodCmd() *cobra.Command {
 				} else {
 					printLiveDogfoodReport(report)
 				}
+				if report.NovelFeatureCoverageSkipped {
+					msg := strings.TrimSpace(report.ResearchLoadError)
+					if msg == "" {
+						msg = "novel-feature coverage was skipped because research.json could not be loaded"
+					}
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("live dogfood: %s", msg)}
+				}
 				// Device CLIs report "unverified-device" (manual --live testing is
 				// their real gate); only a hard FAIL is a non-zero exit.
 				if report.Verdict == pipeline.DogfoodVerdictFail {
@@ -176,13 +183,22 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 	fmt.Printf("Commands:   %d\n", len(report.Commands))
 	fmt.Printf("Tests:      %d passed, %d failed, %d skipped (%d unverified)\n", report.Passed, report.Failed, report.Skipped, report.Unverified)
 	fmt.Printf("Pass rate:  %.0f%% of %d evaluated checks\n", report.PassRate, report.MatrixSize)
-	if report.Verdict == "unverified-device" {
+	switch {
+	case report.Verdict == "unverified-device":
 		fmt.Println("Coverage:   UNVERIFIED - device CLI requires manual live testing")
-	} else if report.CoverageHollow {
+	case report.NovelFeatureCoverageSkipped:
+		reason := strings.TrimSpace(report.ResearchLoadError)
+		if reason == "" {
+			reason = "research.json could not be loaded"
+		}
+		fmt.Printf("Coverage:   SKIPPED - %s\n", reason)
+	case report.CoverageHollow:
 		fmt.Printf("Coverage:   HOLLOW - %d novel feature(s) never executed: %s\n", len(report.HollowFeatures), pipeline.FormatHollowCoverage(report.HollowFeatures, report.HollowReasons))
 		fmt.Printf("            %s\n", pipeline.HollowCoverageRemedy)
-	} else {
+	case report.NovelFeaturesChecked != nil:
 		fmt.Println("Coverage:   headline novel features executed")
+	default:
+		fmt.Println("Coverage:   SKIPPED - novel-feature coverage was not checked")
 	}
 	for _, run := range report.LiveHappyPathRuns {
 		if run.Reused {

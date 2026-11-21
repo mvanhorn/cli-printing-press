@@ -54,10 +54,16 @@ and acceptance-marker writing are deterministic:
 cli-printing-press dogfood --live \
   --dir "$CLI_WORK_DIR" \
   --level full \
-  --research-dir "$RESEARCH_DIR" \
+  --research-dir "$API_RUN_DIR" \
   --json \
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
 ```
+
+`research.json` is written to `$API_RUN_DIR` (Phase 1.5e), the same directory Phases 11 and 12 pass.
+`$RESEARCH_DIR` is `$API_RUN_DIR/research` and does not contain that file. Live dogfood
+also reads the parent directory when `<dir>/research.json` is absent, but a missing
+or unparseable file after that lookup fails the run instead of reporting novel-feature
+coverage as passed.
 
 Use `--level quick` only when the user selected Quick Check in Step 1.
 
@@ -70,7 +76,7 @@ carries the captured session, and export it before the `dogfood --live` call:
 
 ```bash
 <API>_CONFIG="$SESSION_DIR/config.toml" cli-printing-press dogfood --live \
-  --dir "$CLI_WORK_DIR" --level full --research-dir "$RESEARCH_DIR" --json \
+  --dir "$CLI_WORK_DIR" --level full --research-dir "$API_RUN_DIR" --json \
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
 ```
 
