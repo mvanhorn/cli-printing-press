@@ -643,11 +643,15 @@ func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath stri
 			baseAlias = importAliasMap(base)
 		}
 	}
-	// Block names in scope at each call, not every name in the function.
-	// A local in a nested block does not shadow a call outside that block.
+	// One alias per package, legal at every use. A name blocked only inside
+	// a nested block still rules out that alias, because the same import
+	// has to compile at the other calls too.
 	topLevel := fileTopLevelNames(dest)
-	var missing []string
-	chosen := map[string]string{}
+	type selectorUse struct {
+		id      *dst.Ident
+		blocked map[string]bool
+	}
+	uses := map[string][]selectorUse{}
 	unknown := false
 	forEachPackageSelectorScoped(decl, func(id *dst.Ident, sc *bindingScopes) {
 		quoted, ok := known[id.Name]
@@ -668,18 +672,34 @@ func bindStableImportSelectors(decl dst.Decl, dest, pub *dst.File, basePath stri
 		for name := range topLevel {
 			blocked[name] = true
 		}
-		alias := chooseImportAlias(quoted, destAlias, pubAlias, baseAlias, blocked)
-		if destAlias[alias] != quoted {
-			destAlias[alias] = quoted
-			if _, seen := chosen[quoted]; !seen {
-				missing = append(missing, quoted)
-			}
-			chosen[quoted] = alias
-		}
-		id.Name = alias
+		uses[quoted] = append(uses[quoted], selectorUse{id: id, blocked: blocked})
 	})
 	if unknown {
 		return nil, fmt.Errorf("merged function uses an unresolved import alias")
+	}
+	var missing []string
+	chosen := map[string]string{}
+	paths := make([]string, 0, len(uses))
+	for quoted := range uses {
+		paths = append(paths, quoted)
+	}
+	sort.Strings(paths)
+	for _, quoted := range paths {
+		blocked := map[string]bool{}
+		for _, use := range uses[quoted] {
+			for name := range use.blocked {
+				blocked[name] = true
+			}
+		}
+		alias := chooseImportAlias(quoted, destAlias, pubAlias, baseAlias, blocked)
+		if destAlias[alias] != quoted {
+			destAlias[alias] = quoted
+			missing = append(missing, quoted)
+			chosen[quoted] = alias
+		}
+		for _, use := range uses[quoted] {
+			use.id.Name = alias
+		}
 	}
 	maps.Copy(reserved, destAlias)
 	if len(missing) == 0 {
@@ -1067,11 +1087,13 @@ func walkOverlayStmt(s dst.Stmt, sc *bindingScopes, visit func(*dst.Ident, *bind
 					sc.bind(n.Name)
 				}
 			case *dst.TypeSpec:
-				walkFieldListTypes(s.TypeParams, sc, visit)
-				walkOverlayExpr(s.Type, sc, visit)
+				// The type name is in scope in its own definition, so a
+				// field like pkgos.FileInfo must not be rewritten to that name.
 				if s.Name != nil {
 					sc.bind(s.Name.Name)
 				}
+				walkFieldListTypes(s.TypeParams, sc, visit)
+				walkOverlayExpr(s.Type, sc, visit)
 			}
 		}
 	case *dst.ExprStmt:

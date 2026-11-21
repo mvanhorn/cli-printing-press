@@ -887,6 +887,102 @@ func preRun(os string) string {
 	requireTypeChecks(t, got)
 }
 
+func TestBothSidesMergeUsesOneAliasAtEveryCall(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `import pkgos "os"
+
+func preRun() string {
+	tail := "keep"
+	if tail == "" {
+		os := "local"
+		_ = os
+	}
+	return tail + "yes"
+}
+`
+	pubSrc := bothSidesHeader + `import pkgos "os"
+
+func preRun() string {
+	hand := pkgos.Getenv("out")
+	_ = hand
+	tail := "keep"
+	if tail == "" {
+		os := "local"
+		inner := pkgos.Getenv("in")
+		_ = os
+		_ = inner
+	}
+	return tail + "yes"
+}
+`
+	freshSrc := bothSidesHeader + `func preRun(pkgos string) string {
+	tail := "keep"
+	if tail == "" {
+		os := "local"
+		_ = os
+	}
+	return tail + pkgos
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, `Getenv("out")`)
+	assert.Contains(t, got, `Getenv("in")`)
+	requireTypeChecks(t, got)
+}
+
+func TestBothSidesMergeDoesNotHideImportInsideLocalType(t *testing.T) {
+	t.Parallel()
+
+	rel := filepath.Join("internal", "cli", "root.go")
+	baseSrc := bothSidesHeader + `import pkgos "os"
+
+func preRun() string {
+	tail := "keep"
+	return tail + "yes"
+}
+`
+	pubSrc := bothSidesHeader + `import pkgos "os"
+
+func preRun() string {
+	type os struct {
+		info pkgos.FileInfo
+	}
+	var v os
+	_ = v.info.Name()
+	tail := "keep"
+	return tail + "yes"
+}
+`
+	freshSrc := bothSidesHeader + `func preRun(pkgos string) string {
+	tail := "keep"
+	return tail + pkgos
+}
+`
+	baseDir, pubDir, freshDir := writeBothSidesTrees(t, rel, baseSrc, pubSrc, freshSrc)
+	dest := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, overlayHandEditedDecls(
+		filepath.Join(pubDir, rel),
+		filepath.Join(freshDir, rel),
+		filepath.Join(baseDir, rel),
+		dest,
+	))
+	got := readFileString(t, dest)
+	assert.Contains(t, got, "type os struct")
+	assert.Contains(t, got, "FileInfo")
+	assert.NotRegexp(t, `(?m)info\s+os\.FileInfo`, got)
+	requireTypeChecks(t, got)
+}
+
 func requireTypeChecks(t *testing.T, src string) {
 	t.Helper()
 	fset := token.NewFileSet()
