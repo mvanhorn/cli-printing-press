@@ -146,6 +146,15 @@ type LiveDogfoodReport struct {
 	PassRate       float64  `json:"pass_rate"`
 	CoverageHollow bool     `json:"coverage_hollow,omitempty"`
 	HollowFeatures []string `json:"hollow_features,omitempty"`
+	// NovelFeaturesChecked is the number of novel features evaluated.
+	// Nil means coverage did not run. Zero means research.json loaded and
+	// listed no novel features.
+	NovelFeaturesChecked *int `json:"novel_features_checked,omitempty"`
+	// NovelFeatureCoverageSkipped is set when --research-dir was given but
+	// research.json could not be loaded, so coverage was not evaluated.
+	NovelFeatureCoverageSkipped bool `json:"novel_feature_coverage_skipped,omitempty"`
+	// ResearchLoadError is the operator-facing reason coverage was skipped.
+	ResearchLoadError string `json:"research_load_error,omitempty"`
 	// HollowReasons explains each hollow feature, keyed by the feature
 	// command string. A skipped happy path contributes its skip reason. A
 	// happy path that passed only as a dry-run names the argv and whether
@@ -4381,8 +4390,14 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 	if report == nil || strings.TrimSpace(researchDir) == "" {
 		return
 	}
-	research, err := LoadResearch(researchDir)
-	if err != nil || len(research.NovelFeatures) == 0 {
+	research, err := loadResearchNearDir(researchDir)
+	if err != nil {
+		markLiveDogfoodCoverageUnchecked(report, err)
+		return
+	}
+	checked := len(research.NovelFeatures)
+	report.NovelFeaturesChecked = &checked
+	if checked == 0 {
 		return
 	}
 
@@ -4443,6 +4458,24 @@ func finalizeLiveDogfoodCoverage(report *LiveDogfoodReport, researchDir string, 
 	report.CoverageHollow = len(report.HollowFeatures) > 0
 }
 
+// markLiveDogfoodCoverageUnchecked records that --research-dir was set but
+// research.json could not be loaded. A missing check must not look like a
+// pass: the verdict fails and the acceptance marker records the skip.
+func markLiveDogfoodCoverageUnchecked(report *LiveDogfoodReport, err error) {
+	reason := "novel-feature coverage skipped: " + err.Error()
+	report.ResearchLoadError = reason
+	report.NovelFeatureCoverageSkipped = true
+	report.NovelFeaturesChecked = nil
+	report.Tests = append(report.Tests, LiveDogfoodTestResult{
+		Command: "novel-feature-coverage",
+		Kind:    LiveDogfoodTestHappy,
+		Status:  LiveDogfoodStatusFail,
+		Reason:  reason,
+	})
+	refreshLiveDogfoodCoverageCounts(report)
+	report.Verdict = DogfoodVerdictFail
+}
+
 // isBrowserSessionAuthType reports whether the auth type relies on a captured
 // browser session (cookie jar / handshake) rather than an env-var credential.
 // These cannot be exercised by the sandboxed dogfood HOME without injecting the
@@ -4501,23 +4534,25 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	}
 
 	marker := Phase5GateMarker{
-		SchemaVersion:        1,
-		APIName:              apiName,
-		RunID:                runID,
-		Status:               status,
-		Level:                report.Level,
-		MatrixSize:           report.MatrixSize,
-		TestsPassed:          report.Passed,
-		TestsSkipped:         report.Skipped,
-		TestsUnverified:      report.Unverified,
-		TestsFailed:          report.Failed,
-		CoverageHollow:       report.CoverageHollow,
-		HollowFeatures:       append([]string(nil), report.HollowFeatures...),
-		HollowReasons:        maps.Clone(report.HollowReasons),
-		ProofCoveredFeatures: append([]ProofCoveredFeature(nil), report.ProofCoveredFeatures...),
-		LiveHappyPathRuns:    append([]LiveHappyPathRun(nil), report.LiveHappyPathRuns...),
-		SourceFingerprint:    source.Digest,
-		SourceFiles:          source.Files,
+		SchemaVersion:               1,
+		APIName:                     apiName,
+		RunID:                       runID,
+		Status:                      status,
+		Level:                       report.Level,
+		MatrixSize:                  report.MatrixSize,
+		TestsPassed:                 report.Passed,
+		TestsSkipped:                report.Skipped,
+		TestsUnverified:             report.Unverified,
+		TestsFailed:                 report.Failed,
+		CoverageHollow:              report.CoverageHollow,
+		HollowFeatures:              append([]string(nil), report.HollowFeatures...),
+		NovelFeaturesChecked:        report.NovelFeaturesChecked,
+		NovelFeatureCoverageSkipped: report.NovelFeatureCoverageSkipped,
+		HollowReasons:               maps.Clone(report.HollowReasons),
+		ProofCoveredFeatures:        append([]ProofCoveredFeature(nil), report.ProofCoveredFeatures...),
+		LiveHappyPathRuns:           append([]LiveHappyPathRun(nil), report.LiveHappyPathRuns...),
+		SourceFingerprint:           source.Digest,
+		SourceFiles:                 source.Files,
 		AuthContext: Phase5AuthContext{
 			Type:            authType,
 			APIKeyAvailable: opts.AuthEnv != "" && os.Getenv(opts.AuthEnv) != "",

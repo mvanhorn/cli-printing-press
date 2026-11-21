@@ -100,6 +100,36 @@ func TestPhase5Marker_WriterOutputMatchesPublishedSchema(t *testing.T) {
 		require.NoError(t, validateMarker(t, sch, marker))
 	})
 
+	t.Run("pass marker records novel features checked", func(t *testing.T) {
+		checked := 2
+		marker := pipeline.Phase5GateMarker{
+			SchemaVersion:        1,
+			APIName:              "probe",
+			Status:               "pass",
+			Level:                "full",
+			MatrixSize:           4,
+			TestsPassed:          4,
+			NovelFeaturesChecked: &checked,
+			SourceFingerprint:    "deadbeef",
+		}
+		require.NoError(t, validateMarker(t, sch, marker))
+	})
+
+	t.Run("fail marker records skipped novel-feature coverage", func(t *testing.T) {
+		marker := pipeline.Phase5GateMarker{
+			SchemaVersion:               1,
+			APIName:                     "probe",
+			Status:                      "fail",
+			Level:                       "full",
+			MatrixSize:                  4,
+			TestsPassed:                 3,
+			TestsFailed:                 1,
+			NovelFeatureCoverageSkipped: true,
+			SourceFingerprint:           "deadbeef",
+		}
+		require.NoError(t, validateMarker(t, sch, marker))
+	})
+
 	t.Run("fail marker carries failure summary", func(t *testing.T) {
 		marker := pipeline.Phase5GateMarker{
 			SchemaVersion:     1,
@@ -129,27 +159,30 @@ func TestPhase5Marker_SchemaDeclaresNoPhantomProperties(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(phase5MarkerSchemaJSON), &schema))
 
 	emittable := map[string]bool{}
+	checked := 1
 	raw, err := json.Marshal(pipeline.Phase5GateMarker{
-		SchemaVersion:        1,
-		APIName:              "x",
-		RunID:                "x",
-		Status:               "pass",
-		Level:                "full",
-		MatrixSize:           1,
-		TestsPassed:          1,
-		TestsSkipped:         1,
-		TestsUnverified:      1,
-		TestsFailed:          1,
-		CoverageHollow:       true,
-		HollowFeatures:       []string{"x"},
-		HollowReasons:        map[string]string{"x": "non-id positional \"dimension\" at depth 0; set pp:happy-args"},
-		ProofCoveredFeatures: []pipeline.ProofCoveredFeature{{Command: "x", Proof: "x.md"}},
-		LiveHappyPathRuns:    []pipeline.LiveHappyPathRun{{Command: "x", SourceFingerprint: "x"}},
-		SkipReason:           "x",
-		SourceFingerprint:    "x",
-		SourceFiles:          map[string]string{"a": "b"},
-		AuthContext:          pipeline.Phase5AuthContext{Type: "none"},
-		FailureSummary:       &pipeline.Phase5FailureSummary{HTTP4xx: 1},
+		SchemaVersion:               1,
+		APIName:                     "x",
+		RunID:                       "x",
+		Status:                      "pass",
+		Level:                       "full",
+		MatrixSize:                  1,
+		TestsPassed:                 1,
+		TestsSkipped:                1,
+		TestsUnverified:             1,
+		TestsFailed:                 1,
+		CoverageHollow:              true,
+		HollowFeatures:              []string{"x"},
+		HollowReasons:               map[string]string{"x": "non-id positional \"dimension\" at depth 0; set pp:happy-args"},
+		NovelFeaturesChecked:        &checked,
+		NovelFeatureCoverageSkipped: true,
+		ProofCoveredFeatures:        []pipeline.ProofCoveredFeature{{Command: "x", Proof: "x.md"}},
+		LiveHappyPathRuns:           []pipeline.LiveHappyPathRun{{Command: "x", SourceFingerprint: "x"}},
+		SkipReason:                  "x",
+		SourceFingerprint:           "x",
+		SourceFiles:                 map[string]string{"a": "b"},
+		AuthContext:                 pipeline.Phase5AuthContext{Type: "none"},
+		FailureSummary:              &pipeline.Phase5FailureSummary{HTTP4xx: 1},
 	})
 	require.NoError(t, err)
 	var m map[string]any

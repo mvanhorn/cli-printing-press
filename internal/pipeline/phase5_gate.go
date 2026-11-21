@@ -57,6 +57,13 @@ type Phase5GateMarker struct {
 	CoverageHollow  bool              `json:"coverage_hollow,omitempty"`
 	HollowFeatures  []string          `json:"hollow_features,omitempty"`
 	HollowReasons   map[string]string `json:"hollow_reasons,omitempty"`
+	// NovelFeaturesChecked is how many novel features live dogfood evaluated.
+	// A nil pointer means the marker was written before the count was recorded.
+	// Zero means the check ran and research.json listed no novel features.
+	NovelFeaturesChecked *int `json:"novel_features_checked,omitempty"`
+	// NovelFeatureCoverageSkipped is true when --research-dir was set but
+	// research.json could not be loaded. A pass marker with this set is rejected.
+	NovelFeatureCoverageSkipped bool `json:"novel_feature_coverage_skipped,omitempty"`
 	// ProofCoveredFeatures lists novel features counted as covered by an
 	// operator proof file in the same proofs directory instead of a live
 	// happy-path pass.
@@ -185,12 +192,88 @@ func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool, 
 	result := validatePhase5Marker(marker, manifest, skipFile, sourceDir)
 	result.MarkerPath = path
 	if result.Passed {
-		if issues := validatePhase5ProofCoverage(marker, filepath.Dir(path)); len(issues) > 0 {
+		var issues []string
+		if proofIssues := validatePhase5ProofCoverage(marker, filepath.Dir(path)); len(proofIssues) > 0 {
+			issues = append(issues, proofIssues...)
+		}
+		if !skipFile {
+			if issue := phase5NovelFeatureCoverageIssue(data, filepath.Dir(path)); issue != "" {
+				issues = append(issues, issue)
+			}
+		}
+		if len(issues) > 0 {
 			result.Passed = false
 			result.Detail = strings.Join(issues, "; ")
 		}
 	}
 	return result, true
+}
+
+// phase5NovelFeatureCoverageIssue rejects a pass marker that claims coverage
+// without evaluating the run's novel features. Markers that omit
+// novel_features_checked predate the field and stay valid: requiring the
+// field whenever research.json lists features would fail promotions of CLIs
+// that already passed.
+func phase5NovelFeatureCoverageIssue(data []byte, proofsDir string) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ""
+	}
+	if skipped, ok := raw["novel_feature_coverage_skipped"]; ok {
+		var value bool
+		if err := json.Unmarshal(skipped, &value); err != nil || value {
+			return "phase5 acceptance skipped novel-feature coverage"
+		}
+	}
+	checked, ok := raw["novel_features_checked"]
+	if !ok {
+		return ""
+	}
+	// JSON null unmarshals into an int as zero with no error. Treat it as
+	// missing a count so it cannot stand in for "checked zero features".
+	if strings.TrimSpace(string(checked)) == "null" {
+		return "phase5 acceptance novel_features_checked is not a count of features evaluated"
+	}
+	var n int
+	if err := json.Unmarshal(checked, &n); err != nil || n < 0 {
+		return "phase5 acceptance novel_features_checked is not a count of features evaluated"
+	}
+	if n > 0 {
+		return ""
+	}
+	research, err := researchBesideProofs(proofsDir)
+	if err != nil {
+		return fmt.Sprintf("phase5 acceptance checked 0 novel features but research.json could not be read: %v", err)
+	}
+	if research == nil || len(research.NovelFeatures) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("phase5 acceptance checked 0 novel features but research.json lists %d", len(research.NovelFeatures))
+}
+
+// researchBesideProofs reads the run's research.json from the proofs
+// directory's parent, then from that parent's research subdirectory. Those
+// are the run-root file Phase 1.5e writes and the research subdirectory the
+// dogfood skill has also used. A present file that cannot be parsed is an
+// error so a zero count cannot hide behind a broken artifact.
+func researchBesideProofs(proofsDir string) (*ResearchResult, error) {
+	runDir := filepath.Dir(filepath.Clean(proofsDir))
+	candidates := []string{runDir, filepath.Join(runDir, "research")}
+	for _, dir := range candidates {
+		path := filepath.Join(dir, "research.json")
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("%s is a directory", path)
+		}
+		return LoadResearch(dir)
+	}
+	return nil, nil
 }
 
 func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFile bool, sourceDir string) Phase5GateValidation {

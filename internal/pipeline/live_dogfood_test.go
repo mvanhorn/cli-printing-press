@@ -3522,6 +3522,256 @@ func TestFinalizeLiveDogfoodCoverageRecognizesLiveNovelFeatureExecution(t *testi
 
 	assert.False(t, report.CoverageHollow)
 	assert.Empty(t, report.HollowFeatures)
+	require.NotNil(t, report.NovelFeaturesChecked)
+	assert.Equal(t, 1, *report.NovelFeaturesChecked)
+	assert.False(t, report.NovelFeatureCoverageSkipped)
+}
+
+func TestFinalizeLiveDogfoodCoverageWithoutResearchDirDoesNotFail(t *testing.T) {
+	report := &LiveDogfoodReport{Verdict: "PASS", Commands: []string{"digest"}}
+	finalizeLiveDogfoodCoverage(report, "  ", liveDogfoodProofContext{})
+	finalizeLiveDogfoodCoverage(nil, t.TempDir(), liveDogfoodProofContext{})
+
+	assert.Equal(t, "PASS", report.Verdict)
+	assert.Nil(t, report.NovelFeaturesChecked)
+	assert.False(t, report.NovelFeatureCoverageSkipped)
+	assert.False(t, report.CoverageHollow)
+}
+
+func TestFinalizeLiveDogfoodCoverageFallsBackToParentResearch(t *testing.T) {
+	runDir := t.TempDir()
+	researchSubdir := filepath.Join(runDir, "research")
+	require.NoError(t, os.MkdirAll(researchSubdir, 0o755))
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, runDir))
+
+	report := &LiveDogfoodReport{
+		Verdict:  "PASS",
+		Commands: []string{"digest"},
+		Tests: []LiveDogfoodTestResult{
+			{Command: "digest", Kind: LiveDogfoodTestHelp, Status: LiveDogfoodStatusPass},
+		},
+	}
+
+	finalizeLiveDogfoodCoverage(report, researchSubdir, liveDogfoodProofContext{})
+
+	assert.Equal(t, "PASS", report.Verdict)
+	assert.True(t, report.CoverageHollow)
+	assert.Equal(t, []string{"digest"}, report.HollowFeatures)
+	require.NotNil(t, report.NovelFeaturesChecked)
+	assert.Equal(t, 1, *report.NovelFeaturesChecked)
+	assert.False(t, report.NovelFeatureCoverageSkipped)
+	assert.Empty(t, report.ResearchLoadError)
+}
+
+func TestFinalizeLiveDogfoodCoverageMissingResearchDoesNotPass(t *testing.T) {
+	runDir := t.TempDir()
+	researchSubdir := filepath.Join(runDir, "research")
+	require.NoError(t, os.MkdirAll(researchSubdir, 0o755))
+
+	report := &LiveDogfoodReport{
+		Verdict:  "PASS",
+		Commands: []string{"digest"},
+		Tests: []LiveDogfoodTestResult{
+			{Command: "digest", Kind: LiveDogfoodTestHelp, Status: LiveDogfoodStatusPass},
+		},
+	}
+
+	finalizeLiveDogfoodCoverage(report, researchSubdir, liveDogfoodProofContext{})
+
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
+	assert.False(t, report.CoverageHollow)
+	assert.Empty(t, report.HollowFeatures)
+	assert.Nil(t, report.NovelFeaturesChecked)
+	assert.True(t, report.NovelFeatureCoverageSkipped)
+	assert.Contains(t, report.ResearchLoadError, "research.json not found")
+	assert.Contains(t, report.ResearchLoadError, researchSubdir)
+	require.NotEmpty(t, report.Tests)
+	last := report.Tests[len(report.Tests)-1]
+	assert.Equal(t, LiveDogfoodStatusFail, last.Status)
+	assert.Equal(t, "novel-feature-coverage", last.Command)
+}
+
+func TestFinalizeLiveDogfoodCoverageUnparseableResearchDoesNotUseParent(t *testing.T) {
+	runDir := t.TempDir()
+	researchSubdir := filepath.Join(runDir, "research")
+	require.NoError(t, os.MkdirAll(researchSubdir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchSubdir, "research.json"), []byte("{"), 0o644))
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeatures: []NovelFeature{{Name: "Digest", Command: "digest"}},
+	}, runDir))
+
+	report := &LiveDogfoodReport{
+		Verdict:  "PASS",
+		Commands: []string{"digest"},
+		Tests: []LiveDogfoodTestResult{
+			{Command: "digest", Kind: LiveDogfoodTestHelp, Status: LiveDogfoodStatusPass},
+		},
+	}
+
+	finalizeLiveDogfoodCoverage(report, researchSubdir, liveDogfoodProofContext{})
+
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
+	assert.False(t, report.CoverageHollow, "unparseable research.json must not fall back to a parent that would flag hollow coverage")
+	assert.Empty(t, report.HollowFeatures)
+	assert.Nil(t, report.NovelFeaturesChecked)
+	assert.True(t, report.NovelFeatureCoverageSkipped)
+	assert.Contains(t, report.ResearchLoadError, researchSubdir)
+	assert.NotContains(t, report.ResearchLoadError, "not found in")
+}
+
+func TestFinalizeLiveDogfoodCoverageEmptyNovelFeaturesStillRuns(t *testing.T) {
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{APIName: "demo"}, researchDir))
+
+	report := &LiveDogfoodReport{Verdict: "PASS", Commands: []string{"digest"}}
+	finalizeLiveDogfoodCoverage(report, researchDir, liveDogfoodProofContext{})
+
+	assert.Equal(t, "PASS", report.Verdict)
+	assert.False(t, report.CoverageHollow)
+	assert.False(t, report.NovelFeatureCoverageSkipped)
+	require.NotNil(t, report.NovelFeaturesChecked)
+	assert.Equal(t, 0, *report.NovelFeaturesChecked)
+}
+
+func TestLoadResearchNearDir(t *testing.T) {
+	t.Run("reads the given directory", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			NovelFeatures: []NovelFeature{{Command: "digest"}},
+		}, dir))
+		got, err := loadResearchNearDir(dir)
+		require.NoError(t, err)
+		require.Len(t, got.NovelFeatures, 1)
+	})
+
+	t.Run("falls back one parent when the file is absent", func(t *testing.T) {
+		runDir := t.TempDir()
+		sub := filepath.Join(runDir, "research")
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			NovelFeatures: []NovelFeature{{Command: "digest"}},
+		}, runDir))
+		got, err := loadResearchNearDir(sub)
+		require.NoError(t, err)
+		require.Len(t, got.NovelFeatures, 1)
+	})
+
+	t.Run("missing file and missing parent", func(t *testing.T) {
+		runDir := t.TempDir()
+		sub := filepath.Join(runDir, "research")
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		_, err := loadResearchNearDir(sub)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+		assert.Contains(t, err.Error(), sub)
+	})
+
+	t.Run("unparseable file does not fall back", func(t *testing.T) {
+		runDir := t.TempDir()
+		sub := filepath.Join(runDir, "research")
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "research.json"), []byte("{"), 0o644))
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			NovelFeatures: []NovelFeature{{Command: "digest"}},
+		}, runDir))
+		_, err := loadResearchNearDir(sub)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), sub)
+		assert.NotContains(t, err.Error(), "not found")
+	})
+
+	t.Run("unparseable parent when the file is absent", func(t *testing.T) {
+		runDir := t.TempDir()
+		sub := filepath.Join(runDir, "research")
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(runDir, "research.json"), []byte("{"), 0o644))
+		_, err := loadResearchNearDir(sub)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), runDir)
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		_, err := loadResearchNearDir("  ")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty")
+	})
+
+	t.Run("does not walk above the relative root", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		_, err := loadResearchNearDir(".")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+		assert.NotContains(t, err.Error(), "loading")
+	})
+}
+
+func TestWriteLiveDogfoodAcceptanceRecordsNovelFeatureCoverage(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(cliDir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "demo",
+		CLIName:       "demo-pp-cli",
+		RunID:         "run-1",
+		AuthType:      "none",
+	}))
+	runDir := t.TempDir()
+	proofsDir := filepath.Join(runDir, "proofs")
+	markerPath := filepath.Join(proofsDir, Phase5AcceptanceFilename)
+	checked := 1
+	report := &LiveDogfoodReport{
+		Verdict:              "PASS",
+		Level:                "full",
+		MatrixSize:           1,
+		Passed:               1,
+		CoverageHollow:       true,
+		HollowFeatures:       []string{"digest"},
+		NovelFeaturesChecked: &checked,
+	}
+	err := writeLiveDogfoodAcceptance(LiveDogfoodOptions{
+		CLIDir:              cliDir,
+		WriteAcceptancePath: markerPath,
+	}, report, SourceFingerprint{Digest: "abc", Files: map[string]string{"go.mod": "abc"}})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "pass", marker.Status)
+	require.NotNil(t, marker.NovelFeaturesChecked)
+	assert.Equal(t, 1, *marker.NovelFeaturesChecked)
+	assert.False(t, marker.NovelFeatureCoverageSkipped)
+
+	failed := &LiveDogfoodReport{
+		Verdict:                     DogfoodVerdictFail,
+		Level:                       "full",
+		MatrixSize:                  1,
+		Passed:                      0,
+		Failed:                      1,
+		NovelFeatureCoverageSkipped: true,
+		ResearchLoadError:           "novel-feature coverage skipped: research.json not found",
+		Tests: []LiveDogfoodTestResult{{
+			Command: "novel-feature-coverage",
+			Kind:    LiveDogfoodTestHappy,
+			Status:  LiveDogfoodStatusFail,
+			Reason:  "novel-feature coverage skipped: research.json not found",
+		}},
+	}
+	failPath := filepath.Join(proofsDir, "fail-"+Phase5AcceptanceFilename)
+	err = writeLiveDogfoodAcceptance(LiveDogfoodOptions{
+		CLIDir:              cliDir,
+		WriteAcceptancePath: failPath,
+	}, failed, SourceFingerprint{Digest: "abc", Files: map[string]string{"go.mod": "abc"}})
+	require.NoError(t, err)
+	failData, err := os.ReadFile(failPath)
+	require.NoError(t, err)
+	var failMarker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(failData, &failMarker))
+	assert.Equal(t, "fail", failMarker.Status)
+	assert.True(t, failMarker.NovelFeatureCoverageSkipped)
+	assert.Nil(t, failMarker.NovelFeaturesChecked)
 }
 
 func TestLiveDogfoodQuickCommandsSamplesAcrossFamilies(t *testing.T) {
