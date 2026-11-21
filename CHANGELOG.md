@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.35.8](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.7...v4.35.8) (2026-11-21)
+
+
+### Bug Fixes
+
+* **cli:** fail live dogfood when novel-feature research does not load ([#5443](https://github.com/mvanhorn/cli-printing-press/issues/5443)) ([ae1517c](https://github.com/mvanhorn/cli-printing-press/commit/ae1517ca78bde36689a2d9d9b139352ca514ab81)), closes [#5442](https://github.com/mvanhorn/cli-printing-press/issues/5442)
+* **cli:** ignore stamped runtime version in the source fingerprint ([#5426](https://github.com/mvanhorn/cli-printing-press/issues/5426)) ([96d2999](https://github.com/mvanhorn/cli-printing-press/commit/96d2999053daa0870c94d36f99bd4af304476369))
+* **cli:** keep generated OAuth fixtures out of the publish secret scan ([#5437](https://github.com/mvanhorn/cli-printing-press/issues/5437)) ([0dc29c5](https://github.com/mvanhorn/cli-printing-press/commit/0dc29c5b6796251b1dbe925db36194d4497b5d78))
+* **cli:** make generated analytics read-only and JSON over MCP ([#5427](https://github.com/mvanhorn/cli-printing-press/issues/5427)) ([8532124](https://github.com/mvanhorn/cli-printing-press/commit/8532124877d28bab7b6c3aa693c5cda564a769b1))
+* **cli:** merge or refuse both-sides function edits in regen-merge ([#5445](https://github.com/mvanhorn/cli-printing-press/issues/5445)) ([9e1a8d4](https://github.com/mvanhorn/cli-printing-press/commit/9e1a8d487f4faa715b26a08df87086431754a337))
+* **cli:** name real store types in analytics examples ([#5438](https://github.com/mvanhorn/cli-printing-press/issues/5438)) ([d850364](https://github.com/mvanhorn/cli-printing-press/commit/d85036480c8c72570d0f66c3cda9756401d6a823))
+* **cli:** preserve const/var kind edits in regen-merge ([#5425](https://github.com/mvanhorn/cli-printing-press/issues/5425)) ([96efc05](https://github.com/mvanhorn/cli-printing-press/commit/96efc05d137f55a2a2c0f80578af4a07871d4f60))
+* **cli:** rank short store searches by content, not ids ([#5424](https://github.com/mvanhorn/cli-printing-press/issues/5424)) ([09f1eed](https://github.com/mvanhorn/cli-printing-press/commit/09f1eed7e97acc4c927454ab5052fc8c6035dc87))
+* **cli:** walk page pagination and keep live list cursors ([#5430](https://github.com/mvanhorn/cli-printing-press/issues/5430)) ([918144e](https://github.com/mvanhorn/cli-printing-press/commit/918144e3f8901d76f74b6a9c1646513b82509e2c))
+
 ## [4.35.7](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.6...v4.35.7) (2026-11-18)
 
 
