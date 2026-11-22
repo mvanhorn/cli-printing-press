@@ -336,6 +336,29 @@ func TestFindPackageSecretsCombinesVendorPrefixAndDeclaredCookies(t *testing.T) 
 	require.Equal(t, 1, byKind["openrouter-api-key"].Line)
 }
 
+func TestFindPackageSecretsReportsUnscannedSQLite(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "nested"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "blob.bin"), []byte{0, 's', 'k', '_', 'l', 'i', 'v', 'e', '_', '1'}, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "notes.db.md"), []byte("SQLite format 3 is a header name\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "schema.db"), []byte("authored schema\n"), 0o644))
+	header := append([]byte("SQLite format 3\x00"), []byte("page")...)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nested", "Store.DB"), header, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), header, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cache.sqlite-wal"), []byte{0x37, 0x7f, 0x06, 0x83, 0x00, 0x01}, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cache.sqlite-shm"), []byte{0, 0, 0, 0}, 0o644))
+
+	result, err := FindPackageSecretsWithSuppressions(root, nil)
+	require.NoError(t, err)
+	require.Empty(t, result.Findings)
+	require.ElementsMatch(t, []string{
+		"nested/Store.DB",
+		"payload",
+		"cache.sqlite-wal",
+		"cache.sqlite-shm",
+	}, result.UnscannedSQLite)
+}
+
 func testSecret(parts ...string) string {
 	return strings.Join(parts, "")
 }

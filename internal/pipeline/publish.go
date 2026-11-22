@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -689,17 +690,22 @@ const publishableManuscriptMaxCaptureBytes int64 = 100 * 1024 * 1024
 
 type PublishableManuscriptCopyOptions struct {
 	IncludeRawCaptures bool
+	// Excluded, when non-nil, receives slash-separated paths relative to the
+	// source directory that were left out. A skipped directory is listed
+	// once, without its children. The slice is sorted.
+	Excluded *[]string
 }
 
 // CopyPublishableManuscriptDir copies manuscript artifacts that may be bundled
 // into published CLIs. Under discovery/, only press-authored summaries ship
 // by default. Raw captures stay behind because they carry third-party pages
 // and contact data. IncludeRawCaptures opts those captures back in for
-// private use. Live-dogfood transcripts and pipeline runstate are always
-// omitted: they carry API response bodies and absolute host paths, and
-// IncludeRawCaptures does not opt them back in. Phase 5 acceptance and skip
-// markers stay. Shipped text has absolute home and .runstate paths rewritten
-// to the <cli-dir> and <runstate> placeholders.
+// private use. Live-dogfood transcripts, pipeline runstate, review
+// directories, raw proof sample directories, and SQLite stores are always
+// omitted: they carry response bodies, session notes, command output, or
+// local data, and IncludeRawCaptures does not opt them back in. Phase 5
+// acceptance and skip markers stay. Shipped text has absolute home and
+// .runstate paths rewritten to the <cli-dir> and <runstate> placeholders.
 func CopyPublishableManuscriptDir(src, dst string) error {
 	return CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{})
 }
@@ -714,15 +720,29 @@ func CopyPublishableManuscriptDirWithOptions(src, dst string, opts PublishableMa
 
 func copyPublishableManuscriptDir(src, dst string, opts PublishableManuscriptCopyOptions, skipped skippedFiles) error {
 	src = filepath.Clean(src)
+	var excluded []string
 	if err := copyDirFiltered(src, dst, func(path string, info fs.FileInfo) bool {
-		if shouldSkipPublishableManuscriptFile(src, path, info, opts) {
-			return true
-		}
+		skip := shouldSkipPublishableManuscriptFile(src, path, info, opts)
 		// A second name for a skipped capture (hard link), including one
 		// recorded from another manuscript directory, would ship the same bytes.
-		return skipped.contains(path, info)
+		if !skip {
+			skip = skipped.contains(path, info)
+		}
+		if !skip {
+			return false
+		}
+		if opts.Excluded != nil {
+			if rel, err := filepath.Rel(src, path); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				excluded = append(excluded, filepath.ToSlash(rel))
+			}
+		}
+		return true
 	}); err != nil {
 		return err
+	}
+	if opts.Excluded != nil {
+		sort.Strings(excluded)
+		*opts.Excluded = excluded
 	}
 	if err := pruneEmptyDiscoveryDirs(dst, strings.EqualFold(filepath.Base(src), "discovery")); err != nil {
 		return err
@@ -747,12 +767,26 @@ func shouldSkipPublishableManuscriptFile(root, path string, info fs.FileInfo, op
 	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pre-pii-scrub") {
 		return true
 	}
+	// Review notes, proof samples, and SQLite stores are never publishable.
+	// This stays ahead of IncludeRawCaptures so that flag cannot opt them in.
+	if isManuscriptReviewDir(path, info) || isRawProofSampleDir(root, path, info) || isSQLiteStoreFile(path, info) {
+		return true
+	}
 	// Live transcripts and pipeline runstate carry response bodies and host
 	// paths. This check stays ahead of IncludeRawCaptures so that flag cannot
 	// opt them back in. Phase 5 marker filenames stay copyable even when their
 	// JSON resembles a report.
 	if isManuscriptPipelineRunstate(path, info) || isRawLiveDogfoodTranscript(filepath.Base(path)) || isLiveDogfoodReportFile(path, info) {
 		return true
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		if resolved, targetInfo, ok := statSymlinkTarget(path); ok {
+			// The target file of a link into review/ or a proof sample
+			// directory is itself publishable; the ancestor is not.
+			if shouldSkipPublishableManuscriptFile(root, resolved, targetInfo, opts) || publishableAncestorSkipped(root, resolved, opts) {
+				return true
+			}
+		}
 	}
 	if opts.IncludeRawCaptures {
 		return false
@@ -767,6 +801,89 @@ func shouldSkipPublishableManuscriptFile(root, path string, info fs.FileInfo, op
 		return true
 	}
 	return false
+}
+
+// isManuscriptReviewDir matches a directory named review. A symlink keeps
+// that name on Lstat, which does not report the target as a directory.
+func isManuscriptReviewDir(path string, info fs.FileInfo) bool {
+	if info == nil || !strings.EqualFold(filepath.Base(path), "review") {
+		return false
+	}
+	return info.IsDir() || info.Mode()&fs.ModeSymlink != 0
+}
+
+// isRawProofSampleDir matches proof directories whose names contain "sample"
+// (novel-samples, novel-sample). Research sample directories stay; those are
+// covered only when they carry a sniff marker. A symlink is a sample directory
+// when its target is a directory, and when the target cannot be resolved.
+func isRawProofSampleDir(root, path string, info fs.FileInfo) bool {
+	if info == nil || !strings.Contains(strings.ToLower(filepath.Base(path)), "sample") {
+		return false
+	}
+	if !isInsideProofsTree(root, path) {
+		return false
+	}
+	if info.IsDir() {
+		return true
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return false
+	}
+	isDir, ok := symlinkTargetIsDir(path)
+	return !ok || isDir
+}
+
+func isInsideProofsTree(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if rel == "." {
+		return strings.EqualFold(filepath.Base(root), "proofs")
+	}
+	if strings.EqualFold(filepath.Base(root), "proofs") {
+		return true
+	}
+	return pathHasComponentFold(rel, "proofs")
+}
+
+func isSQLiteStoreFile(path string, info fs.FileInfo) bool {
+	if info == nil || info.IsDir() {
+		return false
+	}
+	if artifacts.IsSQLiteStoreFileName(filepath.Base(path)) {
+		return true
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false
+	}
+	return artifacts.FileHasSQLiteStoreHeader(path)
+}
+
+func statSymlinkTarget(path string) (string, fs.FileInfo, bool) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", nil, false
+	}
+	resolved = filepath.Clean(resolved)
+	if resolved == filepath.Clean(path) {
+		return "", nil, false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, false
+	}
+	return resolved, info, true
+}
+
+func symlinkTargetIsDir(path string) (bool, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, false
+	}
+	return info.IsDir(), true
 }
 
 // Summaries the press writes into discovery/: markdown reports, traffic
@@ -834,7 +951,7 @@ func skippedPublishableContent(src string, opts PublishableManuscriptCopyOptions
 		if err != nil {
 			return skipIfVanished(err, false)
 		}
-		// Directory skips (sources/, bundles/, sample dirs) do not mark each
+		// Directory skips (sources/, review/, proof sample dirs, bundles/) do not mark each
 		// child, so a hard link of that child under another name would ship.
 		// Followed symlink targets would mark an ordinary file as raw when a
 		// skipped name points at it. The copy walk checks the link path and

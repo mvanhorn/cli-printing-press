@@ -2015,6 +2015,180 @@ func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
 	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "brief.md"))
 }
 
+func TestPublishPackageOmitsPrivateManuscripts(t *testing.T) {
+	for _, source := range []string{"archived", "embedded"} {
+		t.Run(source, func(t *testing.T) {
+			home := setLibraryTestEnv(t)
+			cliDir := filepath.Join(home, "library", "test-pp-cli")
+			writePublishableTestCLI(t, cliDir)
+			stubPublishPackageValidation(t)
+
+			runID := "20260329-100000"
+			setPublishableTestRunID(t, cliDir, runID)
+			var runDir string
+			if source == "embedded" {
+				require.NoError(t, os.RemoveAll(filepath.Join(home, "manuscripts", "test")))
+				runDir = filepath.Join(cliDir, ".manuscripts", runID)
+			} else {
+				runDir = filepath.Join(home, "manuscripts", "test", runID)
+			}
+			writePrivateManuscriptFixture(t, runDir)
+
+			packageAt := func(t *testing.T, target string, includeRaw bool) (PackageResult, string) {
+				t.Helper()
+				args := []string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"}
+				if includeRaw {
+					args = append(args, "--include-raw-captures")
+				}
+				cmd := newPublishCmd()
+				cmd.SetArgs(args)
+				stdout, stderr, err := runWithCapturedStdoutAndStderr(t, cmd.Execute)
+				require.NoError(t, err)
+				var result PackageResult
+				require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+				assert.True(t, result.ManuscriptsIncluded)
+				assert.Equal(t, runID, result.RunID)
+				return result, stderr
+			}
+
+			result, stderr := packageAt(t, filepath.Join(t.TempDir(), "staging"), false)
+			staged := filepath.Join(result.StagedDir, ".manuscripts", runID)
+			assertPrivateManuscriptsFiltered(t, staged, result.ExcludedManuscripts, false)
+			assert.Contains(t, stderr, "warning: excluded")
+			assert.Contains(t, stderr, "review")
+			assert.Contains(t, stderr, "proofs/novel-samples")
+			assert.Contains(t, stderr, "proofs/listings.db")
+
+			rawResult, _ := packageAt(t, filepath.Join(t.TempDir(), "staging-raw"), true)
+			rawStaged := filepath.Join(rawResult.StagedDir, ".manuscripts", runID)
+			assertPrivateManuscriptsFiltered(t, rawStaged, rawResult.ExcludedManuscripts, true)
+			assert.NotContains(t, rawResult.ExcludedManuscripts, "discovery/probe-001.json")
+		})
+	}
+}
+
+func TestPublishPackageRejectsSQLiteThatReachesTheScan(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "blob.bin"), []byte{0, 1, 2, 3}, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "notes.db.md"), []byte("authored database notes\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "internal", "Store.DB"),
+		append([]byte("SQLite format 3\x00"), []byte("private-listing-row")...),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unscanned SQLite database in staged package")
+	assert.Contains(t, err.Error(), "internal/Store.DB")
+	assert.NotContains(t, err.Error(), "blob.bin")
+	assert.NotContains(t, err.Error(), "notes.db.md")
+	assert.NoDirExists(t, target)
+}
+
+func writePrivateManuscriptFixture(t *testing.T, runDir string) {
+	t.Helper()
+	const marker = "private-listing-row"
+	write := func(rel, body string) {
+		t.Helper()
+		path := filepath.Join(runDir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+	}
+	write("research/brief.md", "# brief\n")
+	write("research/field-samples/notes.md", "authored field notes\n")
+	write("proofs/shipcheck.md", "# shipcheck\n")
+	write("proofs/sample-notes.md", "authored sample notes\n")
+	write("proofs/"+pipeline.Phase5AcceptanceFilename, "{\"status\":\"pass\"}\n")
+	write("discovery/traffic-analysis.json", "{\"auth_stripped\":true}\n")
+	write("discovery/probe-001.json", "{\"raw\":true}\n")
+	write("review.md", "top-level review note\n")
+	write("notes.db.md", "authored database notes\n")
+	write("review/session.md", marker+"\n")
+	write("proofs/novel-samples/out.txt", marker+"\n")
+	write("proofs/novel-sample/listing.txt", marker+"\n")
+	db := filepath.Join(runDir, "proofs", "listings.db")
+	require.NoError(t, os.MkdirAll(filepath.Dir(db), 0o755))
+	require.NoError(t, os.WriteFile(db, append([]byte("SQLite format 3\x00"), []byte(marker)...), 0o644))
+	write("proofs/listings.db-wal", marker+"\n")
+	write("proofs/listings.db-shm", marker+"\n")
+	write("research/cache.sqlite", marker+"\n")
+	write("schema.db", marker+"\n")
+}
+
+func assertPrivateManuscriptsFiltered(t *testing.T, staged string, excluded []string, rawIncluded bool) {
+	t.Helper()
+	for _, rel := range []string{
+		"research/brief.md",
+		"research/field-samples/notes.md",
+		"proofs/shipcheck.md",
+		"proofs/sample-notes.md",
+		"proofs/" + pipeline.Phase5AcceptanceFilename,
+		"discovery/traffic-analysis.json",
+		"review.md",
+		"notes.db.md",
+	} {
+		assert.FileExists(t, filepath.Join(staged, filepath.FromSlash(rel)), rel)
+	}
+	for _, rel := range []string{
+		"review/session.md",
+		"proofs/novel-samples/out.txt",
+		"proofs/novel-sample/listing.txt",
+		"proofs/listings.db",
+		"proofs/listings.db-wal",
+		"proofs/listings.db-shm",
+		"research/cache.sqlite",
+		"schema.db",
+	} {
+		assert.NoFileExists(t, filepath.Join(staged, filepath.FromSlash(rel)), rel)
+	}
+	assert.NoDirExists(t, filepath.Join(staged, "review"))
+	assert.NoDirExists(t, filepath.Join(staged, "proofs", "novel-samples"))
+	assert.NoDirExists(t, filepath.Join(staged, "proofs", "novel-sample"))
+	if rawIncluded {
+		assert.FileExists(t, filepath.Join(staged, "discovery", "probe-001.json"))
+	} else {
+		assert.NoFileExists(t, filepath.Join(staged, "discovery", "probe-001.json"))
+		assert.Contains(t, excluded, "discovery/probe-001.json")
+	}
+	for _, rel := range []string{
+		"review",
+		"proofs/novel-samples",
+		"proofs/novel-sample",
+		"proofs/listings.db",
+		"proofs/listings.db-wal",
+		"research/cache.sqlite",
+		"schema.db",
+	} {
+		assert.Contains(t, excluded, rel)
+	}
+	assert.NotContains(t, excluded, "review.md")
+	assert.NotContains(t, excluded, "notes.db.md")
+	assert.NotContains(t, excluded, "proofs/sample-notes.md")
+	assert.NotContains(t, excluded, "research/brief.md")
+	err := filepath.WalkDir(staged, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(body), "private-listing-row") {
+			t.Errorf("staged manuscript %s still contains private-listing-row", path)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
