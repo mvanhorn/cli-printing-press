@@ -67,13 +67,14 @@ type ValidateResult struct {
 
 // PackageResult is the JSON output of publish package.
 type PackageResult struct {
-	StagedDir           string `json:"staged_dir"`
-	CLIName             string `json:"cli_name"`
-	APIName             string `json:"api_name"`
-	Category            string `json:"category"`
-	ModulePath          string `json:"module_path,omitempty"`
-	ManuscriptsIncluded bool   `json:"manuscripts_included"`
-	RunID               string `json:"run_id,omitempty"`
+	StagedDir           string   `json:"staged_dir"`
+	CLIName             string   `json:"cli_name"`
+	APIName             string   `json:"api_name"`
+	Category            string   `json:"category"`
+	ModulePath          string   `json:"module_path,omitempty"`
+	ManuscriptsIncluded bool     `json:"manuscripts_included"`
+	RunID               string   `json:"run_id,omitempty"`
+	ExcludedManuscripts []string `json:"excluded_manuscripts,omitempty"`
 }
 
 // RenameResult is the JSON output of publish rename.
@@ -538,12 +539,22 @@ func newPublishPackageCmd() *cobra.Command {
 				result.RunID = runID
 				srcMsDir := filepath.Join(msDir, runID)
 				dstMsDir := filepath.Join(outCLIDir, ".manuscripts", runID)
-				manuscriptCopyOptions := pipeline.PublishableManuscriptCopyOptions{IncludeRawCaptures: includeRawCaptures}
+				var excludedManuscripts []string
+				manuscriptCopyOptions := pipeline.PublishableManuscriptCopyOptions{
+					IncludeRawCaptures: includeRawCaptures,
+					Excluded:           &excludedManuscripts,
+				}
 				if err := pipeline.CopyPublishableManuscriptDirWithOptions(srcMsDir, dstMsDir, manuscriptCopyOptions); err != nil {
 					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying manuscripts: %w", err)}
-				} else {
-					result.ManuscriptsIncluded = true
+				}
+				result.ManuscriptsIncluded = true
+				result.ExcludedManuscripts = excludedManuscripts
+				if len(excludedManuscripts) > 0 {
+					fmt.Fprintf(os.Stderr, "warning: excluded %d manuscript path(s) from the package:\n", len(excludedManuscripts))
+					for _, rel := range excludedManuscripts {
+						fmt.Fprintf(os.Stderr, "  %s\n", rel)
+					}
 				}
 			} else {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
@@ -571,7 +582,7 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for PII: %w", piiErr)}
 			}
 
-			if scanErr := formatCombinedScanError(secretResult.Findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
+			if scanErr := formatCombinedScanError(secretResult.Findings, secretResult.UnscannedSQLite, piiResult.Findings, piiResult.Completion); scanErr != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: scanErr}
 			}
@@ -1930,10 +1941,12 @@ func recordReviewedSecretSuppressions(dir string, suppressions []artifacts.Revie
 
 // formatCombinedScanError composes the publish-time error message from
 // both scanners. Sections appear in fixed order: vendor-prefix tokens,
-// then PII pending findings, then PII gate failures. Returns nil when
-// nothing to report so callers can branch on the error directly.
+// unscanned SQLite databases, PII pending findings, then PII gate
+// failures. Returns nil when nothing to report so callers can branch on
+// the error directly.
 func formatCombinedScanError(
 	secretFindings []artifacts.VendorPrefixSecretFinding,
+	unscannedSQLite []string,
 	piiFindings []artifacts.PIIFinding,
 	piiCompletion artifacts.PIICompletionStatus,
 ) error {
@@ -1943,6 +1956,13 @@ func formatCombinedScanError(
 		sections = append(sections,
 			"vendor-prefix tokens detected in staged package:\n"+
 				artifacts.FormatVendorPrefixSecretFindings(secretFindings))
+	}
+	if len(unscannedSQLite) > 0 {
+		paths := append([]string(nil), unscannedSQLite...)
+		sort.Strings(paths)
+		sections = append(sections,
+			"unscanned SQLite database in staged package:\n"+
+				strings.Join(paths, "\n"))
 	}
 	if artifacts.PIIPendingCount(piiFindings) > 0 {
 		sections = append(sections,

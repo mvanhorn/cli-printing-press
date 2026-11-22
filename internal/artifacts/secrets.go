@@ -145,6 +145,10 @@ type ReviewedSecretSuppression struct {
 type SecretScanResult struct {
 	Findings     []VendorPrefixSecretFinding
 	Suppressions []ReviewedSecretSuppression
+	// UnscannedSQLite is files skipped because a NUL in the first 8 KiB would
+	// hide a SQLite store from the text scan. Callers surface these paths
+	// instead of treating the skip as a clean file.
+	UnscannedSQLite []string
 }
 
 type vendorPrefixSecretPattern struct {
@@ -323,6 +327,7 @@ func findSecrets(root string, patterns []vendorPrefixSecretPattern) (SecretScanR
 		}
 		result.Findings = append(result.Findings, fileFindings.Findings...)
 		result.Suppressions = append(result.Suppressions, fileFindings.Suppressions...)
+		result.UnscannedSQLite = append(result.UnscannedSQLite, fileFindings.UnscannedSQLite...)
 		return nil
 	})
 	return result, err
@@ -341,6 +346,13 @@ func scanSecretFile(root, path string, patterns []vendorPrefixSecretPattern) (Se
 		return SecretScanResult{}, err
 	}
 	if bytes.Contains(probe, []byte{0}) {
+		if IsSQLiteStoreFileName(filepath.Base(path)) || HasSQLiteStoreHeader(probe) {
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return SecretScanResult{}, relErr
+			}
+			return SecretScanResult{UnscannedSQLite: []string{filepath.ToSlash(rel)}}, nil
+		}
 		return SecretScanResult{}, nil
 	}
 
