@@ -578,7 +578,12 @@ saved under proofs by an earlier dogfood run. It still copies
 `phase5-acceptance.json` and `phase5-skip.json`. Home paths under
 `printing-press` or a dotfile directory, and any absolute `.runstate` path,
 are rewritten to `<cli-dir>` and `<runstate>` in other shipped manuscript
-text.
+text. The package step also drops `review/` directories, raw proof sample
+directories under `proofs/` whose names contain `sample`, and SQLite stores
+(`*.db`, `*.sqlite`, `*.sqlite3`, and `-wal` / `-shm` / `-journal` sidecars)
+from the archived run and from an embedded `.manuscripts` fallback.
+`--include-raw-captures` does not restore them. `publish package` prints the
+paths it left out.
 
 ```bash
 LIVE_GATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/printing-press-publish.XXXXXX")
@@ -929,9 +934,9 @@ cli-printing-press publish package \
   --json
 ```
 
-Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
+Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. `excluded_manuscripts`, when present, lists manuscript paths the package left out. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
 
-`publish package` performs the mandatory vendor-prefix secret scan over the staged CLI, including copied manuscripts, before returning success. If it reports `vendor-prefix tokens detected`, stop and remove or redact the reported file:line findings before retrying. This is a hard gate and does not depend on `gitleaks`, `trufflehog`, or destination-repo push protection.
+`publish package` performs the mandatory vendor-prefix secret scan over the staged CLI, including copied manuscripts, before returning success. If it reports `vendor-prefix tokens detected`, stop and remove or redact the reported file:line findings before retrying. A SQLite store that still reaches the staged tree is reported as `unscanned SQLite database in staged package` and fails the package the same way; the manuscript filter is supposed to drop those files before the scan. This is a hard gate and does not depend on `gitleaks`, `trufflehog`, or destination-repo push protection.
 
 Then copy the staged CLI into the publish repo, replacing any existing version
 while preserving the public library's release ledger files when this is a
