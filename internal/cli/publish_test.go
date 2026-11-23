@@ -1274,6 +1274,56 @@ func TestPublishPackageKeepsBaseDirHomepage(t *testing.T) {
 	}
 }
 
+func TestPublishPackageKeepsBaseDirDataSources(t *testing.T) {
+	baseList := []pipeline.DataSource{{Name: "Base Feed", Homepage: "https://test.com"}}
+	sourceList := []pipeline.DataSource{{Name: "Source Feed"}}
+	tests := []struct {
+		name   string
+		base   []pipeline.DataSource
+		source []pipeline.DataSource
+		want   []pipeline.DataSource
+	}{
+		{name: "base entry list wins", base: baseList, source: sourceList, want: baseList},
+		{name: "base entry list fills an empty source", base: baseList, want: baseList},
+		{name: "source list kept when base has none", source: sourceList, want: sourceList},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := setLibraryTestEnv(t)
+			cliDir := filepath.Join(home, "library", "test-pp-cli")
+			writePublishableTestCLI(t, cliDir)
+			stubPublishPackageValidation(t)
+			if tt.source != nil {
+				manifest, err := pipeline.ReadCLIManifest(cliDir)
+				require.NoError(t, err)
+				manifest.DataSources = tt.source
+				writeTestManifest(t, cliDir, manifest)
+			}
+
+			base := t.TempDir()
+			writeTestManifest(t, base, pipeline.CLIManifest{
+				SchemaVersion: pipeline.CurrentCLIManifestSchemaVersion,
+				APIName:       "test",
+				CLIName:       "test-pp-cli",
+				DataSources:   tt.base,
+			})
+
+			target := filepath.Join(t.TempDir(), "staging")
+			cmd := newPublishCmd()
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--base-dir", base, "--module-path", "github.com/mvanhorn/printing-press-library/library/other/test", "--json"})
+
+			output, err := runWithCapturedStdout(t, cmd.Execute)
+			require.NoError(t, err)
+			var result PackageResult
+			require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+			staged, err := pipeline.ReadCLIManifest(result.StagedDir)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, staged.DataSources)
+		})
+	}
+}
+
 func TestPublishPackageStampsRuntimeVersionFromDestStash(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
