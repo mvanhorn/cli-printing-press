@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.36.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.8...v4.36.0) (2026-11-23)
+
+
+### Features
+
+* **cli:** record researched data sources in the printed CLI manifest ([#5451](https://github.com/mvanhorn/cli-printing-press/issues/5451)) ([bd183e0](https://github.com/mvanhorn/cli-printing-press/commit/bd183e0454dc3bf26bca299cfe051a2dcfa9bc7e))
+
+
+### Bug Fixes
+
+* **cli:** keep review notes, proof samples and SQLite stores out of published manuscripts ([#5448](https://github.com/mvanhorn/cli-printing-press/issues/5448)) ([f8d89d8](https://github.com/mvanhorn/cli-printing-press/commit/f8d89d84caffe556dc0a1ad8559e925903cc8337))
+
 ## [4.35.8](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.7...v4.35.8) (2026-11-21)
 
 
