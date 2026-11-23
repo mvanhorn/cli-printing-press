@@ -1312,7 +1312,7 @@ func TestPromoteWorkingCLI_PersistsCategoryAndCreator(t *testing.T) {
 	assert.Equal(t, "Trevin Chow", got.Creator.Name)
 }
 
-func TestRestoreLibraryHomepage(t *testing.T) {
+func TestRestoreLibraryCatalogFields(t *testing.T) {
 	tests := []struct {
 		name       string
 		libraryAPI string
@@ -1333,20 +1333,49 @@ func TestRestoreLibraryHomepage(t *testing.T) {
 			require.NoError(t, WriteCLIManifest(libraryDir, CLIManifest{SchemaVersion: 1, APIName: tt.libraryAPI, CLIName: tt.libraryAPI + "-pp-cli", Homepage: tt.library}))
 			require.NoError(t, WriteCLIManifest(stagingDir, CLIManifest{SchemaVersion: 1, APIName: "test", CLIName: "test-pp-cli", Homepage: tt.staged}))
 
-			require.NoError(t, RestoreLibraryHomepage(stagingDir, libraryDir, "test"))
+			require.NoError(t, RestoreLibraryCatalogFields(stagingDir, libraryDir, "test"))
 
 			assert.Equal(t, tt.want, readManifest(t, stagingDir).Homepage)
 		})
 	}
 }
 
-func TestRestoreLibraryHomepageWithoutLibraryManifest(t *testing.T) {
+func TestRestoreLibraryCatalogFieldsWithoutLibraryManifest(t *testing.T) {
 	stagingDir := t.TempDir()
 	require.NoError(t, WriteCLIManifest(stagingDir, CLIManifest{SchemaVersion: 1, APIName: "test", CLIName: "test-pp-cli", Homepage: "https://test.io"}))
 
-	require.NoError(t, RestoreLibraryHomepage(stagingDir, t.TempDir(), "test"))
+	require.NoError(t, RestoreLibraryCatalogFields(stagingDir, t.TempDir(), "test"))
 
 	assert.Equal(t, "https://test.io", readManifest(t, stagingDir).Homepage)
+}
+
+func TestRestoreLibraryCatalogFieldsDataSources(t *testing.T) {
+	libraryList := []DataSource{{Name: "Library Feed", Homepage: "https://test.com"}}
+	stagedList := []DataSource{{Name: "Research Guess"}}
+	tests := []struct {
+		name       string
+		libraryAPI string
+		library    []DataSource
+		staged     []DataSource
+		want       []DataSource
+	}{
+		{name: "library list wins over staged list", libraryAPI: "test", library: libraryList, staged: stagedList, want: libraryList},
+		{name: "library list fills an empty staged manifest", libraryAPI: "test", library: libraryList, want: libraryList},
+		{name: "staged list kept when library has none", libraryAPI: "test", staged: stagedList, want: stagedList},
+		{name: "different API in the library is ignored", libraryAPI: "other", library: libraryList, staged: stagedList, want: stagedList},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			libraryDir := t.TempDir()
+			stagingDir := t.TempDir()
+			require.NoError(t, WriteCLIManifest(libraryDir, CLIManifest{SchemaVersion: 1, APIName: tt.libraryAPI, CLIName: tt.libraryAPI + "-pp-cli", DataSources: tt.library}))
+			require.NoError(t, WriteCLIManifest(stagingDir, CLIManifest{SchemaVersion: 1, APIName: "test", CLIName: "test-pp-cli", DataSources: tt.staged}))
+
+			require.NoError(t, RestoreLibraryCatalogFields(stagingDir, libraryDir, "test"))
+
+			assert.Equal(t, tt.want, readManifest(t, stagingDir).DataSources)
+		})
+	}
 }
 
 func TestPromoteWorkingCLI_KeepsLibraryHomepageForSameCreatorReprint(t *testing.T) {
@@ -1364,6 +1393,7 @@ func TestPromoteWorkingCLI_KeepsLibraryHomepageForSameCreatorReprint(t *testing.
 		CLIName:       "test-pp-cli",
 		Creator:       &spec.Person{Handle: "tmchow", Name: "Trevin Chow"},
 		Homepage:      "https://test.com",
+		DataSources:   []DataSource{{Name: "Library Feed"}},
 	}))
 
 	workDir := filepath.Join(tmp, "working", "test-pp-cli")
@@ -1377,6 +1407,7 @@ func TestPromoteWorkingCLI_KeepsLibraryHomepageForSameCreatorReprint(t *testing.
 		RunID:         "run-homepage",
 		Creator:       &spec.Person{Handle: "tmchow", Name: "Trevin Chow"},
 		Homepage:      "https://test.io",
+		DataSources:   []DataSource{{Name: "Research Guess"}},
 	}))
 
 	state := NewStateWithRun("test", workDir, "run-homepage", "test-scope")
@@ -1385,6 +1416,7 @@ func TestPromoteWorkingCLI_KeepsLibraryHomepageForSameCreatorReprint(t *testing.
 	require.NoError(t, PromoteWorkingCLI("test-pp-cli", workDir, state))
 
 	assert.Equal(t, "https://test.com", readManifest(t, libraryDir).Homepage)
+	assert.Equal(t, []DataSource{{Name: "Library Feed"}}, readManifest(t, libraryDir).DataSources)
 }
 
 func TestPromoteWorkingCLI_UsesCategoryFromPipelineState(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2453,13 +2454,31 @@ func TestRefreshCLIManifestFromSpecPreservesHomepage(t *testing.T) {
 	assert.Equal(t, "https://example.com", got.Homepage)
 }
 
-func TestCLIManifestHomepageKeyOrderMatchesAcrossWritePaths(t *testing.T) {
+func TestRefreshCLIManifestFromSpecPreservesDataSources(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "api_name": "example",
+  "cli_name": "example-pp-cli",
+  "data_sources": [{"name": "Example Feed", "homepage": "https://example.com"}]
+}
+`), 0o644))
+
+	require.NoError(t, RefreshCLIManifestFromSpec(dir, &spec.APISpec{Name: "example"}))
+
+	got, err := ReadCLIManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []DataSource{{Name: "Example Feed", Homepage: "https://example.com"}}, got.DataSources)
+}
+
+func TestCLIManifestCatalogKeyOrderMatchesAcrossWritePaths(t *testing.T) {
 	m := CLIManifest{
 		SchemaVersion: 1,
 		APIName:       "example",
 		CLIName:       "example-pp-cli",
 		Description:   "Example CLI.",
 		Homepage:      "https://example.com",
+		DataSources:   []DataSource{{Name: "Example Feed"}},
 		MCPBinary:     "example-pp-mcp",
 	}
 
@@ -2488,7 +2507,9 @@ func TestCLIManifestHomepageKeyOrderMatchesAcrossWritePaths(t *testing.T) {
 	typedKeys := keyOrder(typed)
 	mergedKeys := keyOrder(merged)
 	require.Contains(t, typedKeys, "homepage")
-	assert.Equal(t, typedKeys, mergedKeys[:len(typedKeys)], "homepage must sit in the same position on both write paths")
+	require.Contains(t, typedKeys, "data_sources")
+	assert.Equal(t, "data_sources", typedKeys[slices.Index(typedKeys, "homepage")+1], "data_sources sits right after homepage")
+	assert.Equal(t, typedKeys, mergedKeys[:len(typedKeys)], "homepage and data_sources must sit in the same position on both write paths")
 }
 
 func TestRefreshCLIManifestFromSpecPreservesCompactNovelFeaturesBuilt(t *testing.T) {

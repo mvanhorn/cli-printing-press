@@ -1727,6 +1727,80 @@ resources:
 	}
 }
 
+func TestGenerateCmdWritesResearchDataSourcesToManifest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		dataSources []pipeline.DataSource
+		want        []pipeline.DataSource
+	}{
+		{
+			name:        "confirmed sources are recorded",
+			dataSources: []pipeline.DataSource{{Name: "TMDb", Homepage: "https://www.themoviedb.org"}, {Name: "OMDb"}},
+			want:        []pipeline.DataSource{{Name: "TMDb", Homepage: "https://www.themoviedb.org"}, {Name: "OMDb"}},
+		},
+		{
+			name:        "invalid entries are dropped",
+			dataSources: []pipeline.DataSource{{Name: " "}, {Name: "Local", Homepage: "https://localhost:3000"}},
+			want:        []pipeline.DataSource{{Name: "Local"}},
+		},
+		{name: "no research sources leaves the field out"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			specPath := filepath.Join(dir, "spec.yaml")
+			researchDir := filepath.Join(dir, "research")
+			outputDir := filepath.Join(dir, "moviefeed")
+			require.NoError(t, os.MkdirAll(researchDir, 0o755))
+			require.NoError(t, os.WriteFile(specPath, []byte(`name: moviefeed
+description: Movie feed API
+version: 0.1.0
+base_url: https://api.moviefeed.com
+website_url: https://docs.moviefeed.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/moviefeed-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+			research, err := json.Marshal(pipeline.ResearchResult{APIName: "moviefeed", DataSources: tt.dataSources})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), research, 0o644))
+
+			cmd := newGenerateCmd()
+			cmd.SetArgs([]string{
+				"--spec", specPath,
+				"--output", outputDir,
+				"--validate=false",
+				"--force",
+				"--research-dir", researchDir,
+			})
+			require.NoError(t, cmd.Execute())
+
+			data, err := os.ReadFile(filepath.Join(outputDir, pipeline.CLIManifestFilename))
+			require.NoError(t, err)
+			var manifest pipeline.CLIManifest
+			require.NoError(t, json.Unmarshal(data, &manifest))
+			assert.Equal(t, tt.want, manifest.DataSources)
+			if tt.want == nil {
+				assert.NotContains(t, string(data), "data_sources")
+			}
+		})
+	}
+}
+
 func TestGenerateCmdForcePreservesImplementedNovelScaffoldAndStandaloneFiles(t *testing.T) {
 	t.Parallel()
 

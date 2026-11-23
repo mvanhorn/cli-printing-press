@@ -204,6 +204,9 @@ cat > "$API_RUN_DIR/research.json" <<REOF
     "canonical_env_var": "<CANONICAL_ENV_VAR, omit when unknown>"
   },
   "homepage": "<https URL of the product's public website, omit when unconfirmed>",
+  "data_sources": [
+    {"name": "<service the CLI reads data from>", "homepage": "<https URL of that service's public site, omit when unconfirmed>"}
+  ],
   "novel_features": [
     {
       "name": "<Feature Name>",
@@ -267,6 +270,13 @@ For each tool, fill in what you know from the research. Stars and command_count 
 2. Confirm it from the brand's own pages or a reliable listing that names it. The API host, a spec server URL, or a URL found in spec examples is not evidence on its own: an API often lives on a different domain than the brand, and specs often cite unrelated sites.
 3. Use the brand's public site, not the docs site, developer portal, or a status page. It must be an `https` URL. Generate drops anything else with a warning.
 4. A homepage already in the library's `.printing-press.json` wins, so a reprint's value never overwrites it.
+
+**Data sources rule**:
+1. `data_sources` lists the services a multi-service CLI reads data from, copied from the brief's `Data sources` line, most important first. Catalog clients show them as "Pulls from …" with icons and match searches on them. Omit `data_sources` for a single-service CLI, and leave out any entry you can't confirm.
+2. Count only services the CLI reads data from. Leave out sites it links out to (airline or hotel booking pages, share links), helper or infrastructure hosts, and API hosts. A flight search that reads Google Flights and FlightAware and links to 40 airline booking pages has two data sources.
+3. Use the name a user would recognize. Each `homepage` follows the Homepage rule: the service's public `https` site, omitted when unconfirmed. Generate keeps the first 12 entries and drops nameless entries, duplicates, and invalid homepages with a warning.
+4. `data_sources` is unrelated to the `sources/` directory of downloaded reference repos. Never list reference repos or competitor tools here.
+5. A list already in the library's `.printing-press.json` wins as a whole, so a reprint's value never overwrites it.
 
 **Narrative rules** (the `narrative` object drives README headline, Quick Start, Auth, Troubleshooting, and the entire SKILL.md):
 1. `display_name` is the canonical prose name, discovered during research, with exact brand casing and spacing. This is agentic/research-owned, not slug-inferred by Go code. Good: "Product Hunt", "GitHub", "YouTube", "Cal.com". Bad: "Producthunt", "Github", "Youtube", "Cal Com". Use the slug only for binary names, directories, module paths, config paths, and env-var prefixes.

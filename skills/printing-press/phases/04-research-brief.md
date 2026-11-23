@@ -54,6 +54,7 @@ Suggested shape:
 - Users:
 - Data profile:
 - Homepage: [the product's public website and the evidence for it, or "unknown"]
+- Data sources: [for a CLI that combines several services, the services it reads data from, most important first, each with its public site and evidence; "none" for a single-service CLI]
 
 ## Reachability Risk
 - [None / Low / High] [evidence: e.g., "6 open issues on reteps/redfin about 403 errors since 2025"]

@@ -1128,6 +1128,35 @@ resources: {}
 	assert.False(t, strings.HasSuffix(m.Description, "..."))
 }
 
+func TestWriteCLIManifestForPublishPreservesDataSources(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+	stubPromoteGitAttribution(t, "", "")
+
+	sources := []DataSource{{Name: "Google Flights"}, {Name: "FlightAware", Homepage: "https://www.flightaware.com"}}
+	state := NewStateWithRun("flightfeed", filepath.Join(tmp, "working", "flightfeed-pp-cli"), "20261122-data-sources", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	writeManifest(t, state.WorkingDir, CLIManifest{
+		APIName:     "flightfeed",
+		DataSources: sources,
+	})
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+name: flightfeed
+description: Flight feed API.
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+resources: {}
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	assert.Equal(t, sources, readPublishedManifest(t, state.WorkingDir).DataSources)
+}
+
 func TestWriteCLIManifestForPublishReplacesLiteralEllipsisDescription(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

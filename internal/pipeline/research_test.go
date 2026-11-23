@@ -121,6 +121,64 @@ func TestWriteNovelFeaturesBuiltKeepsResearchHomepage(t *testing.T) {
 	assert.Equal(t, "https://example.com", loaded.Homepage)
 }
 
+func TestWriteNovelFeaturesBuiltKeepsResearchDataSources(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), []byte(`{
+		"api_name": "test-api",
+		"data_sources": [{"name": "Kayak", "homepage": "https://www.kayak.com"}]
+	}`), 0o644))
+
+	require.NoError(t, WriteNovelFeaturesBuilt(dir, []NovelFeature{{Name: "Health", Command: "health"}}))
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []DataSource{{Name: "Kayak", Homepage: "https://www.kayak.com"}}, loaded.DataSources)
+}
+
+func TestLoadResearchReadsStringDataSourcesAsNames(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), []byte(`{
+		"api_name": "movie-goat",
+		"data_sources": ["TMDb", {"name": "OMDb", "homepage": "https://www.omdbapi.com"}]
+	}`), 0o644))
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []DataSource{{Name: "TMDb"}, {Name: "OMDb", Homepage: "https://www.omdbapi.com"}}, loaded.DataSources)
+	assert.Empty(t, loaded.DataSourceWarnings())
+}
+
+func TestLoadResearchSurvivesMalformedDataSources(t *testing.T) {
+	tests := []struct {
+		name        string
+		dataSources string
+		want        []DataSource
+	}{
+		{name: "not a list", dataSources: `"TMDb, OMDb"`},
+		{name: "bad items are skipped", dataSources: `[42, null, ["nested"], "TMDb"]`, want: []DataSource{{Name: "TMDb"}}},
+		{name: "a non-string homepage keeps the name", dataSources: `[{"name": "TMDb", "homepage": {"url": "https://www.themoviedb.org"}}]`, want: []DataSource{{Name: "TMDb"}}},
+		{name: "a non-string name drops the entry", dataSources: `[{"name": 5}, {"name": "OMDb"}]`, want: []DataSource{{Name: "OMDb"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), []byte(`{
+				"api_name": "movie-goat",
+				"homepage": "https://example.com",
+				"novel_features": [{"name": "Watchlist", "command": "watchlist"}],
+				"data_sources": `+tt.dataSources+`
+			}`), 0o644))
+
+			loaded, err := LoadResearch(dir)
+			require.NoError(t, err)
+			assert.Equal(t, "https://example.com", loaded.Homepage)
+			require.Len(t, loaded.NovelFeatures, 1)
+			assert.Equal(t, tt.want, loaded.DataSources)
+			assert.NotEmpty(t, loaded.DataSourceWarnings())
+		})
+	}
+}
+
 func TestLoadResearchAcceptsStructuredGapsAndPatterns(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte(`{
