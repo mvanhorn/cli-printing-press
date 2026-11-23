@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.36.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.36.0...v4.36.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cli:** create regen-merge staging dir exclusively ([#5454](https://github.com/mvanhorn/cli-printing-press/issues/5454)) ([fc52a95](https://github.com/mvanhorn/cli-printing-press/commit/fc52a9580c7d3ff0a2500b86eeb20896e95d5ac3))
+
 ## [4.36.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.35.8...v4.36.0) (2026-11-23)
 
 
