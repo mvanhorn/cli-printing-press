@@ -42,6 +42,10 @@ type ResearchResult struct {
 	// during the absorb phase alongside NovelFeatures.
 	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
 	Homepage  string           `json:"homepage,omitempty"`
+	// DataSources names the services a multi-service CLI reads data from.
+	// Decoding never fails on it; skipped items become DataSourceWarnings.
+	DataSources        []DataSource `json:"data_sources,omitempty"`
+	dataSourceWarnings []string
 	// Verify is an optional hint for verify's data-pipeline sync probe.
 	// A manifest VerifySyncResource overrides SyncResource. Exclude lists combine.
 	Verify *ResearchVerify `json:"verify,omitempty"`
@@ -58,8 +62,9 @@ func (r *ResearchResult) UnmarshalJSON(data []byte) error {
 	type researchResultAlias ResearchResult
 	var decoded struct {
 		*researchResultAlias
-		Gaps     flexibleResearchStrings `json:"gaps"`
-		Patterns flexibleResearchStrings `json:"patterns"`
+		Gaps        flexibleResearchStrings `json:"gaps"`
+		Patterns    flexibleResearchStrings `json:"patterns"`
+		DataSources json.RawMessage         `json:"data_sources"`
 	}
 	decoded.researchResultAlias = (*researchResultAlias)(r)
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -67,7 +72,13 @@ func (r *ResearchResult) UnmarshalJSON(data []byte) error {
 	}
 	r.Gaps = []string(decoded.Gaps)
 	r.Patterns = []string(decoded.Patterns)
+	r.DataSources, r.dataSourceWarnings = decodeResearchDataSources(decoded.DataSources)
 	return nil
+}
+
+// DataSourceWarnings lists research data_sources items skipped while decoding.
+func (r *ResearchResult) DataSourceWarnings() []string {
+	return r.dataSourceWarnings
 }
 
 type flexibleResearchStrings []string

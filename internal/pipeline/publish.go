@@ -276,6 +276,9 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.Homepage != "" {
 				m.Homepage = existing.Homepage
 			}
+			if len(existing.DataSources) > 0 {
+				m.DataSources = existing.DataSources
+			}
 			if len(existing.Regions) > 0 {
 				m.Regions = append([]string(nil), existing.Regions...)
 			}

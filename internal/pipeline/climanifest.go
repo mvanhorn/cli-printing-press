@@ -125,7 +125,10 @@ type CLIManifest struct {
 	// Homepage is the product's public website, recorded only when research
 	// confirmed it. It is never derived from spec URLs, which usually point
 	// at API hosts or docs rather than the brand's site.
-	Homepage           string            `json:"homepage,omitempty"`
+	Homepage string `json:"homepage,omitempty"`
+	// DataSources lists the services a multi-service CLI reads data from, in
+	// order of importance, recorded only from research.
+	DataSources        []DataSource      `json:"data_sources,omitempty"`
 	MCPBinary          string            `json:"mcp_binary,omitempty"`
 	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
 	MCPPublicToolCount int               `json:"mcp_public_tool_count,omitempty"`
@@ -859,6 +862,7 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"api_language",
 		"description",
 		"homepage",
+		"data_sources",
 		"mcp_binary",
 		"mcp_tool_count",
 		"mcp_public_tool_count",
@@ -1139,6 +1143,7 @@ type GenerateManifestParams struct {
 	AuthPreference  string                 // resolved OpenAPI securityScheme preference selected for this generate
 	NovelFeatures   []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 	Homepage        string                 // validated research homepage; "" when research had none
+	DataSources     []DataSource           // normalized research data sources; nil when research had none
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
@@ -1408,6 +1413,10 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	m.Homepage = p.Homepage
 	if preserveExisting && strings.TrimSpace(existing.Homepage) != "" {
 		m.Homepage = existing.Homepage
+	}
+	m.DataSources = p.DataSources
+	if preserveExisting && len(existing.DataSources) > 0 {
+		m.DataSources = existing.DataSources
 	}
 	if len(p.NovelFeatures) > 0 {
 		m.NovelFeatures = p.NovelFeatures

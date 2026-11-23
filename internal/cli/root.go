@@ -237,6 +237,7 @@ func newGenerateCmd() *cobra.Command {
 					Spec:          parsed,
 					NovelFeatures: generateResult.NovelFeatures,
 					Homepage:      generateResult.Homepage,
+					DataSources:   generateResult.DataSources,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
@@ -560,6 +561,7 @@ func newGenerateCmd() *cobra.Command {
 				AuthPreference:  openAPIParseAuthPref,
 				NovelFeatures:   generateResult.NovelFeatures,
 				Homepage:        generateResult.Homepage,
+				DataSources:     generateResult.DataSources,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
@@ -673,6 +675,7 @@ type generateProjectResult struct {
 	ManifestDescription string
 	DisplayName         string
 	Homepage            string
+	DataSources         []pipeline.DataSource
 	Polished            bool
 	Validate            func() error
 }
@@ -741,6 +744,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		ManifestDescription: manifestDescription,
 		DisplayName:         gen.ManifestDisplayName(),
 		Homepage:            researchHomepage(research),
+		DataSources:         researchDataSources(research),
 		Polished:            runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
 		Validate:            validateGeneratedProject,
 	}, nil
@@ -3373,6 +3377,17 @@ func researchHomepage(research *pipeline.ResearchResult) string {
 		fmt.Fprintf(os.Stderr, "warning: research homepage %q is not a public https URL; leaving manifest homepage unset\n", research.Homepage)
 	}
 	return homepage
+}
+
+func researchDataSources(research *pipeline.ResearchResult) []pipeline.DataSource {
+	if research == nil {
+		return nil
+	}
+	sources, warnings := pipeline.NormalizeDataSources(research.DataSources)
+	for _, w := range append(research.DataSourceWarnings(), warnings...) {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+	return sources
 }
 
 func applyResearchAuthMetadata(apiSpec *spec.APISpec, research *pipeline.ResearchResult) {
