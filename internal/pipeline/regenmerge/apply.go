@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/dave/dst"
 	"github.com/dave/dst/decorator"
@@ -24,7 +23,8 @@ import (
 //
 // Steps:
 //  1. Pre-flight: refuse non-clean git tree unless opts.Force
-//  2. Stage to sibling tempdir <parent>/<basename>.regen-merge-<ts>/
+//  2. Stage to an exclusive sibling tempdir (MkdirTemp under <parent>, so the
+//     rename stays on one filesystem). A pre-created path is not adopted.
 //  3. Deep-copy published → tempdir (preserves novels and collisions)
 //  4. Overwrite TEMPLATED-CLEAN files from fresh
 //  5. Copy NEW-TEMPLATE-EMISSION files from fresh
@@ -36,11 +36,14 @@ import (
 //  8. Overwrite tempdir's go.mod with the merged form (published module +
 //     fresh requires + smart replaces)
 //  9. Apply restoration plans (referent-existence check against tempdir)
-//  10. Two-step rename: <cli-dir> → bak; tempdir → <cli-dir>; remove bak
+//  10. Two-step rename: move <cli-dir> into an exclusive bak dir; rename
+//     tempdir to <cli-dir>; remove the bak dir this run created. The tempdir
+//     is chmod'd back to the published directory's mode before the swap.
 //
-// On any failure pre-rename, removes tempdir; published is untouched.
+// On any failure pre-rename, removes the tempdir this run created; published
+// is untouched. A path this run did not create is not removed.
 // On rename-2 failure, attempts to restore from bak.
-// On both renames failing, returns an error with absolute bak path so the
+// On both renames failing, returns an error with the absolute bak path so the
 // user can recover manually.
 func Apply(report *MergeReport, opts Options) error {
 	if report == nil {
@@ -61,15 +64,24 @@ func Apply(report *MergeReport, opts Options) error {
 		}
 	}
 
-	// Stage tempdir as sibling of cliDir to ensure same-FS rename.
+	// Stage beside cliDir so the publish rename stays on one filesystem.
+	// MkdirTemp is exclusive and unpredictable; MkdirAll would adopt a
+	// pre-created directory and cleanup would RemoveAll it.
 	parent := filepath.Dir(cliDir)
 	base := filepath.Base(cliDir)
-	ts := time.Now().Unix()
-	tempDir := filepath.Join(parent, fmt.Sprintf("%s.regen-merge-%d", base, ts))
-	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+	cliInfo, err := os.Stat(cliDir)
+	if err != nil {
+		return fmt.Errorf("statting cli dir: %w", err)
+	}
+	if !cliInfo.IsDir() {
+		return fmt.Errorf("cli dir %s is not a directory", cliDir)
+	}
+	stage, err := mkdirOwned(parent, scratchPattern(base, "regen-merge-"))
+	if err != nil {
 		return fmt.Errorf("creating tempdir: %w", err)
 	}
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	tempDir := stage.path
+	cleanup := func() { _ = stage.remove() }
 
 	// Deep-copy published → tempdir. pipeline.CopyDir handles symlink-target
 	// containment as defense-in-depth.
@@ -223,24 +235,57 @@ func Apply(report *MergeReport, opts Options) error {
 		return fmt.Errorf("recorded patches no longer match the merged tree: %w", err)
 	}
 
-	// Two-step rename with bak-recovery.
-	bakDir := filepath.Join(parent, fmt.Sprintf("%s.regen-merge-bak-%d", base, ts))
-	if err := os.Rename(cliDir, bakDir); err != nil {
+	// Bak lives under its own exclusive directory. Renaming onto a predictable
+	// sibling would replace an empty directory on Unix and share that path
+	// across same-second runs. The child path does not exist yet, so Windows
+	// rename (which refuses an existing destination) still works.
+	bak, err := mkdirOwned(parent, scratchPattern(base, "regen-merge-bak-"))
+	if err != nil {
 		cleanup()
+		return fmt.Errorf("creating bak dir: %w", err)
+	}
+	if hook := applyScratchHook.Load(); hook != nil {
+		(*hook)(tempDir, bak.path)
+	}
+	// MkdirTemp is 0700. The staged root becomes the published directory, so
+	// restore the mode users had before the swap.
+	if err := chmodOwned(stage, publishedDirMode(cliInfo)); err != nil {
+		cleanup()
+		_ = bak.remove()
+		return fmt.Errorf("preserving cli dir mode: %w", err)
+	}
+	bakDest := filepath.Join(bak.path, bakChildName)
+	if _, err := os.Lstat(bakDest); err == nil {
+		cleanup()
+		_ = bak.remove()
+		return fmt.Errorf("bak destination %s already exists", bakDest)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		cleanup()
+		_ = bak.remove()
+		return fmt.Errorf("checking bak destination: %w", err)
+	}
+	if !stage.matches() || !bak.matches() {
+		cleanup()
+		_ = bak.remove()
+		return fmt.Errorf("staging directory changed before publish")
+	}
+	if err := os.Rename(cliDir, bakDest); err != nil {
+		cleanup()
+		_ = bak.remove()
 		return fmt.Errorf("renaming original to bak: %w", err)
 	}
 	if err := os.Rename(tempDir, cliDir); err != nil {
-		// Recovery attempt.
-		if rerr := os.Rename(bakDir, cliDir); rerr != nil {
+		if rerr := os.Rename(bakDest, cliDir); rerr != nil {
 			return fmt.Errorf("UNRECOVERABLE: rename to final failed (%v) AND restore from bak failed (%v); your data is at %s",
-				err, rerr, bakDir)
+				err, rerr, bakDest)
 		}
-		_ = os.RemoveAll(tempDir)
+		_ = stage.remove()
+		_ = bak.remove()
 		return fmt.Errorf("rename to final failed (recovered from bak): %w", err)
 	}
-	if err := os.RemoveAll(bakDir); err != nil {
+	if err := bak.remove(); err != nil {
 		// Tree is fine; bak just lingers.
-		fmt.Fprintf(os.Stderr, "warning: failed to remove bak dir %s: %v\n", bakDir, err)
+		fmt.Fprintf(os.Stderr, "warning: failed to remove bak dir %s: %v\n", bak.path, err)
 	}
 
 	report.Applied = true
