@@ -24,6 +24,10 @@ Bad fits:
 - The secondary sources are only examples in docs and are not reachable enough
   to smoke test.
 
+Record each upstream source the CLI reads data from in `research.json`'s
+`data_sources` list (see the Data sources rule in the ecosystem absorb gate),
+so the published manifest names them for catalog clients.
+
 ## Reference layout
 
 Keep the hand-authored source layer outside generator-owned packages:

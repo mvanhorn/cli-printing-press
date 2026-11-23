@@ -961,6 +961,19 @@ func TestPrintingPressSkillRecordsResearchedHomepage(t *testing.T) {
 	assert.Contains(t, block, "never overwrites")
 }
 
+func TestPrintingPressSkillRecordsResearchedDataSources(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "**Data sources rule**", "**Narrative rules**")
+
+	assert.Contains(t, skill, "- Data sources:")
+	assert.Contains(t, skill, `"data_sources": [`)
+	assert.Contains(t, block, "Omit `data_sources`")
+	assert.Contains(t, block, "booking")
+	assert.Contains(t, block, "12")
+	assert.Contains(t, block, "`sources/`")
+	assert.Contains(t, block, "never overwrites")
+}
+
 func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 

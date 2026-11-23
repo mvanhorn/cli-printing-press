@@ -79,6 +79,7 @@ Rules that code in this repository follows. Each rule names a defect class that 
 ## Skills and contract docs
 
 - **Skill text that depends on a new binary capability raises `min-binary-version`.**
+- **A field an agent writes into `research.json` decodes without failing the whole file.** Generate treats any research decode error as "no research" without a warning, so one malformed field silently drops novel features, homepage, narrative, and auth metadata. Agent-written fields accept the shapes an agent plausibly writes, skip items they cannot use, and surface what they skipped as warnings.
 - **A change to a file that a contract doc describes updates that doc in the same change.** That includes `docs/PIPELINE.md` and `docs/SPEC-EXTENSIONS.md`. A machine change that alters what an agent should do also updates the skill router and phase files.
 
 ## Comments and code shape

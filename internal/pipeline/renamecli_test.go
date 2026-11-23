@@ -190,6 +190,7 @@ func envName(suffix string) string {
 		CLIName:       cliName,
 		MCPBinary:     mcpName,
 		Homepage:      "https://www.notion.com",
+		DataSources:   []DataSource{{Name: "Notion", Homepage: "https://www.notion.com"}},
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
@@ -326,6 +327,7 @@ func TestRenameCLI(t *testing.T) {
 		assert.Equal(t, naming.TrimCLISuffix(newName), m.APIName)
 		assert.Equal(t, newMCPName, m.MCPBinary)
 		assert.Equal(t, "https://www.notion.com", m.Homepage, "homepage must survive the typed manifest rewrite")
+		assert.Equal(t, []DataSource{{Name: "Notion", Homepage: "https://www.notion.com"}}, m.DataSources, "data sources must survive the typed manifest rewrite")
 
 		// MCPB manifest should launch the renamed MCP binary.
 		mcpbData, err := os.ReadFile(filepath.Join(newDir, MCPBManifestFilename))

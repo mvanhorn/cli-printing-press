@@ -157,6 +157,61 @@ func TestWriteManifestForGenerate_CrossLineageDropsHomepage(t *testing.T) {
 	assert.NotContains(t, string(data), "homepage", "a different API's homepage must not carry over")
 }
 
+func TestWriteManifestForGenerate_DataSourcesPrecedence(t *testing.T) {
+	base := GenerateManifestParams{
+		APIName:  "acme",
+		SpecSrcs: []string{"https://example.com/openapi.json"},
+	}
+	existingList := []DataSource{{Name: "Acme Data", Homepage: "https://acme.com"}}
+	researchList := []DataSource{{Name: "Other Feed"}}
+	tests := []struct {
+		name     string
+		existing []DataSource
+		research []DataSource
+		want     []DataSource
+	}{
+		{name: "existing list wins over fresh research", existing: existingList, research: researchList, want: existingList},
+		{name: "research fills an empty manifest", research: researchList, want: researchList},
+		{name: "existing list survives a run without research", existing: existingList, want: existingList},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			first := base
+			first.OutputDir = dir
+			first.DataSources = tt.existing
+			require.NoError(t, WriteManifestForGenerate(first))
+
+			second := base
+			second.OutputDir = dir
+			second.DataSources = tt.research
+			require.NoError(t, WriteManifestForGenerate(second))
+
+			assert.Equal(t, tt.want, readManifest(t, dir).DataSources)
+		})
+	}
+}
+
+func TestWriteManifestForGenerate_CrossLineageDropsDataSources(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "old-api",
+		SpecSrcs:    []string{"https://example.com/old.json"},
+		OutputDir:   dir,
+		DataSources: []DataSource{{Name: "Old Feed"}},
+	}))
+
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "new-api",
+		SpecSrcs:  []string{"https://example.com/new.json"},
+		OutputDir: dir,
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "data_sources", "a different API's data sources must not carry over")
+}
+
 // A non-nil empty contributors slice is the explicit-clear signal.
 func TestWriteManifestForGenerate_ExplicitClearContributors(t *testing.T) {
 	dir := t.TempDir()

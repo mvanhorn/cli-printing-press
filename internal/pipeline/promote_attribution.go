@@ -129,11 +129,9 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	return nil
 }
 
-// RestoreLibraryHomepage keeps a homepage the library copy already carries.
-// Library homepages may be hand-checked or backfilled outside a print, so a
-// reprint's research guess must not replace them. Only the manifest file is
-// rewritten; release-ledger skeletons are left alone.
-func RestoreLibraryHomepage(stagingDir, libraryDir, apiName string) error {
+// Library values may be hand-checked or backfilled outside a print, so a
+// reprint's research guess must not replace them.
+func RestoreLibraryCatalogFields(stagingDir, libraryDir, apiName string) error {
 	existing, err := ReadCLIManifest(libraryDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -144,11 +142,17 @@ func RestoreLibraryHomepage(stagingDir, libraryDir, apiName string) error {
 	if existing.APIName != "" && apiName != "" && existing.APIName != apiName {
 		return nil
 	}
-	homepage := strings.TrimSpace(existing.Homepage)
-	if homepage == "" {
+	fields := map[string]any{}
+	if homepage := strings.TrimSpace(existing.Homepage); homepage != "" {
+		fields["homepage"] = homepage
+	}
+	if len(existing.DataSources) > 0 {
+		fields["data_sources"] = existing.DataSources
+	}
+	if len(fields) == 0 {
 		return nil
 	}
-	_, err = mergeCLIManifestFields(filepath.Join(stagingDir, CLIManifestFilename), map[string]any{"homepage": homepage})
+	_, err = mergeCLIManifestFields(filepath.Join(stagingDir, CLIManifestFilename), fields)
 	return err
 }
 
