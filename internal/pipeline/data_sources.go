@@ -62,8 +62,15 @@ func decodeResearchDataSources(data json.RawMessage) ([]DataSource, []string) {
 			out = append(out, DataSource{Name: name})
 			continue
 		}
-		var src DataSource
-		if bytes.HasPrefix(item, []byte("{")) && json.Unmarshal(item, &src) == nil {
+		var fields struct {
+			Name     json.RawMessage `json:"name"`
+			Homepage json.RawMessage `json:"homepage"`
+		}
+		if bytes.HasPrefix(item, []byte("{")) && json.Unmarshal(item, &fields) == nil && json.Unmarshal(fields.Name, &name) == nil {
+			src := DataSource{Name: name}
+			if len(fields.Homepage) > 0 && json.Unmarshal(fields.Homepage, &src.Homepage) != nil {
+				warnings = append(warnings, fmt.Sprintf("data source %q homepage %s is not a string; leaving it unset", name, fields.Homepage))
+			}
 			out = append(out, src)
 			continue
 		}

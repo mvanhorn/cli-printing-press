@@ -156,6 +156,8 @@ func TestLoadResearchSurvivesMalformedDataSources(t *testing.T) {
 	}{
 		{name: "not a list", dataSources: `"TMDb, OMDb"`},
 		{name: "bad items are skipped", dataSources: `[42, null, ["nested"], "TMDb"]`, want: []DataSource{{Name: "TMDb"}}},
+		{name: "a non-string homepage keeps the name", dataSources: `[{"name": "TMDb", "homepage": {"url": "https://www.themoviedb.org"}}]`, want: []DataSource{{Name: "TMDb"}}},
+		{name: "a non-string name drops the entry", dataSources: `[{"name": 5}, {"name": "OMDb"}]`, want: []DataSource{{Name: "OMDb"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
