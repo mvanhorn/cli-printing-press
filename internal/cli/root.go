@@ -3383,8 +3383,11 @@ func researchDataSources(research *pipeline.ResearchResult) []pipeline.DataSourc
 	if research == nil {
 		return nil
 	}
+	for _, w := range research.DataSourceWarnings() {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
 	sources, warnings := pipeline.NormalizeDataSources(research.DataSources)
-	for _, w := range append(research.DataSourceWarnings(), warnings...) {
+	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 	return sources

@@ -7,20 +7,14 @@ import (
 	"strings"
 )
 
-// MaxDataSources caps the list so catalog clients show the services a user
-// would recognize, not every retailer a fan-out search touches.
-const MaxDataSources = 12
+const maxDataSources = 12
 
-// DataSource names one service a multi-service CLI reads data from. It is
-// unrelated to the research `sources/` directory of downloaded reference repos.
+// Unrelated to the research `sources/` directory of downloaded reference repos.
 type DataSource struct {
 	Name     string `json:"name"`
 	Homepage string `json:"homepage,omitempty"`
 }
 
-// NormalizeDataSources keeps the entries a catalog can trust, in order, and
-// returns one warning per entry or field it dropped. It returns nil when
-// nothing survives so the manifest omits the field.
 func NormalizeDataSources(raw []DataSource) ([]DataSource, []string) {
 	var out []DataSource
 	var warnings []string
@@ -36,8 +30,8 @@ func NormalizeDataSources(raw []DataSource) ([]DataSource, []string) {
 			warnings = append(warnings, fmt.Sprintf("dropping duplicate data source %q", name))
 			continue
 		}
-		if len(out) == MaxDataSources {
-			warnings = append(warnings, fmt.Sprintf("keeping the first %d data sources; dropping %q and the rest", MaxDataSources, name))
+		if len(out) == maxDataSources {
+			warnings = append(warnings, fmt.Sprintf("keeping the first %d data sources; dropping %q and the rest", maxDataSources, name))
 			break
 		}
 		seen[key] = true
@@ -50,9 +44,6 @@ func NormalizeDataSources(raw []DataSource) ([]DataSource, []string) {
 	return out, warnings
 }
 
-// decodeResearchDataSources reads research.json's agent-written list without
-// ever failing: a bad value must not discard the rest of research. A string
-// item is a name; an object item supplies name and homepage.
 func decodeResearchDataSources(data json.RawMessage) ([]DataSource, []string) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || bytes.Equal(data, []byte("null")) {

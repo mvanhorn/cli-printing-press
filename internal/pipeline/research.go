@@ -40,11 +40,9 @@ type ResearchResult struct {
 	// Narrative holds LLM-authored prose for README and SKILL.md rendering.
 	// Optional: templates fall back to generic content when absent. Populated
 	// during the absorb phase alongside NovelFeatures.
-	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
-	Homepage  string           `json:"homepage,omitempty"`
-	// DataSources names the services a multi-service CLI reads data from.
-	// Decoding never fails on it; skipped items become DataSourceWarnings.
-	DataSources        []DataSource `json:"data_sources,omitempty"`
+	Narrative          *ReadmeNarrative `json:"narrative,omitempty"`
+	Homepage           string           `json:"homepage,omitempty"`
+	DataSources        []DataSource     `json:"data_sources,omitempty"`
 	dataSourceWarnings []string
 	// Verify is an optional hint for verify's data-pipeline sync probe.
 	// A manifest VerifySyncResource overrides SyncResource. Exclude lists combine.
@@ -76,7 +74,6 @@ func (r *ResearchResult) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// DataSourceWarnings lists research data_sources items skipped while decoding.
 func (r *ResearchResult) DataSourceWarnings() []string {
 	return r.dataSourceWarnings
 }

@@ -125,9 +125,7 @@ type CLIManifest struct {
 	// Homepage is the product's public website, recorded only when research
 	// confirmed it. It is never derived from spec URLs, which usually point
 	// at API hosts or docs rather than the brand's site.
-	Homepage string `json:"homepage,omitempty"`
-	// DataSources lists the services a multi-service CLI reads data from, in
-	// order of importance, recorded only from research.
+	Homepage           string            `json:"homepage,omitempty"`
 	DataSources        []DataSource      `json:"data_sources,omitempty"`
 	MCPBinary          string            `json:"mcp_binary,omitempty"`
 	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
@@ -1143,7 +1141,7 @@ type GenerateManifestParams struct {
 	AuthPreference  string                 // resolved OpenAPI securityScheme preference selected for this generate
 	NovelFeatures   []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 	Homepage        string                 // validated research homepage; "" when research had none
-	DataSources     []DataSource           // normalized research data sources; nil when research had none
+	DataSources     []DataSource
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.

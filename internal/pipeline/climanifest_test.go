@@ -2471,7 +2471,7 @@ func TestRefreshCLIManifestFromSpecPreservesDataSources(t *testing.T) {
 	assert.Equal(t, []DataSource{{Name: "Example Feed", Homepage: "https://example.com"}}, got.DataSources)
 }
 
-func TestCLIManifestHomepageKeyOrderMatchesAcrossWritePaths(t *testing.T) {
+func TestCLIManifestCatalogKeyOrderMatchesAcrossWritePaths(t *testing.T) {
 	m := CLIManifest{
 		SchemaVersion: 1,
 		APIName:       "example",
@@ -2509,7 +2509,7 @@ func TestCLIManifestHomepageKeyOrderMatchesAcrossWritePaths(t *testing.T) {
 	require.Contains(t, typedKeys, "homepage")
 	require.Contains(t, typedKeys, "data_sources")
 	assert.Equal(t, "data_sources", typedKeys[slices.Index(typedKeys, "homepage")+1], "data_sources sits right after homepage")
-	assert.Equal(t, typedKeys, mergedKeys[:len(typedKeys)], "homepage must sit in the same position on both write paths")
+	assert.Equal(t, typedKeys, mergedKeys[:len(typedKeys)], "homepage and data_sources must sit in the same position on both write paths")
 }
 
 func TestRefreshCLIManifestFromSpecPreservesCompactNovelFeaturesBuilt(t *testing.T) {

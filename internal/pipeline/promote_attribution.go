@@ -129,10 +129,8 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	return nil
 }
 
-// RestoreLibraryCatalogFields keeps the homepage and data sources the library
-// copy already carries. Library values may be hand-checked or backfilled
-// outside a print, so a reprint's research guess must not replace them. Only
-// the manifest file is rewritten; release-ledger skeletons are left alone.
+// Library values may be hand-checked or backfilled outside a print, so a
+// reprint's research guess must not replace them.
 func RestoreLibraryCatalogFields(stagingDir, libraryDir, apiName string) error {
 	existing, err := ReadCLIManifest(libraryDir)
 	if err != nil {
