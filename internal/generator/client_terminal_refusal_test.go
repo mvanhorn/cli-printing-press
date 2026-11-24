@@ -113,13 +113,26 @@ func assertNotTransientNet(t *testing.T, err error) {
 }
 
 func chainHas(err error, needle string) bool {
-	for i := 0; i < 8 && err != nil; i++ {
+	type multi interface{ Unwrap() []error }
+	var walk func(error, int) bool
+	walk = func(err error, depth int) bool {
+		if err == nil || depth > 20 {
+			return false
+		}
 		if strings.Contains(err.Error(), needle) {
 			return true
 		}
-		err = errors.Unwrap(err)
+		if joined, ok := err.(multi); ok {
+			for _, child := range joined.Unwrap() {
+				if walk(child, depth+1) {
+					return true
+				}
+			}
+			return false
+		}
+		return walk(errors.Unwrap(err), depth+1)
 	}
-	return false
+	return walk(err, 0)
 }
 
 type tempNet struct{ msg string }
@@ -141,6 +154,14 @@ type hiddenSecret struct{ secret string }
 
 func (h hiddenSecret) Error() string { return "refused" }
 func (h hiddenSecret) Unwrap() error { return errors.New("leaked " + h.secret) }
+
+type wrapErr struct {
+	msg string
+	err error
+}
+
+func (w wrapErr) Error() string { return w.msg }
+func (w wrapErr) Unwrap() error { return w.err }
 
 type quietJoin struct {
 	msg  string
@@ -289,6 +310,27 @@ func TestTerminalRefusalMasksCredential(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refused") {
 		t.Fatalf("hook message missing: %v", err)
+	}
+	assertNotTransientNet(t, err)
+
+	deep := error(errors.New("leaked " + secret))
+	for i := 0; i < 12; i++ {
+		deep = wrapErr{msg: "refused", err: deep}
+	}
+	buried := &countingTripper{err: TerminalError(deep)}
+	c = refusalClient(&config.Config{AuthHeaderVal: "Bearer " + secret}, buried)
+	_, err = c.Get(context.Background(), "/widgets", nil)
+	if err == nil {
+		t.Fatal("expected deep-chain refusal")
+	}
+	if buried.hits.Load() != 1 {
+		t.Fatalf("deep attempts = %d, want 1", buried.hits.Load())
+	}
+	if chainHas(err, secret) || strings.Contains(fmt.Sprint(err), secret) {
+		t.Fatalf("deep credential leaked: %v", err)
+	}
+	if !errors.Is(err, ErrTerminalRefusal) {
+		t.Fatalf("missing sentinel: %v", err)
 	}
 	assertNotTransientNet(t, err)
 }

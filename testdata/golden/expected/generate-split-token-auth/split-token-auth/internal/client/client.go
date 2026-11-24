@@ -486,8 +486,10 @@ func (e *TerminalRefusal) Is(target error) bool {
 // TerminalError marks err as a final refusal from a client-hook RoundTripper.
 // The client performs one attempt, does not back off, and does not report a
 // network error. A plain error is still retried. A nil error stays nil.
-// A sentinel wrapped by err remains visible to errors.Is unless the text
-// contained a credential and was redacted.
+// A sentinel wrapped by err stays visible to errors.Is when that cause is
+// kept. The cause is omitted when it implements net.Error, so the refusal
+// does not satisfy net.Error, and again when keeping it would reveal a
+// credential.
 //
 //	return nil, client.TerminalError(errors.New("refused"))
 func TerminalError(err error) error {
@@ -1240,8 +1242,13 @@ func (c *Client) refusalChainLeaksCredential(err error, authHeader string) bool 
 	type multiUnwrap interface{ Unwrap() []error }
 	var walk func(error, int) bool
 	walk = func(err error, depth int) bool {
-		if err == nil || depth > 8 {
+		if err == nil {
 			return false
+		}
+		// An unwalked remainder counts as a leak. Treating it as clean would
+		// keep a credential past this cap reachable through Unwrap.
+		if depth > 8 {
+			return true
 		}
 		if c.maskCredentialText(err.Error(), authHeader) != err.Error() {
 			return true
