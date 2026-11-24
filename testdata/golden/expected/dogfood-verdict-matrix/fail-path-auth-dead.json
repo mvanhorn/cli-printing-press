@@ -36,7 +36,8 @@
     "3 dead flags found"
   ],
   "mcp_read_flag_check": {
-    "checked": 3
+    "checked": 0,
+    "skipped": true
   },
   "mcp_surface_parity": {
     "detail": "no internal/mcp/tools.go; CLI does not ship an MCP surface",

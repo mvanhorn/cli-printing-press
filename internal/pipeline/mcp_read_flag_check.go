@@ -135,13 +135,15 @@ func (s *mcpScope) define(name string, pos token.Pos) *mcpObj {
 }
 
 type mcpCmd struct {
-	use      string
-	ann      map[string]string
-	hidden   bool
-	group    bool
-	endpoint bool
-	parent   *mcpCmd
-	children []*mcpCmd
+	use         string
+	ann         map[string]string
+	hidden      bool
+	cobraHidden bool
+	ambiguous   bool
+	group       bool
+	endpoint    bool
+	parent      *mcpCmd
+	children    []*mcpCmd
 }
 
 func (c *mcpCmd) path() string {
@@ -203,6 +205,8 @@ type mcpAnalyzer struct {
 	edges        []mcpEdge
 	seed         map[token.Pos][]int
 	sinks        []mcpSink
+	lookups      []mcpLookup
+	runBinds     []mcpRunBind
 	links        []mcpLink
 	pending      []mcpFlow
 	strVal       map[token.Pos]string
@@ -225,6 +229,19 @@ type mcpSink struct {
 	scope *mcpScope
 	file  string
 	line  int
+}
+
+type mcpLookup struct {
+	call           *ast.CallExpr
+	cmdObj         *mcpObj
+	persistentOnly bool
+	name           string
+}
+
+type mcpRunBind struct {
+	cmd    *mcpCmd
+	cmdObj *mcpObj
+	rhs    ast.Expr
 }
 
 type mcpFlow struct {
@@ -289,6 +306,9 @@ func (a *mcpAnalyzer) analyze(files []mcpCLIFile) []MCPReadFlagFinding {
 	}
 	a.finishFlows()
 	a.linkCommands()
+	a.bindRuns()
+	a.propagateCommands()
+	a.resolveLookups()
 	a.propagate()
 	return a.findings()
 }
@@ -554,6 +574,7 @@ func (a *mcpAnalyzer) walkAssign(stmt *ast.AssignStmt, scope *mcpScope, ctx *mcp
 	}
 	for i := range stmt.Lhs {
 		a.noteAnnotationAssign(stmt.Lhs[i], stmt.Rhs[i], scope)
+		a.noteRunAssign(stmt.Lhs[i], stmt.Rhs[i], scope)
 		lhs := a.exprObj(stmt.Lhs[i], scope)
 		if lhs == nil {
 			continue
@@ -700,10 +721,12 @@ func (a *mcpAnalyzer) commandFromLit(lit *ast.CompositeLit, scope *mcpScope) *mc
 			}
 		case "Hidden":
 			if id, ok := kv.Value.(*ast.Ident); ok && id.Name == "true" {
-				cmd.hidden = true
+				cmd.cobraHidden = true
 			}
 		case "Annotations":
 			maps.Copy(cmd.ann, a.stringMap(kv.Value, scope))
+		case "Run", "RunE":
+			a.runBinds = append(a.runBinds, mcpRunBind{cmd: cmd, rhs: kv.Value})
 		}
 	}
 	a.classifyCmd(cmd)
@@ -716,9 +739,7 @@ func (a *mcpAnalyzer) classifyCmd(cmd *mcpCmd) {
 	}
 	cmd.group = annotationTrue(cmd.ann, "pp:api-resource") || annotationTrue(cmd.ann, "pp:parent-group")
 	cmd.endpoint = strings.TrimSpace(cmd.ann["pp:endpoint"]) != ""
-	if annotationTrue(cmd.ann, "mcp:hidden") {
-		cmd.hidden = true
-	}
+	cmd.hidden = cmd.cobraHidden || annotationTrue(cmd.ann, "mcp:hidden")
 }
 
 func (a *mcpAnalyzer) isCobraCommand(expr ast.Expr, scope *mcpScope) bool {
@@ -746,12 +767,20 @@ func (a *mcpAnalyzer) noteAnnotationAssign(lhsExpr, rhs ast.Expr, scope *mcpScop
 	switch e := lhsExpr.(type) {
 	case *ast.SelectorExpr:
 		if e.Sel.Name == "Hidden" {
-			if id, ok := rhs.(*ast.Ident); ok && id.Name == "true" {
-				cmd.hidden = true
+			if id, ok := rhs.(*ast.Ident); ok {
+				switch id.Name {
+				case "true":
+					cmd.cobraHidden = true
+				case "false":
+					cmd.cobraHidden = false
+				}
 			}
+			a.classifyCmd(cmd)
 		}
 		if e.Sel.Name == "Annotations" {
-			maps.Copy(cmd.ann, a.stringMap(rhs, scope))
+			next := a.stringMap(rhs, scope)
+			cmd.ann = map[string]string{}
+			maps.Copy(cmd.ann, next)
 			a.classifyCmd(cmd)
 		}
 	case *ast.IndexExpr:
@@ -791,6 +820,7 @@ func (a *mcpAnalyzer) cmdOf(obj *mcpObj) *mcpCmd {
 }
 
 func (a *mcpAnalyzer) noteCall(call *ast.CallExpr, scope *mcpScope, ctx *mcpFnCtx) {
+	a.noteGetString(call, scope, ctx)
 	a.noteFlagBind(call, scope, ctx)
 	a.noteStringResult(call, scope, ctx)
 	a.noteLink(call, scope)
@@ -891,6 +921,174 @@ func (a *mcpAnalyzer) noteStringResult(call *ast.CallExpr, scope *mcpScope, ctx 
 		persistent: persistent,
 	})
 	a.seed[call.Pos()] = append(a.seed[call.Pos()], len(a.flags)-1)
+}
+
+func (a *mcpAnalyzer) noteGetString(call *ast.CallExpr, scope *mcpScope, ctx *mcpFnCtx) {
+	if ctx.file == nil || !ctx.file.hand {
+		return
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "GetString" || len(call.Args) == 0 {
+		return
+	}
+	cmdObj, persistent, ok := a.flagSet(sel.X, scope)
+	if !ok || cmdObj == nil {
+		return
+	}
+	a.lookups = append(a.lookups, mcpLookup{
+		call:           call,
+		cmdObj:         cmdObj,
+		persistentOnly: persistent,
+		name:           a.flagNameArg(call, sel.Sel.Name, scope),
+	})
+}
+
+func (a *mcpAnalyzer) noteRunAssign(lhsExpr, rhs ast.Expr, scope *mcpScope) {
+	sel, ok := lhsExpr.(*ast.SelectorExpr)
+	if !ok || (sel.Sel.Name != "Run" && sel.Sel.Name != "RunE") {
+		return
+	}
+	a.runBinds = append(a.runBinds, mcpRunBind{cmdObj: a.exprObj(sel.X, scope), rhs: rhs})
+}
+
+func (a *mcpAnalyzer) bindRuns() {
+	for _, bind := range a.runBinds {
+		cmd := bind.cmd
+		if cmd == nil {
+			cmd = a.cmdOf(bind.cmdObj)
+		}
+		a.bindRunExpr(cmd, bind.rhs)
+	}
+}
+
+func (a *mcpAnalyzer) bindRunExpr(cmd *mcpCmd, rhs ast.Expr) {
+	if cmd == nil || rhs == nil {
+		return
+	}
+	switch n := rhs.(type) {
+	case *ast.FuncLit:
+		if lf := a.lits[n.Pos()]; lf != nil {
+			a.bindRunParams(cmd, lf.params)
+		}
+	case *ast.Ident:
+		if fn := a.funcs[n.Name]; fn != nil {
+			a.bindRunParams(cmd, fn.params)
+		}
+	case *ast.ParenExpr:
+		a.bindRunExpr(cmd, n.X)
+	}
+}
+
+func (a *mcpAnalyzer) bindRunParams(cmd *mcpCmd, params []*mcpObj) {
+	if len(params) == 0 || params[0] == nil {
+		return
+	}
+	a.cmds[params[0].pos] = cmd
+}
+
+func (a *mcpAnalyzer) propagateCommands() {
+	ambiguous := &mcpCmd{ambiguous: true}
+	changed := true
+	for changed {
+		changed = false
+		for _, flow := range a.pending {
+			if flow.call == nil {
+				continue
+			}
+			params, variadic := a.callParams(flow.call, flow.scope)
+			if len(params) == 0 {
+				continue
+			}
+			for i, arg := range flow.call.Args {
+				var param *mcpObj
+				switch {
+				case i < len(params):
+					param = params[i]
+				case variadic:
+					param = params[len(params)-1]
+				}
+				if param == nil {
+					continue
+				}
+				src := a.cmdOf(a.exprObj(arg, flow.scope))
+				if src == nil {
+					continue
+				}
+				dst := a.cmds[param.pos]
+				switch {
+				case src.ambiguous:
+					if dst == nil || !dst.ambiguous {
+						a.cmds[param.pos] = ambiguous
+						changed = true
+					}
+				case dst == nil:
+					a.cmds[param.pos] = src
+					changed = true
+				case dst != src && !dst.ambiguous:
+					a.cmds[param.pos] = ambiguous
+					changed = true
+				}
+			}
+		}
+	}
+}
+
+func (a *mcpAnalyzer) callParams(call *ast.CallExpr, scope *mcpScope) ([]*mcpObj, bool) {
+	if fn := a.resolveFunc(call, scope); fn != nil {
+		return fn.params, fn.variadic
+	}
+	if lit := a.resolveLit(call, scope); lit != nil {
+		return lit.params, lit.variadic
+	}
+	return nil, false
+}
+
+func (a *mcpAnalyzer) resolveLookups() {
+	for _, look := range a.lookups {
+		idxs := a.lookupFlags(look)
+		if len(idxs) == 0 {
+			continue
+		}
+		a.seed[look.call.Pos()] = append(a.seed[look.call.Pos()], idxs...)
+	}
+}
+
+func (a *mcpAnalyzer) lookupFlags(look mcpLookup) []int {
+	cmd := a.cmdOf(look.cmdObj)
+	if cmd == nil {
+		return nil
+	}
+	var out []int
+	for i, flag := range a.flags {
+		if !cmd.ambiguous && !a.flagVisible(flag, cmd, look.persistentOnly) {
+			continue
+		}
+		if look.name != "" && flag.name != look.name {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+func (a *mcpAnalyzer) flagVisible(flag mcpFlag, cmd *mcpCmd, persistentOnly bool) bool {
+	owner := a.cmdOf(flag.cmdObj)
+	if owner == nil || flag.name == "" {
+		return false
+	}
+	if owner == cmd {
+		return !persistentOnly || flag.persistent
+	}
+	return flag.persistent && cmd.hasAncestor(owner)
+}
+
+func (c *mcpCmd) hasAncestor(owner *mcpCmd) bool {
+	for cur := c.parent; cur != nil; cur = cur.parent {
+		if cur == owner {
+			return true
+		}
+	}
+	return false
 }
 
 func dynamicFlagName(e ast.Expr) string {

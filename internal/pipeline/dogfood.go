@@ -433,7 +433,11 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	}
 	report.SourceClientCheck = checkSourceClients(dir)
 	report.PrintJSONFilteredCheck = checkPrintJSONFiltered(dir)
-	report.MCPReadFlagCheck = checkMCPReadFlags(dir)
+	if report.MCPSurfaceParityCheck.State == MCPSurfaceMissing {
+		report.MCPReadFlagCheck = MCPReadFlagCheckResult{Skipped: true}
+	} else {
+		report.MCPReadFlagCheck = checkMCPReadFlags(dir)
+	}
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
 	report.SyncParamDropCheck = CheckSyncParamDrop(dir, resolveTrafficAnalysisPath(cfg, specPath))

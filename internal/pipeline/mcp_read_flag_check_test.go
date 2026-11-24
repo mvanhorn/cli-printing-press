@@ -877,6 +877,184 @@ func newSnapshotCmd() *cobra.Command {
 	assert.Empty(t, got.Findings)
 }
 
+func TestMCPReadFlags_GetStringInRunE(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	var terms string
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := cmd.Flags().GetString("terms")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&terms, "terms", "", "")
+	return cmd
+}
+`,
+	})
+	require.Equal(t, map[string]bool{"acme snapshot --terms": true}, flagSet(got.Findings))
+}
+
+func TestMCPReadFlags_GetStringThroughHelper(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	var terms string
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := readTerms(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&terms, "terms", "", "")
+	return cmd
+}
+
+func readTerms(cmd *cobra.Command) (string, error) {
+	return cmd.Flags().GetString("terms")
+}
+`,
+	})
+	require.Equal(t, map[string]bool{"acme snapshot --terms": true}, flagSet(got.Findings))
+}
+
+func TestMCPReadFlags_GetStringAnnotatedPasses(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:read-flags": "terms"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fs := cmd.Flags()
+			got, err := fs.GetString("terms")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	cmd.Flags().String("terms", "", "")
+	return cmd
+}
+`,
+	})
+	assert.Empty(t, got.Findings)
+}
+
+func TestMCPReadFlags_GetStringDoesNotTaintOtherFlag(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q, err := cmd.Flags().GetString("query")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(q)
+			return err
+		},
+	}
+	cmd.Flags().String("terms", "", "")
+	cmd.Flags().String("query", "", "")
+	return cmd
+}
+`,
+	})
+	require.Equal(t, map[string]bool{"acme snapshot --query": true}, flagSet(got.Findings))
+}
+
+func TestMCPReadFlags_DynamicGetStringFailsClosed(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := cmd.Flags().GetString(os.Getenv("FLAG"))
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	cmd.Flags().String("terms", "", "")
+	return cmd
+}
+`,
+	})
+	require.Equal(t, map[string]bool{"acme snapshot --terms": true}, flagSet(got.Findings))
+}
+
+func TestMCPReadFlags_ReplacedAnnotationDropsReadFlags(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	var terms string
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		Annotations: map[string]string{"mcp:read-flags": "terms", "mcp:hidden": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := os.ReadFile(terms)
+			return err
+		},
+	}
+	cmd.Annotations = map[string]string{"mcp:read-only": "true"}
+	cmd.Flags().StringVar(&terms, "terms", "", "")
+	return cmd
+}
+`,
+	})
+	require.Equal(t, map[string]bool{"acme snapshot --terms": true}, flagSet(got.Findings))
+}
+
+func TestMCPReadFlags_CobraHiddenSurvivesAnnotationReplace(t *testing.T) {
+	t.Parallel()
+	got := mcpFindings(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	var terms string
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		Hidden: true,
+		Annotations: map[string]string{"mcp:read-flags": "terms"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := os.ReadFile(terms)
+			return err
+		},
+	}
+	cmd.Annotations = map[string]string{"mcp:read-only": "true"}
+	cmd.Flags().StringVar(&terms, "terms", "", "")
+	return cmd
+}
+`,
+	})
+	assert.Empty(t, got.Findings)
+}
+
 func TestMCPReadFlags_SymlinkStillFlagged(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -964,9 +1142,77 @@ func newSnapshotCmd() *cobra.Command {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
 	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), "package client\n")
 	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+	writeRuntimeMCPSurface(t, dir)
 
 	report, err := RunDogfood(dir, "")
 	require.NoError(t, err)
 	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
 	assert.Contains(t, strings.Join(report.Issues, "\n"), "acme snapshot --terms")
+}
+
+func TestRunDogfood_MCPReadFlagSkippedWithoutSurface(t *testing.T) {
+	t.Parallel()
+	dir := mcpReadDir(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	var terms string
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := os.ReadFile(terms)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&terms, "terms", "", "")
+	return cmd
+}
+`,
+	})
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), "package client\n")
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	report, err := RunDogfood(dir, "")
+	require.NoError(t, err)
+	assert.True(t, report.MCPReadFlagCheck.Skipped)
+	assert.Empty(t, report.MCPReadFlagCheck.Findings)
+	assert.NotContains(t, strings.Join(report.Issues, "\n"), "without mcp:read-flags")
+	assert.Equal(t, MCPSurfaceMissing, report.MCPSurfaceParityCheck.State)
+}
+
+func TestRunDogfood_MCPReadFlagRunsWhenSurfaceIsUnknown(t *testing.T) {
+	t.Parallel()
+	dir := mcpReadDir(t, map[string]string{
+		"snapshot.go": mcpSnapHeader + `
+func newSnapshotCmd() *cobra.Command {
+	var terms string
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := os.ReadFile(terms)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&terms, "terms", "", "")
+	return cmd
+}
+`,
+	})
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "mcp", "tools.go"), "package mcp\n")
+
+	report, err := RunDogfood(dir, "")
+	require.NoError(t, err)
+	assert.Equal(t, MCPSurfaceHandEdited, report.MCPSurfaceParityCheck.State)
+	assert.False(t, report.MCPReadFlagCheck.Skipped)
+	assert.Equal(t, DogfoodVerdictFail, report.Verdict)
+	assert.Contains(t, strings.Join(report.Issues, "\n"), "acme snapshot --terms")
+}
+
+func writeRuntimeMCPSurface(t *testing.T, dir string) {
+	t.Helper()
+	mcpDir := filepath.Join(dir, "internal", "mcp")
+	require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+	writeTestFile(t, filepath.Join(mcpDir, "tools.go"), "package mcp\n\n// Generated by CLI Printing Press\nfunc Register() { cobratree.RegisterAll() }\n")
 }
