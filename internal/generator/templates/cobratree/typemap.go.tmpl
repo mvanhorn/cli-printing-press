@@ -349,6 +349,20 @@ func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
 	return blocked
 }
 
+// flagTypesForCommand maps each flag name to its pflag type, letting a local
+// flag shadow an inherited one of the same name.
+func flagTypesForCommand(cmd *cobra.Command) map[string]string {
+	types := map[string]string{}
+	add := func(flag *pflag.Flag) {
+		if _, ok := types[flag.Name]; !ok {
+			types[flag.Name] = flag.Value.Type()
+		}
+	}
+	cmd.NonInheritedFlags().VisitAll(add)
+	cmd.InheritedFlags().VisitAll(add)
+	return types
+}
+
 func cliFlagBlockedArgs(blocked map[string]bool, positionals []positionalArg) map[string]bool {
 	out := map[string]bool{}
 	for name, value := range blocked {

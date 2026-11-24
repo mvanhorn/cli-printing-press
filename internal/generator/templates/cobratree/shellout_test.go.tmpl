@@ -357,6 +357,23 @@ func TestValidateMCPArgumentNamesQuotesEachUnknownArg(t *testing.T) {
 	}
 }
 
+func TestFlagTypesForCommandPrefersLocalFlags(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().StringSlice("ids", nil, "inherited slice")
+	root.PersistentFlags().StringSlice("terms", nil, "shadowed slice")
+	child := &cobra.Command{Use: "child"}
+	child.Flags().String("terms", "", "local string")
+	child.Flags().StringToString("labels", nil, "local map")
+	root.AddCommand(child)
+
+	got := flagTypesForCommand(child)
+	for name, want := range map[string]string{"ids": "stringSlice", "terms": "string", "labels": "stringToString"} {
+		if got[name] != want {
+			t.Fatalf("flag %q type = %q, want %q (all: %#v)", name, got[name], want, got)
+		}
+	}
+}
+
 func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 	root.PersistentFlags().String("audit-dir", "", "root audit dir")
@@ -1725,6 +1742,7 @@ func TestShellOutSinglePositionalArgsFieldPreservesWhitespace(t *testing.T) {
 		positionals,
 		false,
 		nil,
+		nil,
 	)
 
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
@@ -1794,6 +1812,7 @@ func TestShellOutVariadicRawArgsSplits(t *testing.T) {
 				positionals,
 				false,
 				nil,
+				nil,
 			)
 			result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
 				Arguments: map[string]any{"args": tc.raw},
@@ -1821,6 +1840,7 @@ func TestShellOutVariadicRawArgsSplits(t *testing.T) {
 		positionals,
 		false,
 		nil,
+		nil,
 	)
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
 		Arguments: map[string]any{"args": "ok --deliver=webhook:https://evil.example/"},
@@ -1847,6 +1867,7 @@ func TestShellOutStructuredThenRawOverflowPreservesOrder(t *testing.T) {
 		map[string]bool{"args": true, "event-id": true},
 		positionals,
 		false,
+		nil,
 		nil,
 	)
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
@@ -1879,6 +1900,7 @@ func TestShellOutStructuredPositionalPreservesWhitespace(t *testing.T) {
 		map[string]bool{"args": true, "friend": true},
 		positionals,
 		false,
+		nil,
 		nil,
 	)
 
@@ -1913,6 +1935,7 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 		positionals,
 		false,
 		nil,
+		nil,
 	)
 
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
@@ -1939,7 +1962,8 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 	sep := string(filepath.Separator)
 
 	positionals := []positionalArg{positionalArg{InputName: "target", Display: "[target...]", Variadic: true}}
-	allowed := map[string]bool{"args": true, "terms": true, "target": true}
+	allowed := map[string]bool{"args": true, "terms": true, "ids": true, "labels": true, "custom": true, "target": true}
+	flagTypes := map[string]string{"terms": "string", "ids": "stringSlice", "labels": "stringToString"}
 	newHandler := func(readOnly bool) server.ToolHandlerFunc {
 		return shellOutToCLI(
 			func() (string, error) { return bin, nil },
@@ -1949,6 +1973,7 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 			positionals,
 			readOnly,
 			nil,
+			flagTypes,
 		)
 	}
 	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
@@ -1972,8 +1997,9 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 		{"home-relative flag value", map[string]any{"terms": "~" + sep + "secret.txt"}, "--terms"},
 		{"bare home", map[string]any{"terms": "~"}, "--terms"},
 		{"array item", map[string]any{"terms": []any{"coins", secret}}, "--terms"},
-		{"string slice CSV field", map[string]any{"terms": "coins," + quotedSecret}, "--terms"},
-		{"string map value", map[string]any{"terms": "list=" + secret}, "--terms"},
+		{"string slice CSV field", map[string]any{"ids": "coins," + quotedSecret}, "--ids"},
+		{"string map value", map[string]any{"labels": "list=" + secret}, "--labels"},
+		{"unknown flag type split every way", map[string]any{"custom": "list=" + secret}, "--custom"},
 		{"escape from child directory", map[string]any{"terms": "notes" + sep + ".." + sep + ".." + sep + "secret.txt"}, "--terms"},
 		{"structured positional", map[string]any{"target": secret}, "argument"},
 		{"raw args token", map[string]any{"args": "coins " + quotedSecret}, "argument"},
@@ -1994,7 +2020,8 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 	if _, err := os.Stat(serverCwdEntry); err != nil {
 		t.Fatalf("test expects %s in the package directory: %v", serverCwdEntry, err)
 	}
-	accepted := []string{"private", "users", "owner/repo", "https://example.com/a/b", "1..10", ".", serverCwdEntry}
+	freeText := "What does redirect=/docs mean, or a,/b?"
+	accepted := []string{"private", "users", "owner/repo", "https://example.com/a/b", "1..10", ".", serverCwdEntry, freeText}
 	for _, value := range accepted {
 		t.Run("accepts "+value, func(t *testing.T) {
 			result := call(true, map[string]any{"terms": value})
@@ -2008,6 +2035,13 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("positional free text is checked whole", func(t *testing.T) {
+		result := call(true, map[string]any{"target": freeText})
+		if result.IsError {
+			t.Fatalf("read-only tool refused free text: %s", toolResultText(result))
+		}
+	})
 
 	t.Run("non-read-only tool keeps forwarding paths", func(t *testing.T) {
 		result := call(false, map[string]any{"terms": secret})
@@ -2036,7 +2070,7 @@ func main() {
 		t.Fatalf("getwd: %v", err)
 	}
 	for _, readOnly := range []bool{true, false} {
-		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil)
+		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil, nil)
 		result, err := handler(context.Background(), mcplib.CallToolRequest{})
 		if err != nil || result.IsError {
 			t.Fatalf("readOnly=%v handler failed: %v %s", readOnly, err, toolResultText(result))
@@ -2069,6 +2103,7 @@ func TestShellOutBoundsFinalError(t *testing.T) {
 				nil,
 				false,
 				nil,
+				nil,
 			)
 
 			result, err := handler(context.Background(), mcplib.CallToolRequest{})
@@ -2094,6 +2129,7 @@ func TestShellOutSurfacesSuccessStderrHintsSeparateFromJSON(t *testing.T) {
 		map[string]bool{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 
@@ -2185,6 +2221,7 @@ func TestShellOutRepeatableStringArrayReachesCLI(t *testing.T) {
 		nil,
 		false,
 		nil,
+		nil,
 	)
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
 		Arguments: map[string]any{
@@ -2214,6 +2251,7 @@ func TestShellOutNonZeroExitSurfacesStdoutAndStderr(t *testing.T) {
 		map[string]bool{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 
@@ -2346,6 +2384,7 @@ func shellOutFailureText(t *testing.T, bin string, ctx context.Context) string {
 		map[string]bool{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 	result, err := handler(ctx, mcplib.CallToolRequest{})

@@ -81,7 +81,7 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		tool.Meta.AdditionalFields["pp:tenant-gate"] = "child-cli"
 		// Preserve the canonical Cobra identity when normalized names collide.
 		tool.Meta.AdditionalFields[mirrorCLICommandMetaKey] = strings.Join(path, " ")
-		s.AddTool(tool, guardMirroredMCPCall(cmd, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd))))
+		s.AddTool(tool, guardMirroredMCPCall(cmd, shellOutToCLI(cliPath, path, blockedCLIArgs, allowedStructuredArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd), flagTypesForCommand(cmd))))
 	})
 }
 

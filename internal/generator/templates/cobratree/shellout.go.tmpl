@@ -55,7 +55,7 @@ func (c *cappedCapture) String() string {
 	return string(c.data)
 }
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
+func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool, flagTypes map[string]string) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -82,7 +82,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		workDir := ""
 		if readOnly {
-			if msg := localPathArgRefusal(finalArgs[len(prefixArgs):]); msg != "" {
+			if msg := localPathArgRefusal(finalArgs[len(prefixArgs):], flagTypes); msg != "" {
 				return boundedToolResultError(msg), nil
 			}
 			dir, err := os.MkdirTemp("", "mcp-read-only-")
@@ -106,37 +106,46 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 // the server account can read, whether or not the flag is listed in
 // mcp:read-flags. The rule never touches the filesystem, so a refusal does not
 // reveal whether a path exists.
-func localPathArgRefusal(args []string) string {
+func localPathArgRefusal(args []string, flagTypes map[string]string) string {
 	for _, arg := range args {
-		label, value := "argument", arg
+		label, value, items := "argument", arg, []string{arg}
 		if flag, ok := strings.CutPrefix(arg, "--"); ok {
 			name, flagValue, hasValue := strings.Cut(flag, "=")
 			if !hasValue {
 				continue
 			}
-			label, value = "--"+name, flagValue
+			label, value, items = "--"+name, flagValue, pflagValueItems(flagValue, flagTypes[name])
 		}
-		if pathLikeArg(value) {
-			return fmt.Sprintf("refusing %s %q: read-only MCP tools do not accept absolute, home, or parent-relative paths", label, value)
+		for _, item := range items {
+			if leavesWorkDir(item) {
+				return fmt.Sprintf("refusing %s %q: read-only MCP tools do not accept absolute, home, or parent-relative paths", label, value)
+			}
 		}
 	}
 	return ""
 }
 
-// pathLikeArg checks value and every item pflag can decode from it: the CSV
-// fields of a StringSlice and the values of a StringToString.
-func pathLikeArg(value string) bool {
+// pflagValueItems lists value plus the items pflag decodes from it for the
+// flag's type: CSV fields for a StringSlice, and also the values of a
+// StringToString. An unknown or custom type gets every split, so it is checked
+// at least as strictly as a built-in one.
+func pflagValueItems(value, flagType string) []string {
 	items := []string{value}
+	if flagType == "string" || flagType == "stringArray" {
+		return items
+	}
 	if fields, err := csv.NewReader(strings.NewReader(value)).Read(); err == nil {
 		items = append(items, fields...)
 	}
+	if flagType == "stringSlice" {
+		return items
+	}
 	for _, item := range items {
-		_, mapValue, _ := strings.Cut(item, "=")
-		if leavesWorkDir(item) || leavesWorkDir(mapValue) {
-			return true
+		if _, mapValue, ok := strings.Cut(item, "="); ok {
+			items = append(items, mapValue)
 		}
 	}
-	return false
+	return items
 }
 
 // leavesWorkDir reports an absolute, rooted, drive, home, or ".."-relative
