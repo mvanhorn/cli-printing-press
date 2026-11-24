@@ -165,7 +165,7 @@ go test ./...
 **Generate a CLI from a spec:**
 
 ```
-./printing-press generate --spec testdata/petstore.yaml
+./printing-press generate --spec testdata/openapi/petstore.yaml
 ```
 
 **Common changes:**
