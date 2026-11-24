@@ -1929,6 +1929,137 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 	}
 }
 
+func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
+	bin := writeArgvHelper(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	secret := filepath.Join(home, "secret.txt")
+	if err := os.WriteFile(secret, []byte("token"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	sibling, err := os.CreateTemp("", "pp-sibling-")
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+	sibling.Close()
+	t.Cleanup(func() { os.Remove(sibling.Name()) })
+
+	positionals := []positionalArg{positionalArg{InputName: "target", Display: "[target...]", Variadic: true}}
+	allowed := map[string]bool{"args": true, "terms": true, "target": true}
+	newHandler := func(readOnly bool) server.ToolHandlerFunc {
+		return shellOutToCLI(
+			func() (string, error) { return bin, nil },
+			[]string{"market", "snapshot"},
+			map[string]bool{"args": true, "target": true},
+			allowed,
+			positionals,
+			readOnly,
+			nil,
+		)
+	}
+	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
+		t.Helper()
+		result, err := newHandler(readOnly)(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		return result
+	}
+
+	refused := []struct {
+		name  string
+		args  map[string]any
+		label string
+	}{
+		{"absolute flag value", map[string]any{"terms": secret}, "--terms"},
+		{"padded flag value", map[string]any{"terms": "  " + secret + "\n"}, "--terms"},
+		{"home-relative flag value", map[string]any{"terms": "~/secret.txt"}, "--terms"},
+		{"directory flag value", map[string]any{"terms": home}, "--terms"},
+		{"array item", map[string]any{"terms": []any{"coins", secret}}, "--terms"},
+		{"escape from child directory", map[string]any{"terms": ".." + string(filepath.Separator) + filepath.Base(sibling.Name())}, "--terms"},
+		{"structured positional", map[string]any{"target": secret}, "argument"},
+		{"raw args token", map[string]any{"args": "coins " + secret}, "argument"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			result := call(true, tc.args)
+			if !result.IsError {
+				t.Fatalf("read-only tool forwarded a local path: %s", toolResultText(result))
+			}
+			if got := toolResultText(result); !strings.Contains(got, "refusing "+tc.label) || !strings.Contains(got, "local file or directory") {
+				t.Fatalf("tool error = %q, want refusal naming %s", got, tc.label)
+			}
+		})
+	}
+
+	serverCwdEntry := "shellout.go"
+	if _, err := os.Stat(serverCwdEntry); err != nil {
+		t.Fatalf("test expects %s in the package directory: %v", serverCwdEntry, err)
+	}
+	accepted := []string{"private", "users", "owner/repo", "/v1/no-such-pp-path", ".", serverCwdEntry}
+	for _, value := range accepted {
+		t.Run("accepts "+value, func(t *testing.T) {
+			result := call(true, map[string]any{"terms": value})
+			if result.IsError {
+				t.Fatalf("read-only tool refused %q: %s", value, toolResultText(result))
+			}
+			got := decodeArgvResult(t, result)
+			want := []string{"market", "snapshot", "--terms=" + value}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("shellout argv = %#v, want %#v", got, want)
+			}
+		})
+	}
+
+	t.Run("non-read-only tool keeps forwarding paths", func(t *testing.T) {
+		result := call(false, map[string]any{"terms": secret})
+		if result.IsError {
+			t.Fatalf("non-read-only tool refused a path: %s", toolResultText(result))
+		}
+	})
+}
+
+func TestReadOnlyShellOutRunsChildInEmptyDirectory(t *testing.T) {
+	bin := writeGoHelper(t, "cwdhelper", `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	wd, _ := os.Getwd()
+	entries, _ := os.ReadDir(".")
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": wd, "entries": len(entries)})
+}
+`)
+	serverCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for _, readOnly := range []bool{true, false} {
+		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil)
+		result, err := handler(context.Background(), mcplib.CallToolRequest{})
+		if err != nil || result.IsError {
+			t.Fatalf("readOnly=%v handler failed: %v %s", readOnly, err, toolResultText(result))
+		}
+		var got struct {
+			Cwd     string `json:"cwd"`
+			Entries int    `json:"entries"`
+		}
+		if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+			t.Fatalf("decode cwd helper: %v; text=%q", err, toolResultText(result))
+		}
+		if readOnly && (got.Cwd == serverCwd || got.Entries != 0) {
+			t.Fatalf("read-only child ran in %q with %d entries, want a fresh empty directory", got.Cwd, got.Entries)
+		}
+		if !readOnly && got.Cwd != serverCwd {
+			t.Fatalf("non-read-only child ran in %q, want server directory %q", got.Cwd, serverCwd)
+		}
+	}
+}
+
 func TestShellOutBoundsFinalError(t *testing.T) {
 	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
 		t.Run(mode, func(t *testing.T) {
@@ -2874,9 +3005,7 @@ func main() {
 
 func writeArgvHelper(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	src := filepath.Join(dir, "argvhelper.go")
-	body := `package main
+	return writeGoHelper(t, "argvhelper", `package main
 
 import (
 	"encoding/json"
@@ -2886,17 +3015,23 @@ import (
 func main() {
 	_ = json.NewEncoder(os.Stdout).Encode(os.Args[1:])
 }
-`
+`)
+}
+
+func writeGoHelper(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, name+".go")
 	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
-		t.Fatalf("write argv helper source: %v", err)
+		t.Fatalf("write %s source: %v", name, err)
 	}
-	bin := filepath.Join(dir, "argvhelper")
+	bin := filepath.Join(dir, name)
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
 	cmd := exec.Command("go", "build", "-o", bin, src)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build argv helper: %v\n%s", err, out)
+		t.Fatalf("build %s: %v\n%s", name, err, out)
 	}
 	return bin
 }

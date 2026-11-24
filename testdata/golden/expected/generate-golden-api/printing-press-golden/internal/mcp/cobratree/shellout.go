@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -78,12 +79,86 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 			}
 			finalArgs = append(finalArgs, rawPositionals...)
 		}
-		out, err := RunCLICommand(ctx, lookupPath, finalArgs)
+		workDir := ""
+		if readOnly {
+			dir, err := os.MkdirTemp("", "mcp-read-only-")
+			if err != nil {
+				return boundedToolResultError(fmt.Sprintf("creating child working directory: %v", err)), nil
+			}
+			defer os.RemoveAll(dir)
+			if msg := localPathArgRefusal(dir, finalArgs[len(prefixArgs):]); msg != "" {
+				return boundedToolResultError(msg), nil
+			}
+			workDir = dir
+		}
+		out, err := runCLICommandIn(ctx, lookupPath, finalArgs, workDir)
 		if err != nil {
 			return ToolResultFromCLIFailure(out, err), nil
 		}
 		return ToolResultFromCLICommand(out), nil
 	}
+}
+
+// localPathArgRefusal refuses a read-only call when a flag value or positional
+// names an existing local file or directory. A read-only tool runs without a
+// host prompt, so a caller-chosen path would let it read anything the server
+// account can read, whether or not the flag is listed in mcp:read-flags. The
+// child runs in the empty dir, so only absolute, home-relative, or escaping
+// values can resolve.
+func localPathArgRefusal(dir string, args []string) string {
+	for _, arg := range args {
+		label, value := "argument", arg
+		if flag, ok := strings.CutPrefix(arg, "--"); ok {
+			name, flagValue, hasValue := strings.Cut(flag, "=")
+			if !hasValue {
+				continue
+			}
+			label, value = "--"+name, flagValue
+		}
+		if namesLocalPath(dir, value) {
+			return fmt.Sprintf("refusing %s %q: it names a local file or directory, and read-only MCP tools do not read local paths", label, value)
+		}
+	}
+	return ""
+}
+
+// namesLocalPath resolves value the way a child running in dir would open it:
+// as given, trimmed, and with a leading ~ expanded to the home directory.
+func namesLocalPath(dir, value string) bool {
+	trimmed := strings.TrimSpace(value)
+	candidates := []string{value, trimmed}
+	if rest, ok := strings.CutPrefix(trimmed, "~"); ok && (rest == "" || os.IsPathSeparator(rest[0])) {
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates, home+rest)
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		// A UNC share or drive-relative name is refused without a lookup, so
+		// the check never dials a share and never guesses a per-drive cwd.
+		if vol := filepath.VolumeName(candidate); vol != "" && (len(vol) != 2 || !filepath.IsAbs(candidate)) {
+			return true
+		}
+		path := candidate
+		if !filepath.IsAbs(candidate) {
+			if os.IsPathSeparator(candidate[0]) {
+				path = filepath.VolumeName(dir) + candidate
+			} else {
+				// Not filepath.Join: the OS must resolve ".." through
+				// symlinks exactly as the child's open would.
+				path = dir + string(filepath.Separator) + candidate
+			}
+		}
+		if filepath.Clean(path) == dir {
+			continue
+		}
+		if _, err := os.Lstat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // guardMirroredMCPCall re-reads the read-only switch at call time. Registration
@@ -486,7 +561,20 @@ func ToolResultFromCLIFailure(result CLICommandResult, err error) *mcplib.CallTo
 // machine-readable channel. Hint and warning stderr lines are returned
 // separately on success so they cannot corrupt JSON results.
 func RunCLICommand(ctx context.Context, binPath string, args []string) (CLICommandResult, error) {
+	return runCLICommandIn(ctx, binPath, args, "")
+}
+
+// runCLICommandIn runs the companion CLI in dir, or in the server's working
+// directory when dir is empty.
+func runCLICommandIn(ctx context.Context, binPath string, args []string, dir string) (CLICommandResult, error) {
+	// exec resolves a relative Path against Dir, not the server's directory.
+	if dir != "" && filepath.Base(binPath) != binPath {
+		if abs, err := filepath.Abs(binPath); err == nil {
+			binPath = abs
+		}
+	}
 	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
+	cmd.Dir = dir
 	// os.Getenv returns the first duplicate, so an inherited marker has to
 	// be replaced. A nil Env would inherit the parent and could not force it.
 	cmd.Env = mcpChildEnviron()
