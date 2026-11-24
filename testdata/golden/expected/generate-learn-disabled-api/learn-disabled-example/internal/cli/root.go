@@ -135,6 +135,8 @@ func preferImplementedNovelCommands(cmd *cobra.Command) {
 // clientHooks let preserved package-local extensions configure a newly-created
 // client without editing generated code. Hooks are additive and run once per
 // client construction; they must not perform provider-specific behavior here.
+// A hook that wraps HTTPClient.Transport and refuses a request returns
+// client.TerminalError so the refusal is not retried as a network error.
 var clientHooks []func(*client.Client) error
 
 func registerClientHook(hook func(*client.Client) error) {
