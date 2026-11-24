@@ -223,6 +223,7 @@ type mcpAnalyzer struct {
 	mustMemo     map[string]mustResult
 	computing    map[string]bool
 	links        []mcpLink
+	funcAssigns  []funcAssign
 	pending      []mcpFlow
 	strVal       map[token.Pos]string
 	strBad       map[token.Pos]bool
@@ -447,6 +448,7 @@ func (a *mcpAnalyzer) walkGen(decl *ast.GenDecl, scope *mcpScope, ctx *mcpFnCtx)
 			if i < len(vs.Values) {
 				a.walkExpr(vs.Values[i], scope, ctx)
 				a.noteString(obj, vs.Values[i], scope)
+				a.noteFuncAssign(obj, name, vs.Values[i])
 				a.pending = append(a.pending, mcpFlow{lhs: obj, rhs: vs.Values[i], scope: scope, imports: ctx.imports, dots: ctx.dots})
 			}
 		}
@@ -599,6 +601,7 @@ func (a *mcpAnalyzer) walkAssign(stmt *ast.AssignStmt, scope *mcpScope, ctx *mcp
 			continue
 		}
 		a.noteString(lhs, stmt.Rhs[i], scope)
+		a.noteFuncAssign(lhs, stmt.Lhs[i], stmt.Rhs[i])
 		a.noteCommandAssign(lhs, stmt.Rhs[i], scope, ctx)
 		a.noteFlagValue(lhs, stmt.Rhs[i], scope, ctx)
 		a.rememberFlagSet(lhs, stmt.Rhs[i], scope)
@@ -1826,9 +1829,23 @@ func (a *mcpAnalyzer) resolveFunc(call *ast.CallExpr, scope *mcpScope) *mcpFunc 
 	return nil
 }
 
+type funcAssign struct {
+	lhs *mcpObj
+	rhs ast.Expr
+	pos token.Pos
+}
+
+func (a *mcpAnalyzer) noteFuncAssign(lhs *mcpObj, lhsExpr, rhs ast.Expr) {
+	if _, ok := lhsExpr.(*ast.Ident); !ok || lhs == nil || rhs == nil {
+		return
+	}
+	a.funcAssigns = append(a.funcAssigns, funcAssign{lhs: lhs, rhs: rhs, pos: lhsExpr.Pos()})
+}
+
 // calledFunc is the package function a call actually invokes. A local
-// variable or parameter of the same name is not that function. An ident with
-// no object is a package function declared later in the file.
+// variable counts only when every assignment before the call stores that
+// function. An ident with no object is a package function declared later
+// in the file.
 func (a *mcpAnalyzer) calledFunc(call *ast.CallExpr) *mcpFunc {
 	if fn := a.resolveFunc(call, nil); fn != nil {
 		return fn
@@ -1838,9 +1855,45 @@ func (a *mcpAnalyzer) calledFunc(call *ast.CallExpr) *mcpFunc {
 		return nil
 	}
 	if a.identObj[id.Pos()] != nil {
-		return nil
+		return a.funcHeld(id, call.Pos(), map[*mcpObj]bool{})
 	}
 	return a.funcs[id.Name]
+}
+
+func (a *mcpAnalyzer) funcHeld(e ast.Expr, before token.Pos, seen map[*mcpObj]bool) *mcpFunc {
+	id, ok := e.(*ast.Ident)
+	if !ok || id == nil || id.Name == "" || id.Name == "_" {
+		return nil
+	}
+	obj := a.identObj[id.Pos()]
+	pkgObj := a.pkg.lookup(id.Name)
+	if obj != nil && pkgObj != nil && obj.pos == pkgObj.pos {
+		return a.funcs[id.Name]
+	}
+	if obj == nil {
+		return a.funcs[id.Name]
+	}
+	if seen[obj] {
+		return nil
+	}
+	seen[obj] = true
+	var held *mcpFunc
+	found := false
+	for _, asg := range a.funcAssigns {
+		if asg.lhs != obj || !asg.pos.IsValid() || asg.pos >= before {
+			continue
+		}
+		next := a.funcHeld(asg.rhs, asg.pos, seen)
+		if next == nil || (found && next != held) {
+			return nil
+		}
+		held = next
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return held
 }
 
 func (a *mcpAnalyzer) resolveLit(call *ast.CallExpr, scope *mcpScope) *mcpLit {
