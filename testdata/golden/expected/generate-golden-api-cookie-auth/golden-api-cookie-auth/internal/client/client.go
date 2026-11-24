@@ -452,6 +452,60 @@ var ErrRedirectPrivateDestination = errors.New("refusing redirect: loopback, pri
 // to an http:// host that is not localhost or a loopback address.
 var ErrPlaintextCredential = errors.New("refusing to send credentials over plaintext http")
 
+// ErrTerminalRefusal is the marker for a final client-hook transport refusal.
+// errors.Is reports it for an error from TerminalError. The refusal does not
+// implement net.Error.
+var ErrTerminalRefusal = errors.New("terminal transport refusal")
+
+// TerminalRefusal is a client-hook transport error returned after one attempt.
+// It does not implement net.Error, so a caller that treats net.Error as
+// transient does not replay the refusal.
+type TerminalRefusal struct {
+	msg string
+	err error
+}
+
+func (e *TerminalRefusal) Error() string {
+	if e == nil || e.msg == "" {
+		return ErrTerminalRefusal.Error()
+	}
+	return e.msg
+}
+
+func (e *TerminalRefusal) Unwrap() error {
+	if e == nil || e.err == nil {
+		return ErrTerminalRefusal
+	}
+	return e.err
+}
+
+func (e *TerminalRefusal) Is(target error) bool {
+	return target == ErrTerminalRefusal
+}
+
+// TerminalError marks err as a final refusal from a client-hook RoundTripper.
+// The client performs one attempt, does not back off, and does not report a
+// network error. A plain error is still retried. A nil error stays nil.
+// A sentinel wrapped by err remains visible to errors.Is unless the text
+// contained a credential and was redacted.
+//
+//	return nil, client.TerminalError(errors.New("refused"))
+func TerminalError(err error) error {
+	if err == nil {
+		return nil
+	}
+	refusal := &TerminalRefusal{msg: err.Error()}
+	if !chainHasNetError(err) {
+		refusal.err = err
+	}
+	return refusal
+}
+
+func chainHasNetError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 // A followed redirect can change scheme or land on a local address the caller
 // never asked to reach. Only http and https are allowed. An https-to-http
 // downgrade on any earlier hop is refused. An off-origin hop is refused when
@@ -1108,7 +1162,8 @@ func terminalTransportRefusal(err error) bool {
 	return errors.Is(err, ErrPlaintextCredential) ||
 		errors.Is(err, ErrRedirectPrivateDestination) ||
 		errors.Is(err, ErrRedirectProtocolDowngrade) ||
-		errors.Is(err, ErrRedirectUnsupportedScheme)
+		errors.Is(err, ErrRedirectUnsupportedScheme) ||
+		errors.Is(err, ErrTerminalRefusal)
 }
 
 func terminalSentinel(err error) error {
@@ -1121,9 +1176,75 @@ func terminalSentinel(err error) error {
 		return ErrRedirectProtocolDowngrade
 	case errors.Is(err, ErrRedirectUnsupportedScheme):
 		return ErrRedirectUnsupportedScheme
+	case errors.Is(err, ErrTerminalRefusal):
+		var refusal *TerminalRefusal
+		if errors.As(err, &refusal) && refusal != nil && !chainHasNetError(refusal.err) {
+			return refusal
+		}
+		return ErrTerminalRefusal
 	default:
 		return err
 	}
+}
+
+// http.Client wraps every RoundTrip error in *url.Error, and that type
+// implements net.Error, so the client wrap is removed before the hook
+// message is returned.
+func hookRefusalSurface(err error) (string, *TerminalRefusal, bool) {
+	if !errors.Is(err, ErrTerminalRefusal) {
+		return "", nil, false
+	}
+	peeled := err
+	for i := 0; i < 4; i++ {
+		urlErr, ok := peeled.(*url.Error)
+		if !ok || urlErr == nil || urlErr.Err == nil || urlErr.Err == peeled {
+			break
+		}
+		peeled = urlErr.Err
+	}
+	var refusal *TerminalRefusal
+	if !errors.As(peeled, &refusal) || refusal == nil {
+		return "", nil, false
+	}
+	msg := peeled.Error()
+	if _, stillURL := peeled.(*url.Error); stillURL || msg == "" {
+		msg = refusal.Error()
+	}
+	return msg, refusal, true
+}
+
+func (c *Client) finishTerminalRefusal(method, path, authHeader, raw string, refusal *TerminalRefusal) error {
+	msg := c.maskCredentialText(raw, authHeader)
+	var inner error
+	if refusal != nil && msg == raw && !chainHasNetError(refusal.err) && !c.refusalChainLeaksCredential(refusal.err, authHeader) {
+		inner = refusal.err
+	}
+	return fmt.Errorf("%s %s: %w", method, c.displayURL(path, authHeader), &TerminalRefusal{msg: msg, err: inner})
+}
+
+// A redacted refusal must not keep the unwrap chain: Unwrap would print a
+// credential the surface message no longer shows.
+func (c *Client) refusalChainLeaksCredential(err error, authHeader string) bool {
+	type multiUnwrap interface{ Unwrap() []error }
+	var walk func(error, int) bool
+	walk = func(err error, depth int) bool {
+		if err == nil || depth > 8 {
+			return false
+		}
+		if c.maskCredentialText(err.Error(), authHeader) != err.Error() {
+			return true
+		}
+		if multi, ok := err.(multiUnwrap); ok {
+			for _, child := range multi.Unwrap() {
+				if walk(child, depth+1) {
+					return true
+				}
+			}
+			return false
+		}
+		return walk(errors.Unwrap(err), depth+1)
+	}
+	return walk(err, 0)
 }
 
 // redirectLeavesOrigin reports whether a redirect hop should drop custom
@@ -2294,6 +2415,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return nil, 0, ctxErr
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, c.displayURL(path, authHeader), c.maskError(err, authHeader))
+			if raw, refusal, ok := hookRefusalSurface(err); ok {
+				return nil, 0, c.finishTerminalRefusal(method, path, authHeader, raw, refusal)
+			}
 			// A redirect or plaintext refusal will not succeed on replay.
 			if terminalTransportRefusal(err) {
 				return nil, 0, fmt.Errorf("%s %s: %s: %w", method, c.displayURL(path, authHeader), c.maskCredentialText(err.Error(), authHeader), terminalSentinel(err))
