@@ -165,6 +165,18 @@ func TestPrintingPressSetupContractStopsBelowMinBinaryDespiteFreshCache(t *testi
 	assert.NotContains(t, netLog, "curl")
 }
 
+func TestPrintingPressSetupContractAllowsReadFlagCheckBeforeVersionBump(t *testing.T) {
+	t.Parallel()
+
+	output, netLog, err := runPrintingPressStandaloneContractMarked(t, "4.36.1", true)
+	require.NoError(t, err, output)
+
+	assert.NotContains(t, output, "[binary-below-min]")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+	assert.NotContains(t, netLog, "go list")
+	assert.NotContains(t, netLog, "curl")
+}
+
 func TestPrintingPressSetupContractAllowsCurrentBinaryWithoutNetwork(t *testing.T) {
 	t.Parallel()
 
@@ -1876,6 +1888,11 @@ exit 0
 
 func runPrintingPressStandaloneContract(t *testing.T, binaryVersion string) (output string, netLog string, err error) {
 	t.Helper()
+	return runPrintingPressStandaloneContractMarked(t, binaryVersion, false)
+}
+
+func runPrintingPressStandaloneContractMarked(t *testing.T, binaryVersion string, readFlagCheck bool) (output string, netLog string, err error) {
+	t.Helper()
 
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
@@ -1892,7 +1909,7 @@ func runPrintingPressStandaloneContract(t *testing.T, binaryVersion string) (out
 		time.Now().Unix(),
 	), 0o644))
 
-	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionJSONScript(binaryVersion, "3.0.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionJSONScriptMarked(binaryVersion, "3.0.0", readFlagCheck))
 	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
 if [ "$1" = "list" ]; then
   echo "go list $*" >> "$NET_LOG"
@@ -1941,9 +1958,16 @@ func versionScript(version string) string {
 }
 
 func versionJSONScript(version, minSkill string) string {
+	return versionJSONScriptMarked(version, minSkill, false)
+}
+
+func versionJSONScriptMarked(version, minSkill string, readFlagCheck bool) string {
 	payload := `{"version":"` + version + `"}`
 	if minSkill != "" {
 		payload = `{"version":"` + version + `","min_skill_version":"` + minSkill + `"}`
+	}
+	if readFlagCheck {
+		payload = strings.TrimSuffix(payload, "}") + `,"mcp_read_flag_check":true}`
 	}
 	return `#!/bin/sh
 if [ "$1" = "version" ] && [ "$2" = "--json" ]; then

@@ -267,7 +267,11 @@ if [ -n "$PRINTING_PRESS_BIN" ]; then
   _compat_json=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null || true)
   _min_skill=$(printf '%s\n' "$_compat_json" | sed -nE 's/.*"min_skill_version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
   _bin_ver=$(printf '%s\n' "$_compat_json" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
-  if [ -n "$_bin_ver" ] && PP_SEMVER_A="$_bin_ver" PP_SEMVER_B="$_min_binary_version" _semver_lt; then
+  # version.go stays on the last release until release-please bumps it, so a
+  # rebuild of this checkout still reports that version. The marker is how a
+  # build that already runs the read-flag check identifies itself.
+  if [ -n "$_bin_ver" ] && PP_SEMVER_A="$_bin_ver" PP_SEMVER_B="$_min_binary_version" _semver_lt &&
+    ! printf '%s\n' "$_compat_json" | grep -q '"mcp_read_flag_check":true'; then
     echo ""
     echo "[binary-below-min] cli-printing-press binary v$_bin_ver is older than the minimum required v$_min_binary_version"
     echo "PRESS_BINARY_INSTALLED=$_bin_ver"

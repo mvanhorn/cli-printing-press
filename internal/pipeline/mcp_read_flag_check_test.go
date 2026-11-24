@@ -826,6 +826,98 @@ func fmtPersistent(src, extra string) string {
 	return strings.Replace(src, "%s", extra, 1)
 }
 
+func TestMCPReadFlags_NearerPersistentFlagOwnsTheName(t *testing.T) {
+	t.Parallel()
+	const src = `package cli
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{Use: "acme"}
+	root.PersistentFlags().String("terms", "", "")
+	root.AddCommand(newMarketCmd())
+	return root
+}
+
+func newMarketCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "market",
+		Annotations: map[string]string{"pp:parent-group": "true", "mcp:read-flags": "terms"},
+	}
+	cmd.PersistentFlags().String("terms", "", "")
+	cmd.AddCommand(newSnapshotCmd())
+	return cmd
+}
+
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := cmd.Flags().GetString("terms")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	return cmd
+}
+`
+	covered := mcpFindings(t, map[string]string{"snapshot.go": src})
+	assert.Empty(t, covered.Findings)
+
+	open := strings.Replace(src, `"mcp:read-flags": "terms"`, `"pp:parent-group": "true"`, 1)
+	got := mcpFindings(t, map[string]string{"snapshot.go": open})
+	require.Equal(t, map[string]bool{"acme market snapshot --terms": true}, flagSet(got.Findings))
+}
+
+func TestMCPReadFlags_LocalFlagShadowsParentPersistent(t *testing.T) {
+	t.Parallel()
+	const src = `package cli
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{Use: "acme"}
+	root.PersistentFlags().String("terms", "", "")
+	root.AddCommand(newSnapshotCmd())
+	return root
+}
+
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		Annotations: map[string]string{"mcp:read-flags": "terms"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := cmd.Flags().GetString("terms")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	cmd.Flags().String("terms", "", "")
+	return cmd
+}
+`
+	covered := mcpFindings(t, map[string]string{"snapshot.go": src})
+	assert.Empty(t, covered.Findings)
+
+	open := strings.Replace(src, `"mcp:read-flags": "terms"`, `"mcp:read-only": "true"`, 1)
+	got := mcpFindings(t, map[string]string{"snapshot.go": open})
+	require.Equal(t, map[string]bool{"acme snapshot --terms": true}, flagSet(got.Findings))
+}
+
 func TestMCPReadFlags_UnlinkedGroupPersistentFailsClosed(t *testing.T) {
 	t.Parallel()
 	got := mcpFindings(t, map[string]string{

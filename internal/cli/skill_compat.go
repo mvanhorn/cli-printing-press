@@ -220,6 +220,7 @@ type versionJSON struct {
 	Version               string `json:"version"`
 	Go                    string `json:"go"`
 	MinSkillVersion       string `json:"min_skill_version"`
+	MCPReadFlagCheck      bool   `json:"mcp_read_flag_check"`
 	SkillStatus           string `json:"skill_status,omitempty"`
 	InstalledSkillVersion string `json:"installed_skill_version,omitempty"`
 	InstalledSkillPath    string `json:"installed_skill_path,omitempty"`
@@ -227,9 +228,10 @@ type versionJSON struct {
 
 func versionJSONPayload(home string) versionJSON {
 	payload := versionJSON{
-		Version:         version.Version,
-		Go:              runtime.Version(),
-		MinSkillVersion: MinSkillVersion,
+		Version:          version.Version,
+		Go:               runtime.Version(),
+		MinSkillVersion:  MinSkillVersion,
+		MCPReadFlagCheck: true,
 	}
 	report := discoverInstalledSkillCompat(home)
 	if report.Status == skillStatusStale {

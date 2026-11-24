@@ -143,6 +143,7 @@ func TestVersionJSONIncludesMinSkillVersionWithoutDriftFieldsWhenCurrent(t *test
 	payload := versionJSONPayload(home)
 	assert.Equal(t, version.Version, payload.Version)
 	assert.Equal(t, MinSkillVersion, payload.MinSkillVersion)
+	assert.True(t, payload.MCPReadFlagCheck)
 	assert.Empty(t, payload.SkillStatus)
 	assert.Empty(t, payload.InstalledSkillVersion)
 	assert.NotEmpty(t, payload.Go)

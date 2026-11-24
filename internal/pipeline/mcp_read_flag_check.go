@@ -1058,37 +1058,77 @@ func (a *mcpAnalyzer) lookupFlags(look mcpLookup) []int {
 	if cmd == nil {
 		return nil
 	}
+	if !cmd.ambiguous {
+		return a.ownedFlags(cmd, look.persistentOnly, look.name)
+	}
+	seen := map[int]bool{}
 	var out []int
-	for i, flag := range a.flags {
-		if !cmd.ambiguous && !a.flagVisible(flag, cmd, look.persistentOnly) {
-			continue
+	for _, candidate := range a.commands() {
+		for _, idx := range a.ownedFlags(candidate, look.persistentOnly, look.name) {
+			if seen[idx] {
+				continue
+			}
+			seen[idx] = true
+			out = append(out, idx)
 		}
-		if look.name != "" && flag.name != look.name {
-			continue
-		}
-		out = append(out, i)
 	}
 	return out
 }
 
-func (a *mcpAnalyzer) flagVisible(flag mcpFlag, cmd *mcpCmd, persistentOnly bool) bool {
-	owner := a.cmdOf(flag.cmdObj)
-	if owner == nil || flag.name == "" {
-		return false
+// ownedFlags is the flag Cobra returns from this command's flag set.
+// Flags() prefers a local flag, then this command's persistent flag, then the
+// nearest ancestor's persistent flag. A farther flag of the same name is not
+// the one that is read or exposed. PersistentFlags() is only this command's
+// own persistent set.
+func (a *mcpAnalyzer) ownedFlags(cmd *mcpCmd, persistentOnly bool, name string) []int {
+	seen := map[string]bool{}
+	var out []int
+	take := func(i int, flag mcpFlag) {
+		if flag.name == "" || (name != "" && flag.name != name) || seen[flag.name] {
+			return
+		}
+		seen[flag.name] = true
+		out = append(out, i)
 	}
-	if owner == cmd {
-		return !persistentOnly || flag.persistent
+	if persistentOnly {
+		for i, flag := range a.flags {
+			if a.cmdOf(flag.cmdObj) == cmd && flag.persistent {
+				take(i, flag)
+			}
+		}
+		return out
 	}
-	return flag.persistent && cmd.hasAncestor(owner)
-}
-
-func (c *mcpCmd) hasAncestor(owner *mcpCmd) bool {
-	for cur := c.parent; cur != nil; cur = cur.parent {
-		if cur == owner {
-			return true
+	for i, flag := range a.flags {
+		if a.cmdOf(flag.cmdObj) == cmd && !flag.persistent {
+			take(i, flag)
 		}
 	}
-	return false
+	for i, flag := range a.flags {
+		if a.cmdOf(flag.cmdObj) == cmd && flag.persistent {
+			take(i, flag)
+		}
+	}
+	for cur := cmd.parent; cur != nil; cur = cur.parent {
+		for i, flag := range a.flags {
+			if a.cmdOf(flag.cmdObj) == cur && flag.persistent {
+				take(i, flag)
+			}
+		}
+	}
+	return out
+}
+
+func (a *mcpAnalyzer) commands() []*mcpCmd {
+	seen := map[*mcpCmd]bool{}
+	var out []*mcpCmd
+	for _, cmd := range a.cmds {
+		if cmd == nil || cmd.ambiguous || seen[cmd] {
+			continue
+		}
+		seen[cmd] = true
+		out = append(out, cmd)
+	}
+	return out
 }
 
 func dynamicFlagName(e ast.Expr) string {
@@ -1760,7 +1800,7 @@ func (a *mcpAnalyzer) findings() []MCPReadFlagFinding {
 			if flag.cmdObj != nil {
 				cmd = a.cmds[flag.cmdObj.pos]
 			}
-			for _, command := range a.leakPaths(flag, cmd) {
+			for _, command := range a.leakPaths(flag, idx, cmd) {
 				key := command + "\x00" + flag.name
 				next := MCPReadFlagFinding{
 					Command: command,
@@ -1795,7 +1835,7 @@ func (a *mcpAnalyzer) findings() []MCPReadFlagFinding {
 	return out
 }
 
-func (a *mcpAnalyzer) leakPaths(flag mcpFlag, cmd *mcpCmd) []string {
+func (a *mcpAnalyzer) leakPaths(flag mcpFlag, flagIdx int, cmd *mcpCmd) []string {
 	if generator.MCPBlockedInputFlag(flag.name) || generator.MCPBlockedDestinationFlag(flag.name) {
 		return nil
 	}
@@ -1809,7 +1849,7 @@ func (a *mcpAnalyzer) leakPaths(flag mcpFlag, cmd *mcpCmd) []string {
 	var paths []string
 	exposed := false
 	for _, target := range targets {
-		if !commandExposed(target) {
+		if a.flagShadowed(flagIdx, cmd, target) || !commandExposed(target) {
 			continue
 		}
 		exposed = true
@@ -1875,6 +1915,27 @@ func isTopFramework(cmd *mcpCmd) bool {
 		return false
 	}
 	return mcpFrameworkCommands[cobraLeafName(cmd.use)]
+}
+
+func (a *mcpAnalyzer) flagShadowed(flagIdx int, declarer, target *mcpCmd) bool {
+	if declarer == nil || target == nil || target == declarer || flagIdx < 0 || flagIdx >= len(a.flags) {
+		return false
+	}
+	name := a.flags[flagIdx].name
+	if name == "" {
+		return false
+	}
+	for cur := target; cur != nil && cur != declarer; cur = cur.parent {
+		for i, other := range a.flags {
+			if i == flagIdx || other.name != name || a.cmdOf(other.cmdObj) != cur {
+				continue
+			}
+			if other.persistent || cur == target {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func flagBlockedOn(cmd *mcpCmd, flag mcpFlag, declarer *mcpCmd) bool {
