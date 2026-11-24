@@ -584,7 +584,11 @@ func (a *mcpAnalyzer) walkAssign(stmt *ast.AssignStmt, scope *mcpScope, ctx *mcp
 		if _, ok := stmt.Rhs[0].(*ast.CallExpr); ok {
 			var multi []*mcpObj
 			for _, lhs := range stmt.Lhs {
-				multi = append(multi, a.exprObj(lhs, scope))
+				obj := a.exprObj(lhs, scope)
+				multi = append(multi, obj)
+				// The call's result is not a known helper. Recording it drops any
+				// earlier function this variable held.
+				a.noteFuncAssign(obj, lhs, stmt.Rhs[0])
 			}
 			a.pending = append(a.pending, mcpFlow{rhs: stmt.Rhs[0], scope: scope, multi: multi, imports: ctx.imports, dots: ctx.dots})
 			return
@@ -1877,6 +1881,7 @@ func (a *mcpAnalyzer) funcHeld(e ast.Expr, before token.Pos, seen map[*mcpObj]bo
 		return nil
 	}
 	seen[obj] = true
+	defer delete(seen, obj)
 	var held *mcpFunc
 	found := false
 	for _, asg := range a.funcAssigns {

@@ -1137,6 +1137,38 @@ func addTerms(cmd *cobra.Command) {
 }
 `
 	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": rebindSrc}).Findings)["acme market snapshot --terms"])
+
+	replaced := `register := addTerms
+	register, _ = other()
+	if os.Getenv("X") != "" {
+		register(cmd)
+	} else {
+		register(cmd)
+	}`
+	replacedSrc := fmt.Sprintf(src, replaced) + `
+func addTerms(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("terms", "", "")
+}
+func other() (func(*cobra.Command), error) {
+	return func(cmd *cobra.Command) {}, nil
+}
+`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": replacedSrc}).Findings)["acme market snapshot --terms"])
+
+	copied := `register := addTerms
+	alias := register
+	alias = register
+	if os.Getenv("X") != "" {
+		alias(cmd)
+	} else {
+		alias(cmd)
+	}`
+	copiedSrc := fmt.Sprintf(src, copied) + `
+func addTerms(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("terms", "", "")
+}
+`
+	assert.Empty(t, mcpFindings(t, map[string]string{"snapshot.go": copiedSrc}).Findings)
 }
 
 func TestMCPReadFlags_LocalFlagShadowsParentPersistent(t *testing.T) {
