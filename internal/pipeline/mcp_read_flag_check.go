@@ -167,6 +167,7 @@ type mcpFunc struct {
 	variadic bool
 	results  []*mcpObj
 	returns  []mcpReturn
+	body     *ast.BlockStmt
 }
 
 type mcpReturn struct {
@@ -186,6 +187,7 @@ type mcpFlag struct {
 	cmdObj     *mcpObj
 	persistent bool
 	optional   bool
+	literal    bool
 	fn         string
 }
 
@@ -216,6 +218,10 @@ type mcpAnalyzer struct {
 	lookups      []mcpLookup
 	runBinds     []mcpRunBind
 	invokes      []mcpInvoke
+	flagAt       map[token.Pos][]int
+	fnReach      map[string]int
+	mustMemo     map[string]mustResult
+	computing    map[string]bool
 	links        []mcpLink
 	pending      []mcpFlow
 	strVal       map[token.Pos]string
@@ -315,6 +321,7 @@ func (a *mcpAnalyzer) analyze(files []mcpCLIFile) []MCPReadFlagFinding {
 		a.walkDecls(ctx)
 	}
 	a.markOptionalFlags()
+	a.sealGuaranteedFlags()
 	a.finishFlows()
 	a.linkCommands()
 	a.bindRuns()
@@ -385,6 +392,7 @@ func (a *mcpAnalyzer) walkFunc(fn *ast.FuncDecl, parent *mcpScope, fileCtx *mcpF
 	}
 	ctx := *fileCtx
 	ctx.fn = pf
+	pf.body = fn.Body
 	if fn.Body != nil {
 		a.walkBlock(fn.Body, scope, &ctx)
 	}
@@ -884,10 +892,11 @@ func (a *mcpAnalyzer) noteFlagBind(call *ast.CallExpr, scope *mcpScope, ctx *mcp
 	if !ok || target == nil {
 		return
 	}
+	literal := name != ""
 	if name == "" {
 		name = dynamicFlagName(call.Args[1])
 	}
-	a.appendFlag(name, cmdObj, persistent, ctx)
+	a.appendFlag(name, cmdObj, persistent, ctx, call.Pos(), literal)
 	a.seed[target.pos] = append(a.seed[target.pos], len(a.flags)-1)
 }
 
@@ -908,10 +917,11 @@ func (a *mcpAnalyzer) noteFlagValue(lhs *mcpObj, rhs ast.Expr, scope *mcpScope, 
 		return
 	}
 	name := a.flagNameArg(call, sel.Sel.Name, scope)
+	literal := name != ""
 	if name == "" {
 		name = dynamicFlagName(call.Args[0])
 	}
-	a.appendFlag(name, cmdObj, persistent, ctx)
+	a.appendFlag(name, cmdObj, persistent, ctx, call.Pos(), literal)
 	a.seed[lhs.pos] = append(a.seed[lhs.pos], len(a.flags)-1)
 }
 
@@ -928,22 +938,31 @@ func (a *mcpAnalyzer) noteStringResult(call *ast.CallExpr, scope *mcpScope, ctx 
 		return
 	}
 	name := a.flagNameArg(call, sel.Sel.Name, scope)
+	literal := name != ""
 	if name == "" {
 		name = dynamicFlagName(call.Args[0])
 	}
-	a.appendFlag(name, cmdObj, persistent, ctx)
+	a.appendFlag(name, cmdObj, persistent, ctx, call.Pos(), literal)
 	a.seed[call.Pos()] = append(a.seed[call.Pos()], len(a.flags)-1)
 }
 
-func (a *mcpAnalyzer) appendFlag(name string, cmdObj *mcpObj, persistent bool, ctx *mcpFnCtx) {
+func (a *mcpAnalyzer) appendFlag(name string, cmdObj *mcpObj, persistent bool, ctx *mcpFnCtx, pos token.Pos, literal bool) {
 	fn, optional := flagContext(ctx)
 	a.flags = append(a.flags, mcpFlag{
 		name:       name,
 		cmdObj:     cmdObj,
 		persistent: persistent,
 		optional:   optional,
+		literal:    literal,
 		fn:         fn,
 	})
+	if !pos.IsValid() {
+		return
+	}
+	if a.flagAt == nil {
+		a.flagAt = map[token.Pos][]int{}
+	}
+	a.flagAt[pos] = append(a.flagAt[pos], len(a.flags)-1)
 }
 
 func flagContext(ctx *mcpFnCtx) (fn string, optional bool) {
@@ -1007,6 +1026,316 @@ func (a *mcpAnalyzer) markOptionalFlags() {
 		}
 		a.flags[i].optional = true
 	}
+	a.fnReach = status
+}
+
+// A flag registered from every branch of an if/else is present whenever that
+// if runs. Cobra then returns the nearer flag, so a farther flag of the same
+// name is not the one MCP exposes.
+func (a *mcpAnalyzer) sealGuaranteedFlags() {
+	for name, fn := range a.funcs {
+		if a.fnReach[name] != 1 || fn == nil || fn.body == nil || blockHasGoto(fn.body) {
+			continue
+		}
+		a.sealMust(a.mustFunc(name).flags)
+	}
+}
+
+func (a *mcpAnalyzer) sealMust(flags map[flagKey][]int) {
+	for key, idxs := range flags {
+		if key.cmd == nil || key.name == "" {
+			continue
+		}
+		sealed := false
+		for _, idx := range idxs {
+			if idx < 0 || idx >= len(a.flags) {
+				continue
+			}
+			a.flags[idx].optional = false
+			sealed = true
+		}
+		if sealed {
+			continue
+		}
+		a.flags = append(a.flags, mcpFlag{
+			name:       key.name,
+			cmdObj:     key.cmd,
+			persistent: key.persistent,
+			literal:    true,
+			fn:         "",
+		})
+	}
+}
+
+type flagKey struct {
+	cmd        *mcpObj
+	name       string
+	persistent bool
+}
+
+type mustResult struct {
+	flags     map[flagKey][]int
+	returns   bool
+	mayReturn bool
+	opaque    bool
+}
+
+func (a *mcpAnalyzer) mustFunc(name string) mustResult {
+	if a.mustMemo == nil {
+		a.mustMemo = map[string]mustResult{}
+	}
+	if res, ok := a.mustMemo[name]; ok {
+		return res
+	}
+	if a.computing == nil {
+		a.computing = map[string]bool{}
+	}
+	if a.computing[name] {
+		return mustResult{}
+	}
+	fn := a.funcs[name]
+	if fn == nil || fn.body == nil || blockHasGoto(fn.body) {
+		a.mustMemo[name] = mustResult{}
+		return mustResult{}
+	}
+	a.computing[name] = true
+	res := a.mustBlock(fn.body)
+	a.computing[name] = false
+	a.mustMemo[name] = res
+	return res
+}
+
+func (a *mcpAnalyzer) mustBlock(body *ast.BlockStmt) mustResult {
+	if body == nil {
+		return mustResult{}
+	}
+	var acc mustResult
+	for _, stmt := range body.List {
+		acc = seqMust(acc, a.mustStmt(stmt))
+	}
+	return acc
+}
+
+func seqMust(acc, next mustResult) mustResult {
+	if acc.returns || acc.opaque || acc.mayReturn {
+		return acc
+	}
+	acc.flags = unionFlags(acc.flags, next.flags)
+	acc.returns = next.returns
+	acc.mayReturn = next.mayReturn
+	acc.opaque = next.opaque
+	return acc
+}
+
+func (a *mcpAnalyzer) mustStmt(stmt ast.Stmt) mustResult {
+	if stmt == nil {
+		return mustResult{}
+	}
+	switch s := stmt.(type) {
+	case *ast.BlockStmt:
+		return a.mustBlock(s)
+	case *ast.IfStmt:
+		acc := a.mustStmt(s.Init)
+		if acc.returns || acc.opaque || acc.mayReturn {
+			return acc
+		}
+		thenR := a.mustStmt(s.Body)
+		if s.Else == nil {
+			acc.mayReturn = thenR.returns || thenR.mayReturn
+			return acc
+		}
+		elseR := a.mustStmt(s.Else)
+		acc.flags = unionFlags(acc.flags, intersectFlags(thenR.flags, elseR.flags))
+		acc.returns = (thenR.returns || thenR.opaque) && (elseR.returns || elseR.opaque)
+		acc.mayReturn = !acc.returns && (thenR.returns || thenR.mayReturn || elseR.returns || elseR.mayReturn || thenR.opaque || elseR.opaque)
+		return acc
+	case *ast.ForStmt:
+		acc := a.mustStmt(s.Init)
+		if acc.returns || acc.opaque || acc.mayReturn {
+			return acc
+		}
+		if stmtMayExit(s.Body) || stmtMayExit(s.Post) {
+			acc.mayReturn = true
+		}
+		return acc
+	case *ast.RangeStmt:
+		if stmtMayExit(s.Body) {
+			return mustResult{mayReturn: true}
+		}
+		return mustResult{}
+	case *ast.SwitchStmt:
+		return a.mustSwitch(s.Init, s.Body)
+	case *ast.TypeSwitchStmt:
+		return a.mustSwitch(s.Init, s.Body)
+	case *ast.SelectStmt:
+		if stmtMayExit(s.Body) {
+			return mustResult{mayReturn: true}
+		}
+		return mustResult{}
+	case *ast.ExprStmt:
+		return a.mustExpr(s.X)
+	case *ast.AssignStmt:
+		var acc mustResult
+		for _, rhs := range s.Rhs {
+			acc = seqMust(acc, a.mustExpr(rhs))
+		}
+		return acc
+	case *ast.DeclStmt:
+		gen, ok := s.Decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			return mustResult{}
+		}
+		var acc mustResult
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, val := range vs.Values {
+				acc = seqMust(acc, a.mustExpr(val))
+			}
+		}
+		return acc
+	case *ast.ReturnStmt:
+		return mustResult{returns: true}
+	case *ast.LabeledStmt:
+		return a.mustStmt(s.Stmt)
+	default:
+		return mustResult{}
+	}
+}
+
+func (a *mcpAnalyzer) mustSwitch(init ast.Stmt, body *ast.BlockStmt) mustResult {
+	acc := a.mustStmt(init)
+	if acc.returns || acc.opaque || acc.mayReturn {
+		return acc
+	}
+	if stmtMayExit(body) {
+		acc.mayReturn = true
+	}
+	return acc
+}
+
+func (a *mcpAnalyzer) mustExpr(e ast.Expr) mustResult {
+	switch n := e.(type) {
+	case *ast.ParenExpr:
+		return a.mustExpr(n.X)
+	case *ast.CallExpr:
+		return a.mustCall(n)
+	default:
+		return mustResult{}
+	}
+}
+
+func (a *mcpAnalyzer) mustCall(call *ast.CallExpr) mustResult {
+	flags := map[flagKey][]int{}
+	for _, idx := range a.flagAt[call.Pos()] {
+		if idx < 0 || idx >= len(a.flags) {
+			continue
+		}
+		flag := a.flags[idx]
+		if !flag.literal || flag.cmdObj == nil || flag.name == "" {
+			continue
+		}
+		key := flagKey{cmd: flag.cmdObj, name: flag.name, persistent: flag.persistent}
+		flags[key] = append(flags[key], idx)
+	}
+	id, ok := call.Fun.(*ast.Ident)
+	if !ok || id.Name == "" || a.funcs[id.Name] == nil {
+		return mustResult{flags: flags}
+	}
+	inner := a.mustFunc(id.Name)
+	fn := a.funcs[id.Name]
+	for key := range inner.flags {
+		arg := a.matchParam(key.cmd, fn.params, call.Args)
+		if arg == nil {
+			continue
+		}
+		next := flagKey{cmd: arg, name: key.name, persistent: key.persistent}
+		flags[next] = append(flags[next], -1)
+	}
+	return mustResult{
+		flags:     flags,
+		returns:   inner.returns,
+		mayReturn: !inner.returns && (inner.mayReturn || inner.opaque),
+		opaque:    false,
+	}
+}
+
+func (a *mcpAnalyzer) matchParam(cmd *mcpObj, params []*mcpObj, args []ast.Expr) *mcpObj {
+	for i, param := range params {
+		if param != cmd || i >= len(args) {
+			continue
+		}
+		return a.exprObj(args[i], nil)
+	}
+	return nil
+}
+
+func unionFlags(left, right map[flagKey][]int) map[flagKey][]int {
+	if len(left) == 0 && len(right) == 0 {
+		return nil
+	}
+	out := map[flagKey][]int{}
+	for key, idxs := range left {
+		out[key] = append([]int(nil), idxs...)
+	}
+	for key, idxs := range right {
+		out[key] = append(out[key], idxs...)
+	}
+	return out
+}
+
+func intersectFlags(left, right map[flagKey][]int) map[flagKey][]int {
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+	out := map[flagKey][]int{}
+	for key, idxs := range left {
+		other, ok := right[key]
+		if !ok {
+			continue
+		}
+		out[key] = append(append([]int(nil), idxs...), other...)
+	}
+	return out
+}
+
+func blockHasGoto(body *ast.BlockStmt) bool {
+	return stmtMayExitKind(body, true)
+}
+
+func stmtMayExit(stmt ast.Stmt) bool {
+	return stmtMayExitKind(stmt, false)
+}
+
+func stmtMayExitKind(stmt ast.Stmt, gotoOnly bool) bool {
+	if stmt == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		switch node := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			if !gotoOnly {
+				found = true
+			}
+			return false
+		case *ast.BranchStmt:
+			if node.Tok == token.GOTO {
+				found = true
+			}
+			return false
+		default:
+			return true
+		}
+	})
+	return found
 }
 
 func (a *mcpAnalyzer) noteGetString(call *ast.CallExpr, scope *mcpScope, ctx *mcpFnCtx) {

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -934,6 +935,155 @@ func addTerms(cmd *cobra.Command) {
 `
 	viaHelper := mcpFindings(t, map[string]string{"snapshot.go": helper})
 	assert.True(t, flagSet(viaHelper.Findings)["acme market snapshot --terms"])
+}
+
+func TestMCPReadFlags_BothBranchesOwnTheFlag(t *testing.T) {
+	t.Parallel()
+	const src = `package cli
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{Use: "acme"}
+	root.PersistentFlags().String("terms", "", "")
+	root.AddCommand(newMarketCmd())
+	return root
+}
+
+func newMarketCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "market",
+		Annotations: map[string]string{"pp:parent-group": "true", "mcp:read-flags": "terms"},
+	}
+	%s
+	cmd.AddCommand(newSnapshotCmd())
+	return cmd
+}
+
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := cmd.Flags().GetString("terms")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	return cmd
+}
+`
+	both := `if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`
+	covered := mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, both)})
+	assert.Empty(t, covered.Findings)
+
+	unannotated := strings.Replace(src, `"mcp:read-flags": "terms"`, `"pp:parent-group": "true"`, 1)
+	open := mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(unannotated, both)})
+	require.Equal(t, map[string]bool{"acme market snapshot --terms": true}, flagSet(open.Findings))
+
+	chain := `if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else if os.Getenv("Y") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`
+	assert.Empty(t, mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, chain)}).Findings)
+
+	noFinal := `if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else if os.Getenv("Y") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, noFinal)}).Findings)["acme market snapshot --terms"])
+
+	nested := `if os.Getenv("X") != "" {
+		if os.Getenv("Y") != "" {
+			cmd.PersistentFlags().String("terms", "", "")
+		}
+	} else {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, nested)}).Findings)["acme market snapshot --terms"])
+
+	localOnly := `if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		cmd.Flags().String("terms", "", "")
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, localOnly)}).Findings)["acme market snapshot --terms"])
+
+	dynamic := `name := os.Getenv("FLAG")
+	if name == "terms" {
+		cmd.PersistentFlags().String(name, "", "")
+	} else {
+		cmd.PersistentFlags().String(name, "", "")
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, dynamic)}).Findings)["acme market snapshot --terms"])
+
+	lit := `if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		func() { cmd.PersistentFlags().String("terms", "", "") }()
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, lit)}).Findings)["acme market snapshot --terms"])
+
+	skipped := `if os.Getenv("X") != "" {
+		return cmd
+	}
+	if os.Getenv("Y") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, skipped)}).Findings)["acme market snapshot --terms"])
+
+	withGoto := `if os.Getenv("X") != "" {
+		goto reg
+	}
+reg:
+	if os.Getenv("Y") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": fmt.Sprintf(src, withGoto)}).Findings)["acme market snapshot --terms"])
+
+	helperBoth := `if os.Getenv("X") != "" {
+		addTerms(cmd)
+	} else {
+		addTerms(cmd)
+	}`
+	helperSrc := fmt.Sprintf(src, helperBoth) + `
+func addTerms(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("terms", "", "")
+}
+`
+	assert.Empty(t, mcpFindings(t, map[string]string{"snapshot.go": helperSrc}).Findings)
+
+	helperOnce := `if os.Getenv("X") != "" {
+		addTerms(cmd)
+	}`
+	helperOnceSrc := fmt.Sprintf(src, helperOnce) + `
+func addTerms(cmd *cobra.Command) {
+	if os.Getenv("Y") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	} else {
+		cmd.PersistentFlags().String("terms", "", "")
+	}
+}
+`
+	assert.True(t, flagSet(mcpFindings(t, map[string]string{"snapshot.go": helperOnceSrc}).Findings)["acme market snapshot --terms"])
 }
 
 func TestMCPReadFlags_LocalFlagShadowsParentPersistent(t *testing.T) {
