@@ -185,6 +185,14 @@ type mcpFlag struct {
 	name       string
 	cmdObj     *mcpObj
 	persistent bool
+	optional   bool
+	fn         string
+}
+
+type mcpInvoke struct {
+	caller string
+	callee string
+	cond   bool
 }
 
 type mcpEdge struct {
@@ -207,6 +215,7 @@ type mcpAnalyzer struct {
 	sinks        []mcpSink
 	lookups      []mcpLookup
 	runBinds     []mcpRunBind
+	invokes      []mcpInvoke
 	links        []mcpLink
 	pending      []mcpFlow
 	strVal       map[token.Pos]string
@@ -269,6 +278,7 @@ type mcpFnCtx struct {
 	imports map[string]string
 	dots    []string
 	scope   *mcpScope
+	cond    int
 }
 
 func newMCPReadAnalyzer(fset *token.FileSet) *mcpAnalyzer {
@@ -304,6 +314,7 @@ func (a *mcpAnalyzer) analyze(files []mcpCLIFile) []MCPReadFlagFinding {
 	for _, ctx := range ctxs {
 		a.walkDecls(ctx)
 	}
+	a.markOptionalFlags()
 	a.finishFlows()
 	a.linkCommands()
 	a.bindRuns()
@@ -476,8 +487,8 @@ func (a *mcpAnalyzer) walkStmt(stmt ast.Stmt, scope *mcpScope, ctx *mcpFnCtx) {
 			a.walkStmt(s.Init, inner, ctx)
 		}
 		a.walkExpr(s.Cond, inner, ctx)
-		a.walkBlock(s.Body, inner, ctx)
-		a.walkStmt(s.Else, inner, ctx)
+		a.walkConditional(s.Body, inner, ctx)
+		a.walkConditional(s.Else, inner, ctx)
 	case *ast.ForStmt:
 		inner := scope.child()
 		if s.Init != nil {
@@ -485,7 +496,7 @@ func (a *mcpAnalyzer) walkStmt(stmt ast.Stmt, scope *mcpScope, ctx *mcpFnCtx) {
 		}
 		a.walkExpr(s.Cond, inner, ctx)
 		a.walkStmt(s.Post, inner, ctx)
-		a.walkBlock(s.Body, inner, ctx)
+		a.walkConditional(s.Body, inner, ctx)
 	case *ast.RangeStmt:
 		inner := scope.child()
 		a.walkExpr(s.X, scope, ctx)
@@ -493,36 +504,36 @@ func (a *mcpAnalyzer) walkStmt(stmt ast.Stmt, scope *mcpScope, ctx *mcpFnCtx) {
 			a.defineIfNew(s.Key, inner)
 			a.defineIfNew(s.Value, inner)
 		}
-		a.walkBlock(s.Body, inner, ctx)
+		a.walkConditional(s.Body, inner, ctx)
 	case *ast.SwitchStmt:
 		inner := scope.child()
 		if s.Init != nil {
 			a.walkStmt(s.Init, inner, ctx)
 		}
 		a.walkExpr(s.Tag, inner, ctx)
-		a.walkBlock(s.Body, inner, ctx)
+		a.walkConditional(s.Body, inner, ctx)
 	case *ast.TypeSwitchStmt:
 		inner := scope.child()
 		if s.Init != nil {
 			a.walkStmt(s.Init, inner, ctx)
 		}
 		a.walkStmt(s.Assign, inner, ctx)
-		a.walkBlock(s.Body, inner, ctx)
+		a.walkConditional(s.Body, inner, ctx)
 	case *ast.CaseClause:
 		inner := scope.child()
 		for _, e := range s.List {
 			a.walkExpr(e, scope, ctx)
 		}
 		for _, st := range s.Body {
-			a.walkStmt(st, inner, ctx)
+			a.walkConditional(st, inner, ctx)
 		}
 	case *ast.SelectStmt:
-		a.walkBlock(s.Body, scope, ctx)
+		a.walkConditional(s.Body, scope, ctx)
 	case *ast.CommClause:
 		inner := scope.child()
 		a.walkStmt(s.Comm, scope, ctx)
 		for _, st := range s.Body {
-			a.walkStmt(st, inner, ctx)
+			a.walkConditional(st, inner, ctx)
 		}
 	case *ast.GoStmt:
 		a.walkExpr(s.Call, scope, ctx)
@@ -641,6 +652,15 @@ func (a *mcpAnalyzer) walkExpr(e ast.Expr, scope *mcpScope, ctx *mcpFnCtx) {
 	}
 }
 
+func (a *mcpAnalyzer) walkConditional(stmt ast.Stmt, scope *mcpScope, ctx *mcpFnCtx) {
+	if stmt == nil || ctx == nil {
+		return
+	}
+	next := *ctx
+	next.cond++
+	a.walkStmt(stmt, scope, &next)
+}
+
 func (a *mcpAnalyzer) walkLit(lit *ast.FuncLit, parent *mcpScope, ctx *mcpFnCtx) {
 	scope := parent.child()
 	lf := &mcpLit{}
@@ -651,6 +671,9 @@ func (a *mcpAnalyzer) walkLit(lit *ast.FuncLit, parent *mcpScope, ctx *mcpFnCtx)
 	inner := *ctx
 	inner.fn = nil
 	inner.lit = lf
+	// A function literal is not command construction. A flag registered here
+	// is not guaranteed to exist when the MCP mirror reads the Cobra tree.
+	inner.cond++
 	a.walkBlock(lit.Body, scope, &inner)
 }
 
@@ -820,6 +843,7 @@ func (a *mcpAnalyzer) cmdOf(obj *mcpObj) *mcpCmd {
 }
 
 func (a *mcpAnalyzer) noteCall(call *ast.CallExpr, scope *mcpScope, ctx *mcpFnCtx) {
+	a.noteInvoke(call, ctx)
 	a.noteGetString(call, scope, ctx)
 	a.noteFlagBind(call, scope, ctx)
 	a.noteStringResult(call, scope, ctx)
@@ -863,11 +887,7 @@ func (a *mcpAnalyzer) noteFlagBind(call *ast.CallExpr, scope *mcpScope, ctx *mcp
 	if name == "" {
 		name = dynamicFlagName(call.Args[1])
 	}
-	a.flags = append(a.flags, mcpFlag{
-		name:       name,
-		cmdObj:     cmdObj,
-		persistent: persistent,
-	})
+	a.appendFlag(name, cmdObj, persistent, ctx)
 	a.seed[target.pos] = append(a.seed[target.pos], len(a.flags)-1)
 }
 
@@ -891,11 +911,7 @@ func (a *mcpAnalyzer) noteFlagValue(lhs *mcpObj, rhs ast.Expr, scope *mcpScope, 
 	if name == "" {
 		name = dynamicFlagName(call.Args[0])
 	}
-	a.flags = append(a.flags, mcpFlag{
-		name:       name,
-		cmdObj:     cmdObj,
-		persistent: persistent,
-	})
+	a.appendFlag(name, cmdObj, persistent, ctx)
 	a.seed[lhs.pos] = append(a.seed[lhs.pos], len(a.flags)-1)
 }
 
@@ -915,12 +931,82 @@ func (a *mcpAnalyzer) noteStringResult(call *ast.CallExpr, scope *mcpScope, ctx 
 	if name == "" {
 		name = dynamicFlagName(call.Args[0])
 	}
+	a.appendFlag(name, cmdObj, persistent, ctx)
+	a.seed[call.Pos()] = append(a.seed[call.Pos()], len(a.flags)-1)
+}
+
+func (a *mcpAnalyzer) appendFlag(name string, cmdObj *mcpObj, persistent bool, ctx *mcpFnCtx) {
+	fn, optional := flagContext(ctx)
 	a.flags = append(a.flags, mcpFlag{
 		name:       name,
 		cmdObj:     cmdObj,
 		persistent: persistent,
+		optional:   optional,
+		fn:         fn,
 	})
-	a.seed[call.Pos()] = append(a.seed[call.Pos()], len(a.flags)-1)
+}
+
+func flagContext(ctx *mcpFnCtx) (fn string, optional bool) {
+	if ctx == nil {
+		return "<file>", false
+	}
+	switch {
+	case ctx.fn != nil:
+		fn = ctx.fn.name
+	case ctx.lit != nil:
+		fn = "<lit>"
+	default:
+		fn = "<file>"
+	}
+	return fn, ctx.cond > 0
+}
+
+func (a *mcpAnalyzer) noteInvoke(call *ast.CallExpr, ctx *mcpFnCtx) {
+	id, ok := call.Fun.(*ast.Ident)
+	if !ok || id.Name == "" || id.Name == "_" {
+		return
+	}
+	fn, optional := flagContext(ctx)
+	a.invokes = append(a.invokes, mcpInvoke{caller: fn, callee: id.Name, cond: optional})
+}
+
+func (a *mcpAnalyzer) markOptionalFlags() {
+	called := map[string]bool{}
+	for _, inv := range a.invokes {
+		called[inv.callee] = true
+	}
+	status := map[string]int{"init": 1, "main": 1, "<file>": 1}
+	for name := range a.funcs {
+		if !called[name] {
+			status[name] = 1
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, inv := range a.invokes {
+			caller := status[inv.caller]
+			if caller == 0 {
+				continue
+			}
+			next := 2
+			if caller == 1 && !inv.cond {
+				next = 1
+			}
+			prev := status[inv.callee]
+			if prev == 1 || prev == next {
+				continue
+			}
+			status[inv.callee] = next
+			changed = true
+		}
+	}
+	for i := range a.flags {
+		if a.flags[i].optional || status[a.flags[i].fn] == 1 {
+			continue
+		}
+		a.flags[i].optional = true
+	}
 }
 
 func (a *mcpAnalyzer) noteGetString(call *ast.CallExpr, scope *mcpScope, ctx *mcpFnCtx) {
@@ -1087,8 +1173,12 @@ func (a *mcpAnalyzer) ownedFlags(cmd *mcpCmd, persistentOnly bool, name string) 
 		if flag.name == "" || (name != "" && flag.name != name) || seen[flag.name] {
 			return
 		}
-		seen[flag.name] = true
 		out = append(out, i)
+		// A registration that only runs on some paths does not hide the flag
+		// Cobra still inherits when that path is skipped.
+		if !flag.optional {
+			seen[flag.name] = true
+		}
 	}
 	if persistentOnly {
 		for i, flag := range a.flags {
@@ -1927,7 +2017,7 @@ func (a *mcpAnalyzer) flagShadowed(flagIdx int, declarer, target *mcpCmd) bool {
 	}
 	for cur := target; cur != nil && cur != declarer; cur = cur.parent {
 		for i, other := range a.flags {
-			if i == flagIdx || other.name != name || a.cmdOf(other.cmdObj) != cur {
+			if i == flagIdx || other.optional || other.name != name || a.cmdOf(other.cmdObj) != cur {
 				continue
 			}
 			if other.persistent || cur == target {

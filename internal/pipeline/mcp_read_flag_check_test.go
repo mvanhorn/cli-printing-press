@@ -876,6 +876,66 @@ func newSnapshotCmd() *cobra.Command {
 	require.Equal(t, map[string]bool{"acme market snapshot --terms": true}, flagSet(got.Findings))
 }
 
+func TestMCPReadFlags_ConditionalFlagDoesNotHideInherited(t *testing.T) {
+	t.Parallel()
+	const src = `package cli
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{Use: "acme"}
+	root.PersistentFlags().String("terms", "", "")
+	root.AddCommand(newMarketCmd())
+	return root
+}
+
+func newMarketCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "market",
+		Annotations: map[string]string{"pp:parent-group": "true", "mcp:read-flags": "terms"},
+	}
+	if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	}
+	cmd.AddCommand(newSnapshotCmd())
+	return cmd
+}
+
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			got, err := cmd.Flags().GetString("terms")
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(got)
+			return err
+		},
+	}
+	return cmd
+}
+`
+	got := mcpFindings(t, map[string]string{"snapshot.go": src})
+	assert.True(t, flagSet(got.Findings)["acme market snapshot --terms"])
+
+	helper := strings.Replace(src, `if os.Getenv("X") != "" {
+		cmd.PersistentFlags().String("terms", "", "")
+	}`, `if os.Getenv("X") != "" {
+		addTerms(cmd)
+	}`, 1) + `
+func addTerms(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("terms", "", "")
+}
+`
+	viaHelper := mcpFindings(t, map[string]string{"snapshot.go": helper})
+	assert.True(t, flagSet(viaHelper.Findings)["acme market snapshot --terms"])
+}
+
 func TestMCPReadFlags_LocalFlagShadowsParentPersistent(t *testing.T) {
 	t.Parallel()
 	const src = `package cli

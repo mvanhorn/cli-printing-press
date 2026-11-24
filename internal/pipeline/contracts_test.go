@@ -177,6 +177,24 @@ func TestPrintingPressSetupContractAllowsReadFlagCheckBeforeVersionBump(t *testi
 	assert.NotContains(t, netLog, "curl")
 }
 
+func TestPrintingPressSetupContractMarkerDoesNotWaiveOtherVersions(t *testing.T) {
+	t.Parallel()
+
+	output, _, err := runPrintingPressStandaloneContractMarked(t, "4.36.0", true)
+	require.Error(t, err, output)
+	assert.Contains(t, output, "[binary-below-min]")
+	assert.Contains(t, output, "PRESS_BINARY_REQUIRED=4.36.2")
+}
+
+func TestPrintingPressSetupContractMarkerDoesNotWaiveLaterFloor(t *testing.T) {
+	t.Parallel()
+
+	output, _, err := runPrintingPressStandaloneContractFloor(t, "4.36.1", true, "4.37.0")
+	require.Error(t, err, output)
+	assert.Contains(t, output, "[binary-below-min]")
+	assert.Contains(t, output, "PRESS_BINARY_REQUIRED=4.37.0")
+}
+
 func TestPrintingPressSetupContractAllowsCurrentBinaryWithoutNetwork(t *testing.T) {
 	t.Parallel()
 
@@ -1893,6 +1911,11 @@ func runPrintingPressStandaloneContract(t *testing.T, binaryVersion string) (out
 
 func runPrintingPressStandaloneContractMarked(t *testing.T, binaryVersion string, readFlagCheck bool) (output string, netLog string, err error) {
 	t.Helper()
+	return runPrintingPressStandaloneContractFloor(t, binaryVersion, readFlagCheck, "")
+}
+
+func runPrintingPressStandaloneContractFloor(t *testing.T, binaryVersion string, readFlagCheck bool, floor string) (output string, netLog string, err error) {
+	t.Helper()
 
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
@@ -1935,6 +1958,9 @@ echo "fake 9999999 0 4194304 0% /"
 	contract := extractContractBlock(t, skill)
 	contract = strings.ReplaceAll(contract, "```bash\n", "")
 	contract = strings.ReplaceAll(contract, "\n```", "")
+	if floor != "" {
+		contract = strings.Replace(contract, "_min_binary_version=4.36.2", "_min_binary_version="+floor, 1)
+	}
 	scriptPath := filepath.Join(root, "setup-contract.sh")
 	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
 
