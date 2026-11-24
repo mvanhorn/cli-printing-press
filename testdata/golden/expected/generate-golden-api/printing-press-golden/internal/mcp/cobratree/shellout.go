@@ -111,15 +111,12 @@ var cobraResolveMu sync.Mutex
 // args, so a positional naming a subcommand cannot move the call to a command
 // whose flags and read-only status were not checked. A resolution error is
 // not a mismatch: the companion fails the same way before running anything.
+// Find never parses flag values; for mirror argv (long flags, positionals that
+// cannot start with "-") it selects the same command as Traverse.
 func argsResolveTo(cmd *cobra.Command, args []string) bool {
 	cobraResolveMu.Lock()
 	defer cobraResolveMu.Unlock()
-	root := cmd.Root()
-	resolve := root.Find
-	if root.TraverseChildren {
-		resolve = root.Traverse
-	}
-	found, _, err := resolve(args)
+	found, _, err := cmd.Root().Find(args)
 	return err != nil || found == cmd
 }
 

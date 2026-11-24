@@ -1952,6 +1952,12 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 	}
 }
 
+type countingFlagValue int
+
+func (c *countingFlagValue) String() string   { return "" }
+func (c *countingFlagValue) Set(string) error { *c++; return nil }
+func (c *countingFlagValue) Type() string     { return "counting" }
+
 func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 	bin := writeArgvHelper(t)
 	secret := filepath.Join(t.TempDir(), "secret.txt")
@@ -1963,7 +1969,9 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 
 	positionals := []positionalArg{positionalArg{InputName: "target", Display: "[target...]", Variadic: true}}
 	allowed := map[string]bool{"args": true, "terms": true, "ids": true, "labels": true, "custom": true, "target": true}
-	root := &cobra.Command{Use: "root"}
+	root := &cobra.Command{Use: "root", TraverseChildren: true}
+	customSets := countingFlagValue(0)
+	root.PersistentFlags().Var(&customSets, "custom", "")
 	market := &cobra.Command{Use: "market"}
 	snapshot := &cobra.Command{Use: "snapshot [target...]", Run: func(*cobra.Command, []string) {}}
 	snapshot.Flags().String("terms", "", "")
@@ -2053,11 +2061,14 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 
 	for _, sub := range []string{"detail", "info"} {
 		t.Run("positional selecting subcommand "+sub, func(t *testing.T) {
-			result := call(true, map[string]any{"ids": "coins", "target": sub})
+			result := call(true, map[string]any{"custom": "x", "target": sub})
 			if got := toolResultText(result); !result.IsError || !strings.Contains(got, "select a different command") {
 				t.Fatalf("read-only tool let a positional select a subcommand: %s", got)
 			}
 		})
+	}
+	if customSets != 0 {
+		t.Fatalf("resolving the command parsed flags in the server: Set ran %d times", customSets)
 	}
 
 	t.Run("non-read-only tool keeps forwarding paths", func(t *testing.T) {
