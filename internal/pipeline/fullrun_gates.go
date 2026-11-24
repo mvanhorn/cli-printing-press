@@ -41,7 +41,8 @@ func writeFullRunGateFailures(b *strings.Builder, results []*FullRunResult, qual
 		allPassed = false
 		if result.GatesFailed > 0 {
 			fmt.Fprintf(b, "- **%s** - %d gates failed\n", result.APIName, result.GatesFailed)
-		} else {
+		}
+		if result.GatesPassed+result.GatesFailed < qualityGateCount {
 			fmt.Fprintf(b, "- **%s** - validation incomplete (%d/%d gates passed)\n", result.APIName, result.GatesPassed, qualityGateCount)
 		}
 	}
