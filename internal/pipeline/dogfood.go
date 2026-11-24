@@ -65,6 +65,7 @@ type DogfoodReport struct {
 	DescriptionDriftCheck  *DescriptionDriftResult      `json:"description_drift_check,omitempty"`
 	SourceClientCheck      SourceClientCheckResult      `json:"source_client_check"`
 	PrintJSONFilteredCheck PrintJSONFilteredCheckResult `json:"print_json_filtered_check"`
+	MCPReadFlagCheck       MCPReadFlagCheckResult       `json:"mcp_read_flag_check"`
 	TestPresence           TestPresenceResult           `json:"test_presence"`
 	NamingCheck            NamingCheckResult            `json:"naming_check"`
 	SyncParamDropCheck     SyncParamDropResult          `json:"sync_param_drop_check"`
@@ -432,6 +433,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	}
 	report.SourceClientCheck = checkSourceClients(dir)
 	report.PrintJSONFilteredCheck = checkPrintJSONFiltered(dir)
+	report.MCPReadFlagCheck = checkMCPReadFlags(dir)
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
 	report.SyncParamDropCheck = CheckSyncParamDrop(dir, resolveTrafficAnalysisPath(cfg, specPath))
@@ -2695,6 +2697,11 @@ type dogfoodVerdictRule struct {
 }
 
 var dogfoodVerdictRules = []dogfoodVerdictRule{
+	// WARN rules below return before later FAILs. This gate has to stay
+	// ahead of them so a dead flag cannot hide an agent-reachable file read.
+	{DogfoodVerdictFail, func(r *DogfoodReport, _ bool) bool {
+		return len(r.MCPReadFlagCheck.Findings) > 0
+	}},
 	{DogfoodVerdictFail, func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && r.PathCheck.Tested > 0 && r.PathCheck.Pct < 70
 	}},
@@ -2925,6 +2932,15 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		}
 		issues = append(issues, fmt.Sprintf("%d call site(s) using flags.printJSON(cmd, v) — silently drops --select/--compact/--csv/--quiet, switch to printJSONFiltered(cmd.OutOrStdout(), v, flags): %s",
 			len(report.PrintJSONFilteredCheck.Findings),
+			strings.Join(parts, "; ")))
+	}
+	if len(report.MCPReadFlagCheck.Findings) > 0 {
+		parts := make([]string, 0, len(report.MCPReadFlagCheck.Findings))
+		for _, f := range report.MCPReadFlagCheck.Findings {
+			parts = append(parts, fmt.Sprintf("%s --%s (%s:%d)", f.Command, f.Flag, f.File, f.Line))
+		}
+		issues = append(issues, fmt.Sprintf("%d hand-written command flag(s) open a local file without mcp:read-flags: %s",
+			len(report.MCPReadFlagCheck.Findings),
 			strings.Join(parts, "; ")))
 	}
 	if len(report.TestPresence.MissingTests) > 0 {

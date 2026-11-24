@@ -27,6 +27,9 @@
     "with_examples": 1
   },
   "issues": null,
+  "mcp_read_flag_check": {
+    "checked": 2
+  },
   "mcp_surface_parity": {
     "detail": "MCP surface mirrors the Cobra tree at runtime",
     "pass": true,

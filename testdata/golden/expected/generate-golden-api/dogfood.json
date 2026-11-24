@@ -29,6 +29,9 @@
   "issues": [
     "example check skipped: could not build CLI binary: exit status 1"
   ],
+  "mcp_read_flag_check": {
+    "checked": 0
+  },
   "mcp_surface_parity": {
     "detail": "MCP surface mirrors the Cobra tree at runtime",
     "pass": true,

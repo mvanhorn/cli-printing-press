@@ -19,3 +19,10 @@ var mcpBlockedInputFlagSet = map[string]bool{
 func mcpBlockedInputFlagNames() []string {
 	return sortedSetNames(mcpBlockedInputFlagSet)
 }
+
+// MCPBlockedInputFlag reports whether name is on the printed cobratree
+// read-path blocklist. Those flags are dropped from MCP schemas without an
+// mcp:read-flags annotation. A leading "--" is ignored.
+func MCPBlockedInputFlag(name string) bool {
+	return mcpBlockedInputFlagSet[trimFlagName(name)]
+}

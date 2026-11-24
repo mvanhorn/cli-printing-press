@@ -1,6 +1,9 @@
 package generator
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // mcpBlockedDestinationFlagSet is the single list of Cobra flag names whose
 // values choose a filesystem write destination. The printed cobratree walker
@@ -25,6 +28,17 @@ var mcpBlockedDestinationFlagSet = map[string]bool{
 
 func mcpBlockedDestinationFlagNames() []string {
 	return sortedSetNames(mcpBlockedDestinationFlagSet)
+}
+
+// MCPBlockedDestinationFlag reports whether name is on the printed cobratree
+// write-destination blocklist. Those flags are dropped from MCP schemas
+// without an mcp:write-flags annotation. A leading "--" is ignored.
+func MCPBlockedDestinationFlag(name string) bool {
+	return mcpBlockedDestinationFlagSet[trimFlagName(name)]
+}
+
+func trimFlagName(name string) string {
+	return strings.TrimLeft(strings.TrimSpace(name), "-")
 }
 
 func sortedSetNames(set map[string]bool) []string {

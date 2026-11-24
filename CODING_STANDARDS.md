@@ -51,7 +51,7 @@ Rules that code in this repository follows. Each rule names a defect class that 
 ## MCP surface
 
 - **Annotations are never wrong in the permissive direction.** A false `readOnlyHint: true` is a bug; a missing hint only costs a permission prompt.
-- **Novel flags that choose a write destination or name a file to read are declared** in `mcp:write-flags` or `mcp:read-flags` on the command that defines them.
+- **Novel flags that choose a write destination or name a file to read are declared** in `mcp:write-flags` or `mcp:read-flags` on the command that defines them. Dogfood fails a hand-written command that opens a file named by a string flag when that flag is neither on the built-in read or destination blocklist nor listed in one of those annotations. Write-destination flags that are not on the blocklist stay a review rule.
 - **A read-only claim is enforced by a read-only handle,** not by a keyword blocklist. Query classification strips comments and statement separators first.
 - **Cobratree classification uses the full command path and depth,** not the leaf name. The template, the token estimator, and tools-audit change together.
 - **The rich env-var spec is the single source of truth.** Downstream emitters do not drop vars by kind.
