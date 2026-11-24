@@ -602,9 +602,9 @@ func (e *TerminalRefusal) Is(target error) bool {
 // The client performs one attempt, does not back off, and does not report a
 // network error. A plain error is still retried. A nil error stays nil.
 // A sentinel wrapped by err stays visible to errors.Is when that cause is
-// kept. The cause is omitted when it implements net.Error, so the refusal
-// does not satisfy net.Error, and again when keeping it would reveal a
-// credential.
+// kept. The cause is omitted when it implements net.Error, when keeping it
+// would reveal a credential, or when the chain is deeper than the client
+// checks. ErrTerminalRefusal still matches.
 //
 //	return nil, client.TerminalError(errors.New("refused"))
 func TerminalError(err error) error {
