@@ -541,7 +541,7 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 				"format":  "json",
 				"to":      "2024-01-01",
 				"file":    "in.csv",
-				"save-to": "/tmp/custom",
+				"save-to": "custom",
 			},
 		}})
 		if err != nil {
@@ -551,7 +551,7 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 			t.Fatalf("non-destination flags were rejected: %s", toolResultText(result))
 		}
 		argv := decodeArgvResult(t, result)
-		wantArgv := []string{"export", "--file=in.csv", "--format=json", "--save-to=/tmp/custom", "--to=2024-01-01"}
+		wantArgv := []string{"export", "--file=in.csv", "--format=json", "--save-to=custom", "--to=2024-01-01"}
 		if !reflect.DeepEqual(argv, wantArgv) {
 			t.Fatalf("child argv = %#v, want %#v", argv, wantArgv)
 		}
@@ -1931,19 +1931,12 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 
 func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 	bin := writeArgvHelper(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	secret := filepath.Join(home, "secret.txt")
+	secret := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(secret, []byte("token"), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
-	sibling, err := os.CreateTemp("", "pp-sibling-")
-	if err != nil {
-		t.Fatalf("create sibling: %v", err)
-	}
-	sibling.Close()
-	t.Cleanup(func() { os.Remove(sibling.Name()) })
+	quotedSecret := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(secret) + `"`
+	sep := string(filepath.Separator)
 
 	positionals := []positionalArg{positionalArg{InputName: "target", Display: "[target...]", Variadic: true}}
 	allowed := map[string]bool{"args": true, "terms": true, "target": true}
@@ -1973,13 +1966,17 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 		label string
 	}{
 		{"absolute flag value", map[string]any{"terms": secret}, "--terms"},
+		{"missing absolute path", map[string]any{"terms": secret + ".missing"}, "--terms"},
 		{"padded flag value", map[string]any{"terms": "  " + secret + "\n"}, "--terms"},
-		{"home-relative flag value", map[string]any{"terms": "~/secret.txt"}, "--terms"},
-		{"directory flag value", map[string]any{"terms": home}, "--terms"},
+		{"quoted flag value", map[string]any{"terms": `"` + secret + `"`}, "--terms"},
+		{"home-relative flag value", map[string]any{"terms": "~" + sep + "secret.txt"}, "--terms"},
+		{"bare home", map[string]any{"terms": "~"}, "--terms"},
 		{"array item", map[string]any{"terms": []any{"coins", secret}}, "--terms"},
-		{"escape from child directory", map[string]any{"terms": ".." + string(filepath.Separator) + filepath.Base(sibling.Name())}, "--terms"},
+		{"string slice CSV field", map[string]any{"terms": "coins," + quotedSecret}, "--terms"},
+		{"string map value", map[string]any{"terms": "list=" + secret}, "--terms"},
+		{"escape from child directory", map[string]any{"terms": "notes" + sep + ".." + sep + ".." + sep + "secret.txt"}, "--terms"},
 		{"structured positional", map[string]any{"target": secret}, "argument"},
-		{"raw args token", map[string]any{"args": "coins " + secret}, "argument"},
+		{"raw args token", map[string]any{"args": "coins " + quotedSecret}, "argument"},
 	}
 	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1987,7 +1984,7 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 			if !result.IsError {
 				t.Fatalf("read-only tool forwarded a local path: %s", toolResultText(result))
 			}
-			if got := toolResultText(result); !strings.Contains(got, "refusing "+tc.label) || !strings.Contains(got, "local file or directory") {
+			if got := toolResultText(result); !strings.Contains(got, "refusing "+tc.label) || !strings.Contains(got, "parent-relative paths") {
 				t.Fatalf("tool error = %q, want refusal naming %s", got, tc.label)
 			}
 		})
@@ -1997,7 +1994,7 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 	if _, err := os.Stat(serverCwdEntry); err != nil {
 		t.Fatalf("test expects %s in the package directory: %v", serverCwdEntry, err)
 	}
-	accepted := []string{"private", "users", "owner/repo", "/v1/no-such-pp-path", ".", serverCwdEntry}
+	accepted := []string{"private", "users", "owner/repo", "https://example.com/a/b", "1..10", ".", serverCwdEntry}
 	for _, value := range accepted {
 		t.Run("accepts "+value, func(t *testing.T) {
 			result := call(true, map[string]any{"terms": value})

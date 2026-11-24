@@ -6,6 +6,7 @@ package cobratree
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -81,14 +82,14 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		workDir := ""
 		if readOnly {
+			if msg := localPathArgRefusal(finalArgs[len(prefixArgs):]); msg != "" {
+				return boundedToolResultError(msg), nil
+			}
 			dir, err := os.MkdirTemp("", "mcp-read-only-")
 			if err != nil {
 				return boundedToolResultError(fmt.Sprintf("creating child working directory: %v", err)), nil
 			}
 			defer os.RemoveAll(dir)
-			if msg := localPathArgRefusal(dir, finalArgs[len(prefixArgs):]); msg != "" {
-				return boundedToolResultError(msg), nil
-			}
 			workDir = dir
 		}
 		out, err := runCLICommandIn(ctx, lookupPath, finalArgs, workDir)
@@ -100,12 +101,12 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 }
 
 // localPathArgRefusal refuses a read-only call when a flag value or positional
-// names an existing local file or directory. A read-only tool runs without a
-// host prompt, so a caller-chosen path would let it read anything the server
-// account can read, whether or not the flag is listed in mcp:read-flags. The
-// child runs in the empty dir, so only absolute, home-relative, or escaping
-// values can resolve.
-func localPathArgRefusal(dir string, args []string) string {
+// could name a path outside the child's empty working directory. A read-only
+// tool runs without a host prompt, so such a path would let it read anything
+// the server account can read, whether or not the flag is listed in
+// mcp:read-flags. The rule never touches the filesystem, so a refusal does not
+// reveal whether a path exists.
+func localPathArgRefusal(args []string) string {
 	for _, arg := range args {
 		label, value := "argument", arg
 		if flag, ok := strings.CutPrefix(arg, "--"); ok {
@@ -115,46 +116,45 @@ func localPathArgRefusal(dir string, args []string) string {
 			}
 			label, value = "--"+name, flagValue
 		}
-		if namesLocalPath(dir, value) {
-			return fmt.Sprintf("refusing %s %q: it names a local file or directory, and read-only MCP tools do not read local paths", label, value)
+		if pathLikeArg(value) {
+			return fmt.Sprintf("refusing %s %q: read-only MCP tools do not accept absolute, home, or parent-relative paths", label, value)
 		}
 	}
 	return ""
 }
 
-// namesLocalPath resolves value the way a child running in dir would open it:
-// as given, trimmed, and with a leading ~ expanded to the home directory.
-func namesLocalPath(dir, value string) bool {
-	trimmed := strings.TrimSpace(value)
-	candidates := []string{value, trimmed}
-	if rest, ok := strings.CutPrefix(trimmed, "~"); ok && (rest == "" || os.IsPathSeparator(rest[0])) {
-		if home, err := os.UserHomeDir(); err == nil {
-			candidates = append(candidates, home+rest)
-		}
+// pathLikeArg checks value and every item pflag can decode from it: the CSV
+// fields of a StringSlice and the values of a StringToString.
+func pathLikeArg(value string) bool {
+	items := []string{value}
+	if fields, err := csv.NewReader(strings.NewReader(value)).Read(); err == nil {
+		items = append(items, fields...)
 	}
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		// A UNC share or drive-relative name is refused without a lookup, so
-		// the check never dials a share and never guesses a per-drive cwd.
-		if vol := filepath.VolumeName(candidate); vol != "" && (len(vol) != 2 || !filepath.IsAbs(candidate)) {
+	for _, item := range items {
+		_, mapValue, _ := strings.Cut(item, "=")
+		if leavesWorkDir(item) || leavesWorkDir(mapValue) {
 			return true
 		}
-		path := candidate
-		if !filepath.IsAbs(candidate) {
-			if os.IsPathSeparator(candidate[0]) {
-				path = filepath.VolumeName(dir) + candidate
-			} else {
-				// Not filepath.Join: the OS must resolve ".." through
-				// symlinks exactly as the child's open would.
-				path = dir + string(filepath.Separator) + candidate
-			}
-		}
-		if filepath.Clean(path) == dir {
-			continue
-		}
-		if _, err := os.Lstat(path); err == nil {
+	}
+	return false
+}
+
+// leavesWorkDir reports an absolute, rooted, drive, home, or ".."-relative
+// path once surrounding space and quotes are trimmed. Any other relative path
+// resolves inside the child's empty working directory.
+func leavesWorkDir(s string) bool {
+	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), `"'`))
+	if s == "" {
+		return false
+	}
+	if filepath.IsAbs(s) || filepath.VolumeName(s) != "" || os.IsPathSeparator(s[0]) {
+		return true
+	}
+	if s == "~" || (s[0] == '~' && len(s) > 1 && os.IsPathSeparator(s[1])) {
+		return true
+	}
+	for _, elem := range strings.FieldsFunc(s, func(r rune) bool { return r < 0x80 && os.IsPathSeparator(uint8(r)) }) {
+		if elem == ".." {
 			return true
 		}
 	}
@@ -556,11 +556,8 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (CLIComma
 // runCLICommandIn runs the companion CLI in dir, or in the server's working
 // directory when dir is empty.
 func runCLICommandIn(ctx context.Context, binPath string, args []string, dir string) (CLICommandResult, error) {
-	// exec resolves a relative Path against Dir, not the server's directory.
-	if dir != "" && filepath.Base(binPath) != binPath {
-		if abs, err := filepath.Abs(binPath); err == nil {
-			binPath = abs
-		}
+	if dir != "" {
+		binPath = anchorRelativeCLIPath(binPath)
 	}
 	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
 	cmd.Dir = dir
@@ -588,6 +585,20 @@ func runCLICommandIn(ctx context.Context, binPath string, args []string, dir str
 		return result, fmt.Errorf("cli %s: %w (%s)", binPath, err, bound.Text(detail))
 	}
 	return result, nil
+}
+
+// anchorRelativeCLIPath prefixes the server's directory to a relative path
+// with a separator, because exec resolves a relative Path against Dir. The
+// result is not cleaned, so symlinks resolve as written.
+func anchorRelativeCLIPath(binPath string) string {
+	if binPath == "" || filepath.IsAbs(binPath) || filepath.VolumeName(binPath) != "" || os.IsPathSeparator(binPath[0]) || filepath.Base(binPath) == binPath {
+		return binPath
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return binPath
+	}
+	return wd + string(filepath.Separator) + binPath
 }
 
 // Mirrored CLI children do not authenticate the MCP listener. Copying this
