@@ -1240,12 +1240,11 @@ func (a *mcpAnalyzer) mustCall(call *ast.CallExpr) mustResult {
 		key := flagKey{cmd: flag.cmdObj, name: flag.name, persistent: flag.persistent}
 		flags[key] = append(flags[key], idx)
 	}
-	id, ok := call.Fun.(*ast.Ident)
-	if !ok || id.Name == "" || a.funcs[id.Name] == nil {
+	fn := a.calledFunc(call)
+	if fn == nil {
 		return mustResult{flags: flags}
 	}
-	inner := a.mustFunc(id.Name)
-	fn := a.funcs[id.Name]
+	inner := a.mustFunc(fn.name)
 	for key := range inner.flags {
 		arg := a.matchParam(key.cmd, fn.params, call.Args)
 		if arg == nil {
@@ -1825,6 +1824,23 @@ func (a *mcpAnalyzer) resolveFunc(call *ast.CallExpr, scope *mcpScope) *mcpFunc 
 		}
 	}
 	return nil
+}
+
+// calledFunc is the package function a call actually invokes. A local
+// variable or parameter of the same name is not that function. An ident with
+// no object is a package function declared later in the file.
+func (a *mcpAnalyzer) calledFunc(call *ast.CallExpr) *mcpFunc {
+	if fn := a.resolveFunc(call, nil); fn != nil {
+		return fn
+	}
+	id, ok := call.Fun.(*ast.Ident)
+	if !ok || id.Name == "" {
+		return nil
+	}
+	if a.identObj[id.Pos()] != nil {
+		return nil
+	}
+	return a.funcs[id.Name]
 }
 
 func (a *mcpAnalyzer) resolveLit(call *ast.CallExpr, scope *mcpScope) *mcpLit {
