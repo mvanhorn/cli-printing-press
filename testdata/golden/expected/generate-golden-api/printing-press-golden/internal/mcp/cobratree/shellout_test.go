@@ -1963,7 +1963,15 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 
 	positionals := []positionalArg{positionalArg{InputName: "target", Display: "[target...]", Variadic: true}}
 	allowed := map[string]bool{"args": true, "terms": true, "ids": true, "labels": true, "custom": true, "target": true}
-	flagTypes := map[string]string{"terms": "string", "ids": "stringSlice", "labels": "stringToString"}
+	root := &cobra.Command{Use: "root"}
+	market := &cobra.Command{Use: "market"}
+	snapshot := &cobra.Command{Use: "snapshot [target...]", Run: func(*cobra.Command, []string) {}}
+	snapshot.Flags().String("terms", "", "")
+	snapshot.Flags().StringSlice("ids", nil, "")
+	snapshot.Flags().StringToString("labels", nil, "")
+	snapshot.AddCommand(&cobra.Command{Use: "detail", Aliases: []string{"info"}, Run: func(*cobra.Command, []string) {}})
+	market.AddCommand(snapshot)
+	root.AddCommand(market)
 	newHandler := func(readOnly bool) server.ToolHandlerFunc {
 		return shellOutToCLI(
 			func() (string, error) { return bin, nil },
@@ -1973,7 +1981,7 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 			positionals,
 			readOnly,
 			nil,
-			flagTypes,
+			snapshot,
 		)
 	}
 	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
@@ -2042,6 +2050,15 @@ func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
 			t.Fatalf("read-only tool refused free text: %s", toolResultText(result))
 		}
 	})
+
+	for _, sub := range []string{"detail", "info"} {
+		t.Run("positional selecting subcommand "+sub, func(t *testing.T) {
+			result := call(true, map[string]any{"ids": "coins", "target": sub})
+			if got := toolResultText(result); !result.IsError || !strings.Contains(got, "select a different command") {
+				t.Fatalf("read-only tool let a positional select a subcommand: %s", got)
+			}
+		})
+	}
 
 	t.Run("non-read-only tool keeps forwarding paths", func(t *testing.T) {
 		result := call(false, map[string]any{"terms": secret})

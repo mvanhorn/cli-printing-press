@@ -352,6 +352,9 @@ func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
 // flagTypesForCommand maps each flag name to its pflag type, letting a local
 // flag shadow an inherited one of the same name.
 func flagTypesForCommand(cmd *cobra.Command) map[string]string {
+	if cmd == nil {
+		return nil
+	}
 	types := map[string]string{}
 	add := func(flag *pflag.Flag) {
 		if _, ok := types[flag.Name]; !ok {

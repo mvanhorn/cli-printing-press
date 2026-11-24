@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -55,8 +56,9 @@ func (c *cappedCapture) String() string {
 	return string(c.data)
 }
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool, flagTypes map[string]string) server.ToolHandlerFunc {
+func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool, cmd *cobra.Command) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
+	flagTypes := flagTypesForCommand(cmd)
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		if lookupErr != nil {
@@ -82,6 +84,9 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		workDir := ""
 		if readOnly {
+			if cmd != nil && !argsResolveTo(cmd, finalArgs) {
+				return boundedToolResultError("refusing positional arguments that select a different command; call that command's tool instead"), nil
+			}
 			if msg := localPathArgRefusal(finalArgs[len(prefixArgs):], flagTypes); msg != "" {
 				return boundedToolResultError(msg), nil
 			}
@@ -98,6 +103,24 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		return ToolResultFromCLICommand(out), nil
 	}
+}
+
+var cobraResolveMu sync.Mutex
+
+// argsResolveTo reports whether the companion's Cobra tree would run cmd for
+// args, so a positional naming a subcommand cannot move the call to a command
+// whose flags and read-only status were not checked. A resolution error is
+// not a mismatch: the companion fails the same way before running anything.
+func argsResolveTo(cmd *cobra.Command, args []string) bool {
+	cobraResolveMu.Lock()
+	defer cobraResolveMu.Unlock()
+	root := cmd.Root()
+	resolve := root.Find
+	if root.TraverseChildren {
+		resolve = root.Traverse
+	}
+	found, _, err := resolve(args)
+	return err != nil || found == cmd
 }
 
 // localPathArgRefusal refuses a read-only call when a flag value or positional
