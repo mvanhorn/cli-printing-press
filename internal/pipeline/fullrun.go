@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"gopkg.in/yaml.v3"
 )
-
-const fullRunQualityGateCount = 10
 
 // FullRunResult holds everything the press produced for one API.
 type FullRunResult struct {
@@ -157,16 +156,8 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	cmd.Dir = repoRoot
 	genOut, genErr := cmd.CombinedOutput()
 	result.GatesOutput = string(genOut)
-
-	for line := range strings.SplitSeq(result.GatesOutput, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "PASS") {
-			result.GatesPassed++
-		}
-		if strings.Contains(trimmed, "FAIL") {
-			result.GatesFailed++
-		}
-	}
+	expectedGates := generator.StandardQualityGateNames(findCLIName(workingDir))
+	result.GatesPassed, result.GatesFailed = countQualityGateVerdicts(result.GatesOutput, expectedGates)
 
 	if genErr != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("generate: %v", genErr))
@@ -415,7 +406,7 @@ func PrintComparisonTable(results []*FullRunResult) string {
 
 	writeComparisonRows(&b, results, []comparisonRow{
 		{"Quality Gates", func(r *FullRunResult) string {
-			return fmt.Sprintf("%d/%d PASS", r.GatesPassed, fullRunQualityGateCount)
+			return fmt.Sprintf("%d/%d PASS", r.GatesPassed, generator.StandardQualityGateCount())
 		}},
 		{"Commands", func(r *FullRunResult) string {
 			return fmt.Sprintf("%d", r.CommandCount)
@@ -559,13 +550,14 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 
 	// Summarize runs
 	b.WriteString("## Runs\n\n")
+	qualityGateCount := generator.StandardQualityGateCount()
 	for _, r := range results {
 		status := "OK"
 		if len(r.Errors) > 0 {
 			status = fmt.Sprintf("%d errors", len(r.Errors))
 		}
 		fmt.Fprintf(&b, "- **%s** (%s) - Gates %d/%d, Duration %s, Status: %s\n",
-			r.APIName, r.Level, r.GatesPassed, fullRunQualityGateCount, r.Duration.Round(time.Second), status)
+			r.APIName, r.Level, r.GatesPassed, qualityGateCount, r.Duration.Round(time.Second), status)
 	}
 	b.WriteString("\n")
 
@@ -632,23 +624,7 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 	}
 	b.WriteString("\n")
 
-	// Gate failures
-	b.WriteString("## Gate Failures\n\n")
-	for _, r := range results {
-		if r.GatesFailed > 0 {
-			fmt.Fprintf(&b, "- **%s** - %d gates failed\n", r.APIName, r.GatesFailed)
-		}
-	}
-	allPassed := true
-	for _, r := range results {
-		if r.GatesFailed > 0 {
-			allPassed = false
-			break
-		}
-	}
-	if allPassed {
-		b.WriteString("All gates passed across all runs.\n")
-	}
+	writeFullRunGateFailures(&b, results, qualityGateCount)
 	b.WriteString("\n")
 
 	// Dogfood summary
