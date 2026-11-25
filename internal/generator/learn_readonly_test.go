@@ -82,11 +82,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"learnro-pp-cli/internal/cliutil"
 	"learnro-pp-cli/internal/store"
@@ -358,6 +360,38 @@ func TestLearnReadOnlyNewerSchemaIsRejected(t *testing.T) {
 	after := snapshotLearnDB(t, dbPath)
 	if before.sum != after.sum || before.ver != after.ver {
 		t.Fatal("newer-schema read changed the store")
+	}
+}
+
+func TestLearnReadOnlyNewerSchemaWithTablesIsRejected(t *testing.T) {
+	isolateLearnHome(t)
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	seedReadableLearnDB(t, dbPath)
+	settleLearnDB(t, dbPath, store.StoreSchemaVersion+50)
+	before := snapshotLearnDB(t, dbPath)
+
+	for _, args := range [][]string{
+		{"learnings", "stats", "--json"},
+		{"learnings", "list", "--json"},
+		{"learnings", "candidates", "--json"},
+		{"playbook", "list", "--json"},
+	} {
+		stdout, stderr, err := runLearn(t, append(args, "--db", dbPath)...)
+		if err == nil {
+			t.Fatalf("%v exited 0 on a newer schema; stdout=%s", args, stdout)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "newer than supported") || strings.Contains(msg, "too old") {
+			t.Fatalf("%v error = %q, want newer than supported\nstderr=%s", args, msg, stderr)
+		}
+	}
+	after := snapshotLearnDB(t, dbPath)
+	if before.sum != after.sum || before.ver != after.ver || !strings.EqualFold(before.journal, after.journal) {
+		t.Fatalf("newer readable schema changed: before=%+v after=%+v", before, after)
+	}
+	assertNoSidecars(t, dbPath)
+	if _, err := os.Stat(learnAuditPath(t)); !os.IsNotExist(err) {
+		t.Fatalf("rejected playbook list wrote an audit log: %v", err)
 	}
 }
 
@@ -653,20 +687,25 @@ func TestLearnWritersStillMutate(t *testing.T) {
 
 	t.Run("sync", func(t *testing.T) {
 		dbPath := filepath.Join(t.TempDir(), "data.db")
-		root := RootCmd()
-		var stdout, stderr strings.Builder
-		root.SetOut(&stdout)
-		root.SetErr(&stderr)
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		root.SetContext(ctx)
-		root.SetArgs([]string{"sync", "--db", dbPath, "--timeout", "1s"})
-		err := root.Execute()
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("LEARNRO_BASE_URL", srv.URL)
+		t.Setenv("MYAPI_TOKEN", "test-token")
+
+		stdout, stderr, err := runLearn(t, "sync", "--db", dbPath, "--timeout", "1s")
 		if _, statErr := os.Stat(dbPath); statErr != nil {
-			t.Fatalf("sync did not create the store: %v\ncommand err=%v\nstderr=%s", statErr, err, stderr.String())
+			t.Fatalf("sync did not create the store: %v\ncommand err=%v\nstderr=%s\nstdout=%s", statErr, err, stderr, stdout)
 		}
 		if ver := learnUserVersion(t, dbPath); ver != store.StoreSchemaVersion {
 			t.Fatalf("sync user_version = %d, want %d (err=%v)", ver, store.StoreSchemaVersion, err)
+		}
+		if hits.Load() == 0 {
+			t.Fatal("sync did not call the local server")
 		}
 	})
 }

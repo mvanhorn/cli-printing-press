@@ -344,9 +344,11 @@ func openLearnReadOnly(ctx context.Context, dbPath string) (*store.Store, bool, 
 	return db, true, nil
 }
 
-// learnTableReadable reports whether table is present. A missing table on a
-// schema this binary has not migrated is a schema error; read-only commands
-// do not run migrations to create it.
+// learnTableReadable reports whether table can be read without migrating.
+// A missing table on a schema this binary has not migrated is a schema
+// error. A newer user_version is refused even when the table is still
+// present, because a later schema can keep the name while changing what
+// the columns mean. An older version with the table present stays readable.
 func learnTableReadable(db *store.Store, table string) error {
 	var n int
 	if err := db.DB().QueryRow(
@@ -355,10 +357,17 @@ func learnTableReadable(db *store.Store, table string) error {
 	).Scan(&n); err != nil {
 		return fmt.Errorf("reading local store schema: %w", err)
 	}
-	if n > 0 {
-		return nil
+	if n == 0 {
+		return learnSchemaVersionError(db, table, true)
 	}
-	return learnSchemaVersionError(db, table, true)
+	ver, err := db.SchemaVersion()
+	if err != nil {
+		return fmt.Errorf("reading local store schema: %w", err)
+	}
+	if ver > store.StoreSchemaVersion {
+		return learnSchemaVersionError(db, table, false)
+	}
+	return nil
 }
 
 // rewriteLearnSchemaError turns a missing-table or missing-column failure

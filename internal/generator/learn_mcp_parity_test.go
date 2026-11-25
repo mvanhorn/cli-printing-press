@@ -214,6 +214,7 @@ func TestGenerateLearnMCPParity_StatsReadOnlyDoesNotPrune(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	statsSrc := readEmitted(t, outputDir, "internal", "cli", "learnings_stats.go")
 	require.Contains(t, statsSrc, `"mcp:read-only": "true"`)
