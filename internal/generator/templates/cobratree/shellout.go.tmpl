@@ -227,12 +227,10 @@ func asPositionalSequence(value any) (reflect.Value, bool) {
 	if !rv.IsValid() {
 		return reflect.Value{}, false
 	}
-	switch rv.Kind() {
-	case reflect.Slice, reflect.Array:
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
 		return rv, true
-	default:
-		return reflect.Value{}, false
 	}
+	return reflect.Value{}, false
 }
 
 func expandPositionalSequence(name string, seq reflect.Value) ([]string, error) {
