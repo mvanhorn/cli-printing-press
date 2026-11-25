@@ -14,8 +14,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"learn-loop-example-pp-cli/internal/store"
 )
 
 // learnStatsEnvelope locks the JSON contract for `learnings stats`.
@@ -66,19 +64,25 @@ local-only: events never leave this machine.`,
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "learnings stats")
 			}
-			s, err := store.OpenWithContext(cmd.Context(), learnDBPath(dbPath))
+			// Read-only: do not prune. PruneLearnEvents deletes rows and
+			// chmods the database through the write lock.
+			s, ok, err := openLearnReadOnly(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {
 				return fmt.Errorf("learnings stats: %w", err)
 			}
+			if !ok {
+				return writeLearnStats(cmd, flags, emptyLearnStats())
+			}
 			defer s.Close()
-
-			eventsPruned, pruneErr := s.PruneLearnEvents(0, 0)
-			if pruneErr != nil {
-				eventsPruned = 0
+			if err := learnTableReadable(s, "learn_events"); err != nil {
+				return fmt.Errorf("learnings stats: %w", err)
 			}
 
 			stats, err := s.LearnEventStats(cmd.Context())
 			if err != nil {
+				if schemaErr := rewriteLearnSchemaError(s, "learn_events", err); schemaErr != nil {
+					return fmt.Errorf("learnings stats: %w", schemaErr)
+				}
 				return fmt.Errorf("learnings stats: %w", err)
 			}
 			env := learnStatsEnvelope{
@@ -94,29 +98,38 @@ local-only: events never leave this machine.`,
 				CandidatesConfirmed:    stats.CandidatesConfirmed,
 				CandidatesRejected:     stats.CandidatesRejected,
 				EventCounts:            stats.EventCounts,
-				EventsPruned:           eventsPruned,
 			}
-
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				return printJSONFiltered(cmd.OutOrStdout(), env, flags)
-			}
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "recall hit rate:          %s (%d hits / %d misses)\n",
-				formatStatRate(env.RecallHitRate), env.RecallHits, env.RecallMisses)
-			fmt.Fprintf(out, "teach-to-reuse:           %s (%d of %d taught rows reused)\n",
-				formatStatRate(env.TeachToReuse), env.ReusedRows, env.TaughtRows)
-			fmt.Fprintf(out, "playbook resolution rate: %s (%d hits, %d later amended)\n",
-				formatStatRate(env.PlaybookResolutionRate), env.PlaybookHits, env.PlaybookHitsAmended)
-			fmt.Fprintf(out, "candidates:               %d confirmed, %d rejected\n",
-				env.CandidatesConfirmed, env.CandidatesRejected)
-			if env.EventsPruned > 0 {
-				fmt.Fprintf(out, "(pruned %d old event(s) this run)\n", env.EventsPruned)
-			}
-			return nil
+			return writeLearnStats(cmd, flags, env)
 		},
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	return cmd
+}
+
+func emptyLearnStats() learnStatsEnvelope {
+	return learnStatsEnvelope{EventCounts: map[string]int64{}}
+}
+
+func writeLearnStats(cmd *cobra.Command, flags *rootFlags, env learnStatsEnvelope) error {
+	if env.EventCounts == nil {
+		env.EventCounts = map[string]int64{}
+	}
+	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+		return printJSONFiltered(cmd.OutOrStdout(), env, flags)
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "recall hit rate:          %s (%d hits / %d misses)\n",
+		formatStatRate(env.RecallHitRate), env.RecallHits, env.RecallMisses)
+	fmt.Fprintf(out, "teach-to-reuse:           %s (%d of %d taught rows reused)\n",
+		formatStatRate(env.TeachToReuse), env.ReusedRows, env.TaughtRows)
+	fmt.Fprintf(out, "playbook resolution rate: %s (%d hits, %d later amended)\n",
+		formatStatRate(env.PlaybookResolutionRate), env.PlaybookHits, env.PlaybookHitsAmended)
+	fmt.Fprintf(out, "candidates:               %d confirmed, %d rejected\n",
+		env.CandidatesConfirmed, env.CandidatesRejected)
+	if env.EventsPruned > 0 {
+		fmt.Fprintf(out, "(pruned %d old event(s) this run)\n", env.EventsPruned)
+	}
+	return nil
 }
 
 // formatStatRate renders a nullable rate for the human surface: "n/a"

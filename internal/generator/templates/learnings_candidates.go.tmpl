@@ -137,19 +137,27 @@ alter command behavior or recall's verified results on their own.`,
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "learnings candidates")
 			}
-			s, err := store.OpenWithContext(cmd.Context(), learnDBPath(dbPath))
+			s, ok, err := openLearnReadOnly(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {
 				return fmt.Errorf("learnings candidates: %w", err)
 			}
-			defer s.Close()
-
-			stored, err := s.ListCandidates(store.ListCandidatesFilter{
-				Status: statusFilter,
-				Class:  classFilter,
-				Limit:  limit,
-			})
-			if err != nil {
-				return fmt.Errorf("learnings candidates: %w", err)
+			var stored []store.CandidateRow
+			if ok {
+				defer s.Close()
+				if err := learnTableReadable(s, "learn_candidates"); err != nil {
+					return fmt.Errorf("learnings candidates: %w", err)
+				}
+				stored, err = s.ListCandidates(store.ListCandidatesFilter{
+					Status: statusFilter,
+					Class:  classFilter,
+					Limit:  limit,
+				})
+				if err != nil {
+					if schemaErr := rewriteLearnSchemaError(s, "learn_candidates", err); schemaErr != nil {
+						return fmt.Errorf("learnings candidates: %w", schemaErr)
+					}
+					return fmt.Errorf("learnings candidates: %w", err)
+				}
 			}
 			rows := make([]candidateRow, 0, len(stored))
 			for _, r := range stored {

@@ -472,7 +472,34 @@ Run 'learn-disabled-example-pp-cli doctor' to verify auth and connectivity.`,
 		rootCmd.SetErr(&terminalStreamFilter{w: rootCmd.ErrOrStderr()})
 	}
 
+	// Cobra's positional validators (ExactArgs, RangeArgs, MinimumNArgs,
+	// MaximumNArgs, NoArgs, and the rest) return plain errors. Wrapping
+	// the validator — not matching its text — makes every current and
+	// future Args failure exit 2, while a RunE error that happens to
+	// say "accepts 1 arg(s)" stays a runtime exit.
+	wrapPositionalUsageErrors(rootCmd)
 	return rootCmd
+}
+
+// wrapPositionalUsageErrors marks Args-validator failures as usage errors.
+// A nil Args keeps Cobra's default (arbitrary positionals). RunE is not
+// wrapped, so runtime failures keep their own exit code.
+func wrapPositionalUsageErrors(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	if cmd.Args != nil {
+		validate := cmd.Args
+		cmd.Args = func(c *cobra.Command, args []string) error {
+			if err := validate(c, args); err != nil {
+				return usageErr(err)
+			}
+			return nil
+		}
+	}
+	for _, child := range cmd.Commands() {
+		wrapPositionalUsageErrors(child)
+	}
 }
 
 // noLocalDataEnvVar is the operator switch for running without a local copy

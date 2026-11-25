@@ -205,7 +205,7 @@ func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 		"learnings reject must not carry local-write hints")
 }
 
-func TestGenerateLearnMCPParity_StatsReadOnlyAllowsTelemetryPrune(t *testing.T) {
+func TestGenerateLearnMCPParity_StatsReadOnlyDoesNotPrune(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("parity-stats")
@@ -214,12 +214,15 @@ func TestGenerateLearnMCPParity_StatsReadOnlyAllowsTelemetryPrune(t *testing.T) 
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	statsSrc := readEmitted(t, outputDir, "internal", "cli", "learnings_stats.go")
-	statsBlock := commandBlock(t, statsSrc, `Use:   "stats"`)
-	require.Contains(t, statsBlock, `"mcp:read-only": "true"`)
-	require.Contains(t, statsBlock, "PruneLearnEvents(0, 0)",
-		"read-only MCP stats may prune telemetry-class local events")
+	require.Contains(t, statsSrc, `"mcp:read-only": "true"`)
+	require.Contains(t, statsSrc, "openLearnReadOnly(")
+	require.NotContains(t, statsSrc, "PruneLearnEvents(",
+		"read-only stats must not delete events or chmod the store")
+	require.NotContains(t, statsSrc, "OpenWithContext(",
+		"read-only stats must not open the migrating store")
 }
 
 // TestGenerateTeachPlaybookInlineJSON verifies the R16 inline playbook
