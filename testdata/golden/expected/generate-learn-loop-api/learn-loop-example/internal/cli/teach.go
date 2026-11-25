@@ -323,6 +323,79 @@ func learnDBPath(explicit string) string {
 	return defaultDBPath("learn-loop-example-pp-cli")
 }
 
+// openLearnReadOnly opens an existing store for a read-only learn command.
+// ok is false when the file is absent: the caller returns an empty result
+// and must not create the file. The open skips mkdir, migration, and
+// journal-mode changes. A stat or open error other than absence is returned.
+func openLearnReadOnly(ctx context.Context, dbPath string) (*store.Store, bool, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("opening local database: %w", err)
+	}
+	db, err := store.OpenReadOnlyContext(ctx, dbPath)
+	if err != nil {
+		if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("opening local database: %w", err)
+	}
+	return db, true, nil
+}
+
+// learnTableReadable reports whether table is present. A missing table on a
+// schema this binary has not migrated is a schema error; read-only commands
+// do not run migrations to create it.
+func learnTableReadable(db *store.Store, table string) error {
+	var n int
+	if err := db.DB().QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		table,
+	).Scan(&n); err != nil {
+		return fmt.Errorf("reading local store schema: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	return learnSchemaVersionError(db, table, true)
+}
+
+// rewriteLearnSchemaError turns a missing-table or missing-column failure
+// into a schema-version message when the on-disk version is not this
+// binary's. A current schema keeps the original query error.
+func rewriteLearnSchemaError(db *store.Store, table string, queryErr error) error {
+	if !sqliteSchemaMismatch(queryErr) {
+		return nil
+	}
+	return learnSchemaVersionError(db, table, false)
+}
+
+func learnSchemaVersionError(db *store.Store, table string, missingTable bool) error {
+	ver, err := db.SchemaVersion()
+	if err != nil {
+		return fmt.Errorf("reading local store schema: %w", err)
+	}
+	switch {
+	case ver > store.StoreSchemaVersion:
+		return fmt.Errorf("database schema version %d is newer than supported version %d; upgrade the CLI binary or open an older database", ver, store.StoreSchemaVersion)
+	case ver < store.StoreSchemaVersion:
+		return fmt.Errorf("local store schema version %d is too old to read %s (this CLI supports version %d and does not migrate on a read-only command)", ver, table, store.StoreSchemaVersion)
+	case missingTable:
+		return fmt.Errorf("local store is missing table %s", table)
+	default:
+		return nil
+	}
+}
+
+func sqliteSchemaMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such table") || strings.Contains(msg, "no such column")
+}
+
 // newTeachCmd builds the `teach` cobra command — the LLM-facing write
 // surface. Silent on success, safe to background, errors only to
 // teach.log. Requires --resource-type so recalls can validate returned
@@ -915,23 +988,33 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 
-			dbPath = learnDBPath(dbPath)
-			s, err := store.OpenWithContext(cmd.Context(), dbPath)
+			s, ok, err := openLearnReadOnly(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {
 				return fmt.Errorf("learnings list: %w", err)
 			}
-			defer s.Close()
-
-			rows, err := listLearningsRows(cmd.Context(), s, store.ListLearningsFilter{
-				Query:         queryFilter,
-				Source:        sourceFilter,
-				ResourceID:    resourceFilter,
-				Action:        actionFilter,
-				MinConfidence: minConf,
-				Limit:         limit,
-			})
-			if err != nil {
-				return fmt.Errorf("learnings list: %w", err)
+			var rows []learningRow
+			if ok {
+				defer s.Close()
+				if err := learnTableReadable(s, "search_learnings"); err != nil {
+					return fmt.Errorf("learnings list: %w", err)
+				}
+				rows, err = listLearningsRows(cmd.Context(), s, store.ListLearningsFilter{
+					Query:         queryFilter,
+					Source:        sourceFilter,
+					ResourceID:    resourceFilter,
+					Action:        actionFilter,
+					MinConfidence: minConf,
+					Limit:         limit,
+				})
+				if err != nil {
+					if schemaErr := rewriteLearnSchemaError(s, "search_learnings", err); schemaErr != nil {
+						return fmt.Errorf("learnings list: %w", schemaErr)
+					}
+					return fmt.Errorf("learnings list: %w", err)
+				}
+			}
+			if rows == nil {
+				rows = []learningRow{}
 			}
 
 			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
