@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // Fixture index used across which-ranking tests. Covers a typical mix
@@ -348,10 +350,9 @@ func TestWhichPipedNoMatchExits2WithEmptyEnvelope(t *testing.T) {
 	}
 }
 
-// Sanity: whichIndex compiles and is well-formed. Generated CLIs with
-// neither novel features nor promoted endpoint commands ship an empty
-// index, and that is still a valid state (which returns the "no curated
-// index" error at runtime).
+// Sanity: whichIndex compiles and is well-formed. Every curated row names
+// a command the Cobra tree can resolve. Commands outside this list are
+// discovered from the tree at runtime.
 func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
 	root := newRootCmd(&rootFlags{})
 	for i, e := range whichIndex {
@@ -365,6 +366,292 @@ func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
 		found, remaining, err := root.Find(strings.Fields(e.Command))
 		if err != nil || len(remaining) > 0 {
 			t.Errorf("whichIndex[%d] command %q does not resolve in the Cobra tree (found=%v, remaining=%v, err=%v)", i, e.Command, found, remaining, err)
+		}
+	}
+}
+
+func TestRankWhich_ExactPathBeatsFuzzyCurated(t *testing.T) {
+	index := []whichEntry{
+		{
+			Command:      "market breakouts",
+			Description:  "market trend market trend market trend",
+			Group:        "market",
+			WhyItMatters: "Use market trend when the move is already underway",
+			curated:      true,
+		},
+		{Command: "market trend", Description: "Show the market trend"},
+	}
+	got := rankWhich(index, "market trend", 1)
+	if len(got) != 1 || got[0].Entry.Command != "market trend" {
+		t.Fatalf("exact path must outrank a fuzzy curated row, got %+v", got)
+	}
+}
+
+func TestRankWhich_CuratedWinsEqualScore(t *testing.T) {
+	index := []whichEntry{
+		{Command: "aa", Description: "same words here"},
+		{Command: "bb", Description: "same words here", curated: true},
+	}
+	got := rankWhich(index, "same words here", 2)
+	if len(got) < 2 || got[0].Score != got[1].Score {
+		t.Fatalf("fixture must tie so curated precedence is the decider, got %+v", got)
+	}
+	if got[0].Entry.Command != "bb" {
+		t.Fatalf("curated row should win an equal score, got %+v", got)
+	}
+}
+
+func TestWhichCommandIndex_NilRootKeepsCurated(t *testing.T) {
+	old := whichIndex
+	whichIndex = []whichEntry{
+		{Command: "digest", Description: "Summarize"},
+		{Command: "   "},
+		{Command: "digest", Description: "duplicate"},
+	}
+	t.Cleanup(func() { whichIndex = old })
+
+	got := whichCommandIndex(nil)
+	if len(got) != 1 || got[0].Command != "digest" || !got[0].curated || got[0].Description != "Summarize" {
+		t.Fatalf("nil root should keep the first curated row only, got %+v", got)
+	}
+	if whichIncludeCommand(nil) {
+		t.Fatal("nil command must not be indexed")
+	}
+}
+
+func TestWhichCommandIndex_OverlaysCuratedOntoTree(t *testing.T) {
+	old := whichIndex
+	whichIndex = []whichEntry{
+		{Command: "alpha beta"},
+	}
+	t.Cleanup(func() { whichIndex = old })
+
+	root := &cobra.Command{Use: "cli"}
+	alpha := &cobra.Command{Use: "alpha", RunE: whichRuntimeNoop}
+	alpha.AddCommand(&cobra.Command{
+		Use:     "beta",
+		Short:   "From the tree",
+		Aliases: []string{"handy"},
+		RunE:    whichRuntimeNoop,
+	})
+	root.AddCommand(alpha)
+
+	got := whichCommandIndex(root)
+	var found *whichEntry
+	for i := range got {
+		if got[i].Command == "alpha beta" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil || !found.curated {
+		t.Fatalf("curated path missing from runtime index: %+v", got)
+	}
+	if found.Description != "From the tree" || found.Group != "alpha" || len(found.aliases) != 1 || found.aliases[0] != "handy" {
+		t.Fatalf("blank curated fields should take the tree short, group, and alias, got %+v", *found)
+	}
+}
+
+func whichRuntimeNoop(*cobra.Command, []string) error { return nil }
+
+func whichRuntimeFixture(t *testing.T) *cobra.Command {
+	t.Helper()
+	old := whichIndex
+	whichIndex = []whichEntry{
+		{
+			Command:      "market breakouts",
+			Description:  "Scan market breakouts",
+			Group:        "market",
+			WhyItMatters: "Find market breakouts before they fade",
+		},
+	}
+	t.Cleanup(func() { whichIndex = old })
+
+	root := &cobra.Command{Use: "cli"}
+	root.AddCommand(newWhichCmd(&rootFlags{asJSON: true}))
+
+	root.AddCommand(&cobra.Command{Use: "help", Short: "Help about any command", RunE: whichRuntimeNoop})
+	completion := &cobra.Command{Use: "completion", Short: "Generate shell completion", RunE: whichRuntimeNoop}
+	completion.AddCommand(&cobra.Command{Use: "check", Short: "Check completion setup", RunE: whichRuntimeNoop})
+	root.AddCommand(completion)
+
+	hidden := &cobra.Command{Use: "area", Short: "Hidden area group", Hidden: true, RunE: whichRuntimeNoop}
+	hidden.AddCommand(&cobra.Command{Use: "child", Short: "Child of a hidden area group", RunE: whichRuntimeNoop})
+	root.AddCommand(hidden)
+
+	alpha := &cobra.Command{Use: "alpha", Short: "Alpha parent", RunE: whichRuntimeNoop}
+	alpha.AddCommand(&cobra.Command{
+		Use:     "beta",
+		Short:   "Hand-written alpha beta capability",
+		Aliases: []string{"handy"},
+		RunE:    whichRuntimeNoop,
+	})
+	root.AddCommand(alpha)
+
+	market := &cobra.Command{Use: "market", Short: "Market parent", RunE: whichRuntimeNoop}
+	market.AddCommand(&cobra.Command{Use: "breakouts", Short: "Short label", RunE: whichRuntimeNoop})
+	market.AddCommand(&cobra.Command{Use: "trend", Short: "Show the market trend", RunE: whichRuntimeNoop})
+	root.AddCommand(market)
+
+	group := &cobra.Command{Use: "norun", Short: "Not runnable"}
+	group.AddCommand(&cobra.Command{Use: "leaf", Short: "Runnable leaf under a non-runnable parent", RunE: whichRuntimeNoop})
+	root.AddCommand(group)
+
+	root.AddCommand(&cobra.Command{Use: "retired", Short: "Retired command", Deprecated: "use trend", RunE: whichRuntimeNoop})
+	root.AddCommand(&cobra.Command{Use: "__complete", Short: "Internal completion hook", RunE: whichRuntimeNoop})
+	return root
+}
+
+func TestWhichRuntime_UnindexedCommands(t *testing.T) {
+	root := whichRuntimeFixture(t)
+	index := whichCommandIndex(root)
+	commands := map[string]whichEntry{}
+	for _, entry := range index {
+		if _, ok := commands[entry.Command]; ok {
+			t.Fatalf("duplicate command %q in runtime index", entry.Command)
+		}
+		commands[entry.Command] = entry
+	}
+	for _, want := range []string{"alpha beta", "area child", "completion check", "norun leaf", "market trend", "market breakouts"} {
+		if _, ok := commands[want]; !ok {
+			t.Fatalf("runtime index missing %q: %+v", want, index)
+		}
+	}
+	for _, banned := range []string{"help", "completion", "area", "norun", "retired", "__complete"} {
+		if _, ok := commands[banned]; ok {
+			t.Fatalf("runtime index must exclude %q", banned)
+		}
+	}
+	if !commands["market breakouts"].curated || commands["market breakouts"].Description != "Scan market breakouts" {
+		t.Fatalf("curated prose should overlay the tree command, got %+v", commands["market breakouts"])
+	}
+
+	assertTop := func(query, want string) {
+		t.Helper()
+		got := rankWhich(index, query, 3)
+		if len(got) == 0 || got[0].Entry.Command != want {
+			t.Fatalf("query %q: want %s first, got %+v", query, want, got)
+		}
+	}
+	assertTop("alpha beta", "alpha beta")
+	assertTop("Alpha Beta", "alpha beta")
+	assertTop("Hand-written alpha beta capability", "alpha beta")
+	assertTop("handy", "alpha beta")
+	assertTop("area child", "area child")
+	assertTop("Child of a hidden area group", "area child")
+	assertTop("market trend", "market trend")
+	assertTop("Show the market trend", "market trend")
+	assertTop("market breakouts", "market breakouts")
+	assertTop("Find market breakouts before they fade", "market breakouts")
+	assertTop("norun leaf", "norun leaf")
+	assertTop("completion check", "completion check")
+
+	if got := rankWhich(index, "teleport a rhinoceros", 3); len(got) != 0 {
+		t.Fatalf("nonsense query should not match, got %+v", got)
+	}
+	for _, query := range []string{"help", "completion"} {
+		for _, match := range rankWhich(index, query, 10) {
+			if match.Entry.Command == query {
+				t.Fatalf("query %q returned framework command %+v", query, match)
+			}
+		}
+	}
+	listed := map[string]bool{}
+	for _, match := range rankWhich(index, "", 0) {
+		listed[match.Entry.Command] = true
+	}
+	if !listed["alpha beta"] || listed["help"] || listed["completion"] {
+		t.Fatalf("empty query listing = %+v", listed)
+	}
+}
+
+func TestWhichRuntime_ExactPathExits0(t *testing.T) {
+	stdout, _ := executeWhich(t, whichRuntimeFixture(t), "alpha", "beta")
+	var envelope struct {
+		Matches []struct {
+			Entry map[string]any `json:"entry"`
+			Score int            `json:"score"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(stdout, &envelope); err != nil {
+		t.Fatalf("stdout = %q: %v", stdout, err)
+	}
+	if len(envelope.Matches) == 0 || envelope.Matches[0].Entry["command"] != "alpha beta" {
+		t.Fatalf("matches = %+v, want alpha beta first", envelope.Matches)
+	}
+	if envelope.Matches[0].Score <= 0 {
+		t.Fatalf("exact path score = %d, want a confident match", envelope.Matches[0].Score)
+	}
+	for _, key := range []string{"curated", "aliases"} {
+		if _, ok := envelope.Matches[0].Entry[key]; ok {
+			t.Fatalf("JSON envelope must not expose %s: %+v", key, envelope.Matches[0].Entry)
+		}
+	}
+}
+
+func TestWhichRuntime_NonsenseExits2(t *testing.T) {
+	stdout, err := executeWhich(t, whichRuntimeFixture(t), "teleport", "a", "rhinoceros")
+	if err == nil {
+		t.Fatal("nonsense query should fail")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("ExitCode = %d, want 2; stdout=%q", got, stdout)
+	}
+	var miss map[string]any
+	if json.Unmarshal(stdout, &miss) != nil {
+		t.Fatalf("no-match stdout must be a JSON envelope, got %q", stdout)
+	}
+	matches, _ := miss["matches"].([]any)
+	if len(matches) != 0 {
+		t.Fatalf("matches = %#v, want empty array", miss["matches"])
+	}
+}
+
+func executeWhich(t *testing.T, root *cobra.Command, args ...string) ([]byte, error) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	for _, cmd := range root.Commands() {
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+	}
+	root.SetArgs(append([]string{"which"}, args...))
+	err := root.Execute()
+	if err != nil && stdout.Len() == 0 && stderr.Len() != 0 {
+		t.Logf("stderr: %s", stderr.String())
+	}
+	return stdout.Bytes(), err
+}
+
+func TestWhichRuntime_EmptySurfaceExits2(t *testing.T) {
+	old := whichIndex
+	whichIndex = nil
+	t.Cleanup(func() { whichIndex = old })
+
+	cases := [][]string{
+		{"alpha"},
+		{},
+	}
+	for _, args := range cases {
+		var stdout, stderr bytes.Buffer
+		flags := &rootFlags{asJSON: true}
+		cmd := newWhichCmd(flags)
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("args %q: empty surface should fail, stdout=%q", args, stdout.String())
+		}
+		if got := ExitCode(err); got != 2 {
+			t.Fatalf("args %q: ExitCode = %d, want 2", args, got)
+		}
+		if !strings.Contains(err.Error(), "no runnable commands") {
+			t.Fatalf("args %q: err = %v, want the empty-surface error", args, err)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("args %q: empty surface should not write a match envelope, stdout=%q", args, stdout.String())
 		}
 	}
 }

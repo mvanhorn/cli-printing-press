@@ -14389,7 +14389,7 @@ func TestGenerateGraphQLBFFUsesSemanticCommandSurface(t *testing.T) {
 	assert.Contains(t, string(productsHelp), "makers")
 }
 
-func TestGenerateWhichDoesNotFallbackToEndpointGuesses(t *testing.T) {
+func TestGenerateWhichFindsUnindexedSubresource(t *testing.T) {
 	t.Parallel()
 
 	outputDir := filepath.Join(t.TempDir(), "whichfallback-pp-cli")
@@ -14443,10 +14443,23 @@ func TestGenerateWhichDoesNotFallbackToEndpointGuesses(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 	binaryPath := filepath.Join(outputDir, "whichfallback-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/whichfallback-pp-cli")
-	whichOut, err := exec.Command(binaryPath, "which", "reviews", "--json").CombinedOutput()
+
+	top := runWhichJSON(t, binaryPath, "reviews", "--json", "--limit", "1")
+	require.NotEmpty(t, top.Matches)
+	assert.Equal(t, "products reviews", top.Matches[0].Entry.Command)
+
+	exact := runWhichJSON(t, binaryPath, "products", "reviews", "list", "--json", "--limit", "1")
+	require.NotEmpty(t, exact.Matches)
+	assert.Equal(t, "products reviews list", exact.Matches[0].Entry.Command)
+
+	miss, err := runWhich(t, binaryPath, "teleport", "a", "rhinoceros", "--json")
 	require.Error(t, err)
-	assert.NotContains(t, string(whichOut), "no curated capability index")
-	assert.Contains(t, string(whichOut), `"matches"`)
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, 2, exitErr.ExitCode())
+	var payload whichRunPayload
+	require.NoError(t, json.Unmarshal(miss, &payload), string(miss))
+	assert.Empty(t, payload.Matches)
 }
 
 func graphQLBFFCaptureEntry(operationName, variablesJSON, hash string) browsersniff.EnrichedEntry {

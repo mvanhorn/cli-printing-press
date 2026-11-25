@@ -12,15 +12,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// whichEntry is one row of the curated capability index. The index is seeded
-// at generation time from novel hero features first, then promoted endpoint
-// commands, deduped by Command so a novel that replaced a promoted leaf keeps
-// the hero copy.
+// whichEntry is one runnable command. whichIndex holds the curated hero and
+// promoted rows; whichCommandIndex overlays those onto the live Cobra tree.
+// curated and aliases affect ranking only and stay out of the JSON envelope.
 type whichEntry struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
 	Group        string `json:"group,omitempty"`
 	WhyItMatters string `json:"why_it_matters,omitempty"`
+	curated      bool
+	aliases      []string
 }
 
 // whichIndex is the curated list of capabilities this CLI advertises.
@@ -33,27 +34,37 @@ var whichIndex = []whichEntry{
 }
 
 // whichMatch pairs an index entry with its ranking score for a query.
-// Higher score means stronger match. The ranker is naive (exact token
-// then substring then group tag) because 20-40 entries do not need
-// semantic retrieval - a ranker upgrade is a future change that would
-// not break this contract.
+// Higher score means stronger match. The ranker is token and substring
+// based; an exact command path or name outranks fuzzy prose.
 type whichMatch struct {
 	Entry whichEntry `json:"entry"`
 	Score int        `json:"score"`
 }
 
+// whichExactPathScore is large enough that a full command-path match stays
+// ahead of any fuzzy curated row. Prose credit is capped, so a paragraph
+// that repeats the query cannot overtake the command the operator named.
+const whichExactPathScore = 100
+
+// whichExactNameScore ranks a leaf name or alias above fuzzy prose without
+// tying it with a full path match of a different command.
+const whichExactNameScore = 50
+
 // rankWhich returns up to `limit` best matches for `query` against the
 // index, sorted by descending score. Score breakdown:
 //
-//	+3  exact token match on the command's leaf or full path
-//	+2  substring match on the command (any part)
-//	+2  substring match on description or why_it_matters
-//	+1  per-token match on description or why_it_matters (capped at 3)
-//	+1  group tag contains the query as a whole token
+//	+100 exact command-path match (case and internal whitespace ignored)
+//	+50  exact leaf name or alias match
+//	+3   exact token match on the command's leaf or full path
+//	+2   substring match on the command (any part)
+//	+2   substring match on description or why_it_matters
+//	+1   per-token match on description or why_it_matters (capped at 3)
+//	+1   group tag contains the query as a whole token
 //
-// Ties break on declaration order in the index. An empty query returns
-// every entry at score 0 in declaration order - this is the "list all"
-// behavior the skill documents for broad agent discovery.
+// Equal scores prefer a curated row, then fewer capability sub-tokens,
+// then earlier declaration order. An empty query returns every entry at
+// score 0 in declaration order - this is the "list all" behavior the
+// skill documents for broad agent discovery.
 func rankWhich(index []whichEntry, query string, limit int) []whichMatch {
 	if limit <= 0 {
 		limit = 3
@@ -81,9 +92,11 @@ func rankWhich(index []whichEntry, query string, limit int) []whichMatch {
 		if scored[i].Score != scored[j].Score {
 			return scored[i].Score > scored[j].Score
 		}
-		// Specificity tie-break: at equal score prefer the command with the
-		// fewest capability sub-tokens - the canonical operation over variants
-		// carrying extra words the request never used.
+		// Curated rows win an equal score. Fewer sub-tokens is the next
+		// tie-break, so a canonical operation beats a longer variant.
+		if scored[i].Entry.curated != scored[j].Entry.curated {
+			return scored[i].Entry.curated
+		}
 		return len(whichSubTokens(strings.ToLower(scored[i].Entry.Command))) <
 			len(whichSubTokens(strings.ToLower(scored[j].Entry.Command)))
 	})
@@ -247,7 +260,7 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 		}
 		score -= unmatched
 	}
-	return score
+	return whichApplyExactBoost(score, query, cmd, e.aliases)
 }
 
 func whichFieldCredit(qTokens, fieldTokens []string) int {
@@ -368,6 +381,140 @@ func whichSingular(s string) string {
 	return s
 }
 
+func whichApplyExactBoost(score int, query, command string, aliases []string) int {
+	q := whichNormalizeCommand(query)
+	cmd := whichNormalizeCommand(command)
+	if q == "" || cmd == "" {
+		return score
+	}
+	if q == cmd {
+		return score + whichExactPathScore
+	}
+	if whichExactLeaf(q, cmd) || whichExactAlias(q, aliases) {
+		return score + whichExactNameScore
+	}
+	return score
+}
+
+func whichExactLeaf(query, command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 1 && fields[len(fields)-1] == query
+}
+
+func whichExactAlias(query string, aliases []string) bool {
+	for _, alias := range aliases {
+		if whichNormalizeCommand(alias) == query {
+			return true
+		}
+	}
+	return false
+}
+
+func whichNormalizeCommand(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+}
+
+// whichCommandIndex is the ranker's candidate set: every runnable command
+// on the live tree, with curated whichIndex prose overlaid by command path.
+// Curated rows the tree does not currently contain stay, so a partially
+// built root still answers hero queries.
+func whichCommandIndex(root *cobra.Command) []whichEntry {
+	tree := whichTreeEntries(root)
+	byPath := make(map[string]whichEntry, len(tree))
+	for _, entry := range tree {
+		byPath[whichNormalizeCommand(entry.Command)] = entry
+	}
+	out := make([]whichEntry, 0, len(whichIndex)+len(tree))
+	seen := make(map[string]bool, len(whichIndex)+len(tree))
+	for _, curated := range whichIndex {
+		key := whichNormalizeCommand(curated.Command)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		entry := curated
+		entry.curated = true
+		if treeEntry, ok := byPath[key]; ok {
+			if strings.TrimSpace(entry.Description) == "" {
+				entry.Description = treeEntry.Description
+			}
+			if strings.TrimSpace(entry.Group) == "" {
+				entry.Group = treeEntry.Group
+			}
+			if len(entry.aliases) == 0 {
+				entry.aliases = treeEntry.aliases
+			}
+		}
+		out = append(out, entry)
+	}
+	for _, entry := range tree {
+		key := whichNormalizeCommand(entry.Command)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, entry)
+	}
+	return out
+}
+
+func whichTreeEntries(root *cobra.Command) []whichEntry {
+	if root == nil {
+		return nil
+	}
+	var out []whichEntry
+	var walk func(*cobra.Command, []string)
+	walk = func(cmd *cobra.Command, ancestors []string) {
+		for _, child := range cmd.Commands() {
+			if child == nil {
+				continue
+			}
+			path := make([]string, 0, len(ancestors)+1)
+			path = append(path, ancestors...)
+			path = append(path, child.Name())
+			if whichIncludeCommand(child) {
+				out = append(out, whichEntryFromCommand(child, path))
+			}
+			// Descend even when this node is hidden or not runnable. Area
+			// groups are sometimes hidden while their children stay invocable.
+			walk(child, path)
+		}
+	}
+	walk(root, nil)
+	return out
+}
+
+func whichEntryFromCommand(cmd *cobra.Command, path []string) whichEntry {
+	command := strings.Join(path, " ")
+	desc := strings.TrimSpace(cmd.Short)
+	if desc == "" {
+		desc = command
+	}
+	entry := whichEntry{
+		Command:     command,
+		Description: desc,
+		aliases:     append([]string(nil), cmd.Aliases...),
+	}
+	if len(path) > 1 {
+		entry.Group = path[len(path)-2]
+	}
+	return entry
+}
+
+func whichIncludeCommand(cmd *cobra.Command) bool {
+	if cmd == nil || !cmd.Runnable() || cmd.Hidden || cmd.Deprecated != "" {
+		return false
+	}
+	// help and completion are framework commands. Skipping the node still
+	// leaves a real child (for example "completion check") on the walk.
+	// Cobra's __complete helpers are internal even when a caller unhides them.
+	name := strings.ToLower(cmd.Name())
+	if name == "help" || name == "completion" || strings.HasPrefix(name, "__") {
+		return false
+	}
+	return true
+}
+
 func newWhichCmd(flags *rootFlags) *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
@@ -377,7 +524,7 @@ func newWhichCmd(flags *rootFlags) *cobra.Command {
 			"mcp:read-only":        "true",
 			"pp:typed-exit-codes": "0,2",
 		},
-		Long: `which resolves a natural-language capability query (for example, "search messages" or "stale tickets") to the best matching command from this CLI's curated feature index.
+		Long: `which resolves a natural-language capability query (for example, "search messages" or "stale tickets") to the best matching runnable command. Curated features stay in the index as ranking boosts, and an exact command path or name outranks a fuzzy match.
 
 Exit codes:
   0  at least one match found
@@ -386,18 +533,19 @@ Exit codes:
 		Example: `  {{.Name}}-pp-cli which "stale tickets"
   {{.Name}}-pp-cli which "bottleneck"
   {{.Name}}-pp-cli which --limit 1 "send message"
-  {{.Name}}-pp-cli which                                # list the full capability index`,
+  {{.Name}}-pp-cli which                                # list runnable commands`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(whichIndex) == 0 {
-				return usageErr(fmt.Errorf("this CLI has no curated capability index; run '--help' to see every command"))
+			index := whichCommandIndex(cmd.Root())
+			if len(index) == 0 {
+				return usageErr(fmt.Errorf("this CLI has no runnable commands to match; run '--help' to see every command"))
 			}
 			query := strings.Join(args, " ")
-			matches := rankWhich(whichIndex, query, limit)
 
-			// Empty query returns the whole index at score 0 (listing mode).
+			// Empty query lists the runnable surface (curated rows first).
 			if strings.TrimSpace(query) == "" {
-				return renderWhich(cmd, flags, rankWhichAll(whichIndex))
+				return renderWhich(cmd, flags, rankWhichAll(index))
 			}
+			matches := rankWhich(index, query, limit)
 
 			if len(matches) == 0 {
 				// Machine output still uses the typed exit-2 no-match path.
