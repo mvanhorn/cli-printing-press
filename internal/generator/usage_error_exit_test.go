@@ -32,6 +32,9 @@ func TestUsageErrorExitCode_EmittedInRoot(t *testing.T) {
 
 	require.Contains(t, src, "func isCobraUsageError(",
 		"isCobraUsageError helper must be emitted into the printed CLI")
+	require.Contains(t, src, "wrapPositionalUsageErrors(rootCmd)",
+		"positional validators must be wrapped as usage errors before Execute returns")
+	require.Contains(t, src, "func wrapPositionalUsageErrors(")
 	require.Contains(t, src, "if err != nil && isCobraUsageError(err) {",
 		"Execute() must wrap Cobra usage errors before returning")
 	require.Contains(t, src, "return usageErr(err)",
