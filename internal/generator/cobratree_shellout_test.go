@@ -26,17 +26,23 @@ func TestGeneratedMCPJoinsFlagValuesAndSplitsVariadicRawArgs(t *testing.T) {
 	assert.NotContains(t, shellout, `out = append(out, "--"+k, strconv.FormatFloat`)
 	assert.Contains(t, shellout, `return ToolResultFromCLIFailure(out, err), nil`)
 	assert.Contains(t, shellout, `!positionals[0].Variadic`)
+	assert.Contains(t, shellout, `must be a string or an array of strings`)
+	assert.Contains(t, shellout, `provide the preceding positional arguments`)
+	assert.NotContains(t, shellout, `or use the args field`)
+	assert.NotContains(t, shellout, `text = fmt.Sprintf("%v", tv)`)
 
 	typemap := readGenerated(t, outputDir, "internal", "mcp", "cobratree", "typemap.go")
 	assert.Contains(t, typemap, "Variadic  bool")
 	assert.Contains(t, typemap, `case "stringSlice", "stringArray":`)
 	assert.Contains(t, typemap, `mcplib.WithStringItems()`)
 	assert.Contains(t, typemap, `return mcplib.WithArray(flag.Name, propOpts...)`)
+	assert.Contains(t, typemap, `return mcplib.WithArray(positional.InputName, propOpts...)`)
+	assert.Contains(t, typemap, `Pass an array of strings; each item is one argument.`)
 	assert.Contains(t, typemap, `case "string", "duration":`)
 	assert.NotContains(t, typemap, `"stringSlice", "stringArray", "duration"`)
 
 	requireGeneratedCompiles(t, outputDir)
-	output, err := runGoCommandOutput(t, outputDir, "test", "./internal/mcp/cobratree", "-count=1", "-v", "-run", "^Test(CliArgsFromMCP_ValueCannotSmuggleBlockedFlag|CliArgsFromMCP_AllowsPerCommandFlags|CliArgsFromMCP_RepeatableArrayExpandsToFlagOccurrences|StringArrayAndSliceFlagsUseArraySchema|StringArrayEmptyItemReachesCobra|ShellOutRepeatableStringArrayReachesCLI|ShellOutNonZeroExitSurfacesStdoutAndStderr|ToolResultFromCLIFailureUsesCauseWhenSilent|ToolResultFromCLIFailureKeepsStdoutFirst|ShellOutSilentFailureSurfacesExecError|RunCLICommandFailureKeepsStdoutBesideStderr|RunCLICommandReportsStderrOnFailure|RunCLICommandFallsBackToStdoutOnFailureWithoutStderr|PositionalArgsFromRawArgsField|ShellOutVariadicRawArgsSplits|ShellOutStructuredThenRawOverflowPreservesOrder|ShellOutSinglePositionalArgsFieldPreservesWhitespace)$")
+	output, err := runGoCommandOutput(t, outputDir, "test", "./internal/mcp/cobratree", "-count=1", "-v", "-run", "^Test(CliArgsFromMCP_ValueCannotSmuggleBlockedFlag|CliArgsFromMCP_AllowsPerCommandFlags|CliArgsFromMCP_RepeatableArrayExpandsToFlagOccurrences|StringArrayAndSliceFlagsUseArraySchema|StringArrayEmptyItemReachesCobra|ShellOutRepeatableStringArrayReachesCLI|ShellOutNonZeroExitSurfacesStdoutAndStderr|ToolResultFromCLIFailureUsesCauseWhenSilent|ToolResultFromCLIFailureKeepsStdoutFirst|ShellOutSilentFailureSurfacesExecError|RunCLICommandFailureKeepsStdoutBesideStderr|RunCLICommandReportsStderrOnFailure|RunCLICommandFallsBackToStdoutOnFailureWithoutStderr|PositionalArgsFromRawArgsField|ShellOutVariadicRawArgsSplits|ShellOutStructuredThenRawOverflowPreservesOrder|ShellOutSinglePositionalArgsFieldPreservesWhitespace|MCPVariadicPositional.*)$")
 	require.NoError(t, err, output)
 	for _, name := range []string{
 		"TestCliArgsFromMCP_AllowsPerCommandFlags",
@@ -51,6 +57,8 @@ func TestGeneratedMCPJoinsFlagValuesAndSplitsVariadicRawArgs(t *testing.T) {
 		"TestRunCLICommandFailureKeepsStdoutBesideStderr",
 		"TestRunCLICommandReportsStderrOnFailure",
 		"TestRunCLICommandFallsBackToStdoutOnFailureWithoutStderr",
+		"TestMCPVariadicPositionalSchemaAndArgv",
+		"TestMCPVariadicPositionalRejectsUnhonoredValues",
 	} {
 		assert.Contains(t, output, "--- PASS: "+name)
 	}
