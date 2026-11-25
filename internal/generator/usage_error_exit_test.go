@@ -16,9 +16,10 @@ import (
 // classifies it after the wrap).
 //
 // Behavior is exercised by the unit tests in root_test.go.tmpl, which
-// ship alongside root.go in every generated CLI. This canary just
-// proves the structural contract — the helper exists, the wrap is
-// wired, and the hint path was switched from `return ...` to `err = ...`.
+// ship alongside root.go in every generated CLI. This canary proves the
+// structural contract — the helper exists, the wrap is wired, and the
+// hint path was switched from `return ...` to `err = ...` — and that
+// the emitted module compiles.
 func TestUsageErrorExitCode_EmittedInRoot(t *testing.T) {
 	t.Parallel()
 
@@ -55,4 +56,6 @@ func TestUsageErrorExitCode_EmittedInRoot(t *testing.T) {
 	require.NoError(t, err, "root_test.go must ship into the generated CLI")
 	require.Contains(t, string(testSrc), "TestExitCode_UsageError_WrappedAsCode2",
 		"emitted test file must cover the wrap → code-2 contract")
+
+	requireGeneratedCompiles(t, outputDir)
 }
