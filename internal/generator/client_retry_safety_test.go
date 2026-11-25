@@ -23,7 +23,8 @@ func TestGeneratedClientRetrySafety(t *testing.T) {
 	require.Contains(t, clientSrc, "func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error")
 	require.Contains(t, clientSrc, "func (c *Client) bindOperationDeadline(ctx context.Context) (context.Context, context.CancelFunc)")
 	require.Contains(t, clientSrc, "timed out waiting %s for rate-limit budget to refill")
-	require.Contains(t, clientSrc, "if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries {")
+	require.Contains(t, clientSrc, "const maxRateLimitRefills = 1")
+	require.Contains(t, clientSrc, "if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries && rateLimitRefills < maxRateLimitRefills {")
 	require.Contains(t, clientSrc, "if err := c.limiter.Wait(opCtx); err != nil {")
 	require.NotContains(t, clientSrc, "c.limiter.Wait()")
 	refillStart := strings.Index(clientSrc, "func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error")
@@ -468,7 +469,7 @@ func TestRetrySafety_WaitsAfterRetriesInsteadOfRateLimitedError(t *testing.T) {
 	}
 }
 
-func TestRetrySafety_ShortTimeoutIsTimeoutNotRateLimitedError(t *testing.T) {
+func TestRetrySafety_ShortTimeoutDuringRefillIsRateLimitedError(t *testing.T) {
 	var calls int
 	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
@@ -478,26 +479,112 @@ func TestRetrySafety_ShortTimeoutIsTimeoutNotRateLimitedError(t *testing.T) {
 	}))
 	c.HTTPClient.Timeout = 80 * time.Millisecond
 
+	started := time.Now()
 	_, err := c.Get(context.Background(), "/items", nil)
+	elapsed := time.Since(started)
 	if err == nil {
-		t.Fatal("Get() = nil; want timeout while waiting for refill")
+		t.Fatal("Get() = nil; want rate-limit exhaustion when the refill wait hits the deadline")
 	}
 	var limited *platform.RateLimitedError
-	if errors.As(err, &limited) {
-		t.Fatalf("Get() = %v; want timeout, not RateLimitedError", err)
+	if !errors.As(err, &limited) {
+		t.Fatalf("Get() = %v; want RateLimitedError, not a wrapped deadline", err)
 	}
-	if !strings.Contains(err.Error(), "timed out waiting") {
-		t.Fatalf("Get() = %v; want a clear rate-limit wait timeout", err)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Get() = %v; deadline during the post-budget wait must not stay a timeout error", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Get() = %v; want context deadline exceeded", err)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed %s; the deadline should stop the 1s refill wait", elapsed)
 	}
 	if calls != 4 {
 		t.Fatalf("calls = %d, want 4 (retry policy) before the refill wait times out", calls)
 	}
 }
 
-func TestRetrySafety_Persistent429WithoutDeadlineIsBoundedByOneTimeout(t *testing.T) {
+func TestRetrySafety_Persistent429IsBoundedRateLimitedError(t *testing.T) {
+	for _, timeout := range []time.Duration{0, 10 * time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			var calls int
+			c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				resp := retryResponse(req, http.StatusTooManyRequests)
+				resp.Header.Set("Retry-After", "0")
+				return resp, nil
+			}))
+			c.HTTPClient.Timeout = timeout
+
+			started := time.Now()
+			_, err := c.Get(context.Background(), "/items", nil)
+			elapsed := time.Since(started)
+			if err == nil {
+				t.Fatal("Get() = nil; want RateLimitedError")
+			}
+			var limited *platform.RateLimitedError
+			if !errors.As(err, &limited) {
+				t.Fatalf("Get() = %v; want RateLimitedError", err)
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Get() = %v; persistent 429 must not surface as a deadline", err)
+			}
+			if calls != 5 {
+				t.Fatalf("calls = %d, want 4 budget attempts plus one post-refill request", calls)
+			}
+			if elapsed < 900*time.Millisecond {
+				t.Fatalf("elapsed %s, want the single 1s refill wait", elapsed)
+			}
+			if elapsed > 3*time.Second {
+				t.Fatalf("elapsed %s; persistent 429 must stop after one refill, not at --timeout", elapsed)
+			}
+		})
+	}
+}
+
+func TestRetrySafety_Transient429ThenSuccess(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls <= 2 {
+			resp := retryResponse(req, http.StatusTooManyRequests)
+			resp.Header.Set("Retry-After", "0")
+			return resp, nil
+		}
+		return retryResponse(req, http.StatusOK), nil
+	}))
+
+	if _, err := c.Get(context.Background(), "/items", nil); err != nil {
+		t.Fatalf("Get() = %v; two 429s then 200 must succeed", err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+}
+
+func TestRetrySafety_DeadlineDuringRetryBudgetStaysTimeout(t *testing.T) {
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		resp := retryResponse(req, http.StatusTooManyRequests)
+		resp.Header.Set("Retry-After", "5")
+		return resp, nil
+	}))
+	c.HTTPClient.Timeout = 80 * time.Millisecond
+
+	_, err := c.Get(context.Background(), "/items", nil)
+	if err == nil {
+		t.Fatal("Get() = nil; want timeout during the in-budget retry wait")
+	}
+	var limited *platform.RateLimitedError
+	if errors.As(err, &limited) {
+		t.Fatalf("Get() = %v; a deadline before the retry budget is spent must stay a timeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Get() = %v; want context deadline exceeded", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestRetrySafety_CancelDuringRefillIsNotRateLimited(t *testing.T) {
 	var calls int
 	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
@@ -505,32 +592,54 @@ func TestRetrySafety_Persistent429WithoutDeadlineIsBoundedByOneTimeout(t *testin
 		resp.Header.Set("Retry-After", "0")
 		return resp, nil
 	}))
-	c.HTTPClient.Timeout = 1500 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	started := time.Now()
+	_, err := c.Get(ctx, "/items", nil)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("Get() = nil; want cancellation during the refill wait")
+	}
+	var limited *platform.RateLimitedError
+	if errors.As(err, &limited) {
+		t.Fatalf("Get() = %v; cancellation must not be reported as rate limiting", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get() = %v; want context canceled", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("elapsed %s; cancel should interrupt the refill wait", elapsed)
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4 before the refill wait is canceled", calls)
+	}
+}
+
+func TestRetrySafety_VerifyDoesNotRefillPersistent429(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
+	var calls int
+	c := newRetrySafetyClient(t, retryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		resp := retryResponse(req, http.StatusTooManyRequests)
+		resp.Header.Set("Retry-After", "0")
+		return resp, nil
+	}))
 
 	started := time.Now()
 	_, err := c.Get(context.Background(), "/items", nil)
 	elapsed := time.Since(started)
-	if err == nil {
-		t.Fatal("Get() = nil; want the operation deadline to stop persistent 429s")
-	}
 	var limited *platform.RateLimitedError
-	if errors.As(err, &limited) {
-		t.Fatalf("Get() = %v; want timeout, not RateLimitedError", err)
+	if !errors.As(err, &limited) {
+		t.Fatalf("Get() = %v; want RateLimitedError", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Get() = %v; want context deadline exceeded", err)
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (verify/dogfood fail-fast)", calls)
 	}
-	if elapsed < time.Second {
-		t.Fatalf("elapsed %s, want at least one 1s refill wait before the deadline", elapsed)
-	}
-	if elapsed > 2500*time.Millisecond {
-		t.Fatalf("elapsed %s; a fresh --timeout per refill would run past one 1.5s deadline", elapsed)
-	}
-	if calls < 5 {
-		t.Fatalf("calls = %d, want the loop to refill at least once before the deadline", calls)
-	}
-	if calls > 8 {
-		t.Fatalf("calls = %d; an unbounded refill loop would keep dialing", calls)
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("elapsed %s; verify must not refill-wait", elapsed)
 	}
 }
 

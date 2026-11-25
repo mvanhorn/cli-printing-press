@@ -2098,10 +2098,18 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 	}
 }
 
-// Exhausted 429 retries are a pacing signal, not a command failure. Sleep
-// the last Retry-After so the attempt can continue while the operation
-// deadline still has time; a non-positive wait falls back to one second
-// so Retry-After: 0 cannot tight-loop.
+// maxRateLimitRefills is how many post-budget waits a safe read may take
+// after maxRetries 429s. One wait is the recovery added for a limiter that
+// is briefly empty: the next attempt can still succeed. Another 429 after
+// that wait is a server that keeps refusing, so the client stops and
+// returns RateLimitedError instead of requesting until the operation
+// deadline and reporting a timeout.
+const maxRateLimitRefills = 1
+
+// Sleep the last Retry-After so one more attempt can proceed while the
+// operation deadline still has time. A non-positive wait falls back to one
+// second so Retry-After: 0 cannot tight-loop. The caller decides whether a
+// deadline here is rate-limit exhaustion or a real cancellation.
 func (c *Client) waitForRateLimitRefill(ctx context.Context, wait time.Duration) error {
 	if wait <= 0 {
 		wait = time.Second
@@ -2275,6 +2283,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		return retryPolicy.RetryBudget > 0 && time.Since(retryStarted)+wait <= retryPolicy.RetryBudget+uploadAllowance*time.Duration(maxRetries+1)
 	}
 	var lastErr error
+	rateLimitRefills := 0
 
 	for attempt := 0; ; attempt++ {
 		if err := c.waitForPlatformBudget(opCtx, endpointClass); err != nil {
@@ -2524,9 +2533,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// Rate limited: classify before provider decoding. The server-driven
 		// 429 / Retry-After retry policy is unchanged (maxRetries, RetryBudget,
 		// RetryAfterDelay). Unsafe-to-replay writes still return the shared
-		// typed error. After that policy is exhausted, wait for the local
-		// politeness budget to refill — bounded by ctx / --timeout — instead
-		// of failing the command while time remains.
+		// typed error. After that policy is exhausted, one refill wait lets a
+		// briefly empty budget recover. A later 429, or a deadline during
+		// that wait, is RateLimitedError (exit 7) — not another request, and
+		// not a wrapped context deadline (exit 5). A canceled context still
+		// surfaces as cancellation.
 		if resp.StatusCode == http.StatusTooManyRequests {
 			c.limiter.OnRateLimit()
 			wait := platform.RetryAfterDelay(resp.Header.Get("Retry-After"), attempt, time.Now().UTC(), nil)
@@ -2541,15 +2552,19 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				lastErr = apiErr
 				continue
 			}
-			if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries {
+			if canRetryAmbiguousFailure && maxRetries > 0 && attempt >= maxRetries && rateLimitRefills < maxRateLimitRefills {
+				rateLimitRefills++
 				if c.platformSession != nil {
 					c.platformSession.RecordRateLimitWait(wait)
 				}
 				if err := c.waitForRateLimitRefill(opCtx, wait); err != nil {
-					return nil, 0, err
+					if errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+						return nil, 0, err
+					}
+				} else {
+					lastErr = apiErr
+					continue
 				}
-				lastErr = apiErr
-				continue
 			}
 			requestID := resp.Header.Get("X-Request-ID")
 			if requestID == "" {
