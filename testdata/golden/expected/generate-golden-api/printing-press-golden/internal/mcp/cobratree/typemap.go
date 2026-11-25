@@ -116,11 +116,21 @@ func toolOptionForFlag(flag *pflag.Flag) mcplib.ToolOption {
 }
 
 func toolOptionForPositional(positional positionalArg) mcplib.ToolOption {
-	propOpts := []mcplib.PropertyOption{mcplib.Description("Positional argument " + positional.Display)}
+	desc := "Positional argument " + positional.Display
+	if positional.Variadic {
+		desc += ". Pass an array of strings; each item is one argument."
+	}
+	propOpts := []mcplib.PropertyOption{mcplib.Description(desc)}
 	if positional.Required {
 		propOpts = append(propOpts, mcplib.Required())
 	}
-	return mcplib.WithString(positional.InputName, propOpts...)
+	if !positional.Variadic {
+		return mcplib.WithString(positional.InputName, propOpts...)
+	}
+	// One schema item becomes one argv token. A string schema would hide that
+	// and leave an array to be formatted as a single literal.
+	propOpts = append(propOpts, mcplib.WithStringItems())
+	return mcplib.WithArray(positional.InputName, propOpts...)
 }
 
 func flagDescription(flag *pflag.Flag) string {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -71,7 +72,11 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 			return boundedToolResultError(err.Error()), nil
 		}
 		finalArgs = append(finalArgs, positionalArgs...)
-		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
+		raw, err := rawArgsField(args)
+		if err != nil {
+			return boundedToolResultError(err.Error()), nil
+		}
+		if strings.TrimSpace(raw) != "" {
 			rawPositionals := positionalArgsFromRawArgsField(raw, positionals, len(positionalArgs))
 			if err := validatePositionalArgsForMCPAtOffset(rawPositionals, readOnly, positionalWriteSinks, len(positionalArgs)); err != nil {
 				return boundedToolResultError(err.Error()), nil
@@ -147,40 +152,174 @@ func quoteMCPParameterNames(names []string) string {
 
 func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) ([]string, error) {
 	out := make([]string, 0, len(positionals))
+	// supplied counts descriptors that produced tokens. A variadic descriptor
+	// can emit several argv tokens, so a gap check against len(out) rejects a
+	// later positional that was actually contiguous.
+	supplied := 0
 	for positionalIndex, positional := range positionals {
 		value, ok := args[positional.InputName]
 		if !ok || value == nil {
 			continue
 		}
-		var text string
-		switch tv := value.(type) {
-		case string:
-			text = tv
-		case float64:
-			text = strconv.FormatFloat(tv, 'f', -1, 64)
-		case bool:
-			text = strconv.FormatBool(tv)
-		default:
-			text = fmt.Sprintf("%v", tv)
+		texts, err := positionalTexts(positional, value)
+		if err != nil {
+			return nil, err
 		}
-		if strings.TrimSpace(text) == "" {
+		if len(texts) == 0 {
 			continue
 		}
-		if positionalIndex != len(out) {
-			return nil, fmt.Errorf("structured positional %q cannot be used while earlier positional arguments are omitted; provide the preceding positional arguments or use the args field", positional.InputName)
+		if positionalIndex != supplied {
+			return nil, fmt.Errorf("structured positional %q cannot be used while earlier positional arguments are omitted; provide the preceding positional arguments", positional.InputName)
 		}
-		if text != "-" && strings.HasPrefix(text, "-") {
-			return nil, fmt.Errorf("flag-like positional argument %q not allowed in structured positional %q; use structured flag parameters instead", text, positional.InputName)
+		supplied++
+		argvIndex := len(out)
+		for _, text := range texts {
+			if err := validateStructuredPositionalToken(text, positional.InputName, positionalIndex, argvIndex, readOnly, positionalWriteSinks); err != nil {
+				return nil, err
+			}
+			out = append(out, text)
+			argvIndex++
 		}
-		if readOnly && positionalWriteSinks[positionalIndex] && text != "-" {
-			return nil, fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", positionalIndex+1, text)
-		}
-		out = append(out, text)
 	}
 	if err := validatePositionalArgsForMCP(out, readOnly, nil); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func rawArgsField(args map[string]any) (string, error) {
+	rawValue, exists := args["args"]
+	if !exists || rawValue == nil {
+		return "", nil
+	}
+	raw, ok := rawValue.(string)
+	if !ok {
+		return "", fmt.Errorf("MCP parameter \"args\" must be a string; got %s", positionalValueKind(rawValue))
+	}
+	return raw, nil
+}
+
+func positionalTexts(positional positionalArg, value any) ([]string, error) {
+	if seq, ok := asPositionalSequence(value); ok {
+		if !positional.Variadic {
+			return nil, positionalShapeError(positional.InputName, false, value)
+		}
+		return expandPositionalSequence(positional.InputName, seq)
+	}
+	text, ok := formatPositionalScalar(value)
+	if !ok {
+		return nil, positionalShapeError(positional.InputName, positional.Variadic, value)
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+	return []string{text}, nil
+}
+
+// []byte and json.RawMessage are blobs. Expanding them would turn each byte
+// into its own argv token instead of rejecting a value the schema cannot honor.
+func asPositionalSequence(value any) (reflect.Value, bool) {
+	switch value.(type) {
+	case []byte, json.RawMessage:
+		return reflect.Value{}, false
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return reflect.Value{}, false
+	}
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+		return rv, true
+	}
+	return reflect.Value{}, false
+}
+
+func expandPositionalSequence(name string, seq reflect.Value) ([]string, error) {
+	texts := make([]string, 0, seq.Len())
+	for i := 0; i < seq.Len(); i++ {
+		item := seq.Index(i).Interface()
+		if item == nil {
+			continue
+		}
+		text, ok := formatPositionalScalar(item)
+		if !ok {
+			return nil, positionalItemShapeError(name, i, item)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		texts = append(texts, text)
+	}
+	return texts, nil
+}
+
+func formatPositionalScalar(value any) (string, bool) {
+	switch tv := value.(type) {
+	case string:
+		return tv, true
+	case bool:
+		return strconv.FormatBool(tv), true
+	case json.Number:
+		return tv.String(), true
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return "", false
+	}
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(rv.Int(), 10), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(rv.Uint(), 10), true
+	case reflect.Float32, reflect.Float64:
+		bits := 64
+		if rv.Kind() == reflect.Float32 {
+			bits = 32
+		}
+		return strconv.FormatFloat(rv.Float(), 'f', -1, bits), true
+	default:
+		return "", false
+	}
+}
+
+func positionalShapeError(name string, variadic bool, value any) error {
+	got := positionalValueKind(value)
+	if variadic {
+		return fmt.Errorf("structured positional %q must be a string or an array of strings; got %s", name, got)
+	}
+	return fmt.Errorf("structured positional %q must be a single string, number, or boolean; got %s", name, got)
+}
+
+func positionalItemShapeError(name string, index int, value any) error {
+	return fmt.Errorf("structured positional %q item %d must be a string, number, or boolean; got %s", name, index, positionalValueKind(value))
+}
+
+func positionalValueKind(value any) string {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return "an empty value"
+	}
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.Map:
+		return "an object"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
+}
+
+func validateStructuredPositionalToken(text, name string, positionalIndex, argvIndex int, readOnly bool, positionalWriteSinks map[int]bool) error {
+	if text != "-" && strings.HasPrefix(text, "-") {
+		return fmt.Errorf("flag-like positional argument %q not allowed in structured positional %q; use structured flag parameters instead", text, name)
+	}
+	// A variadic descriptor is one schema field and many argv slots. Checking
+	// only the descriptor index lets a later value skip a sink marked at the
+	// argv slot it actually occupies, and checking only the argv slot lets
+	// every expanded value skip a sink marked on the descriptor.
+	if readOnly && text != "-" && (positionalWriteSinks[positionalIndex] || positionalWriteSinks[argvIndex]) {
+		return fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", argvIndex+1, text)
+	}
+	return nil
 }
 
 func positionalArgsFromRawArgsField(raw string, positionals []positionalArg, structuredCount int) []string {

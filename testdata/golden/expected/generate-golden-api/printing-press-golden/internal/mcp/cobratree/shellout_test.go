@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1331,6 +1332,10 @@ func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
 	if _, ok := props["slug>"]; ok {
 		t.Fatalf("invalid schema key %q leaked into schema: %#v", "slug>", props)
 	}
+	assertArrayOfStrings(t, tool, "slug")
+	if !reflect.DeepEqual(tool.InputSchema.Required, []string{"slug"}) {
+		t.Fatalf("collapsed variadic required = %#v", tool.InputSchema.Required)
+	}
 }
 
 func TestPositionalAlternationPlaceholderSanitizesKey(t *testing.T) {
@@ -1492,9 +1497,14 @@ func TestPositionalAlternationPlaceholderSanitizesKey(t *testing.T) {
 	if _, dup := repeatTool.Tool.InputSchema.Properties["ip_host_2"]; dup {
 		t.Fatal("identical alternation placeholders did not collapse")
 	}
+	assertArrayOfStrings(t, repeatTool.Tool, "ip_host")
 	got = shellOutArgv(t, repeatTool.Handler, map[string]any{"ip_host": "a", "args": "b c"})
 	if !reflect.DeepEqual(got, []string{"repeat", "a", "b", "c"}) {
 		t.Fatalf("repeat argv = %#v", got)
+	}
+	got = shellOutArgv(t, repeatTool.Handler, map[string]any{"ip_host": []any{"a", "b", "c"}})
+	if !reflect.DeepEqual(got, []string{"repeat", "a", "b", "c"}) {
+		t.Fatalf("repeat array argv = %#v", got)
 	}
 
 	keepTool := tools["keep"]
@@ -1554,6 +1564,539 @@ func toolNames(tools map[string]*server.ServerTool) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+type positionalStringer struct{}
+
+func (positionalStringer) String() string { return "[alpha beta]" }
+
+type positionalStruct struct {
+	Secret string
+}
+
+func TestMCPVariadicPositionalSchemaAndArgv(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	bin, marker := writeSpawnMarkerProbe(t)
+	noop := func(*cobra.Command, []string) error { return nil }
+	pack := &cobra.Command{Use: "pack <a> [b...]", Short: "Pack values", RunE: noop}
+	pack.Flags().String("format", "", "output format")
+	size := &cobra.Command{Use: "size <term> [term...]", Short: "Size terms", RunE: noop}
+	compare := &cobra.Command{Use: "compare <ref> <ref> [ref...]", Short: "Compare refs", RunE: noop}
+	lookup := &cobra.Command{Use: "lookup <query>", Short: "Look up one query", RunE: noop}
+	bulk := &cobra.Command{Use: "bulk [terms...]", Short: "Bulk terms", RunE: noop}
+	save := &cobra.Command{
+		Use:   "save [path...]",
+		Short: "Save paths",
+		RunE:  noop,
+		Annotations: map[string]string{
+			"mcp:read-only":         "true",
+			"mcp:write-positionals": "0",
+		},
+	}
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(pack, size, compare, lookup, bulk, save)
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	tools := s.ListTools()
+
+	packTool := tools["pack"]
+	if packTool == nil {
+		t.Fatalf("pack tool missing: %#v", toolNames(tools))
+	}
+	assertStringSchema(t, packTool.Tool, "a")
+	assertArrayOfStrings(t, packTool.Tool, "b")
+	assertPropertyDescription(t, packTool, "b", "[b...]")
+	assertPropertyDescription(t, packTool, "b", "array of strings")
+	if _, ok := packTool.Tool.InputSchema.Properties["args"]; ok {
+		t.Fatal("raw args was advertised on a command that already has positionals")
+	}
+	if !reflect.DeepEqual(packTool.Tool.InputSchema.Required, []string{"a"}) {
+		t.Fatalf("pack required = %#v", packTool.Tool.InputSchema.Required)
+	}
+
+	sizeTool := tools["size"]
+	if sizeTool == nil {
+		t.Fatal("size tool missing")
+	}
+	assertArrayOfStrings(t, sizeTool.Tool, "term")
+	if !reflect.DeepEqual(sizeTool.Tool.InputSchema.Required, []string{"term"}) {
+		t.Fatalf("size required = %#v", sizeTool.Tool.InputSchema.Required)
+	}
+	if _, ok := sizeTool.Tool.InputSchema.Properties["args"]; ok {
+		t.Fatal("raw args was advertised on size")
+	}
+
+	compareTool := tools["compare"]
+	if compareTool == nil {
+		t.Fatal("compare tool missing")
+	}
+	assertArrayOfStrings(t, compareTool.Tool, "ref")
+	if !reflect.DeepEqual(compareTool.Tool.InputSchema.Required, []string{"ref"}) {
+		t.Fatalf("compare required = %#v", compareTool.Tool.InputSchema.Required)
+	}
+
+	lookupTool := tools["lookup"]
+	if lookupTool == nil {
+		t.Fatal("lookup tool missing")
+	}
+	assertStringSchema(t, lookupTool.Tool, "query")
+
+	bulkTool := tools["bulk"]
+	if bulkTool == nil {
+		t.Fatal("bulk tool missing")
+	}
+	assertArrayOfStrings(t, bulkTool.Tool, "terms")
+	if len(bulkTool.Tool.InputSchema.Required) != 0 {
+		t.Fatalf("optional variadic required = %#v", bulkTool.Tool.InputSchema.Required)
+	}
+
+	saveTool := tools["save"]
+	if saveTool == nil {
+		t.Fatal("save tool missing")
+	}
+	assertArrayOfStrings(t, saveTool.Tool, "path")
+
+	resetMarker(t, marker)
+	got := shellOutArgv(t, packTool.Handler, map[string]any{
+		"a":      "x",
+		"b":      []any{"y", "z"},
+		"format": "json",
+	})
+	if !reflect.DeepEqual(got, []string{"pack", "--format=json", "x", "y", "z"}) {
+		t.Fatalf("pack argv = %#v", got)
+	}
+	for _, arg := range got {
+		if strings.HasPrefix(arg, "--b") || arg == "[y z]" || arg == "[y,z]" {
+			t.Fatalf("pack collapsed the array into one flag or token: %#v", got)
+		}
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("success path did not run the CLI: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		handler server.ToolHandlerFunc
+		args    map[string]any
+		want    []string
+	}{
+		{"collapsed variadic array", sizeTool.Handler, map[string]any{"term": []any{"alpha", "beta"}}, []string{"size", "alpha", "beta"}},
+		{"collapsed single string", sizeTool.Handler, map[string]any{"term": "alpha"}, []string{"size", "alpha"}},
+		{"string that looks like an array stays one token", sizeTool.Handler, map[string]any{"term": "[alpha beta]"}, []string{"size", "[alpha beta]"}},
+		{"json text array stays one token", sizeTool.Handler, map[string]any{"term": `["alpha","beta"]`}, []string{"size", `["alpha","beta"]`}},
+		{"compare array", compareTool.Handler, map[string]any{"ref": []any{"a", "b", "c"}}, []string{"compare", "a", "b", "c"}},
+		{"compare single string", compareTool.Handler, map[string]any{"ref": "alpha"}, []string{"compare", "alpha"}},
+		{"spaces inside one array item", packTool.Handler, map[string]any{"a": "x", "b": []any{"y z", "q"}}, []string{"pack", "x", "y z", "q"}},
+		{"single string is not split", packTool.Handler, map[string]any{"a": "x", "b": "y z"}, []string{"pack", "x", "y z"}},
+		{"typed string slice", bulkTool.Handler, map[string]any{"terms": []string{"alpha", "beta"}}, []string{"bulk", "alpha", "beta"}},
+		{"fixed array", bulkTool.Handler, map[string]any{"terms": [2]string{"alpha", "beta"}}, []string{"bulk", "alpha", "beta"}},
+		{"blank and nil items are skipped", bulkTool.Handler, map[string]any{"terms": []any{nil, "alpha", "  ", "beta"}}, []string{"bulk", "alpha", "beta"}},
+		{"numbers and bools are their own tokens", bulkTool.Handler, map[string]any{"terms": []any{"n", float64(2), true, false, json.Number("3"), 4, int8(6), uint(5), uint8(7), uintptr(9), float32(1.5)}}, []string{"bulk", "n", "2", "true", "false", "3", "4", "6", "5", "7", "9", "1.5"}},
+		{"empty array is zero arguments", bulkTool.Handler, map[string]any{"terms": []any{}}, []string{"bulk"}},
+		{"nil slice is zero arguments", bulkTool.Handler, map[string]any{"terms": []any(nil)}, []string{"bulk"}},
+		{"raw args still splits a variadic", bulkTool.Handler, map[string]any{"args": "alpha beta"}, []string{"bulk", "alpha", "beta"}},
+		{"array then raw args keeps order", packTool.Handler, map[string]any{"a": "x", "b": []any{"y"}, "args": "z w"}, []string{"pack", "x", "y", "z", "w"}},
+		{"scalar query keeps spaces", lookupTool.Handler, map[string]any{"query": "two words"}, []string{"lookup", "two words"}},
+		{"scalar raw args keeps spaces", lookupTool.Handler, map[string]any{"args": "two words"}, []string{"lookup", "two words"}},
+		{"leading space is not a flag", bulkTool.Handler, map[string]any{"terms": []any{" --token"}}, []string{"bulk", " --token"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetMarker(t, marker)
+			got := shellOutArgv(t, tc.handler, tc.args)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("argv = %#v, want %#v", got, tc.want)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("CLI did not run: %v", err)
+			}
+		})
+	}
+}
+
+func TestMCPVariadicPositionalRejectsUnhonoredValues(t *testing.T) {
+	pinMCPReadOnlyOff(t)
+	bin, marker := writeSpawnMarkerProbe(t)
+	noop := func(*cobra.Command, []string) error { return nil }
+	pack := &cobra.Command{Use: "pack <a> [b...]", Short: "Pack values", RunE: noop}
+	lookup := &cobra.Command{Use: "lookup <query>", Short: "Look up one query", RunE: noop}
+	bulk := &cobra.Command{Use: "bulk [terms...]", Short: "Bulk terms", RunE: noop}
+	save := &cobra.Command{
+		Use:   "save [path...]",
+		Short: "Save paths",
+		RunE:  noop,
+		Annotations: map[string]string{
+			"mcp:read-only":         "true",
+			"mcp:write-positionals": "0",
+		},
+	}
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(pack, lookup, bulk, save)
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return bin, nil })
+	tools := s.ListTools()
+
+	// Prove the probe records a spawn before treating a missing marker as success.
+	resetMarker(t, marker)
+	if got := shellOutArgv(t, tools["lookup"].Handler, map[string]any{"query": "ok"}); !reflect.DeepEqual(got, []string{"lookup", "ok"}) {
+		t.Fatalf("probe argv = %#v", got)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("probe did not record a spawn: %v", err)
+	}
+
+	handlerCases := []struct {
+		name    string
+		handler server.ToolHandlerFunc
+		args    map[string]any
+		want    string
+		absent  []string
+	}{
+		{
+			name:    "scalar array",
+			handler: tools["pack"].Handler,
+			args:    map[string]any{"a": []any{"x", "y"}},
+			want:    `structured positional "a" must be a single string, number, or boolean; got an array`,
+			absent:  []string{"[x y]", "x y"},
+		},
+		{
+			name:    "scalar object hides contents",
+			handler: tools["lookup"].Handler,
+			args:    map[string]any{"query": map[string]any{"--token": "secret-value"}},
+			want:    `structured positional "query" must be a single string, number, or boolean; got an object`,
+			absent:  []string{"secret-value", "--token"},
+		},
+		{
+			name:    "variadic object",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"terms": map[string]any{"k": "secret-value"}},
+			want:    `structured positional "terms" must be a string or an array of strings; got an object`,
+			absent:  []string{"secret-value"},
+		},
+		{
+			name:    "variadic nested array",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"terms": []any{[]any{"alpha", "beta"}}},
+			want:    `structured positional "terms" item 0 must be a string, number, or boolean; got an array`,
+			absent:  []string{"[alpha beta]", "alpha beta"},
+		},
+		{
+			name:    "variadic byte slice",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"terms": []byte("--token=secret")},
+			want:    `structured positional "terms" must be a string or an array of strings; got an array`,
+			absent:  []string{"--token=secret", "45 45"},
+		},
+		{
+			name:    "flag-like array item",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"terms": []any{"ok", "--token=x"}},
+			want:    `flag-like positional argument "--token=x" not allowed in structured positional "terms"; use structured flag parameters instead`,
+		},
+		{
+			name:    "negative number is flag-like",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"terms": []any{float64(-2)}},
+			want:    `flag-like positional argument "-2" not allowed in structured positional "terms"; use structured flag parameters instead`,
+		},
+		{
+			name:    "omitted earlier positional",
+			handler: tools["pack"].Handler,
+			args:    map[string]any{"b": []any{"y", "z"}},
+			want:    `structured positional "b" cannot be used while earlier positional arguments are omitted; provide the preceding positional arguments`,
+			absent:  []string{"args"},
+		},
+		{
+			name:    "args array is rejected",
+			handler: tools["pack"].Handler,
+			args:    map[string]any{"a": "x", "args": []any{"y", "z"}},
+			want:    `MCP parameter "args" must be a string; got an array`,
+			absent:  []string{"[y z]"},
+		},
+		{
+			name:    "args object is rejected",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"args": map[string]any{"k": "secret-value"}},
+			want:    `MCP parameter "args" must be a string; got an object`,
+			absent:  []string{"secret-value"},
+		},
+		{
+			name:    "case-variant key is unknown",
+			handler: tools["bulk"].Handler,
+			args:    map[string]any{"Terms": []any{"alpha", "beta"}},
+			want:    `unknown MCP parameter "Terms"; use the tool schema's named parameters`,
+		},
+		{
+			name:    "write sink array does not run",
+			handler: tools["save"].Handler,
+			args:    map[string]any{"path": []any{"-", "evil.txt"}},
+			want:    `positional argument 2 writes to "evil.txt"; file output is not available for read-only MCP tools`,
+		},
+		{
+			name:    "write sink rejects a relative path",
+			handler: tools["save"].Handler,
+			args:    map[string]any{"path": []any{"../secret"}},
+			want:    `positional argument 1 writes to "../secret"; file output is not available for read-only MCP tools`,
+		},
+	}
+	for _, tc := range handlerCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertToolRejected(t, tc.handler, marker, tc.args, tc.want, tc.absent...)
+		})
+	}
+
+	// Stdout dash is the documented write-sink escape and does run.
+	resetMarker(t, marker)
+	got := shellOutArgv(t, tools["save"].Handler, map[string]any{"path": []any{"-"}})
+	if !reflect.DeepEqual(got, []string{"save", "-"}) {
+		t.Fatalf("stdout sink argv = %#v", got)
+	}
+
+	packPositionals := positionalArgsForCommand(pack, nil)
+	direct := []struct {
+		name     string
+		use      string
+		args     map[string]any
+		readOnly bool
+		sinks    map[int]bool
+		want     []string
+		wantErr  string
+		absent   []string
+	}{
+		{
+			name:    "scalar typed slice",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": []string{"alpha", "beta"}},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
+		},
+		{
+			name:    "scalar fixed array",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": [1]string{"alpha"}},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
+		},
+		{
+			name:    "scalar int map",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": map[int]string{1: "secret-value"}},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got an object`,
+			absent:  []string{"secret-value"},
+		},
+		{
+			name:    "scalar stringer",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": positionalStringer{}},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got cobratree.positionalStringer`,
+			absent:  []string{"[alpha beta]"},
+		},
+		{
+			name:    "scalar struct",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": positionalStruct{Secret: "secret-value"}},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got cobratree.positionalStruct`,
+			absent:  []string{"secret-value"},
+		},
+		{
+			name:    "scalar byte slice",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": []byte("alpha")},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
+			absent:  []string{"97 108"},
+		},
+		{
+			name:    "scalar raw message",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": json.RawMessage(`["alpha","beta"]`)},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
+			absent:  []string{`["alpha","beta"]`},
+		},
+		{
+			name:    "scalar pointer to slice",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": &[]string{"alpha", "beta"}},
+			wantErr: `structured positional "query" must be a single string, number, or boolean; got *[]string`,
+			absent:  []string{"alpha"},
+		},
+		{
+			name:    "variadic raw message",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": json.RawMessage(`["alpha","beta"]`)},
+			wantErr: `structured positional "terms" must be a string or an array of strings; got an array`,
+			absent:  []string{"alpha"},
+		},
+		{
+			name:    "variadic stringer item",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": []any{positionalStringer{}}},
+			wantErr: `structured positional "terms" item 0 must be a string, number, or boolean; got cobratree.positionalStringer`,
+			absent:  []string{"[alpha beta]"},
+		},
+		{
+			name:    "variadic object item",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": []any{map[string]any{"k": "secret-value"}}},
+			wantErr: `structured positional "terms" item 0 must be a string, number, or boolean; got an object`,
+			absent:  []string{"secret-value"},
+		},
+		{
+			name:    "variadic struct item",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": []any{"ok", positionalStruct{Secret: "secret-value"}}},
+			wantErr: `structured positional "terms" item 1 must be a string, number, or boolean; got cobratree.positionalStruct`,
+			absent:  []string{"secret-value"},
+		},
+		{
+			name: "later positional stays contiguous after a variadic",
+			use:  "join <a> [b...] <c>",
+			args: map[string]any{"a": "x", "b": []any{"y", "z"}, "c": "w"},
+			want: []string{"x", "y", "z", "w"},
+		},
+		{
+			name:    "omitted variadic still blocks a later positional",
+			use:     "join <a> [b...] <c>",
+			args:    map[string]any{"a": "x", "c": "w"},
+			wantErr: `structured positional "c" cannot be used while earlier positional arguments are omitted; provide the preceding positional arguments`,
+			absent:  []string{"args"},
+		},
+		{
+			name:     "descriptor sink covers every expanded value",
+			use:      "export <name> [path...]",
+			args:     map[string]any{"name": "n", "path": []any{"a", "b"}},
+			readOnly: true,
+			sinks:    map[int]bool{1: true},
+			wantErr:  `positional argument 2 writes to "a"; file output is not available for read-only MCP tools`,
+		},
+		{
+			name:     "argv sink covers the expanded slot",
+			use:      "export <name> [path...]",
+			args:     map[string]any{"name": "n", "path": []any{"a", "b"}},
+			readOnly: true,
+			sinks:    map[int]bool{2: true},
+			wantErr:  `positional argument 3 writes to "b"; file output is not available for read-only MCP tools`,
+		},
+		{
+			name:     "flag-like item wins over a write sink",
+			use:      "save [path...]",
+			args:     map[string]any{"path": []any{"--out=evil"}},
+			readOnly: true,
+			sinks:    map[int]bool{0: true},
+			wantErr:  `flag-like positional argument "--out=evil" not allowed in structured positional "path"; use structured flag parameters instead`,
+		},
+		{
+			name:  "write sink is ignored when the tool is not read-only",
+			use:   "save [path...]",
+			args:  map[string]any{"path": []any{"evil.txt"}},
+			sinks: map[int]bool{0: true},
+			want:  []string{"evil.txt"},
+		},
+		{
+			name: "scalar bool number and string",
+			use:  "lookup <query>",
+			args: map[string]any{"query": true},
+			want: []string{"true"},
+		},
+		{
+			name: "scalar float",
+			use:  "lookup <query>",
+			args: map[string]any{"query": float64(3)},
+			want: []string{"3"},
+		},
+		{
+			name: "scalar json number",
+			use:  "lookup <query>",
+			args: map[string]any{"query": json.Number("8")},
+			want: []string{"8"},
+		},
+		{
+			name: "scalar int",
+			use:  "lookup <query>",
+			args: map[string]any{"query": 4},
+			want: []string{"4"},
+		},
+	}
+	for _, tc := range direct {
+		t.Run(tc.name, func(t *testing.T) {
+			positionals := positionalArgsForCommand(&cobra.Command{Use: tc.use}, nil)
+			got, err := positionalArgsFromMCP(tc.args, positionals, tc.readOnly, tc.sinks)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("positionalArgsFromMCP error: %v", err)
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Fatalf("positionals = %#v, want %#v", got, tc.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("positionalArgsFromMCP = %#v, want error %q", got, tc.wantErr)
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("error = %q, want %q", err.Error(), tc.wantErr)
+			}
+			for _, bad := range tc.absent {
+				if strings.Contains(err.Error(), bad) {
+					t.Fatalf("error %q contains %q", err.Error(), bad)
+				}
+			}
+		})
+	}
+	if packPositionals[0].InputName != "a" || !packPositionals[1].Variadic {
+		t.Fatalf("pack positionals = %#v", packPositionals)
+	}
+
+	raw, err := rawArgsField(map[string]any{"args": "alpha beta"})
+	if err != nil || raw != "alpha beta" {
+		t.Fatalf("rawArgsField string = %q, %v", raw, err)
+	}
+	raw, err = rawArgsField(map[string]any{})
+	if err != nil || raw != "" {
+		t.Fatalf("rawArgsField missing = %q, %v", raw, err)
+	}
+	raw, err = rawArgsField(map[string]any{"args": nil})
+	if err != nil || raw != "" {
+		t.Fatalf("rawArgsField nil = %q, %v", raw, err)
+	}
+	if _, err = rawArgsField(map[string]any{"args": []any{"alpha"}}); err == nil || err.Error() != `MCP parameter "args" must be a string; got an array` {
+		t.Fatalf("rawArgsField array error = %v", err)
+	}
+	if _, err = rawArgsField(map[string]any{"args": float64(1)}); err == nil || !strings.Contains(err.Error(), "got float64") {
+		t.Fatalf("rawArgsField number error = %v", err)
+	}
+}
+
+func assertToolRejected(t *testing.T, handler server.ToolHandlerFunc, marker string, args map[string]any, want string, absent ...string) {
+	t.Helper()
+	resetMarker(t, marker)
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handler succeeded: %s", toolResultText(result))
+	}
+	got := toolResultText(result)
+	if got != want {
+		t.Fatalf("tool error = %q, want %q", got, want)
+	}
+	for _, bad := range absent {
+		if bad != "" && strings.Contains(got, bad) {
+			t.Fatalf("tool error %q contains %q", got, bad)
+		}
+	}
+	if strings.Contains(got, "cli ") {
+		t.Fatalf("handler spawned the CLI: %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("companion CLI ran despite the tool error (stat %v)", err)
+	}
+}
+
+func resetMarker(t *testing.T, marker string) {
+	t.Helper()
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove spawn marker: %v", err)
+	}
 }
 
 func TestPositionalArgsFromRawArgsField(t *testing.T) {
@@ -2870,6 +3413,39 @@ func main() {
 		t.Fatalf("build confirm probe: %v\n%s", err, out)
 	}
 	return bin
+}
+
+func writeSpawnMarkerProbe(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "spawned")
+	src := filepath.Join(dir, "spawnprobe.go")
+	body := `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	if err := os.WriteFile(` + strconv.Quote(marker) + `, []byte("spawned"), 0o644); err != nil {
+		panic(err)
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(os.Args[1:])
+}
+`
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatalf("write spawn probe source: %v", err)
+	}
+	bin := filepath.Join(dir, "spawnprobe")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", bin, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build spawn probe: %v\n%s", err, out)
+	}
+	return bin, marker
 }
 
 func writeArgvHelper(t *testing.T) string {
