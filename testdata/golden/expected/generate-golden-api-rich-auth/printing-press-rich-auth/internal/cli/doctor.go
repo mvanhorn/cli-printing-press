@@ -418,7 +418,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						// body for a known interstitial; some bot walls return
 						// 200 with a JS challenge page.
 						if vendor := looksLikeDoctorInterstitial(reachBody); vendor != "" {
-							report["api"] = fmt.Sprintf("blocked by %s interstitial — the configured transport reached the wall. Try a different network, wait for the IP-level rate limit to clear, or check that the browser-chrome transport is bound correctly.", vendor)
+							report["api"] = doctorSection("error", fmt.Sprintf("blocked by %s interstitial — the configured transport reached the wall. Try a different network, wait for the IP-level rate limit to clear, or check that the browser-chrome transport is bound correctly.", vendor))
 						} else if doctorBodyLooksLikeHTML(reachBody) {
 							report["api"] = "reachable (HTML body at /)"
 						} else {
@@ -430,8 +430,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						// purposes. Inspect the response body for a known
 						// interstitial first; otherwise note the status.
 						status := reachAPIErr.StatusCode
-						if vendor := looksLikeDoctorInterstitial([]byte(reachAPIErr.Body)); vendor != "" {
-							report["api"] = fmt.Sprintf("blocked by %s interstitial (HTTP %d) — the configured transport reached the wall.", vendor, status)
+						if vendor := looksLikeDoctorInterstitial(doctorReachabilityBody(reachAPIErr)); vendor != "" {
+							report["api"] = doctorSection("error", fmt.Sprintf("blocked by %s interstitial (HTTP %d) — the configured transport reached the wall.", vendor, status))
 						} else {
 							report["api"] = fmt.Sprintf("reachable (HTTP %d at /)", status)
 						}
@@ -524,36 +524,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				if !ok {
 					continue
 				}
-				s := fmt.Sprintf("%v", v)
-				indicator := green("OK")
-				switch {
-				case strings.HasPrefix(s, "WARN"):
-					indicator = yellow("WARN")
-				case strings.HasPrefix(s, "INFO"):
-					indicator = yellow("INFO")
-				case strings.HasPrefix(s, "ERROR"):
-					indicator = red("FAIL")
-				case strings.HasPrefix(s, "refused:"):
-					indicator = red("FAIL")
-				case strings.HasPrefix(s, "optional"):
-					// Optional-auth CLI with no key set — informational, not a failure.
-					indicator = yellow("INFO")
-				case strings.Contains(s, "scope-limited"):
-					indicator = yellow("WARN")
-				case strings.Contains(s, "not verified"):
-					// "present, not verified" — credentials are loaded but no
-					// probe ran. Informational, not a warning; a clean config
-					// shouldn't render yellow WARN in CI dashboards.
-					indicator = yellow("INFO")
-				case strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing"):
-					indicator = red("FAIL")
-				case s == "not required":
-					// Public APIs: no auth needed is a healthy state, not a warning.
-					indicator = green("OK")
-				case strings.Contains(s, "not ") || strings.Contains(s, "skipped") || strings.Contains(s, "inferred"):
-					indicator = yellow("WARN")
-				}
-				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
+				indicator, text := doctorCheckPresentation(v)
+				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, text)
 			}
 			// Print info keys without status indicator
 			for _, key := range []string{"config_path", "base_url", "tls", "auth_source", "auth_refusals", "credentials_location", "version"} {
@@ -792,6 +764,69 @@ func legacyCredentialProbePaths(cfg *config.Config) []string {
 		add(legacyPath)
 	}
 	return paths
+}
+
+// doctorSection records a health row whose verdict is status. The indicator
+// and --fail-on gate read that status and do not re-parse detail.
+func doctorSection(status, detail string) map[string]any {
+	return map[string]any{"status": status, "detail": detail}
+}
+
+// doctorReachabilityBody prefers the pre-summary response. Non-2xx HTML is
+// collapsed before it lands in Body, which drops the anchored <title> tag.
+func doctorReachabilityBody(apiErr *client.APIError) []byte {
+	if apiErr == nil {
+		return nil
+	}
+	if apiErr.RawBody != "" {
+		return []byte(apiErr.RawBody)
+	}
+	return []byte(apiErr.Body)
+}
+
+// doctorCheckPresentation returns the indicator and the text to print.
+// Status "error" is a failure even when detail lacks the string-row fragments.
+func doctorCheckPresentation(v any) (string, string) {
+	if section, ok := v.(map[string]any); ok {
+		status, _ := section["status"].(string)
+		if strings.EqualFold(strings.TrimSpace(status), "error") {
+			detail, _ := section["detail"].(string)
+			if strings.TrimSpace(detail) == "" {
+				detail = "error"
+			}
+			return red("FAIL"), detail
+		}
+	}
+	s := fmt.Sprintf("%v", v)
+	indicator := green("OK")
+	switch {
+	case strings.HasPrefix(s, "WARN"):
+		indicator = yellow("WARN")
+	case strings.HasPrefix(s, "INFO"):
+		indicator = yellow("INFO")
+	case strings.HasPrefix(s, "ERROR"):
+		indicator = red("FAIL")
+	case strings.HasPrefix(s, "refused:"):
+		indicator = red("FAIL")
+	case strings.HasPrefix(s, "optional"):
+		// Optional-auth CLI with no key set — informational, not a failure.
+		indicator = yellow("INFO")
+	case strings.Contains(s, "scope-limited"):
+		indicator = yellow("WARN")
+	case strings.Contains(s, "not verified"):
+		// "present, not verified" — credentials are loaded but no
+		// probe ran. Informational, not a warning; a clean config
+		// shouldn't render yellow WARN in CI dashboards.
+		indicator = yellow("INFO")
+	case strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing"):
+		indicator = red("FAIL")
+	case s == "not required":
+		// Public APIs: no auth needed is a healthy state, not a warning.
+		indicator = green("OK")
+	case strings.Contains(s, "not ") || strings.Contains(s, "skipped") || strings.Contains(s, "inferred"):
+		indicator = yellow("WARN")
+	}
+	return indicator, s
 }
 
 // doctorInfoKeys are report entries rendered as information, not health

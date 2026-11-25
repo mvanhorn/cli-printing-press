@@ -200,6 +200,9 @@ type APIError struct {
 	Path       string
 	StatusCode int
 	Body       string
+	// RawBody is the capped, credential-masked response before HTML summarization.
+	// Error() keeps Body's summary; tag-anchored classifiers read RawBody.
+	RawBody string
 }
 
 func (e *APIError) Error() string {
@@ -2498,6 +2501,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 
 		bodyText := truncateErrorBody(resp.Header.Get("Content-Type"), respBody)
+		// Keep the pre-summary bytes for classifiers. HTML collapse drops the
+		// <title> tag doctor uses to tell a challenge page from a real response.
+		rawText := ""
+		if !binaryResponse {
+			rawText = limitErrorBody(respBody)
+		}
 		if resp.StatusCode == http.StatusForbidden {
 			bodyText = cliutil.AnnotateTransportBlock(bodyText, resp.Header, respBody)
 		}
@@ -2507,6 +2516,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			Path:       c.displayURL(path, authHeader),
 			StatusCode: resp.StatusCode,
 			Body:       c.maskCredentialText(bodyText, authHeader),
+			RawBody:    c.maskCredentialText(rawText, authHeader),
 		}
 		// OAuth providers can expire or revoke tokens early. The
 		// client_credentials grant issues no refresh token, so recovery from
