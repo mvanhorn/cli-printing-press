@@ -14440,8 +14440,8 @@ func TestGenerateWhichFindsUnindexedSubresource(t *testing.T) {
 	assert.NotContains(t, whichSrc, `Command: "products reviews list"`)
 	assert.Contains(t, whichSrc, `"pp:typed-exit-codes": "0,2"`)
 
-	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "whichfallback-pp-cli")
+	requireGeneratedCompiles(t, outputDir)
+	binaryPath := whichCLIBinary(outputDir, "whichfallback-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/whichfallback-pp-cli")
 
 	top := runWhichJSON(t, binaryPath, "reviews", "--json", "--limit", "1")

@@ -8,10 +8,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func whichCLIBinary(dir, name string) string {
+	return platform.ExecutablePath(filepath.Join(dir, name))
+}
 
 func TestWhichIndexSeedsPromotedCommands(t *testing.T) {
 	t.Parallel()
@@ -216,9 +221,10 @@ func TestWhichFindsUnpromotedEndpoint(t *testing.T) {
 	assert.NotContains(t, whichSrc, `Command: "widgets trend"`)
 	assert.Contains(t, whichSrc, "whichCommandIndex")
 
+	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "-count=1", "-timeout", "300s", "-run", "TestWhich|TestRankWhich", "./internal/cli/")
 
-	binaryPath := filepath.Join(outputDir, "which-surface-pp-cli")
+	binaryPath := whichCLIBinary(outputDir, "which-surface-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/which-surface-pp-cli")
 
 	trend := runWhichJSON(t, binaryPath, "widgets", "trend", "--json", "--limit", "1")

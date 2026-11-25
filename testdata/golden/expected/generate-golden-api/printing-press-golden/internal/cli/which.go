@@ -14,7 +14,8 @@ import (
 
 // whichEntry is one runnable command. whichIndex holds the curated hero and
 // promoted rows; whichCommandIndex overlays those onto the live Cobra tree.
-// curated and aliases affect ranking only and stay out of the JSON envelope.
+// curated, aliases, and invocations affect ranking only and stay out of the
+// JSON envelope. invocations holds alias-qualified paths for this command.
 type whichEntry struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
@@ -22,6 +23,7 @@ type whichEntry struct {
 	WhyItMatters string `json:"why_it_matters,omitempty"`
 	curated      bool
 	aliases      []string
+	invocations  []string
 }
 
 // whichIndex is the curated list of capabilities this CLI advertises.
@@ -53,8 +55,8 @@ const whichExactNameScore = 50
 // rankWhich returns up to `limit` best matches for `query` against the
 // index, sorted by descending score. Score breakdown:
 //
-//	+100 exact command-path match (case and internal whitespace ignored)
-//	+50  exact leaf name or alias match
+//	+100 exact command path, including one that uses a command alias
+//	+50  exact leaf name or bare alias match
 //	+3   exact token match on the command's leaf or full path
 //	+2   substring match on the command (any part)
 //	+2   substring match on description or why_it_matters
@@ -260,7 +262,7 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 		}
 		score -= unmatched
 	}
-	return whichApplyExactBoost(score, query, cmd, e.aliases)
+	return whichApplyExactBoost(score, query, cmd, e.aliases, e.invocations)
 }
 
 func whichFieldCredit(qTokens, fieldTokens []string) int {
@@ -381,19 +383,28 @@ func whichSingular(s string) string {
 	return s
 }
 
-func whichApplyExactBoost(score int, query, command string, aliases []string) int {
+func whichApplyExactBoost(score int, query, command string, aliases, invocations []string) int {
 	q := whichNormalizeCommand(query)
 	cmd := whichNormalizeCommand(command)
 	if q == "" || cmd == "" {
 		return score
 	}
-	if q == cmd {
+	if q == cmd || whichExactInvocation(q, invocations) {
 		return score + whichExactPathScore
 	}
 	if whichExactLeaf(q, cmd) || whichExactAlias(q, aliases) {
 		return score + whichExactNameScore
 	}
 	return score
+}
+
+func whichExactInvocation(query string, invocations []string) bool {
+	for _, invocation := range invocations {
+		if whichNormalizeCommand(invocation) == query {
+			return true
+		}
+	}
+	return false
 }
 
 func whichExactLeaf(query, command string) bool {
@@ -444,6 +455,9 @@ func whichCommandIndex(root *cobra.Command) []whichEntry {
 			if len(entry.aliases) == 0 {
 				entry.aliases = treeEntry.aliases
 			}
+			if len(entry.invocations) == 0 {
+				entry.invocations = treeEntry.invocations
+			}
 		}
 		out = append(out, entry)
 	}
@@ -463,8 +477,8 @@ func whichTreeEntries(root *cobra.Command) []whichEntry {
 		return nil
 	}
 	var out []whichEntry
-	var walk func(*cobra.Command, []string)
-	walk = func(cmd *cobra.Command, ancestors []string) {
+	var walk func(*cobra.Command, []string, []string)
+	walk = func(cmd *cobra.Command, ancestors, prefixes []string) {
 		for _, child := range cmd.Commands() {
 			if child == nil {
 				continue
@@ -472,15 +486,72 @@ func whichTreeEntries(root *cobra.Command) []whichEntry {
 			path := make([]string, 0, len(ancestors)+1)
 			path = append(path, ancestors...)
 			path = append(path, child.Name())
+			// prefixes[0] and names[0] are the canonical spellings, so the
+			// first invocation is the command path operators see in help.
+			invocations := whichChildInvocations(prefixes, whichCommandNames(child))
 			if whichIncludeCommand(child) {
-				out = append(out, whichEntryFromCommand(child, path))
+				entry := whichEntryFromCommand(child, path)
+				if len(invocations) > 1 {
+					entry.invocations = append([]string(nil), invocations[1:]...)
+				}
+				out = append(out, entry)
 			}
 			// Descend even when this node is hidden or not runnable. Area
 			// groups are sometimes hidden while their children stay invocable.
-			walk(child, path)
+			walk(child, path, invocations)
 		}
 	}
-	walk(root, nil)
+	walk(root, nil, nil)
+	return out
+}
+
+// whichMaxInvocations bounds alias-path expansion. A deep chain of aliases
+// would otherwise multiply, and the canonical path is always first.
+const whichMaxInvocations = 16
+
+func whichCommandNames(cmd *cobra.Command) []string {
+	seen := map[string]bool{}
+	names := make([]string, 0, 1+len(cmd.Aliases))
+	add := func(raw string) {
+		name := whichNormalizeCommand(raw)
+		// A multi-word alias is not a Cobra name; keeping it would make the
+		// invocation a different number of fields than the real path.
+		if name == "" || strings.Contains(name, " ") || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	add(cmd.Name())
+	for _, alias := range cmd.Aliases {
+		add(alias)
+	}
+	return names
+}
+
+func whichChildInvocations(prefixes, names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	if len(prefixes) == 0 {
+		if len(names) > whichMaxInvocations {
+			names = names[:whichMaxInvocations]
+		}
+		return append([]string(nil), names...)
+	}
+	out := make([]string, 0, len(prefixes)*len(names))
+	for _, prefix := range prefixes {
+		prefix = whichNormalizeCommand(prefix)
+		if prefix == "" {
+			continue
+		}
+		for _, name := range names {
+			out = append(out, prefix+" "+name)
+			if len(out) >= whichMaxInvocations {
+				return out
+			}
+		}
+	}
 	return out
 }
 

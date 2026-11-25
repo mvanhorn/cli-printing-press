@@ -7,6 +7,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -370,6 +371,54 @@ func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
 	}
 }
 
+func TestRankWhich_AliasPathBeatsParent(t *testing.T) {
+	index := []whichEntry{
+		{Command: "alpha", Description: "handy alpha tools"},
+		{
+			Command:     "alpha beta",
+			Description: "Show beta",
+			aliases:     []string{"handy"},
+			invocations: []string{"alpha handy"},
+		},
+	}
+	got := rankWhich(index, "alpha handy", 1)
+	if len(got) != 1 || got[0].Entry.Command != "alpha beta" {
+		t.Fatalf("alias path should outrank the parent, got %+v", got)
+	}
+	if got[0].Score < whichExactPathScore {
+		t.Fatalf("alias path score = %d, want the exact-path boost", got[0].Score)
+	}
+}
+
+func TestWhichCommandNamesSkipsSpacedAlias(t *testing.T) {
+	cmd := &cobra.Command{Use: "beta", Aliases: []string{"handy", "bad alias", "handy"}}
+	got := whichCommandNames(cmd)
+	if len(got) != 2 || got[0] != "beta" || got[1] != "handy" {
+		t.Fatalf("whichCommandNames = %#v", got)
+	}
+}
+
+func TestWhichChildInvocationsCaps(t *testing.T) {
+	if got := whichChildInvocations(nil, nil); got != nil {
+		t.Fatalf("empty names = %#v", got)
+	}
+	if got := whichChildInvocations([]string{""}, []string{"beta"}); len(got) != 0 {
+		t.Fatalf("blank prefix = %#v", got)
+	}
+	names := make([]string, 0, whichMaxInvocations+4)
+	for i := 0; i < whichMaxInvocations+4; i++ {
+		names = append(names, fmt.Sprintf("n%d", i))
+	}
+	got := whichChildInvocations(nil, names)
+	if len(got) != whichMaxInvocations || got[0] != "n0" {
+		t.Fatalf("root cap = %#v", got)
+	}
+	got = whichChildInvocations([]string{"parent", ""}, names)
+	if len(got) != whichMaxInvocations || got[0] != "parent n0" {
+		t.Fatalf("child cap = %#v", got)
+	}
+}
+
 func TestRankWhich_ExactPathBeatsFuzzyCurated(t *testing.T) {
 	index := []whichEntry{
 		{
@@ -450,6 +499,9 @@ func TestWhichCommandIndex_OverlaysCuratedOntoTree(t *testing.T) {
 	if found.Description != "From the tree" || found.Group != "alpha" || len(found.aliases) != 1 || found.aliases[0] != "handy" {
 		t.Fatalf("blank curated fields should take the tree short, group, and alias, got %+v", *found)
 	}
+	if len(found.invocations) != 1 || found.invocations[0] != "alpha handy" {
+		t.Fatalf("blank curated row should take the tree alias path, got %+v", found.invocations)
+	}
 }
 
 func whichRuntimeNoop(*cobra.Command, []string) error { return nil }
@@ -479,11 +531,11 @@ func whichRuntimeFixture(t *testing.T) *cobra.Command {
 	hidden.AddCommand(&cobra.Command{Use: "child", Short: "Child of a hidden area group", RunE: whichRuntimeNoop})
 	root.AddCommand(hidden)
 
-	alpha := &cobra.Command{Use: "alpha", Short: "Alpha parent", RunE: whichRuntimeNoop}
+	alpha := &cobra.Command{Use: "alpha", Short: "handy alpha tools", Aliases: []string{"alf"}, RunE: whichRuntimeNoop}
 	alpha.AddCommand(&cobra.Command{
 		Use:     "beta",
 		Short:   "Hand-written alpha beta capability",
-		Aliases: []string{"handy"},
+		Aliases: []string{"handy", "bad alias"},
 		RunE:    whichRuntimeNoop,
 	})
 	root.AddCommand(alpha)
@@ -525,6 +577,18 @@ func TestWhichRuntime_UnindexedCommands(t *testing.T) {
 	if !commands["market breakouts"].curated || commands["market breakouts"].Description != "Scan market breakouts" {
 		t.Fatalf("curated prose should overlay the tree command, got %+v", commands["market breakouts"])
 	}
+	aliasPaths := map[string]bool{}
+	for _, path := range commands["alpha beta"].invocations {
+		aliasPaths[path] = true
+		if strings.Contains(path, "bad alias") {
+			t.Fatalf("a multi-word alias must not become an invocation path: %q", path)
+		}
+	}
+	for _, want := range []string{"alpha handy", "alf beta", "alf handy"} {
+		if !aliasPaths[want] {
+			t.Fatalf("runtime index missing alias path %q: %#v", want, commands["alpha beta"].invocations)
+		}
+	}
 
 	assertTop := func(query, want string) {
 		t.Helper()
@@ -537,6 +601,9 @@ func TestWhichRuntime_UnindexedCommands(t *testing.T) {
 	assertTop("Alpha Beta", "alpha beta")
 	assertTop("Hand-written alpha beta capability", "alpha beta")
 	assertTop("handy", "alpha beta")
+	assertTop("alpha handy", "alpha beta")
+	assertTop("alf beta", "alpha beta")
+	assertTop("alf handy", "alpha beta")
 	assertTop("area child", "area child")
 	assertTop("Child of a hidden area group", "area child")
 	assertTop("market trend", "market trend")
