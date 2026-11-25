@@ -297,24 +297,35 @@ func newPlaybookListCmd(flags *rootFlags) *cobra.Command {
 			if dryRunOK(flags) {
 				return writeDryRun(cmd.OutOrStdout(), flags, "playbook list")
 			}
-			dbPath = learnDBPath(dbPath)
-			s, err := store.OpenWithContext(cmd.Context(), dbPath)
+			s, ok, err := openLearnReadOnly(cmd.Context(), learnDBPath(dbPath))
 			if err != nil {
 				return fmt.Errorf("playbook list: %w", err)
 			}
-			defer s.Close()
-			rows, err := s.ListPlaybooks()
-			if err != nil {
-				return fmt.Errorf("playbook list: %w", err)
-			}
-			if rows == nil {
-				rows = []store.PlaybookRow{}
+			rows := []store.PlaybookRow{}
+			if ok {
+				defer s.Close()
+				if err := learnTableReadable(s, "learning_playbooks"); err != nil {
+					return fmt.Errorf("playbook list: %w", err)
+				}
+				listed, err := s.ListPlaybooks()
+				if err != nil {
+					if schemaErr := rewriteLearnSchemaError(s, "learning_playbooks", err); schemaErr != nil {
+						return fmt.Errorf("playbook list: %w", schemaErr)
+					}
+					return fmt.Errorf("playbook list: %w", err)
+				}
+				if listed != nil {
+					rows = listed
+				}
 			}
 
-			_ = appendLearningsAudit(map[string]any{
-				"action": "playbook-list",
-				"rows":   len(rows),
-			})
+			// The audit log is telemetry, and the opt-out has to hold for it.
+			if !noLearnActive(flags) {
+				_ = appendLearningsAudit(map[string]any{
+					"action": "playbook-list",
+					"rows":   len(rows),
+				})
+			}
 
 			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
 				return printJSONFiltered(cmd.OutOrStdout(), rows, flags)
