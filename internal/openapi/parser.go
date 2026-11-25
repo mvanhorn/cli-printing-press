@@ -9601,6 +9601,28 @@ func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag 
 			}
 		}
 
+		// HubSpot CRM v3: paging.next.after. Inside a pagination wrapper, a
+		// "next" object carrying a property named like the request cursor
+		// param is where the next cursor lives.
+		if prefix != "" && lower == "next" && pag.NextCursorPath == "" && pag.CursorParam != "" {
+			if nextSchema := schemaRefValue(propRef); nextSchema != nil {
+				nextNames := make([]string, 0, len(nextSchema.Properties))
+				for name := range nextSchema.Properties {
+					nextNames = append(nextNames, name)
+				}
+				sort.Strings(nextNames)
+				for _, name := range nextNames {
+					if strings.EqualFold(name, pag.CursorParam) {
+						pag.NextCursorPath = path + "." + name
+						if pag.Type == "" {
+							pag.Type = "cursor"
+						}
+						break
+					}
+				}
+			}
+		}
+
 		if prefix != "" || !isPaginationWrapperField(lower) || propRef == nil || propRef.Value == nil {
 			continue
 		}

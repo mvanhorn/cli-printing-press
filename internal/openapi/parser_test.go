@@ -14907,6 +14907,48 @@ func TestDetectPaginationRecognizesPageIntCursor(t *testing.T) {
 	}
 }
 
+// HubSpot CRM v3 list endpoints return {"results":[...],"paging":{"next":
+// {"after":"10","link":"..."}}}. The cursor is two levels under the
+// wrapper, so it used to be missed and sync stopped after page one.
+func TestDetectPaginationRecognizesHubSpotPagingNextAfter(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	str := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	}
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+				Type: &openapi3.Types{"object"},
+				Properties: openapi3.Schemas{
+					"results": &openapi3.SchemaRef{Value: &openapi3.Schema{
+						Type:  &openapi3.Types{"array"},
+						Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+					}},
+					"paging": &openapi3.SchemaRef{Value: &openapi3.Schema{
+						Type: &openapi3.Types{"object"},
+						Properties: openapi3.Schemas{
+							"next": &openapi3.SchemaRef{Value: &openapi3.Schema{
+								Type:       &openapi3.Types{"object"},
+								Properties: openapi3.Schemas{"after": str(), "link": str()},
+							}},
+						},
+					}},
+				},
+			}}},
+		},
+	}})
+
+	pag := detectPagination([]spec.Param{{Name: "limit"}, {Name: "after"}}, &openapi3.Operation{Responses: responses})
+	require.NotNil(t, pag)
+	assert.Equal(t, "after", pag.CursorParam)
+	assert.Equal(t, "cursor", pag.Type)
+	assert.Equal(t, "paging.next.after", pag.NextCursorPath)
+}
+
 func TestDetectPaginationRecognizesNestedNumericNextPage(t *testing.T) {
 	t.Parallel()
 

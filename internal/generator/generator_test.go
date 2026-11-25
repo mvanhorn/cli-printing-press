@@ -5418,6 +5418,42 @@ func TestExtractPageItemsMongoPaginationEnvelope(t *testing.T) {
 	}
 }
 
+func TestExtractPageItemsHubSpotPagingNextAfter(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"results": [{"id":"1"},{"id":"2"}],
+		"paging": {"next": {"after": "102", "link": "https://api.hubapi.com/crm/v3/objects/deals?after=102"}}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "after")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "102" {
+		t.Fatalf("want cursor 102 from paging.next.after, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when paging.next.after is present")
+	}
+}
+
+func TestExtractPageItemsPagingNextLinkOnly(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"results": [{"id":"1"}],
+		"paging": {"next": {"link": "https://api.example.com/things?after=abc&limit=1"}}
+	}` + "`" + `)
+	_, cursor, _ := extractPageItems(json.RawMessage(body), "after")
+	if cursor != "abc" {
+		t.Fatalf("want cursor abc from paging.next.link, got %q", cursor)
+	}
+}
+
+func TestExtractPageItemsHubSpotLastPageHasNoCursor(t *testing.T) {
+	body := []byte(` + "`" + `{"results": [{"id":"1"}]}` + "`" + `)
+	_, cursor, _ := extractPageItems(json.RawMessage(body), "after")
+	if cursor != "" {
+		t.Fatalf("last page: want empty cursor, got %q", cursor)
+	}
+}
+
 func TestExtractPageItemsPipedriveAdditionalDataEnvelope(t *testing.T) {
 	body := []byte(` + "`" + `{
 		"data": [{"id":"deal-1"},{"id":"deal-2"}],
