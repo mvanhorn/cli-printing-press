@@ -6,7 +6,6 @@ package cli
 
 import (
 	"bytes"
-
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -178,6 +177,149 @@ func TestExitCode_UsageError_WrappedAsCode2(t *testing.T) {
 	if got := ExitCode(wrapped); got != 2 {
 		t.Errorf("ExitCode(usageErr(...)) = %d, want 2 (POSIX usage convention)", got)
 	}
+}
+
+// TestPositionalArgValidatorsExit2 runs each Cobra positional validator the
+// generator ships or may ship. Classification is the Args wrapper, so a
+// future validator wording still exits 2.
+func TestPositionalArgValidatorsExit2(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		args  cobra.PositionalArgs
+		argv  []string
+		valid []string
+	}{
+		{name: "exact missing", args: cobra.ExactArgs(1)},
+		{name: "exact extra", args: cobra.ExactArgs(1), argv: []string{"a", "b"}},
+		{name: "range missing", args: cobra.RangeArgs(1, 2)},
+		{name: "range extra", args: cobra.RangeArgs(1, 2), argv: []string{"a", "b", "c"}},
+		{name: "minimum", args: cobra.MinimumNArgs(2), argv: []string{"only"}},
+		{name: "maximum", args: cobra.MaximumNArgs(1), argv: []string{"a", "b"}},
+		{name: "noargs", args: cobra.NoArgs, argv: []string{"extra"}},
+		{name: "only valid", args: cobra.OnlyValidArgs, argv: []string{"nope"}, valid: []string{"ok"}},
+		{name: "match all", args: cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs), argv: []string{"nope"}, valid: []string{"ok"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := executeWrappedArgs(tc.args, tc.valid, append([]string{"child"}, tc.argv...))
+			if err == nil {
+				t.Fatal("expected a positional usage error")
+			}
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode = %d, want 2; err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestPositionalArgValidatorAcceptsMatchingArgs(t *testing.T) {
+	t.Parallel()
+	if err := executeWrappedArgs(cobra.ExactArgs(1), nil, []string{"child", "one"}); err != nil {
+		t.Fatalf("valid positional args returned %v", err)
+	}
+}
+
+// TestPositionalArgRuntimeErrorKeepsExit1 is the negative case: a RunE
+// failure whose text is a Cobra validator sentence is still a runtime
+// error. Matching those sentences in isCobraUsageError would misclassify it.
+func TestPositionalArgRuntimeErrorKeepsExit1(t *testing.T) {
+	t.Parallel()
+	messages := []string{
+		"accepts 1 arg(s), received 0",
+		"accepts between 1 and 2 arg(s), received 0",
+		"requires at least 1 arg(s), only received 0",
+		"accepts at most 0 arg(s), received 1",
+		"handler rejected the arg payload",
+	}
+	for _, msg := range messages {
+		msg := msg
+		t.Run(msg, func(t *testing.T) {
+			t.Parallel()
+			root := &cobra.Command{
+				Use:           "cli",
+				SilenceErrors: true,
+				SilenceUsage:  true,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					return errors.New(msg)
+				},
+			}
+			wrapPositionalUsageErrors(root)
+			var sink bytes.Buffer
+			root.SetOut(&sink)
+			root.SetErr(&sink)
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("expected a runtime error")
+			}
+			if got := ExitCode(err); got != 1 {
+				t.Fatalf("ExitCode = %d, want 1; err=%v", got, err)
+			}
+		})
+	}
+}
+
+// TestGeneratedTreePositionalExitCodes runs the printed command tree, so a
+// validator wired only in a unit helper cannot pass while newRootCmd skips
+// the wrap.
+func TestGeneratedTreePositionalExitCodes(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "profile show missing", args: []string{"profile", "show"}, want: 2},
+		{name: "profile show extra", args: []string{"profile", "show", "one", "two"}, want: 2},
+		{name: "profile use missing", args: []string{"profile", "use"}, want: 2},
+		{name: "local-data purge extra", args: []string{"local-data", "purge", "extra"}, want: 2},
+		{name: "profile save reserved name", args: []string{"profile", "save", "a b"}, want: 1},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var flags rootFlags
+			root := newRootCmd(&flags)
+			var sink bytes.Buffer
+			root.SetOut(&sink)
+			root.SetErr(&sink)
+			root.SilenceErrors = true
+			root.SetArgs(tc.args)
+			err := root.Execute()
+			if tc.want == 0 {
+				if err != nil {
+					t.Fatalf("Execute() = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := ExitCode(err); got != tc.want {
+				t.Fatalf("ExitCode = %d, want %d; err=%v", got, tc.want, err)
+			}
+		})
+	}
+}
+
+func executeWrappedArgs(validate cobra.PositionalArgs, valid, argv []string) error {
+	root := &cobra.Command{Use: "cli", SilenceErrors: true, SilenceUsage: true}
+	child := &cobra.Command{
+		Use:       "child",
+		Args:      validate,
+		ValidArgs: valid,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+	root.AddCommand(child)
+	wrapPositionalUsageErrors(root)
+	var sink bytes.Buffer
+	root.SetOut(&sink)
+	root.SetErr(&sink)
+	root.SetArgs(argv)
+	return root.Execute()
 }
 
 // TestFilterFields covers --select projection against the four payload
