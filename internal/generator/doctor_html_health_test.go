@@ -145,7 +145,7 @@ func runDoctorText(t *testing.T, binaryPath string, env []string, extraArgs ...s
 }
 
 func doctorAPILine(out string) string {
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(line, " API:") {
 			return strings.TrimSpace(line)
 		}
