@@ -138,7 +138,7 @@ func TestLearningsStats_ReportsFourHeadlineMetrics(t *testing.T) {
 	}
 }
 
-func TestLearningsStats_PrunesBeforeReporting(t *testing.T) {
+func TestLearningsStats_DoesNotPrune(t *testing.T) {
 	home := withTempLearnHome(t)
 	dbPath := filepath.Join(home, "data.db")
 
@@ -159,11 +159,11 @@ func TestLearningsStats_PrunesBeforeReporting(t *testing.T) {
 	s.Close()
 
 	env := runLearningsStatsJSON(t, dbPath)
-	if env.EventsPruned != 1 {
-		t.Errorf("events_pruned = %d, want 1", env.EventsPruned)
+	if env.EventsPruned != 0 {
+		t.Errorf("events_pruned = %d, want 0 (read-only stats does not delete events)", env.EventsPruned)
 	}
-	if env.RecallMisses != 2 {
-		t.Errorf("recall_misses = %d, want 2", env.RecallMisses)
+	if env.RecallMisses != 3 {
+		t.Errorf("recall_misses = %d, want 3 (the backdated row must remain)", env.RecallMisses)
 	}
 	if env.RecallHitRate == nil || *env.RecallHitRate != 0 {
 		t.Errorf("recall_hit_rate = %v, want 0 (misses only)", env.RecallHitRate)

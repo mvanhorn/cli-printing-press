@@ -100,7 +100,7 @@ func TestGenerateLearnEvents_EmitsMeasurementSurface(t *testing.T) {
 	for _, want := range []string{
 		`Use:   "stats"`,
 		`"mcp:read-only": "true"`,
-		"PruneLearnEvents(0, 0)",
+		"openLearnReadOnly(",
 		// the four headline metrics in the JSON contract
 		`json:"recall_hit_rate"`,
 		`json:"teach_to_reuse"`,
@@ -109,6 +109,10 @@ func TestGenerateLearnEvents_EmitsMeasurementSurface(t *testing.T) {
 	} {
 		require.Contains(t, stats, want, "emitted cli/learnings_stats.go must contain %q", want)
 	}
+	require.NotContains(t, stats, "PruneLearnEvents(",
+		"read-only stats must not delete learn events")
+	require.NotContains(t, stats, "OpenWithContext(",
+		"read-only stats must not open the migrating store")
 
 	// One clean registration path: stats registers on the learnings
 	// group in teach.go's newLearningsCmd.

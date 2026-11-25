@@ -45,9 +45,8 @@ const (
 	LearnSurfaceMCP = "mcp"
 )
 
-// Retention defaults per the measurement contract: the table is capped
-// and pruned opportunistically on stats runs, so a long-lived store
-// never grows an unbounded telemetry tail.
+// Retention defaults for PruneLearnEvents. The method deletes rows and
+// chmods the database, so a read-only command must not call it.
 const (
 	DefaultLearnEventMaxRows = 10000
 	DefaultLearnEventMaxAge  = 90 * 24 * time.Hour
@@ -155,8 +154,8 @@ func (s *Store) InsertLearnEvent(event, familyHash string, matchedRowID int64, e
 // PruneLearnEvents applies the retention policy: rows older than
 // maxAge are dropped, then the oldest rows beyond the maxRows cap.
 // Non-positive arguments take the defaults (10000 rows / 90 days).
-// Returns the number of rows removed. Run opportunistically at stats
-// time; best-effort by caller contract.
+// Returns the number of rows removed. Read-only commands must not call
+// this: it deletes rows and chmods the database file.
 func (s *Store) PruneLearnEvents(maxRows int, maxAge time.Duration) (int64, error) {
 	if maxRows <= 0 {
 		maxRows = DefaultLearnEventMaxRows
