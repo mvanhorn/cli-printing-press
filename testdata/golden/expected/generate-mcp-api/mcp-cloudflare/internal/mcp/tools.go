@@ -119,6 +119,8 @@ type mcpPageConfig struct {
 	CursorInBody         bool
 	ExternalContinuation bool
 	BodyPath             []string
+	PaginationType       string
+	LimitParam           string
 }
 
 func formatMCPParamValue(v any) string {
@@ -292,6 +294,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				requestCursor = s
 			}
 		}
+		if pageConfig.PaginationType == "page" && pageConfig.LimitParam != "" && mcpCursor != "" {
+			if n := bound.CursorPageSize(mcpCursor); n > 0 {
+				replayCarriedPageLimit(bindings, params, bodyArgs, pageConfig.LimitParam, n)
+			}
+		}
 
 		var data json.RawMessage
 		switch method {
@@ -413,7 +420,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			return mcplib.NewToolResultText(result), nil
 		}
 		if pageConfig.CursorParam != "" || pageConfig.NextCursorPath != "" || pageConfig.ExternalContinuation {
-			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession), nil
+			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession, mcpPagingParams(params, bodyArgs, pageConfig, requestCursor), path), nil
 		}
 		return mcpToolResultTextWithPlatform(method, data, readOnly, platformSession), nil
 	}
@@ -599,11 +606,11 @@ func runeLevenshtein(a, b string) int {
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
-	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, "", false, nil)
+	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, "", false, nil, nil, "")
 }
 
-func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor, requestCursor string, readOnly bool, platformSession *platform.Session) *mcplib.CallToolResult {
-	result := bound.EndpointPageResponse(method, data, bound.PageOptions{
+func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor, requestCursor string, readOnly bool, platformSession *platform.Session, params map[string]string, requestPath string) *mcplib.CallToolResult {
+	result := bound.EndpointPageResponse(method, data, withSinglePageTotal(bound.PageOptions{
 		Cursor:               cursor,
 		CursorParam:          pageConfig.CursorParam,
 		NextCursorPath:       pageConfig.NextCursorPath,
@@ -611,11 +618,104 @@ func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, page
 		RequestCursor:        requestCursor,
 		ReadOnly:             readOnly,
 		ExternalContinuation: pageConfig.ExternalContinuation,
-	})
+	}, data, pageConfig, params, requestPath))
 	if platformSession != nil {
 		result = bound.WithMetadata(result, platformSession.OutputMetadata())
 	}
 	return mcplib.NewToolResultText(result)
+}
+
+// mcpPagingParams copies a body or form offset and limit into the map the
+// total check reads. That map otherwise holds query values only, so a
+// restored body offset was ignored and the next cursor repeated.
+// A JSON number stays in bodyArgs and never becomes requestCursor.
+func mcpPagingParams(params map[string]string, bodyArgs map[string]any, pageConfig mcpPageConfig, requestCursor string) map[string]string {
+	if pageConfig.PaginationType != "offset" && pageConfig.PaginationType != "page" {
+		return params
+	}
+	cursor := ""
+	if pageConfig.CursorInBody && pageConfig.CursorParam != "" {
+		cursor = strings.TrimSpace(requestCursor)
+		if cursor == "" {
+			cursor = mcpBodyCursor(bodyArgs, pageConfig)
+		}
+	}
+	limit := ""
+	if pageConfig.LimitParam != "" {
+		if v, ok := bodyArgs[pageConfig.LimitParam]; ok {
+			limit = strings.TrimSpace(formatMCPParamValue(v))
+		}
+	}
+	if cursor == "" && limit == "" {
+		return params
+	}
+	merged := make(map[string]string, len(params)+2)
+	for k, v := range params {
+		merged[k] = v
+	}
+	if cursor != "" {
+		merged[pageConfig.CursorParam] = cursor
+	}
+	if limit != "" && pageConfig.LimitParam != "" && strings.TrimSpace(merged[pageConfig.LimitParam]) == "" {
+		merged[pageConfig.LimitParam] = limit
+	}
+	return merged
+}
+
+func mcpBodyCursor(bodyArgs map[string]any, pageConfig mcpPageConfig) string {
+	if bodyArgs == nil || pageConfig.CursorParam == "" {
+		return ""
+	}
+	v, ok := bodyArgs[pageConfig.CursorParam]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(formatMCPParamValue(v))
+}
+
+func replayCarriedPageLimit(bindings []mcpParamBinding, params map[string]string, bodyArgs map[string]any, name string, n int) {
+	if n <= 0 || name == "" {
+		return
+	}
+	size := strconv.Itoa(n)
+	for _, binding := range bindings {
+		if binding.WireName != name && binding.PublicName != name {
+			continue
+		}
+		switch binding.Location {
+		case "path", "header", "template", "raw", "body_json":
+			return
+		case "body":
+			if _, ok := bodyArgs[binding.WireName]; !ok {
+				bodyArgs[binding.WireName] = n
+			}
+			return
+		default:
+			if strings.TrimSpace(params[binding.WireName]) == "" {
+				params[binding.WireName] = size
+			}
+			return
+		}
+	}
+	if strings.TrimSpace(params[name]) == "" {
+		params[name] = size
+	}
+}
+
+func withSinglePageTotal(opts bound.PageOptions, data json.RawMessage, pageConfig mcpPageConfig, params map[string]string, requestPath string) bound.PageOptions {
+	if pageConfig.PaginationType != "offset" && pageConfig.PaginationType != "page" {
+		return opts
+	}
+	next, sawTotal, replay, ok := cli.SinglePageNextCursor(data, pageConfig.NextCursorPath, pageConfig.HasMoreField, pageConfig.PaginationType, pageConfig.CursorParam, pageConfig.LimitParam, params, requestPath)
+	if !ok || !sawTotal {
+		return opts
+	}
+	opts.TotalSeen = true
+	opts.TotalNextCursor = next
+	if replay > 0 {
+		opts.ReplayPageSize = replay
+	}
+	return opts
 }
 
 func newMCPClient(ctx context.Context) (*client.Client, *platform.Session, error) {

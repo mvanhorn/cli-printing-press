@@ -3565,6 +3565,7 @@ func (g *Generator) renderSingleFiles() error {
 		"main.go.tmpl":                             filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
 		"version.go.tmpl":                          filepath.Join("internal", "cli", "version.go"),
 		"helpers.go.tmpl":                          filepath.Join("internal", "cli", "helpers.go"),
+		"pagecursor.go.tmpl":                       filepath.Join("internal", "cli", "pagecursor.go"),
 		"root_test.go.tmpl":                        filepath.Join("internal", "cli", "root_test.go"),
 		"doctor.go.tmpl":                           filepath.Join("internal", "cli", "doctor.go"),
 		"agent_context.go.tmpl":                    filepath.Join("internal", "cli", "agent_context.go"),
@@ -4545,17 +4546,20 @@ func cobratreeWalkerTemplateFiles() map[string]string {
 }
 
 // GenerateMCPSurface rewrites the generated MCP entrypoint, tools package,
-// cobratree helpers, AND the generator-reserved cliutil package without
-// touching the printed CLI's command files. The cliutil package is
-// included because the MCP template references helpers (SanitizeErrorBody,
-// LooksLikeAuthError) that older library CLIs lack — leaving cliutil
-// stale produces "undefined: cliutil.SanitizeErrorBody" build errors on
-// regenerated tools.go. Per AGENTS.md, internal/cliutil is generator-
-// reserved (agents must not hand-edit it), so unconditional regen here
-// is intentionally asymmetric vs the marker-checked tools.go/handlers.go
-// paths in mcp-sync. Spec-conditional cliutil files (freshness,
-// autoRefresh, oauth token client) stay in renderOptionalSupportFiles so they don't get
-// emitted when the spec opts out.
+// cobratree helpers, the generator-reserved cliutil package, and
+// internal/cli/pagecursor.go without touching the printed CLI's command
+// files. The cliutil package is included because the MCP template
+// references helpers (SanitizeErrorBody, LooksLikeAuthError) that older
+// library CLIs lack — leaving cliutil stale produces "undefined:
+// cliutil.SanitizeErrorBody" build errors on regenerated tools.go.
+// pagecursor.go is the same kind of split: tools.go calls
+// cli.SinglePageNextCursor, which older helpers.go does not define.
+// Per AGENTS.md, internal/cliutil is generator-reserved (agents must not
+// hand-edit it), so unconditional regen here is intentionally asymmetric
+// vs the marker-checked tools.go/handlers.go paths in mcp-sync.
+// Spec-conditional cliutil files (freshness, autoRefresh, oauth token
+// client) stay in renderOptionalSupportFiles so they don't get emitted
+// when the spec opts out.
 func (g *Generator) GenerateMCPSurface() error {
 	SanitizeCapturedResourceIDsForGenerate(g.Spec)
 	if err := g.resolveCursorRequestParams(); err != nil {
@@ -4571,6 +4575,7 @@ func (g *Generator) GenerateMCPSurface() error {
 		return err
 	}
 	mcpFiles := map[string]string{
+		"pagecursor.go.tmpl": filepath.Join("internal", "cli", "pagecursor.go"),
 		// cliutil files. Deliberately asymmetric with the marker-checked
 		// tools.go / handlers.go / root.go paths elsewhere in mcp-sync:
 		// those files can carry hand-edits and require explicit

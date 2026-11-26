@@ -155,8 +155,31 @@ func TestCodeOrchestrationSendsMultipartUploadsRuntime(t *testing.T) {
 		t.Fatalf("replace metadata multipart = %#v", replaceMeta["multipart"])
 	}
 }
+
+func TestReplayCarriedMultipartLimit(t *testing.T) {
+	fields := map[string]string{}
+	body := map[string]any{}
+	binding := []mcpParamBinding{{PublicName: "per-page", WireName: "per_page", Location: "body"}}
+	replayCarriedPageLimit(binding, map[string]string{}, body, "per_page", 20, true, fields)
+	if fields["per_page"] != "20" {
+		t.Fatalf("multipart limit = %#v", fields)
+	}
+	if _, ok := body["per_page"]; ok {
+		t.Fatal("multipart limit was written as JSON")
+	}
+	fields["per_page"] = "5"
+	replayCarriedPageLimit(binding, map[string]string{}, body, "per_page", 20, true, fields)
+	if fields["per_page"] != "5" {
+		t.Fatalf("explicit multipart limit = %#v", fields["per_page"])
+	}
+	jsonBody := map[string]any{}
+	replayCarriedPageLimit(binding, map[string]string{}, jsonBody, "per_page", 20, false, map[string]string{})
+	if jsonBody["per_page"] != 20 {
+		t.Fatalf("non-multipart body limit = %#v", jsonBody["per_page"])
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "code_orch_multipart_runtime_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^TestCodeOrchestrationSendsMultipartUploadsRuntime$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^(TestCodeOrchestrationSendsMultipartUploadsRuntime|TestReplayCarriedMultipartLimit)$", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }

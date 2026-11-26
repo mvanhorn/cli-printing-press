@@ -219,6 +219,69 @@ func TestEndpointPageResponseContinuesFromOpaqueCursor(t *testing.T) {
 	}
 }
 
+func TestCursorPageSize(t *testing.T) {
+	if CursorPageSize("") != 0 || CursorPageSize("not-a-cursor") != 0 {
+		t.Fatal("a cursor that does not decode reported a page size")
+	}
+	with := encodeEndpointCursor(endpointCursor{Version: 1, UpstreamCursor: "2", PageSize: 20})
+	if CursorPageSize(with) != 20 {
+		t.Fatalf("page size = %d", CursorPageSize(with))
+	}
+	without := encodeEndpointCursor(endpointCursor{Version: 1, UpstreamCursor: "2"})
+	if CursorPageSize(without) != 0 {
+		t.Fatal("a cursor with no page size reported one")
+	}
+	negative := encodeEndpointCursor(endpointCursor{Version: 1, PageSize: -1})
+	if CursorPageSize(negative) != 0 {
+		t.Fatal("a negative page size was replayed")
+	}
+}
+
+func TestCursorPageSizeSurvivesMetadataShrink(t *testing.T) {
+	state := endpointCursor{Version: 1, Offset: 4, UpstreamCursor: "2", PageSize: 100}
+	items := make([]any, 4)
+	for i := range items {
+		items[i] = map[string]any{"id": "i" + strconv.Itoa(i), "blob": strings.Repeat("x", 20000)}
+	}
+	payload := map[string]any{
+		"items":          items,
+		"next_cursor":    encodeEndpointCursor(state),
+		"returned_count": len(items),
+	}
+	meta := map[string]any{"note": strings.Repeat("n", 20000)}
+	out, ok := fitMetadataPage(map[string]any{"data": payload}, meta)
+	if !ok {
+		t.Fatal("page did not shrink")
+	}
+	if got := pageSizeFromMetadata(t, out); got != 100 {
+		t.Fatalf("shrunk page size = %d", got)
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, ok := fitMetadataItemPreview(payload, meta, "items", raw, 1, state, "")
+	if !ok {
+		t.Fatal("item preview did not fit")
+	}
+	if got := pageSizeFromMetadata(t, preview); got != 100 {
+		t.Fatalf("preview page size = %d", got)
+	}
+}
+
+func pageSizeFromMetadata(t *testing.T, wrapped string) int {
+	t.Helper()
+	var envelope struct {
+		Data struct {
+			NextCursor string `json:"next_cursor"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(wrapped), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return CursorPageSize(envelope.Data.NextCursor)
+}
+
 func TestEndpointPageResponseWrapsUpstreamCursorOpaquely(t *testing.T) {
 	items := []map[string]string{
 		{"id": "item-0", "payload": "small"},

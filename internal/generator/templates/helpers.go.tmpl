@@ -2611,80 +2611,8 @@ func rememberListPage(ctx context.Context, data json.RawMessage, nextCursorPath,
 }
 
 func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (listPageFields, bool) {
-	var items []json.RawMessage
-	if json.Unmarshal(data, &items) == nil {
-		return listPageFields{}, true
-	}
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(data, &obj) != nil {
-		return listPageFields{}, false
-	}
-	fields := listPageFields{}
-	if n, ok := responseCollectionCount(obj); ok {
-		fields.Count = n
-		fields.CountSet = true
-	}
-	explicitNoMore := false
-	explicitMore := false
-	if nextCursorPath != "" {
-		raw, present := rawAtPath(obj, nextCursorPath)
-		if (!present || rawJSONNull(raw)) && hasMoreFieldIsNextLink(nextCursorPath) {
-			explicitNoMore = true
-		}
-	}
-	next := ""
-	if !explicitNoMore {
-		next = resolvePaginatedNextCursor(obj, nextCursorPath, cursorParam)
-	}
-	if hasMoreField != "" {
-		raw, present := rawAtPath(obj, hasMoreField)
-		reading := readHasMoreField(raw, present, cursorParam)
-		switch {
-		case !present || rawJSONNull(raw):
-			if hasMoreFieldIsNextLink(hasMoreField) {
-				explicitNoMore = true
-				next = ""
-			}
-		case reading.nonBool && !reading.more:
-			explicitNoMore = true
-			next = ""
-		case reading.nonBool && reading.more:
-			explicitMore = true
-			if next == "" {
-				next = reading.nextCursor
-			}
-		default:
-			var more bool
-			if json.Unmarshal(raw, &more) == nil {
-				if more {
-					explicitMore = true
-				} else {
-					explicitNoMore = true
-					next = ""
-				}
-			}
-		}
-	}
-	if next == "" && !explicitNoMore && (explicitMore || topLevelNextIsFollowable(obj)) {
-		pageSize := 0
-		if limitParam != "" && params != nil {
-			if n, err := strconv.Atoi(params[limitParam]); err == nil && n > 0 {
-				pageSize = n
-			}
-		}
-		if explicitMore && paginationType == "offset" {
-			pageSize = offsetAdvancePageSize(pageSize, fetchedPageItemCount(obj, requestPath))
-		}
-		if advanced, ok := nextClientSidePaginationCursor(params, cursorParam, paginationType, pageSize); ok {
-			next = advanced
-		}
-	}
-	if explicitNoMore {
-		next = ""
-	}
-	fields.NextCursor = next
-	fields.HasMore = next != ""
-	return fields, true
+	fields, _, ok := pageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
+	return fields, ok
 }
 
 func responseCollectionCount(obj map[string]json.RawMessage) (int, bool) {
