@@ -54,6 +54,7 @@ func isAllowedDeadHelper(name string) bool {
 		"reportedCollectionTotal",
 		"reportedCollectionTotalAtDepth",
 		"resolvePaginatedNextCursor",
+		"SinglePageNextCursor",
 		"resourceURLIDPathParam",
 		"responsePayloadParentAtPath",
 		"urlIDFieldName":

@@ -402,6 +402,11 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			}
 		}
 	}
+	if method == "GET" && ep.Page.PaginationType == "page" && ep.Page.LimitParam != "" && mcpCursor != "" {
+		if n := bound.CursorPageSize(mcpCursor); n > 0 && !codeOrchParamPresent(params, ep.QueryParams, ep.Page.LimitParam) {
+			params[ep.Page.LimitParam] = fmt.Sprintf("%d", n)
+		}
+	}
 
 	// Route params to their runtime slots. GET/DELETE params are query
 	// strings; write methods split spec-declared query params from the
@@ -525,12 +530,13 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 	}
 	var text string
 	if method == "GET" && (ep.Page.CursorParam != "" || ep.Page.NextCursorPath != "") {
-		text = bound.EndpointPageResponse(method, data, bound.PageOptions{
+		text = bound.EndpointPageResponse(method, data, withSinglePageTotal(bound.PageOptions{
 			Cursor:         mcpCursor,
 			CursorParam:    ep.Page.CursorParam,
 			NextCursorPath: ep.Page.NextCursorPath,
+			HasMoreField:   ep.Page.HasMoreField,
 			RequestCursor:  requestCursor,
-		})
+		}, data, ep.Page, query, path))
 	} else if !gated && codeOrchUnpagedReadGET(ep, method) {
 		// A resolved gated call is not paged. The next page would refetch,
 		// and that refetch would repeat the write.
@@ -620,6 +626,21 @@ func codeOrchSplitQuery(queryParams []codeOrchParamBinding, params map[string]an
 		}
 	}
 	return cliutil.EncodeQuery(uv)
+}
+
+func codeOrchParamPresent(params map[string]any, queryParams []codeOrchParamBinding, name string) bool {
+	for key, value := range params {
+		if value == nil {
+			continue
+		}
+		if key != name && codeOrchWireQueryName(queryParams, key) != name {
+			continue
+		}
+		if strings.TrimSpace(formatMCPParamValue(value)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func codeOrchWireQueryName(queryParams []codeOrchParamBinding, name string) string {

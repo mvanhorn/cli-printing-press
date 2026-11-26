@@ -109,7 +109,38 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `formFields.Set(binding.WireName, mcpFormFieldValue(v))`)
 	assert.Regexp(t, `(?s)func mcpFormFieldValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpSrc)
 
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "replay_form_limit_test.go"), []byte(`package mcp
+
+import (
+	"net/url"
+	"testing"
+)
+
+func TestReplayCarriedFormLimit(t *testing.T) {
+	fields := url.Values{}
+	body := map[string]any{}
+	binding := []mcpParamBinding{{PublicName: "per-page", WireName: "per_page", Location: "body"}}
+	replayCarriedPageLimit(binding, map[string]string{}, body, "per_page", 20, true, fields)
+	if fields.Get("per_page") != "20" {
+		t.Fatalf("form limit = %q", fields.Get("per_page"))
+	}
+	if _, ok := body["per_page"]; ok {
+		t.Fatal("form limit was written as JSON")
+	}
+	fields.Set("per_page", "5")
+	replayCarriedPageLimit(binding, map[string]string{}, body, "per_page", 20, true, fields)
+	if fields.Get("per_page") != "5" {
+		t.Fatalf("explicit form limit = %q", fields.Get("per_page"))
+	}
+	jsonBody := map[string]any{}
+	replayCarriedPageLimit(binding, map[string]string{}, jsonBody, "per_page", 20, false, url.Values{})
+	if jsonBody["per_page"] != 20 {
+		t.Fatalf("non-form body limit = %#v", jsonBody["per_page"])
+	}
+}
+`), 0o644))
 	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "^TestReplayCarriedFormLimit$", "-count=1")
 	runGoCommand(t, outputDir, "build", "./...")
 }
 

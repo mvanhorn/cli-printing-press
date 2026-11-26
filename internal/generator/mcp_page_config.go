@@ -23,6 +23,10 @@ type mcpPageSettings struct {
 	// BodyPath is the full request-body path, including the leaf, when the
 	// cursor is nested. Empty means CursorParam is a top-level body or query key.
 	BodyPath []string
+	// PaginationType and LimitParam are set for offset and page lists so a
+	// reported total can name the next page. Cursor lists leave both empty.
+	PaginationType string
+	LimitParam     string
 }
 
 type mcpEndpointInput struct {
@@ -50,11 +54,13 @@ func deriveMCPPageSettings(resource spec.Resource, opName string, endpoint spec.
 		if !mcpEndpointPageable(endpoint) {
 			return mcpPageSettings{}
 		}
-		return mcpPageSettings{
+		settings := mcpPageSettings{
 			CursorParam:        strings.TrimSpace(endpoint.Pagination.CursorParam),
 			NextCursorPath:     mcpNextCursorPath(endpoint),
 			ExposeOpaqueCursor: true,
 		}
+		applyOffsetPageSettings(&settings, endpoint)
+		return settings
 	}
 	if endpoint.UsesBinaryResponse() || endpoint.UsesTextResponse() || !endpointIsReadCommand(endpoint, opName) {
 		return mcpPageSettings{}
@@ -102,7 +108,7 @@ func settingsFromDeclaredPagination(endpoint spec.Endpoint, inputs []mcpEndpoint
 	if cursorInBody && !endpointCanReplayBodyCursor(endpoint) {
 		return mcpPageSettings{}
 	}
-	return mcpPageSettings{
+	settings := mcpPageSettings{
 		CursorParam:        cursorParam,
 		NextCursorPath:     mcpNextCursorPath(endpoint),
 		HasMoreField:       hasMore,
@@ -110,6 +116,23 @@ func settingsFromDeclaredPagination(endpoint spec.Endpoint, inputs []mcpEndpoint
 		CursorInBody:       cursorInBody,
 		BodyPath:           bodyPath,
 		ExposeOpaqueCursor: !mcpHasPublicCursor(inputs),
+	}
+	applyOffsetPageSettings(&settings, endpoint)
+	return settings
+}
+
+func applyOffsetPageSettings(settings *mcpPageSettings, endpoint spec.Endpoint) {
+	if endpoint.Pagination == nil || settings == nil {
+		return
+	}
+	paginationType := strings.ToLower(strings.TrimSpace(endpoint.Pagination.Type))
+	if paginationType != "offset" && paginationType != "page" {
+		return
+	}
+	settings.PaginationType = paginationType
+	settings.LimitParam = strings.TrimSpace(endpoint.Pagination.LimitParam)
+	if settings.HasMoreField == "" {
+		settings.HasMoreField = strings.TrimSpace(endpoint.Pagination.HasMoreField)
 	}
 }
 
@@ -339,13 +362,16 @@ func appendMCPEndpointBodyInputs(out *[]mcpEndpointInput, body []spec.Param, dep
 }
 
 func renderMCPPageConfig(s mcpPageSettings) string {
-	if s.CursorParam == "" && s.NextCursorPath == "" && s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation && len(s.BodyPath) == 0 {
+	if s.CursorParam == "" && s.NextCursorPath == "" && s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation && len(s.BodyPath) == 0 && s.PaginationType == "" && s.LimitParam == "" {
 		return "mcpPageConfig{}"
 	}
-	// GET lists only fill CursorParam and NextCursorPath. Keep that literal
-	// byte-identical, including an explicit empty NextCursorPath for offset
-	// and page pagination.
+	// Cursor GET lists only fill CursorParam and NextCursorPath. Keep that
+	// literal byte-identical. Offset and page lists add the type and limit
+	// key, including an explicit empty NextCursorPath.
 	if len(s.BodyPath) == 0 && s.HasMoreField == "" && s.ContinuationInput == "" && !s.CursorInBody && !s.ExternalContinuation {
+		if s.PaginationType == "offset" || s.PaginationType == "page" {
+			return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q, PaginationType: %q, LimitParam: %q}", s.CursorParam, s.NextCursorPath, s.PaginationType, s.LimitParam)
+		}
 		return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}", s.CursorParam, s.NextCursorPath)
 	}
 	parts := make([]string, 0, 7)
@@ -373,6 +399,12 @@ func renderMCPPageConfig(s mcpPageSettings) string {
 	}
 	if s.ExternalContinuation {
 		parts = append(parts, "ExternalContinuation: true")
+	}
+	if s.PaginationType != "" {
+		parts = append(parts, fmt.Sprintf("PaginationType: %q", s.PaginationType))
+	}
+	if s.LimitParam != "" {
+		parts = append(parts, fmt.Sprintf("LimitParam: %q", s.LimitParam))
 	}
 	return "mcpPageConfig{" + strings.Join(parts, ", ") + "}"
 }

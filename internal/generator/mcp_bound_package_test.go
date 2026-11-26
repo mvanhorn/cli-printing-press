@@ -213,7 +213,7 @@ func TestMCPPageConfigDoesNotTreatNumericCursorAsResponsePath(t *testing.T) {
 					CursorParam: paginationType,
 				},
 			}
-			assert.Equal(t, `mcpPageConfig{CursorParam: "`+paginationType+`", NextCursorPath: ""}`, mcpPageConfig(endpoint))
+			assert.Equal(t, `mcpPageConfig{CursorParam: "`+paginationType+`", NextCursorPath: "", PaginationType: "`+paginationType+`", LimitParam: ""}`, mcpPageConfig(endpoint))
 		})
 	}
 }

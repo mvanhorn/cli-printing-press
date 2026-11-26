@@ -70,6 +70,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/deliver_spacefast.go",
 		"internal/cli/deliver_spacefast_test.go",
 		"internal/cli/agent_context.go",
+		"internal/cli/pagecursor.go",
 		"internal/cli/root_test.go",
 		"internal/cli/sync_hint.go",
 		"internal/cli/sync_hint_test.go",
@@ -188,9 +189,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +2: cliutil.EnvAssignHint and its GOOS test.
 		// +2: internal/cli/deliver_spacefast.go and its test, the always-emitted
 		// spacefast:<name> deliver sink.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 198},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 202},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 199},
+		// +1: internal/cli/pagecursor.go, the single-page cursor helper mcp-sync rewrites.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 199},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 203},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 200},
 	}
 
 	for _, tt := range tests {

@@ -179,7 +179,7 @@ func TestMCPPageConfigPagesReadOnlyPOSTLists(t *testing.T) {
 		Params: []spec.Param{{Name: "offset", In: "query", Type: "integer"}},
 	}
 	assert.Equal(t,
-		`mcpPageConfig{CursorParam: "offset", ContinuationInput: "offset"}`,
+		`mcpPageConfig{CursorParam: "offset", ContinuationInput: "offset", PaginationType: "offset", LimitParam: "limit"}`,
 		mcpToolPageConfig(spec.Resource{}, "list", offset),
 	)
 
@@ -460,6 +460,9 @@ func TestGeneratedReadOnlyPOSTListPaging(t *testing.T) {
 	requireLineContains(t, toolsCode, `"/groups/{id}/members",`, `ExternalContinuation: true`)
 	requireLineContains(t, toolsCode, `"/items/search",`, `mcpPageConfig{CursorParam: "page_token", NextCursorPath: "page_token", HasMoreField: "more", ContinuationInput: "page_token"}`)
 	requireLineContains(t, toolsCode, `"/items/nested",`, `BodyPath: []string{"paging", "cursor"}`)
+	assert.Contains(t, toolsCode, "func nestedBodyValue(")
+	assert.Contains(t, toolsCode, "v, ok := nestedBodyValue(bodyArgs, pageConfig.BodyPath)")
+	assert.Contains(t, toolsCode, "v, ok := nestedBodyValue(body, path)")
 	requireLineContains(t, toolsCode, `"/items/form",`, `CursorInBody: true`)
 	requireLineContains(t, toolsCode, `"/items/opaque",`, `mcpPageConfig{}`)
 	assert.NotContains(t, toolsCode, `mcplib.WithString("after"`)

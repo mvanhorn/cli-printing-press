@@ -126,6 +126,9 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 	mcpGot := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	require.Contains(t, mcpGot, `mcplib.WithString("start-date-time", mcplib.Description("RFC3339 timestamp"))`)
 	require.NotContains(t, mcpGot, `mcplib.WithString("start-date-time", mcplib.Required()`)
+	require.Contains(t, mcpGot, "func nestedBodyValue(")
+	require.Contains(t, mcpGot, "v, ok := nestedBodyValue(body, path)")
+	require.Contains(t, mcpGot, "nestedBodyValue(bodyArgs, pageConfig.BodyPath)")
 
 	runtimeTest := `package cli
 
@@ -171,6 +174,67 @@ func TestOptionalNestedRequiredRuntime(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "nested_required_runtime_test.go"), []byte(runtimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestOptionalNestedRequiredRuntime", "-count=1")
+
+	cursorTest := `package mcp
+
+import "testing"
+
+func TestNestedBodyCursorLookup(t *testing.T) {
+	body := map[string]any{"paging": map[string]any{"cursor": float64(20)}}
+	nested := mcpPageConfig{CursorParam: "cursor", BodyPath: []string{"paging", "cursor"}}
+	if got := mcpBodyCursor(body, nested); got != "20" {
+		t.Fatalf("nested number = %q", got)
+	}
+	body["paging"].(map[string]any)["cursor"] = " 20 "
+	if got := mcpBodyCursor(body, nested); got != "20" {
+		t.Fatalf("nested string = %q", got)
+	}
+	body["paging"].(map[string]any)["cursor"] = nil
+	if got := mcpBodyCursor(body, nested); got != "" {
+		t.Fatalf("nested nil = %q", got)
+	}
+	if got := mcpBodyCursor(map[string]any{"paging": map[string]any{}}, nested); got != "" {
+		t.Fatalf("missing nested = %q", got)
+	}
+	flat := mcpPageConfig{CursorParam: "offset"}
+	if got := mcpBodyCursor(map[string]any{"offset": float64(40)}, flat); got != "40" {
+		t.Fatalf("flat number = %q", got)
+	}
+	s, ok := nestedBodyString(map[string]any{"paging": map[string]any{"cursor": "abc"}}, []string{"paging", "cursor"})
+	if !ok || s != "abc" {
+		t.Fatalf("string lookup = %q %v", s, ok)
+	}
+	if _, ok := nestedBodyString(map[string]any{"paging": map[string]any{"cursor": float64(20)}}, []string{"paging", "cursor"}); ok {
+		t.Fatal("number lookup became a string")
+	}
+	if _, ok := nestedBodyString(map[string]any{}, nil); ok {
+		t.Fatal("empty path matched")
+	}
+	bodyArgs := map[string]any{}
+	params := map[string]string{}
+	nestedLimit := []mcpParamBinding{{
+		PublicName: "per-page",
+		WireName:   "per_page",
+		Location:   "body",
+		BodyPath:   []string{"paging", "per_page"},
+	}}
+	replayCarriedPageLimit(nestedLimit, params, bodyArgs, "per_page", 20)
+	got, ok := nestedBodyValue(bodyArgs, []string{"paging", "per_page"})
+	if !ok || got != 20 {
+		t.Fatalf("nested limit = %#v %v", got, ok)
+	}
+	if _, ok := bodyArgs["per_page"]; ok {
+		t.Fatal("nested limit was also written at the top level")
+	}
+	replayCarriedPageLimit(nestedLimit, params, bodyArgs, "per_page", 50)
+	got, _ = nestedBodyValue(bodyArgs, []string{"paging", "per_page"})
+	if got != 20 {
+		t.Fatalf("explicit nested limit overwritten to %#v", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "nested_cursor_lookup_test.go"), []byte(cursorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestNestedBodyCursorLookup", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 
 	promotedSpec := apiSpec
