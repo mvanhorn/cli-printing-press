@@ -15,9 +15,12 @@ Leave any installed `printing-press-rich-pp-cli` on `PATH` unused. It uses the o
 
 Relocate all four directories to an empty absolute directory before every run. `PRINTING_PRESS_RICH_HOME` does that for the process; `--home` does it for one invocation. Both win over `HOME`, `USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`. `PRINTING_PRESS_RICH_CONFIG_DIR`, `PRINTING_PRESS_RICH_DATA_DIR`, `PRINTING_PRESS_RICH_STATE_DIR`, and `PRINTING_PRESS_RICH_CACHE_DIR` win over both, so clear them when they were inherited. Those variables must be absolute; a relative value is skipped. `--home` must be absolute. On Unix, `mktemp -d` creates the directory; on Windows, pass an empty absolute path.
 
+Set `PRINTING_PRESS_RICH_CONFIG` to a file inside that directory, even when the file does not exist yet. A missing config under the relocated directory otherwise loads `~/.config/printing-press-rich-pp-cli/config.toml` from the real home, and a later save can rewrite that file. An inherited `PRINTING_PRESS_RICH_CONFIG` is a config path, so replace it. `--home` does not stop the fallback.
+
 ```bash
 iso="$(mktemp -d)"
 export PRINTING_PRESS_RICH_HOME="$iso"
+export PRINTING_PRESS_RICH_CONFIG="$iso/config.toml"
 export PRINTING_PRESS_RICH_CONFIG_DIR=
 export PRINTING_PRESS_RICH_DATA_DIR=
 export PRINTING_PRESS_RICH_STATE_DIR=

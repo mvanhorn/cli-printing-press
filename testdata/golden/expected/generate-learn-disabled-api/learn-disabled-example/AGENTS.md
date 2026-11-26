@@ -15,9 +15,12 @@ Leave any installed `learn-disabled-example-pp-cli` on `PATH` unused. It uses th
 
 Relocate all four directories to an empty absolute directory before every run. `LEARN_DISABLED_EXAMPLE_HOME` does that for the process; `--home` does it for one invocation. Both win over `HOME`, `USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`. `LEARN_DISABLED_EXAMPLE_CONFIG_DIR`, `LEARN_DISABLED_EXAMPLE_DATA_DIR`, `LEARN_DISABLED_EXAMPLE_STATE_DIR`, and `LEARN_DISABLED_EXAMPLE_CACHE_DIR` win over both, so clear them when they were inherited. Those variables must be absolute; a relative value is skipped. `--home` must be absolute. On Unix, `mktemp -d` creates the directory; on Windows, pass an empty absolute path.
 
+Set `LEARN_DISABLED_EXAMPLE_CONFIG` to a file inside that directory, even when the file does not exist yet. A missing config under the relocated directory otherwise loads `~/.config/learn-disabled-example-pp-cli/config.toml` from the real home, and a later save can rewrite that file. An inherited `LEARN_DISABLED_EXAMPLE_CONFIG` is a config path, so replace it. `--home` does not stop the fallback.
+
 ```bash
 iso="$(mktemp -d)"
 export LEARN_DISABLED_EXAMPLE_HOME="$iso"
+export LEARN_DISABLED_EXAMPLE_CONFIG="$iso/config.toml"
 export LEARN_DISABLED_EXAMPLE_CONFIG_DIR=
 export LEARN_DISABLED_EXAMPLE_DATA_DIR=
 export LEARN_DISABLED_EXAMPLE_STATE_DIR=

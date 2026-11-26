@@ -40,6 +40,7 @@ func TestGeneratedAgentsGuideRendersPortableAgentContract(t *testing.T) {
 	assert.NotContains(t, content, "## Command Reference")
 	assert.NotContains(t, content, "npx -y @mvanhorn/printing-press-library install")
 	assert.Contains(t, content, "export FINANCE_HOME=")
+	assert.Contains(t, content, `export FINANCE_CONFIG="$iso/config.toml"`)
 	assert.Contains(t, content, "export FINANCE_CONFIG_DIR=")
 	assert.NotContains(t, content, "export HOME=")
 	assert.NotContains(t, content, "export USERPROFILE=")

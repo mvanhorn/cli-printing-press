@@ -11,6 +11,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -31,11 +32,13 @@ func TestGeneratedAgentsContractIsolatesOperatorHome(t *testing.T) {
 	assertHTTPAgentsIsolation(t, agents, cliName, prefix, true)
 	assertAgentsSkillOmitsSourceContract(t, outputDir)
 	assertPrintedPathEnv(t, outputDir, prefix)
+	writeLegacyConfigProbe(t, outputDir, cliName, prefix, apiSpec.Config.Format, "", false)
 
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommand(t, outputDir, "test", "-count=1", "./internal/cliutil/", "-run", "TestKindDirHomeEnvUsesFlatKindLayout|TestKindDirPerKindEnvBeatsHomeEnv")
+	runGoCommand(t, outputDir, "test", "-count=1", "./internal/config/", "-run", "TestPrintedConfigEnvSkipsLegacyHome")
 
-	binaryPath := filepath.Join(outputDir, cliName)
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, cliName))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+cliName)
 
 	sentinel := t.TempDir()
@@ -132,6 +135,23 @@ func TestGeneratedAgentsContractLearnDisabledOmitsLearnCommands(t *testing.T) {
 	assertAgentsSkillOmitsSourceContract(t, outputDir)
 	assertPrintedPathEnv(t, outputDir, prefix)
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedAgentsConfigEnvSkipsLegacyHome(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("agents-cfg")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cliName := naming.CLI(apiSpec.Name)
+	prefix := naming.EnvPrefix(apiSpec.Name)
+	agents := readFileString(t, filepath.Join(outputDir, "AGENTS.md"))
+	require.Contains(t, agents, `export `+prefix+`_CONFIG="$iso/config.`+apiSpec.Config.Format+`"`)
+	require.Contains(t, readFileString(t, filepath.Join(outputDir, "internal", "config", "config.go")), `os.Getenv("`+prefix+`_CONFIG")`)
+	writeLegacyConfigProbe(t, outputDir, cliName, prefix, apiSpec.Config.Format, apiSpec.BaseURL, true)
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "-count=1", "./internal/config/", "-run", "TestPrintedConfigEnvSkipsLegacyHome")
 }
 
 func TestGeneratedDeviceAgentsContractNoLocalCache(t *testing.T) {
@@ -237,6 +257,7 @@ func assertHTTPAgentsIsolation(t *testing.T, agents, cliName, prefix string, lea
 	require.NotContains(t, agents, "Start by asking the generated CLI")
 	require.NotContains(t, agents, "export HOME=")
 	require.Contains(t, agents, prefix+"_HOME")
+	require.Contains(t, agents, `export `+prefix+`_CONFIG="$iso/config.`)
 	for _, suffix := range []string{"CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR"} {
 		require.Contains(t, agents, prefix+"_"+suffix)
 	}
@@ -406,4 +427,68 @@ func writeDeviceCacheProbe(t *testing.T, outputDir, cliName string, store, sessi
 	body.WriteString("\treturn rel != \"..\" && (len(rel) < len(prefix) || rel[:len(prefix)] != prefix)\n}\n")
 	path := filepath.Join(outputDir, "internal", "device", "cache_isolation_test.go")
 	require.NoError(t, os.WriteFile(path, []byte(body.String()), 0o644))
+}
+
+func writeLegacyConfigProbe(t *testing.T, outputDir, cliName, prefix, format, defaultBase string, scrub bool) {
+	t.Helper()
+	scrubLiteral := "false"
+	if scrub {
+		scrubLiteral = "true"
+	}
+	var body strings.Builder
+	body.WriteString("package config\n\nimport (\n\t\"bytes\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"testing\"\n)\n\n")
+	body.WriteString("func TestPrintedConfigEnvSkipsLegacyHome(t *testing.T) {\n")
+	body.WriteString("\tt.Run(\"missing relocated config reads legacy home\", func(t *testing.T) {\n")
+	body.WriteString("\t\thome, iso := legacyHomes(t)\n")
+	body.WriteString("\t\tlegacy := plantLegacyConfig(t, home)\n")
+	body.WriteString("\t\tbefore := readLegacy(t, legacy)\n")
+	body.WriteString("\t\tsetLegacyEnv(t, home, iso, \"\")\n")
+	body.WriteString("\t\tcfg := mustLoadConfig(t)\n")
+	body.WriteString("\t\tif cfg.BaseURL != \"https://legacy.invalid\" {\n\t\t\tt.Fatalf(\"base_url = %q\", cfg.BaseURL)\n\t\t}\n")
+	body.WriteString("\t\tif cfg.AuthHeaderVal != \"legacy-secret\" {\n\t\t\tt.Fatalf(\"auth_header = %q\", cfg.AuthHeaderVal)\n\t\t}\n")
+	body.WriteString("\t\tif err := cfg.save(); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n")
+	body.WriteString("\t\tafter := readLegacy(t, legacy)\n")
+	body.WriteString("\t\tif " + scrubLiteral + " {\n")
+	body.WriteString("\t\t\tif bytes.Contains(after, []byte(\"legacy-secret\")) {\n\t\t\t\tt.Fatal(\"save left the legacy credential in place\")\n\t\t\t}\n")
+	body.WriteString("\t\t} else if !bytes.Equal(before, after) {\n\t\t\tt.Fatal(\"save rewrote the legacy config\")\n\t\t}\n")
+	body.WriteString("\t})\n")
+	body.WriteString("\tt.Run(\"explicit config file skips legacy home\", func(t *testing.T) {\n")
+	body.WriteString("\t\thome, iso := legacyHomes(t)\n")
+	body.WriteString("\t\tlegacy := plantLegacyConfig(t, home)\n")
+	body.WriteString("\t\tbefore := readLegacy(t, legacy)\n")
+	body.WriteString("\t\tsetLegacyEnv(t, home, iso, filepath.Join(iso, \"config." + format + "\"))\n")
+	body.WriteString("\t\tcfg := mustLoadConfig(t)\n")
+	body.WriteString("\t\tif cfg.BaseURL != " + strconv.Quote(defaultBase) + " {\n\t\t\tt.Fatalf(\"base_url = %q\", cfg.BaseURL)\n\t\t}\n")
+	body.WriteString("\t\tif cfg.AuthHeaderVal != \"\" {\n\t\t\tt.Fatalf(\"auth_header = %q\", cfg.AuthHeaderVal)\n\t\t}\n")
+	body.WriteString("\t\tif err := cfg.save(); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n")
+	body.WriteString("\t\tif !bytes.Equal(before, readLegacy(t, legacy)) {\n\t\t\tt.Fatal(\"save rewrote the legacy config\")\n\t\t}\n")
+	body.WriteString("\t})\n}\n\n")
+	body.WriteString("func legacyHomes(t *testing.T) (string, string) {\n\tt.Helper()\n\treturn t.TempDir(), t.TempDir()\n}\n\n")
+	body.WriteString("func plantLegacyConfig(t *testing.T, home string) string {\n")
+	body.WriteString("\tt.Helper()\n")
+	body.WriteString("\tpath := filepath.Join(home, \".config\", " + strconv.Quote(cliName) + ", \"config." + format + "\")\n")
+	body.WriteString("\tif err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {\n\t\tt.Fatal(err)\n\t}\n")
+	body.WriteString("\tbody := " + strconv.Quote(legacyConfigBody(format)) + "\n")
+	body.WriteString("\tif err := os.WriteFile(path, []byte(body), 0o600); err != nil {\n\t\tt.Fatal(err)\n\t}\n")
+	body.WriteString("\treturn path\n}\n\n")
+	body.WriteString("func setLegacyEnv(t *testing.T, home, iso, configFile string) {\n")
+	body.WriteString("\tt.Helper()\n")
+	body.WriteString("\tt.Setenv(\"HOME\", home)\n\tt.Setenv(\"USERPROFILE\", home)\n")
+	body.WriteString("\tfor _, key := range []string{\"XDG_CONFIG_HOME\", \"XDG_DATA_HOME\", \"XDG_STATE_HOME\", \"XDG_CACHE_HOME\", " +
+		strconv.Quote(prefix+"_CONFIG_DIR") + ", " + strconv.Quote(prefix+"_DATA_DIR") + ", " +
+		strconv.Quote(prefix+"_STATE_DIR") + ", " + strconv.Quote(prefix+"_CACHE_DIR") + "} {\n")
+	body.WriteString("\t\tt.Setenv(key, \"\")\n\t}\n")
+	body.WriteString("\tt.Setenv(" + strconv.Quote(prefix+"_HOME") + ", iso)\n")
+	body.WriteString("\tt.Setenv(" + strconv.Quote(prefix+"_CONFIG") + ", configFile)\n}\n\n")
+	body.WriteString("func mustLoadConfig(t *testing.T) *Config {\n\tt.Helper()\n\tcfg, err := Load(\"\")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\treturn cfg\n}\n\n")
+	body.WriteString("func readLegacy(t *testing.T, path string) []byte {\n\tt.Helper()\n\tdata, err := os.ReadFile(path)\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\treturn data\n}\n")
+	path := filepath.Join(outputDir, "internal", "config", "legacy_config_test.go")
+	require.NoError(t, os.WriteFile(path, []byte(body.String()), 0o644))
+}
+
+func legacyConfigBody(format string) string {
+	if format == "toml" {
+		return "base_url = \"https://legacy.invalid\"\nauth_header = \"legacy-secret\"\n"
+	}
+	return "{\"base_url\":\"https://legacy.invalid\",\"auth_header\":\"legacy-secret\"}\n"
 }
