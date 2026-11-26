@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,7 +45,8 @@ func TestFullRun(t *testing.T) {
 			result := MakeBestCLI(api.name, api.level, api.flag, api.url, outputDir, pressBinary)
 			results = append(results, result)
 
-			assert.Equal(t, fullRunQualityGateCount, result.GatesPassed, "%s: all quality gates should pass", api.name)
+			assert.Equal(t, generator.StandardQualityGateCount(), result.GatesPassed, "%s: all quality gates should pass", api.name)
+			assert.Zero(t, result.GatesFailed, "%s: no quality gate should fail", api.name)
 			assert.True(t, result.CommandCount > 0, "%s: should have commands", api.name)
 			assert.NotNil(t, result.Scorecard, "%s: should have scorecard", api.name)
 		})
@@ -74,26 +76,71 @@ func TestFullRunQualitySpecPath(t *testing.T) {
 func TestGenerateLearningsPlanUsesQualityGateCount(t *testing.T) {
 	t.Parallel()
 
+	gateTotal := generator.StandardQualityGateCount()
+	require.Equal(t, 12, gateTotal)
+	const interruptedPasses = 6
+	const earlyFailurePasses = 4
 	outputPath := filepath.Join(t.TempDir(), "learnings.md")
-	require.NoError(t, GenerateLearningsPlan([]*FullRunResult{{
-		APIName:     "demo",
-		Level:       "EASY",
-		GatesPassed: 6,
-	}}, outputPath))
+	results := []*FullRunResult{
+		{APIName: "complete", Level: "EASY", GatesPassed: gateTotal},
+		{APIName: "interrupted", Level: "EASY", GatesPassed: interruptedPasses, Errors: []string{"generate interrupted"}},
+		{APIName: "early failure", Level: "EASY", GatesPassed: earlyFailurePasses, GatesFailed: 1},
+		{APIName: "final failure", Level: "EASY", GatesPassed: gateTotal - 1, GatesFailed: 1},
+	}
+	require.NoError(t, GenerateLearningsPlan(results, outputPath))
 
 	content, err := os.ReadFile(outputPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Gates 6/10")
-	assert.NotContains(t, string(content), "Gates 6/9")
+	plan := string(content)
+	assert.Contains(t, plan, fmt.Sprintf("**complete** (EASY) - Gates %d/%d", gateTotal, gateTotal))
+	assert.Contains(t, plan, fmt.Sprintf("**interrupted** (EASY) - Gates %d/%d", interruptedPasses, gateTotal))
+	assert.Contains(t, plan, fmt.Sprintf("**interrupted** - validation incomplete (%d/%d gates passed)", interruptedPasses, gateTotal))
+	assert.Contains(t, plan, "**early failure** - 1 gates failed")
+	assert.Contains(t, plan, fmt.Sprintf("**early failure** - validation incomplete (%d/%d gates passed)", earlyFailurePasses, gateTotal))
+	assert.Contains(t, plan, "**final failure** - 1 gates failed")
+	assert.NotContains(t, plan, "**final failure** - validation incomplete")
+	assert.NotContains(t, plan, "All gates passed across all runs.")
+	assert.Contains(t, PrintComparisonTable(results), fmt.Sprintf("%d/%d PASS", gateTotal, gateTotal))
+
+	require.NoError(t, GenerateLearningsPlan(results[:1], outputPath))
+	content, err = os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "All gates passed across all runs.")
+}
+
+func TestCountQualityGateVerdictsUsesNamedGatesOnce(t *testing.T) {
+	t.Parallel()
+
+	expectedGates := []string{"load inputs", "check records", "write report"}
+	output := `PASS load inputs
+PASS check records
+PASS check records
+PASS unrelated step
+Generated demo at /tmp/PASS-FAIL/demo
+`
+	passed, failed := countQualityGateVerdicts(output, expectedGates)
+	assert.Equal(t, 2, passed)
+	assert.Zero(t, failed)
+
+	output += "PASS write report\n"
+	passed, failed = countQualityGateVerdicts(output, expectedGates)
+	assert.Equal(t, 3, passed)
+	assert.Zero(t, failed)
+
+	output += "FAIL check records\nFAIL check records\nPASS check records\n"
+	passed, failed = countQualityGateVerdicts(output, expectedGates)
+	assert.Equal(t, 2, passed)
+	assert.Equal(t, 1, failed)
 }
 
 func TestPrintComparisonTableRows(t *testing.T) {
 	t.Parallel()
 
+	const passedGates = 6
 	table := PrintComparisonTable([]*FullRunResult{{
 		APIName:         "demo",
 		Level:           "EASY",
-		GatesPassed:     6,
+		GatesPassed:     passedGates,
 		CommandCount:    9,
 		ResourceCount:   5,
 		CoveragePercent: 83,
@@ -129,7 +176,7 @@ func TestPrintComparisonTableRows(t *testing.T) {
 		last = idx
 	}
 
-	assert.Contains(t, table, "6/10 PASS")
+	assert.Contains(t, table, fmt.Sprintf("%d/%d PASS", passedGates, generator.StandardQualityGateCount()))
 	assert.Contains(t, table, "72/80 (72%)")
 	assert.Contains(t, table, "1/2")
 	assert.Contains(t, table, "PASS 100%")

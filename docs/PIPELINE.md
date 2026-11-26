@@ -126,7 +126,7 @@ Freshness ownership:
 - Freshness metadata belongs in the existing JSON provenance envelope at `meta.freshness`. It describes current-cache freshness for the covered path only; it must not be described as full historical backfill or API-specific enrichment.
 
 Gates:
-- All ten generator quality gates pass: `go mod tidy`, safe `golang.org/x/net`, fresh generated `go test -count=1 ./...`, default-mode `govulncheck`, `go vet`, `go build`, binary build, `--help`, version, `doctor`
+- The [generator quality gates](../internal/generator/validate.go) all pass. They cover dependency resolution and version floors, fresh generated tests, default-mode `govulncheck`, `go vet`, builds, and the binary's `--help`, `version`, and `doctor` commands.
 
 Artifacts:
 - Full CLI source tree in the output directory
@@ -165,7 +165,7 @@ Outputs:
 
 Gates:
 - Overlay merge completes without conflicts
-- All ten generator quality gates pass again after regeneration, including safe `golang.org/x/net`, fresh generated `go test -count=1 ./...`, and default-mode `govulncheck`
+- The generator quality gates pass again after regeneration.
 
 Artifacts:
 - Merged spec (format follows the source spec)
