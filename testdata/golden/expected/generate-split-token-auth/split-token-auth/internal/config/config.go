@@ -527,7 +527,7 @@ func (c *Config) trustedGlobalCredentialOrigin() (string, bool) {
 	opened, _, err := openDefaultConfig(primary, legacy)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return usableBuiltinOrigin()
+			return c.originWithoutRecord()
 		}
 		return "", false
 	}
@@ -536,12 +536,21 @@ func (c *Config) trustedGlobalCredentialOrigin() (string, bool) {
 	}
 	base := strings.TrimSpace(baseURLFromConfigBytes(opened.Data))
 	if base == "" {
-		return usableBuiltinOrigin()
+		return c.originWithoutRecord()
 	}
 	if _, ok := cliutil.NormalizeCredentialOrigin(base); !ok {
 		return "", false
 	}
 	return base, true
+}
+
+// An explicit profile skips the legacy file, so a missing server is unknown.
+// Do not treat that as the built-in origin.
+func (c *Config) originWithoutRecord() (string, bool) {
+	if c.ExplicitFile() {
+		return "", false
+	}
+	return usableBuiltinOrigin()
 }
 
 func usableBuiltinOrigin() (string, bool) {
