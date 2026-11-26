@@ -724,23 +724,31 @@ func setNestedBodyArg(body map[string]any, path []string, value any) {
 	current[path[len(path)-1]] = value
 }
 
-func nestedBodyString(body map[string]any, path []string) (string, bool) {
+func nestedBodyValue(body map[string]any, path []string) (any, bool) {
 	if len(path) == 0 {
-		return "", false
+		return nil, false
 	}
 	current := any(body)
 	for _, key := range path {
 		obj, ok := current.(map[string]any)
 		if !ok {
-			return "", false
+			return nil, false
 		}
 		next, ok := obj[key]
 		if !ok {
-			return "", false
+			return nil, false
 		}
 		current = next
 	}
-	s, ok := current.(string)
+	return current, true
+}
+
+func nestedBodyString(body map[string]any, path []string) (string, bool) {
+	v, ok := nestedBodyValue(body, path)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
 	return s, ok
 }
 
@@ -1866,22 +1874,11 @@ func mcpBodyCursor(bodyArgs map[string]any, pageConfig mcpPageConfig) string {
 	}
 {{- if $hasNestedBodyPath}}
 	if len(pageConfig.BodyPath) > 0 {
-		current := any(bodyArgs)
-		for _, key := range pageConfig.BodyPath {
-			obj, ok := current.(map[string]any)
-			if !ok {
-				return ""
-			}
-			next, ok := obj[key]
-			if !ok {
-				return ""
-			}
-			current = next
-		}
-		if current == nil {
+		v, ok := nestedBodyValue(bodyArgs, pageConfig.BodyPath)
+		if !ok || v == nil {
 			return ""
 		}
-		return strings.TrimSpace(formatMCPParamValue(current))
+		return strings.TrimSpace(formatMCPParamValue(v))
 	}
 {{- end}}
 	v, ok := bodyArgs[pageConfig.CursorParam]
