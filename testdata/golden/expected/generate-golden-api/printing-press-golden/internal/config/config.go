@@ -494,20 +494,30 @@ func (c *Config) globalCredentialOriginError(creds *cliutil.Credentials) error {
 	return fmt.Errorf("global credentials for %s were not applied to %s; run auth login --config %s", issued, target, c.Path)
 }
 
+// ExplicitFile reports that Load was given --config or PRINTING_PRESS_GOLDEN_CONFIG.
+// The legacy home file is then a different file and still holds the operator's
+// credentials, so callers must not open it.
+func (c *Config) ExplicitFile() bool {
+	return c != nil && c.explicitConfig
+}
+
 func (c *Config) trustedGlobalCredentialOrigin() (string, bool) {
 	dir, err := cliutil.ConfigDir()
 	if err != nil {
 		return "", false
 	}
 	primary := filepath.Join(dir, "config.toml")
-	legacy, err := LegacyConfigPath()
-	if err != nil {
-		return "", false
+	legacy := ""
+	if !c.ExplicitFile() {
+		legacy, err = LegacyConfigPath()
+		if err != nil {
+			return "", false
+		}
 	}
 	opened, _, err := openDefaultConfig(primary, legacy)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return usableBuiltinOrigin()
+			return c.originWithoutRecord()
 		}
 		return "", false
 	}
@@ -516,12 +526,33 @@ func (c *Config) trustedGlobalCredentialOrigin() (string, bool) {
 	}
 	base := strings.TrimSpace(baseURLFromConfigBytes(opened.Data))
 	if base == "" {
-		return usableBuiltinOrigin()
+		return c.originWithoutRecord()
 	}
 	if _, ok := cliutil.NormalizeCredentialOrigin(base); !ok {
 		return "", false
 	}
 	return base, true
+}
+
+// An explicit profile does not open the legacy file. If that file exists, its
+// server is unchecked and unscoped credentials are refused; otherwise the built-in origin stands.
+func (c *Config) originWithoutRecord() (string, bool) {
+	if c.ExplicitFile() && legacyServerUnchecked() {
+		return "", false
+	}
+	return usableBuiltinOrigin()
+}
+
+func legacyServerUnchecked() bool {
+	path, err := LegacyConfigPath()
+	if err != nil {
+		return true
+	}
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return true
 }
 
 func usableBuiltinOrigin() (string, bool) {
