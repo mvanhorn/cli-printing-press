@@ -522,15 +522,25 @@ func (c *Config) globalCredentialOriginError(creds *cliutil.Credentials) error {
 	return fmt.Errorf("global credentials for %s were not applied to %s; run auth login --config %s", issued, target, c.Path)
 }
 
+// ExplicitFile reports that Load was given --config or PRINTING_PRESS_OAUTH2_CONFIG.
+// The legacy home file is then a different file and still holds the operator's
+// credentials, so callers must not open it.
+func (c *Config) ExplicitFile() bool {
+	return c != nil && c.explicitConfig
+}
+
 func (c *Config) trustedGlobalCredentialOrigin() (string, bool) {
 	dir, err := cliutil.ConfigDir()
 	if err != nil {
 		return "", false
 	}
 	primary := filepath.Join(dir, "config.toml")
-	legacy, err := LegacyConfigPath()
-	if err != nil {
-		return "", false
+	legacy := ""
+	if !c.ExplicitFile() {
+		legacy, err = LegacyConfigPath()
+		if err != nil {
+			return "", false
+		}
 	}
 	opened, _, err := openDefaultConfig(primary, legacy)
 	if err != nil {

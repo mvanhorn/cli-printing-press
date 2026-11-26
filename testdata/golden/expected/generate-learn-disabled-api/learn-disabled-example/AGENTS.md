@@ -15,7 +15,9 @@ Leave any installed `learn-disabled-example-pp-cli` on `PATH` unused. It uses th
 
 Relocate all four directories to an empty absolute directory before every run. `LEARN_DISABLED_EXAMPLE_HOME` does that for the process; `--home` does it for one invocation. Both win over `HOME`, `USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`. `LEARN_DISABLED_EXAMPLE_CONFIG_DIR`, `LEARN_DISABLED_EXAMPLE_DATA_DIR`, `LEARN_DISABLED_EXAMPLE_STATE_DIR`, and `LEARN_DISABLED_EXAMPLE_CACHE_DIR` win over both, so clear them when they were inherited. Those variables must be absolute; a relative value is skipped. `--home` must be absolute. On Unix, `mktemp -d` creates the directory; on Windows, pass an empty absolute path.
 
-Set `LEARN_DISABLED_EXAMPLE_CONFIG` to a file inside that directory, even when the file does not exist yet. A missing config under the relocated directory otherwise loads `~/.config/learn-disabled-example-pp-cli/config.toml` from the real home, and a later save can rewrite that file. An inherited `LEARN_DISABLED_EXAMPLE_CONFIG` is a config path, so replace it. `--home` does not stop the fallback.
+Set `LEARN_DISABLED_EXAMPLE_CONFIG` to a file inside that directory, even when the file does not exist yet. Without it, a missing config under the relocated directory loads `~/.config/learn-disabled-example-pp-cli/config.toml` from the real home (`os.UserHomeDir`): `Load` applies that file, `doctor` opens it, and a later save can rewrite it. An inherited `LEARN_DISABLED_EXAMPLE_CONFIG` is a config path, so replace it. `--config` is that same explicit file for one invocation. `--home` does not stop those reads.
+
+`os.UserHomeDir` ignores `LEARN_DISABLED_EXAMPLE_HOME`. On Unix it reads `HOME`. On Windows it reads `USERPROFILE` and ignores `HOME` when `USERPROFILE` is set. `devcli` sets both, plus `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`, on the CLI process only. An inherited `XDG_*_HOME` value is used when `LEARN_DISABLED_EXAMPLE_HOME` is unset or relative. Do not export HOME or USERPROFILE for the shell; `go` and `git` keep the real profile.
 
 ```bash
 iso="$(mktemp -d)"
@@ -25,30 +27,38 @@ export LEARN_DISABLED_EXAMPLE_CONFIG_DIR=
 export LEARN_DISABLED_EXAMPLE_DATA_DIR=
 export LEARN_DISABLED_EXAMPLE_STATE_DIR=
 export LEARN_DISABLED_EXAMPLE_CACHE_DIR=
-./learn-disabled-example-pp-cli doctor --json
-./learn-disabled-example-pp-cli agent-context --pretty
+devcli() {
+  env HOME="$iso" USERPROFILE="$iso" \
+    XDG_CONFIG_HOME="$iso/xdg/config" \
+    XDG_DATA_HOME="$iso/xdg/data" \
+    XDG_STATE_HOME="$iso/xdg/state" \
+    XDG_CACHE_HOME="$iso/xdg/cache" \
+    ./learn-disabled-example-pp-cli "$@"
+}
+devcli doctor --json
+devcli agent-context --pretty
 ```
 
-Keep those variables set for every `./learn-disabled-example-pp-cli` run in the session, including `which` and `--help`. Send live API requests only when the task requires them.
+Keep `LEARN_DISABLED_EXAMPLE_HOME`, `LEARN_DISABLED_EXAMPLE_CONFIG`, and the cleared directory variables exported, and run later commands through `devcli`, including `which` and `--help`. Send live API requests only when the task requires them.
 
 Use runtime discovery on that binary instead of a copied command list:
 
 ```bash
-./learn-disabled-example-pp-cli which "<capability>" --json
-./learn-disabled-example-pp-cli <command> --help
+devcli which "<capability>" --json
+devcli <command> --help
 ```
 
 Add `--agent` to command invocations for JSON, compact output, non-interactive defaults, and no color:
 
 ```bash
-./learn-disabled-example-pp-cli <command> --agent
+devcli <command> --agent
 ```
 
 Before running an unfamiliar command that may mutate remote state, inspect its help and prefer a dry run:
 
 ```bash
-./learn-disabled-example-pp-cli <command> --help
-./learn-disabled-example-pp-cli <command> --dry-run --agent
+devcli <command> --help
+devcli <command> --dry-run --agent
 ```
 
 A completed `--dry-run` reports `"success": true` and `"dry_run": true` and omits HTTP `status`. Hand-written commands should call `writeDryRun` for that shape. A dry run that fails validation exits non-zero with `"success": false`.

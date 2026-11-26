@@ -154,6 +154,124 @@ func TestGeneratedAgentsConfigEnvSkipsLegacyHome(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "-count=1", "./internal/config/", "-run", "TestPrintedConfigEnvSkipsLegacyHome")
 }
 
+func TestGeneratedAgentsDoctorSkipsOperatorLegacyConfig(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("agents-doc-legacy")
+	apiSpec.BaseURL = ""
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	cliName := naming.CLI(apiSpec.Name)
+	prefix := naming.EnvPrefix(apiSpec.Name)
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, cliName))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+cliName)
+
+	operator := t.TempDir()
+	iso := t.TempDir()
+	legacyPath := filepath.Join(operator, ".config", cliName, "config."+apiSpec.Config.Format)
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0o700))
+	legacyBody := []byte("auth_header = \"legacy-secret\"\n")
+	require.NoError(t, os.WriteFile(legacyPath, legacyBody, 0o600))
+	explicit := filepath.Join(iso, "config."+apiSpec.Config.Format)
+
+	base := func() []string {
+		return append(doctorEnv(operator, prefix),
+			prefix+"_HOME="+iso,
+			"MYAPI_TOKEN=",
+			prefix+"_BASE_URL=",
+			"PRINTING_PRESS_VERIFY=",
+			"PRINTING_PRESS_DOGFOOD=",
+			"PRINTING_PRESS_VERIFY_LIVE_HTTP=",
+			"XDG_CONFIG_HOME="+filepath.Join(operator, ".config"),
+			"XDG_DATA_HOME="+filepath.Join(operator, ".local", "share"),
+			"XDG_STATE_HOME="+filepath.Join(operator, ".local", "state"),
+			"XDG_CACHE_HOME="+filepath.Join(operator, ".cache"),
+		)
+	}
+
+	t.Run("config env leaves the operator file unread", func(t *testing.T) {
+		env := append(base(), prefix+"_CONFIG="+explicit)
+		payload, err := runDoctorJSON(t, binaryPath, env)
+		require.NoError(t, err)
+		assertDoctorMissedLegacy(t, payload, legacyPath, explicit)
+		require.Equal(t, legacyBody, fileBytes(t, legacyPath))
+	})
+
+	t.Run("config flag leaves the operator file unread", func(t *testing.T) {
+		payload, err := runDoctorJSON(t, binaryPath, base(), "--config", explicit)
+		require.NoError(t, err)
+		assertDoctorMissedLegacy(t, payload, legacyPath, explicit)
+		require.Equal(t, legacyBody, fileBytes(t, legacyPath))
+	})
+
+	t.Run("home env alone still reads the operator file", func(t *testing.T) {
+		payload, err := runDoctorJSON(t, binaryPath, base())
+		require.NoError(t, err)
+		require.Equal(t, "legacy config path", payload["credentials_location"])
+		require.Contains(t, credentialLocations(t, payload), legacyPath)
+		require.Equal(t, legacyBody, fileBytes(t, legacyPath))
+	})
+
+	t.Run("explicit path can still name the operator file", func(t *testing.T) {
+		payload, err := runDoctorJSON(t, binaryPath, base(), "--config", legacyPath)
+		require.NoError(t, err)
+		require.Equal(t, "config-kind path", payload["credentials_location"])
+		require.Contains(t, credentialLocations(t, payload), legacyPath)
+		require.Equal(t, legacyBody, fileBytes(t, legacyPath))
+	})
+
+	t.Run("process home hides the operator file when config env is unset", func(t *testing.T) {
+		decoy := t.TempDir()
+		env := append(doctorEnv(decoy, prefix),
+			"MYAPI_TOKEN=",
+			prefix+"_BASE_URL=",
+			"XDG_CONFIG_HOME="+filepath.Join(decoy, "xdg", "config"),
+			"XDG_DATA_HOME="+filepath.Join(decoy, "xdg", "data"),
+			"XDG_STATE_HOME="+filepath.Join(decoy, "xdg", "state"),
+			"XDG_CACHE_HOME="+filepath.Join(decoy, "xdg", "cache"),
+		)
+		payload, err := runDoctorJSON(t, binaryPath, env)
+		require.NoError(t, err)
+		require.Equal(t, "none", payload["credentials_location"])
+		require.NotContains(t, credentialLocations(t, payload), legacyPath)
+		require.Equal(t, legacyBody, fileBytes(t, legacyPath))
+	})
+}
+
+func assertDoctorMissedLegacy(t *testing.T, payload map[string]any, legacyPath, explicit string) {
+	t.Helper()
+	require.Equal(t, "none", payload["credentials_location"])
+	require.NotContains(t, credentialLocations(t, payload), legacyPath)
+	require.Equal(t, explicit, payload["config_path"])
+	encoded, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "legacy-secret")
+}
+
+func credentialLocations(t *testing.T, payload map[string]any) []string {
+	t.Helper()
+	raw, ok := payload["credentials_locations"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		path, ok := item.(string)
+		require.True(t, ok, "credentials_locations item %#v", item)
+		out = append(out, path)
+	}
+	return out
+}
+
+func fileBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
+}
+
 func TestGeneratedDeviceAgentsContractNoLocalCache(t *testing.T) {
 	t.Parallel()
 
@@ -245,17 +363,27 @@ func assertHTTPAgentsIsolation(t *testing.T, agents, cliName, prefix string, lea
 	require.Contains(t, agents, "Leave any installed `"+cliName+"` on `PATH` unused.")
 	require.Contains(t, agents, "go build -o ./"+cliName+" ./cmd/"+cliName)
 	require.Contains(t, agents, "go test ./...")
-	require.Contains(t, agents, "./"+cliName+" doctor --json")
-	require.Contains(t, agents, "./"+cliName+" agent-context --pretty")
-	require.Contains(t, agents, "./"+cliName+" which \"<capability>\" --json")
-	require.Contains(t, agents, "./"+cliName+" <command> --help")
-	require.Contains(t, agents, "./"+cliName+" <command> --agent")
-	require.Contains(t, agents, "./"+cliName+" <command> --dry-run --agent")
+	require.Contains(t, agents, "devcli doctor --json")
+	require.Contains(t, agents, "devcli agent-context --pretty")
+	require.Contains(t, agents, "devcli which \"<capability>\" --json")
+	require.Contains(t, agents, "devcli <command> --help")
+	require.Contains(t, agents, "devcli <command> --agent")
+	require.Contains(t, agents, "devcli <command> --dry-run --agent")
+	require.Contains(t, agents, `./`+cliName+` "$@"`)
+	require.Contains(t, agents, `env HOME="$iso" USERPROFILE="$iso"`)
+	require.Contains(t, agents, `XDG_CONFIG_HOME="$iso/xdg/config"`)
+	require.Contains(t, agents, `XDG_DATA_HOME="$iso/xdg/data"`)
+	require.Contains(t, agents, `XDG_STATE_HOME="$iso/xdg/state"`)
+	require.Contains(t, agents, `XDG_CACHE_HOME="$iso/xdg/cache"`)
+	require.Contains(t, agents, "`doctor` opens it")
+	require.Contains(t, agents, "os.UserHomeDir")
 	require.Contains(t, agents, "`--agent` does not imply `--yes`")
 	require.Contains(t, agents, "`\"dry_run\": true`")
 	require.NotContains(t, agents, "\n"+cliName+" doctor --json\n")
+	require.NotContains(t, agents, "./"+cliName+" doctor --json")
 	require.NotContains(t, agents, "Start by asking the generated CLI")
 	require.NotContains(t, agents, "export HOME=")
+	require.NotContains(t, agents, "export USERPROFILE=")
 	require.Contains(t, agents, prefix+"_HOME")
 	require.Contains(t, agents, `export `+prefix+`_CONFIG="$iso/config.`)
 	for _, suffix := range []string{"CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR"} {
@@ -267,9 +395,9 @@ func assertHTTPAgentsIsolation(t *testing.T, agents, cliName, prefix string, lea
 	require.Contains(t, agents, "on Windows, pass an empty absolute path")
 	if learn {
 		require.Contains(t, agents, "including `which` and `--help`, `recall`, and `teach`")
-		require.Contains(t, agents, "Run these on the isolated `./"+cliName+"`")
-		require.Contains(t, agents, "./"+cliName+" recall")
-		require.Contains(t, agents, "./"+cliName+" teach")
+		require.Contains(t, agents, "Run these through the isolated `devcli`")
+		require.Contains(t, agents, "devcli recall")
+		require.Contains(t, agents, "devcli teach")
 		return
 	}
 	require.Contains(t, agents, "including `which` and `--help`. Send live API requests only when the task requires them.")
@@ -446,6 +574,11 @@ func writeLegacyConfigProbe(t *testing.T, outputDir, cliName, prefix, format, de
 	body.WriteString("\t\tcfg := mustLoadConfig(t)\n")
 	body.WriteString("\t\tif cfg.BaseURL != \"https://legacy.invalid\" {\n\t\t\tt.Fatalf(\"base_url = %q\", cfg.BaseURL)\n\t\t}\n")
 	body.WriteString("\t\tif cfg.AuthHeaderVal != \"legacy-secret\" {\n\t\t\tt.Fatalf(\"auth_header = %q\", cfg.AuthHeaderVal)\n\t\t}\n")
+	if scrub {
+		body.WriteString("\t\tif cfg.ExplicitFile() {\n\t\t\tt.Fatal(\"empty config env was treated as an explicit file\")\n\t\t}\n")
+		body.WriteString("\t\torigin, ok := cfg.trustedGlobalCredentialOrigin()\n")
+		body.WriteString("\t\tif !ok || origin != \"https://legacy.invalid\" {\n\t\t\tt.Fatalf(\"origin = %q ok=%v\", origin, ok)\n\t\t}\n")
+	}
 	body.WriteString("\t\tif err := cfg.save(); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n")
 	body.WriteString("\t\tafter := readLegacy(t, legacy)\n")
 	body.WriteString("\t\tif " + scrubLiteral + " {\n")
@@ -460,9 +593,33 @@ func writeLegacyConfigProbe(t *testing.T, outputDir, cliName, prefix, format, de
 	body.WriteString("\t\tcfg := mustLoadConfig(t)\n")
 	body.WriteString("\t\tif cfg.BaseURL != " + strconv.Quote(defaultBase) + " {\n\t\t\tt.Fatalf(\"base_url = %q\", cfg.BaseURL)\n\t\t}\n")
 	body.WriteString("\t\tif cfg.AuthHeaderVal != \"\" {\n\t\t\tt.Fatalf(\"auth_header = %q\", cfg.AuthHeaderVal)\n\t\t}\n")
+	if scrub {
+		body.WriteString("\t\tif !cfg.ExplicitFile() {\n\t\t\tt.Fatal(\"config env was not treated as an explicit file\")\n\t\t}\n")
+		body.WriteString("\t\torigin, ok := cfg.trustedGlobalCredentialOrigin()\n")
+		body.WriteString("\t\tif !ok || origin != " + strconv.Quote(defaultBase) + " {\n\t\t\tt.Fatalf(\"origin = %q ok=%v\", origin, ok)\n\t\t}\n")
+	}
 	body.WriteString("\t\tif err := cfg.save(); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n")
 	body.WriteString("\t\tif !bytes.Equal(before, readLegacy(t, legacy)) {\n\t\t\tt.Fatal(\"save rewrote the legacy config\")\n\t\t}\n")
-	body.WriteString("\t})\n}\n\n")
+	body.WriteString("\t})\n")
+	if scrub {
+		body.WriteString("\tt.Run(\"explicit config applies isolated credentials\", func(t *testing.T) {\n")
+		body.WriteString("\t\thome, iso := legacyHomes(t)\n")
+		body.WriteString("\t\tlegacy := plantLegacyConfig(t, home)\n")
+		body.WriteString("\t\tbefore := readLegacy(t, legacy)\n")
+		body.WriteString("\t\tconfigFile := filepath.Join(iso, \"profiles\", \"work." + format + "\")\n")
+		body.WriteString("\t\tsetLegacyEnv(t, home, iso, configFile)\n")
+		body.WriteString("\t\tcredPath := filepath.Join(iso, \"data\", \"credentials.toml\")\n")
+		body.WriteString("\t\tif err := os.MkdirAll(filepath.Dir(credPath), 0o700); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n")
+		body.WriteString("\t\tif err := os.WriteFile(credPath, []byte(\"auth_header = \\\"iso-secret\\\"\\n\"), 0o600); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n")
+		body.WriteString("\t\tcfg := mustLoadConfig(t)\n")
+		body.WriteString("\t\tif cfg.AuthHeaderVal != \"iso-secret\" {\n\t\t\tt.Fatalf(\"auth_header = %q\", cfg.AuthHeaderVal)\n\t\t}\n")
+		body.WriteString("\t\tfor _, summary := range cfg.CredentialRefusalSummaries() {\n")
+		body.WriteString("\t\t\tif bytes.Contains([]byte(summary), []byte(\"legacy.invalid\")) {\n\t\t\t\tt.Fatal(summary)\n\t\t\t}\n")
+		body.WriteString("\t\t}\n")
+		body.WriteString("\t\tif !bytes.Equal(before, readLegacy(t, legacy)) {\n\t\t\tt.Fatal(\"load rewrote the legacy config\")\n\t\t}\n")
+		body.WriteString("\t})\n")
+	}
+	body.WriteString("}\n\n")
 	body.WriteString("func legacyHomes(t *testing.T) (string, string) {\n\tt.Helper()\n\treturn t.TempDir(), t.TempDir()\n}\n\n")
 	body.WriteString("func plantLegacyConfig(t *testing.T, home string) string {\n")
 	body.WriteString("\tt.Helper()\n")
