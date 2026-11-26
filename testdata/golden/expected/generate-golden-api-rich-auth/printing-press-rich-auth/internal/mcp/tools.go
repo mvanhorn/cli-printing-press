@@ -300,14 +300,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 		}
 		if pageConfig.PaginationType == "page" && pageConfig.LimitParam != "" && mcpCursor != "" {
 			if n := bound.CursorPageSize(mcpCursor); n > 0 {
-				size := strconv.Itoa(n)
-				if pageConfig.CursorInBody {
-					if _, ok := bodyArgs[pageConfig.LimitParam]; !ok {
-						bodyArgs[pageConfig.LimitParam] = size
-					}
-				} else if strings.TrimSpace(params[pageConfig.LimitParam]) == "" {
-					params[pageConfig.LimitParam] = size
-				}
+				replayCarriedPageLimit(bindings, params, bodyArgs, pageConfig.LimitParam, n)
 			}
 		}
 
@@ -682,6 +675,35 @@ func mcpBodyCursor(bodyArgs map[string]any, pageConfig mcpPageConfig) string {
 		return ""
 	}
 	return strings.TrimSpace(formatMCPParamValue(v))
+}
+
+func replayCarriedPageLimit(bindings []mcpParamBinding, params map[string]string, bodyArgs map[string]any, name string, n int) {
+	if n <= 0 || name == "" {
+		return
+	}
+	size := strconv.Itoa(n)
+	for _, binding := range bindings {
+		if binding.WireName != name && binding.PublicName != name {
+			continue
+		}
+		switch binding.Location {
+		case "path", "header", "template", "raw", "body_json":
+			return
+		case "body":
+			if _, ok := bodyArgs[binding.WireName]; !ok {
+				bodyArgs[binding.WireName] = n
+			}
+			return
+		default:
+			if strings.TrimSpace(params[binding.WireName]) == "" {
+				params[binding.WireName] = size
+			}
+			return
+		}
+	}
+	if strings.TrimSpace(params[name]) == "" {
+		params[name] = size
+	}
 }
 
 func withSinglePageTotal(opts bound.PageOptions, data json.RawMessage, pageConfig mcpPageConfig, params map[string]string, requestPath string) bound.PageOptions {

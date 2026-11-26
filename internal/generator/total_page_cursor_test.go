@@ -646,6 +646,74 @@ func TestTotalPageMCPReportsHasMore(t *testing.T) {
 	}
 }
 
+func TestTotalPageReplayLimitType(t *testing.T) {
+	body := map[string]any{}
+	params := map[string]string{}
+	replayCarriedPageLimit([]mcpParamBinding{{
+		PublicName: "per-page",
+		WireName:   "per_page",
+		Location:   "body",
+	}}, params, body, "per_page", 20)
+	n, ok := body["per_page"].(int)
+	if !ok || n != 20 {
+		t.Fatalf("body limit = %#v", body["per_page"])
+	}
+	if params["per_page"] != "" {
+		t.Fatalf("body limit also written to query %#v", params)
+	}
+	replayCarriedPageLimit([]mcpParamBinding{{
+		PublicName: "per-page",
+		WireName:   "per_page",
+		Location:   "body",
+	}}, params, body, "per_page", 50)
+	if body["per_page"] != 20 {
+		t.Fatalf("explicit body limit overwritten to %#v", body["per_page"])
+	}
+
+	splitBody := map[string]any{"page": "2"}
+	splitQuery := map[string]string{}
+	replayCarriedPageLimit([]mcpParamBinding{
+		{PublicName: "page", WireName: "page", Location: "body"},
+		{PublicName: "per-page", WireName: "per_page", Location: "query"},
+	}, splitQuery, splitBody, "per_page", 10)
+	if _, ok := splitBody["per_page"]; ok {
+		t.Fatalf("query limit written into the body: %#v", splitBody)
+	}
+	if splitQuery["per_page"] != "10" {
+		t.Fatalf("query limit = %#v", splitQuery["per_page"])
+	}
+	splitQuery["per_page"] = "5"
+	replayCarriedPageLimit([]mcpParamBinding{{
+		PublicName: "per-page",
+		WireName:   "per_page",
+		Location:   "query",
+	}}, splitQuery, splitBody, "per_page", 10)
+	if splitQuery["per_page"] != "5" {
+		t.Fatalf("explicit query limit = %#v", splitQuery["per_page"])
+	}
+
+	untouched := map[string]any{}
+	replayCarriedPageLimit(nil, map[string]string{}, untouched, "per_page", 0)
+	replayCarriedPageLimit(nil, map[string]string{}, untouched, "", 20)
+	if len(untouched) != 0 {
+		t.Fatalf("empty replay wrote %#v", untouched)
+	}
+	pathQuery := map[string]string{}
+	replayCarriedPageLimit([]mcpParamBinding{{
+		PublicName: "per_page",
+		WireName:   "per_page",
+		Location:   "path",
+	}}, pathQuery, map[string]any{}, "per_page", 20)
+	if pathQuery["per_page"] != "" {
+		t.Fatalf("path limit replayed into the query: %#v", pathQuery)
+	}
+	fallback := map[string]string{}
+	replayCarriedPageLimit(nil, fallback, map[string]any{}, "per_page", 20)
+	if fallback["per_page"] != "20" {
+		t.Fatalf("unbound limit = %#v", fallback)
+	}
+}
+
 func callTotalPage(t *testing.T, tools map[string]*server.ServerTool, name string, args map[string]any) map[string]any {
 	t.Helper()
 	tool, ok := tools[name]

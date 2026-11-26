@@ -39,6 +39,16 @@ func TestCodeOrchestrationPagesBoundedLists(t *testing.T) {
 				},
 				Pagination: &spec.Pagination{Type: "offset", CursorParam: "offset"},
 			},
+			"list-pages": {
+				Method:      "GET",
+				Path:        "/items-by-page",
+				Description: "List items by page",
+				Params: []spec.Param{
+					{Name: "page", In: "query", Type: "integer", Description: "Page number"},
+					{Name: "per_page", FlagName: "per-page", In: "query", Type: "integer", Description: "Page size"},
+				},
+				Pagination: &spec.Pagination{Type: "page", CursorParam: "page", LimitParam: "per_page"},
+			},
 			"get": {
 				Method:      "GET",
 				Path:        "/items/{id}",
@@ -66,6 +76,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -169,8 +180,77 @@ func TestCodeOrchestrationKeepsNumericStartingOffset(t *testing.T) {
 		t.Fatalf("continuation must re-request the numeric starting offset, sent %q", gotOffsets)
 	}
 }
+
+func TestCodeOrchestrationKeepsExplicitPageSize(t *testing.T) {
+	var gotPage, gotSize []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPage = append(gotPage, r.URL.Query().Get("page"))
+		gotSize = append(gotSize, r.URL.Query().Get("per_page"))
+		size := 20
+		if raw := r.URL.Query().Get("per_page"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				size = n
+			}
+		}
+		rows := make([]string, 0, size)
+		for i := 0; i < size; i++ {
+			rows = append(rows, fmt.Sprintf("{\"id\":\"p%d\"}", i))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"results\":[" + strings.Join(rows, ",") + "],\"pagination\":{\"total\":57}}"))
+	}))
+	defer server.Close()
+	t.Setenv("CORCHPAGE_BASE_URL", server.URL)
+
+	read := func(params map[string]any) map[string]any {
+		t.Helper()
+		result, err := handleCodeOrchRead(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: map[string]any{
+			"endpoint_id": "items.list-pages", "params": params,
+		}}})
+		if err != nil || result == nil || result.IsError {
+			t.Fatalf("read failed: result=%#v err=%v", result, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(result.Content[0].(mcplib.TextContent).Text), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out
+	}
+	first := read(nil)
+	next, _ := first["next_cursor"].(string)
+	if next == "" || first["has_more"] != true {
+		t.Fatalf("first page = %#v", first)
+	}
+	read(map[string]any{"page": next, "per-page": 5})
+	if len(gotSize) != 2 || gotSize[1] != "5" || gotPage[1] != "2" {
+		t.Fatalf("explicit page size sent page=%q per_page=%q", gotPage, gotSize)
+	}
+	read(map[string]any{"page": next})
+	if len(gotSize) != 3 || gotSize[2] != "20" || gotPage[2] != "2" {
+		t.Fatalf("carried page size sent page=%q per_page=%q", gotPage, gotSize)
+	}
+}
+
+func TestCodeOrchParamPresent(t *testing.T) {
+	query := []codeOrchParamBinding{{PublicName: "per-page", WireName: "per_page"}}
+	if !codeOrchParamPresent(map[string]any{"per-page": "5"}, query, "per_page") {
+		t.Fatal("public name was treated as absent")
+	}
+	if !codeOrchParamPresent(map[string]any{"per_page": 5}, query, "per_page") {
+		t.Fatal("wire name was treated as absent")
+	}
+	if codeOrchParamPresent(map[string]any{"per-page": "  "}, query, "per_page") {
+		t.Fatal("blank public name counted as present")
+	}
+	if codeOrchParamPresent(map[string]any{"per-page": nil}, query, "per_page") {
+		t.Fatal("nil public name counted as present")
+	}
+	if codeOrchParamPresent(map[string]any{}, query, "per_page") {
+		t.Fatal("missing limit counted as present")
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "code_orch_page_runtime_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^(TestCodeOrchestrationPagesBoundedListsRuntime|TestCodeOrchestrationKeepsNumericStartingOffset)$", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "^(TestCodeOrchestrationPagesBoundedListsRuntime|TestCodeOrchestrationKeepsNumericStartingOffset|TestCodeOrchestrationKeepsExplicitPageSize|TestCodeOrchParamPresent)$", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
 }

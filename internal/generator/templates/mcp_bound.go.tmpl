@@ -383,6 +383,7 @@ func fitMetadataPage(envelope map[string]any, meta map[string]any) (string, bool
 			Version:        state.Version,
 			Offset:         start + n,
 			UpstreamCursor: state.UpstreamCursor,
+			PageSize:       state.PageSize,
 		})
 		if next == "" {
 			return "", false
@@ -423,6 +424,7 @@ func fitMetadataItemPreview(payload map[string]any, meta map[string]any, field s
 		Version:        state.Version,
 		Offset:         nextOffset,
 		UpstreamCursor: state.UpstreamCursor,
+		PageSize:       state.PageSize,
 	})
 	if next == "" {
 		next = fallback

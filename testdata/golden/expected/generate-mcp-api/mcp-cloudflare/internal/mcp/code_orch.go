@@ -403,11 +403,8 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 		}
 	}
 	if method == "GET" && ep.Page.PaginationType == "page" && ep.Page.LimitParam != "" && mcpCursor != "" {
-		if n := bound.CursorPageSize(mcpCursor); n > 0 {
-			limit, present := params[ep.Page.LimitParam]
-			if !present || strings.TrimSpace(formatMCPParamValue(limit)) == "" {
-				params[ep.Page.LimitParam] = fmt.Sprintf("%d", n)
-			}
+		if n := bound.CursorPageSize(mcpCursor); n > 0 && !codeOrchParamPresent(params, ep.QueryParams, ep.Page.LimitParam) {
+			params[ep.Page.LimitParam] = fmt.Sprintf("%d", n)
 		}
 	}
 
@@ -629,6 +626,21 @@ func codeOrchSplitQuery(queryParams []codeOrchParamBinding, params map[string]an
 		}
 	}
 	return cliutil.EncodeQuery(uv)
+}
+
+func codeOrchParamPresent(params map[string]any, queryParams []codeOrchParamBinding, name string) bool {
+	for key, value := range params {
+		if value == nil {
+			continue
+		}
+		if key != name && codeOrchWireQueryName(queryParams, key) != name {
+			continue
+		}
+		if strings.TrimSpace(formatMCPParamValue(value)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func codeOrchWireQueryName(queryParams []codeOrchParamBinding, name string) string {

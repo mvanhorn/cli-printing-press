@@ -210,6 +210,27 @@ func TestNestedBodyCursorLookup(t *testing.T) {
 	if _, ok := nestedBodyString(map[string]any{}, nil); ok {
 		t.Fatal("empty path matched")
 	}
+	bodyArgs := map[string]any{}
+	params := map[string]string{}
+	nestedLimit := []mcpParamBinding{{
+		PublicName: "per-page",
+		WireName:   "per_page",
+		Location:   "body",
+		BodyPath:   []string{"paging", "per_page"},
+	}}
+	replayCarriedPageLimit(nestedLimit, params, bodyArgs, "per_page", 20)
+	got, ok := nestedBodyValue(bodyArgs, []string{"paging", "per_page"})
+	if !ok || got != 20 {
+		t.Fatalf("nested limit = %#v %v", got, ok)
+	}
+	if _, ok := bodyArgs["per_page"]; ok {
+		t.Fatal("nested limit was also written at the top level")
+	}
+	replayCarriedPageLimit(nestedLimit, params, bodyArgs, "per_page", 50)
+	got, _ = nestedBodyValue(bodyArgs, []string{"paging", "per_page"})
+	if got != 20 {
+		t.Fatalf("explicit nested limit overwritten to %#v", got)
+	}
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "nested_cursor_lookup_test.go"), []byte(cursorTest), 0o644))
