@@ -358,6 +358,23 @@ func TestValidateMCPArgumentNamesQuotesEachUnknownArg(t *testing.T) {
 	}
 }
 
+func TestFlagTypesForCommandPrefersLocalFlags(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().StringSlice("ids", nil, "inherited slice")
+	root.PersistentFlags().StringSlice("terms", nil, "shadowed slice")
+	child := &cobra.Command{Use: "child"}
+	child.Flags().String("terms", "", "local string")
+	child.Flags().StringToString("labels", nil, "local map")
+	root.AddCommand(child)
+
+	got := flagTypesForCommand(child)
+	for name, want := range map[string]string{"ids": "stringSlice", "terms": "string", "labels": "stringToString"} {
+		if got[name] != want {
+			t.Fatalf("flag %q type = %q, want %q (all: %#v)", name, got[name], want, got)
+		}
+	}
+}
+
 func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 	root.PersistentFlags().String("audit-dir", "", "root audit dir")
@@ -542,7 +559,7 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 				"format":  "json",
 				"to":      "2024-01-01",
 				"file":    "in.csv",
-				"save-to": "/tmp/custom",
+				"save-to": "custom",
 			},
 		}})
 		if err != nil {
@@ -552,7 +569,7 @@ func TestWriteSinkFlagsStayOutOfMCPSchemaAndArgv(t *testing.T) {
 			t.Fatalf("non-destination flags were rejected: %s", toolResultText(result))
 		}
 		argv := decodeArgvResult(t, result)
-		wantArgv := []string{"export", "--file=in.csv", "--format=json", "--save-to=/tmp/custom", "--to=2024-01-01"}
+		wantArgv := []string{"export", "--file=in.csv", "--format=json", "--save-to=custom", "--to=2024-01-01"}
 		if !reflect.DeepEqual(argv, wantArgv) {
 			t.Fatalf("child argv = %#v, want %#v", argv, wantArgv)
 		}
@@ -2268,6 +2285,7 @@ func TestShellOutSinglePositionalArgsFieldPreservesWhitespace(t *testing.T) {
 		positionals,
 		false,
 		nil,
+		nil,
 	)
 
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
@@ -2337,6 +2355,7 @@ func TestShellOutVariadicRawArgsSplits(t *testing.T) {
 				positionals,
 				false,
 				nil,
+				nil,
 			)
 			result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
 				Arguments: map[string]any{"args": tc.raw},
@@ -2364,6 +2383,7 @@ func TestShellOutVariadicRawArgsSplits(t *testing.T) {
 		positionals,
 		false,
 		nil,
+		nil,
 	)
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
 		Arguments: map[string]any{"args": "ok --deliver=webhook:https://evil.example/"},
@@ -2390,6 +2410,7 @@ func TestShellOutStructuredThenRawOverflowPreservesOrder(t *testing.T) {
 		map[string]bool{"args": true, "event-id": true},
 		positionals,
 		false,
+		nil,
 		nil,
 	)
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
@@ -2422,6 +2443,7 @@ func TestShellOutStructuredPositionalPreservesWhitespace(t *testing.T) {
 		map[string]bool{"args": true, "friend": true},
 		positionals,
 		false,
+		nil,
 		nil,
 	)
 
@@ -2456,6 +2478,7 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 		positionals,
 		false,
 		nil,
+		nil,
 	)
 
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
@@ -2472,6 +2495,472 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 	}
 }
 
+type countingFlagValue int
+
+func (c *countingFlagValue) String() string   { return "" }
+func (c *countingFlagValue) Set(string) error { *c++; return nil }
+func (c *countingFlagValue) Type() string     { return "counting" }
+
+func TestReadOnlyShellOutRefusesLocalPathValues(t *testing.T) {
+	bin := writeArgvHelper(t)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("token"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	quotedSecret := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(secret) + `"`
+	sep := string(filepath.Separator)
+
+	positionals := []positionalArg{positionalArg{InputName: "target", Display: "[target...]", Variadic: true}}
+	allowed := map[string]bool{"args": true, "terms": true, "ids": true, "labels": true, "custom": true, "target": true}
+	root := &cobra.Command{Use: "root", TraverseChildren: true}
+	customSets := countingFlagValue(0)
+	root.PersistentFlags().Var(&customSets, "custom", "")
+	market := &cobra.Command{Use: "market"}
+	snapshot := &cobra.Command{Use: "snapshot [target...]", Run: func(*cobra.Command, []string) {}}
+	snapshot.Flags().String("terms", "", "")
+	snapshot.Flags().StringSlice("ids", nil, "")
+	snapshot.Flags().StringToString("labels", nil, "")
+	snapshot.AddCommand(&cobra.Command{Use: "detail", Aliases: []string{"info"}, Run: func(*cobra.Command, []string) {}})
+	market.AddCommand(snapshot)
+	root.AddCommand(market)
+	newHandler := func(readOnly bool) server.ToolHandlerFunc {
+		return shellOutToCLI(
+			func() (string, error) { return bin, nil },
+			[]string{"market", "snapshot"},
+			map[string]bool{"args": true, "target": true},
+			allowed,
+			positionals,
+			readOnly,
+			nil,
+			snapshot,
+		)
+	}
+	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
+		t.Helper()
+		result, err := newHandler(readOnly)(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		return result
+	}
+
+	refused := []struct {
+		name  string
+		args  map[string]any
+		label string
+	}{
+		{"absolute flag value", map[string]any{"terms": secret}, "--terms"},
+		{"missing absolute path", map[string]any{"terms": secret + ".missing"}, "--terms"},
+		{"padded flag value", map[string]any{"terms": "  " + secret + "\n"}, "--terms"},
+		{"quoted flag value", map[string]any{"terms": `"` + secret + `"`}, "--terms"},
+		{"home-relative flag value", map[string]any{"terms": "~" + sep + "secret.txt"}, "--terms"},
+		{"bare home", map[string]any{"terms": "~"}, "--terms"},
+		{"array item", map[string]any{"terms": []any{"coins", secret}}, "--terms"},
+		{"string slice CSV field", map[string]any{"ids": "coins," + quotedSecret}, "--ids"},
+		{"string map value", map[string]any{"labels": "list=" + secret}, "--labels"},
+		{"unknown flag type split every way", map[string]any{"custom": "list=" + secret}, "--custom"},
+		{"escape from child directory", map[string]any{"terms": "notes" + sep + ".." + sep + ".." + sep + "secret.txt"}, "--terms"},
+		{"structured positional", map[string]any{"target": secret}, "argument"},
+		{"raw args token", map[string]any{"args": "coins " + quotedSecret}, "argument"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			result := call(true, tc.args)
+			if !result.IsError {
+				t.Fatalf("read-only tool forwarded a local path: %s", toolResultText(result))
+			}
+			if got := toolResultText(result); !strings.Contains(got, "refusing "+tc.label) || !strings.Contains(got, "parent-relative paths") {
+				t.Fatalf("tool error = %q, want refusal naming %s", got, tc.label)
+			}
+		})
+	}
+
+	serverCwdEntry := "shellout.go"
+	if _, err := os.Stat(serverCwdEntry); err != nil {
+		t.Fatalf("test expects %s in the package directory: %v", serverCwdEntry, err)
+	}
+	freeText := "What does redirect=/docs mean, or a,/b?"
+	accepted := []string{"private", "users", "owner/repo", "https://example.com/a/b", "1..10", ".", serverCwdEntry, freeText}
+	for _, value := range accepted {
+		t.Run("accepts "+value, func(t *testing.T) {
+			result := call(true, map[string]any{"terms": value})
+			if result.IsError {
+				t.Fatalf("read-only tool refused %q: %s", value, toolResultText(result))
+			}
+			got := decodeArgvResult(t, result)
+			want := []string{"market", "snapshot", "--terms=" + value}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("shellout argv = %#v, want %#v", got, want)
+			}
+		})
+	}
+
+	t.Run("positional free text is checked whole", func(t *testing.T) {
+		result := call(true, map[string]any{"target": freeText})
+		if result.IsError {
+			t.Fatalf("read-only tool refused free text: %s", toolResultText(result))
+		}
+	})
+
+	for _, sub := range []string{"detail", "info"} {
+		t.Run("positional selecting subcommand "+sub, func(t *testing.T) {
+			result := call(true, map[string]any{"custom": "x", "target": sub})
+			if got := toolResultText(result); !result.IsError || !strings.Contains(got, "select a different command") {
+				t.Fatalf("read-only tool let a positional select a subcommand: %s", got)
+			}
+		})
+	}
+	if customSets != 0 {
+		t.Fatalf("resolving the command parsed flags in the server: Set ran %d times", customSets)
+	}
+
+	t.Run("non-read-only tool keeps forwarding paths", func(t *testing.T) {
+		result := call(false, map[string]any{"terms": secret})
+		if result.IsError {
+			t.Fatalf("non-read-only tool refused a path: %s", toolResultText(result))
+		}
+	})
+}
+
+func TestReadOnlyShellOutRunsChildInEmptyDirectory(t *testing.T) {
+	bin := writeGoHelper(t, "cwdhelper", `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	wd, _ := os.Getwd()
+	entries, _ := os.ReadDir(".")
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": wd, "entries": len(entries)})
+}
+`)
+	serverCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for _, readOnly := range []bool{true, false} {
+		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil, nil)
+		result, err := handler(context.Background(), mcplib.CallToolRequest{})
+		if err != nil || result.IsError {
+			t.Fatalf("readOnly=%v handler failed: %v %s", readOnly, err, toolResultText(result))
+		}
+		var got struct {
+			Cwd     string `json:"cwd"`
+			Entries int    `json:"entries"`
+		}
+		if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+			t.Fatalf("decode cwd helper: %v; text=%q", err, toolResultText(result))
+		}
+		if readOnly && (got.Cwd == serverCwd || got.Entries != 0) {
+			t.Fatalf("read-only child ran in %q with %d entries, want a fresh empty directory", got.Cwd, got.Entries)
+		}
+		if !readOnly && got.Cwd != serverCwd {
+			t.Fatalf("non-read-only child ran in %q, want server directory %q", got.Cwd, serverCwd)
+		}
+	}
+}
+
+func TestReadOnlyBareFlagChecksNoOptDefVal(t *testing.T) {
+	bin := writeArgvHelper(t)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("terms", "", "inherited")
+	if flag := root.PersistentFlags().Lookup("terms"); flag != nil {
+		flag.NoOptDefVal = secret
+	}
+	snapshot := &cobra.Command{Use: "snapshot", Run: func(*cobra.Command, []string) {}}
+	snapshot.Flags().Bool("verbose", false, "")
+	snapshot.Flags().String("terms", "", "")
+	snapshot.Flags().String("format", "", "")
+	snapshot.Flags().String("notes", "", "")
+	snapshot.Flags().StringSlice("ids", nil, "")
+	if flag := snapshot.Flags().Lookup("format"); flag != nil {
+		flag.NoOptDefVal = "json"
+	}
+	if flag := snapshot.Flags().Lookup("ids"); flag != nil {
+		flag.NoOptDefVal = "coins," + secret
+	}
+	root.AddCommand(snapshot)
+
+	allowed := map[string]bool{"verbose": true, "terms": true, "format": true, "notes": true, "ids": true}
+	handler := func(readOnly bool) server.ToolHandlerFunc {
+		return shellOutToCLI(
+			func() (string, error) { return bin, nil },
+			[]string{"snapshot"},
+			map[string]bool{},
+			allowed,
+			nil,
+			readOnly,
+			nil,
+			snapshot,
+		)
+	}
+	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
+		t.Helper()
+		result, err := handler(readOnly)(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		return result
+	}
+
+	t.Run("boolean bare flag is forwarded", func(t *testing.T) {
+		result := call(true, map[string]any{"verbose": true})
+		if result.IsError {
+			t.Fatalf("read-only tool refused a boolean: %s", toolResultText(result))
+		}
+		got := decodeArgvResult(t, result)
+		want := []string{"snapshot", "--verbose"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("shellout argv = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("safe optional value is forwarded", func(t *testing.T) {
+		result := call(true, map[string]any{"format": true})
+		if result.IsError {
+			t.Fatalf("read-only tool refused a safe optional value: %s", toolResultText(result))
+		}
+		got := decodeArgvResult(t, result)
+		want := []string{"snapshot", "--format"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("shellout argv = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("optional value that leaves the work dir is refused", func(t *testing.T) {
+		result := call(true, map[string]any{"ids": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --ids") || !strings.Contains(got, strconv.Quote("coins,"+secret)) {
+			t.Fatalf("tool error = %q, want refusal of --ids naming the optional path", got)
+		}
+	})
+
+	t.Run("bare non-boolean without an optional value is refused", func(t *testing.T) {
+		result := call(true, map[string]any{"notes": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --notes without a value") {
+			t.Fatalf("tool error = %q, want a bare-flag refusal", got)
+		}
+	})
+
+	t.Run("local flag hides an inherited optional path", func(t *testing.T) {
+		result := call(true, map[string]any{"terms": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --terms without a value") || strings.Contains(got, secret) {
+			t.Fatalf("tool error = %q, want the local flag's bare refusal and not the inherited path", got)
+		}
+	})
+
+	t.Run("non-read-only tool still forwards a bare flag", func(t *testing.T) {
+		result := call(false, map[string]any{"ids": true})
+		if result.IsError {
+			t.Fatalf("non-read-only tool refused a bare flag: %s", toolResultText(result))
+		}
+	})
+}
+
+func TestReadOnlyChildAnchorsOperatorPathEnv(t *testing.T) {
+	bin := writeGoHelper(t, "envhelper", `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	keys := []string{
+		"PRINTING_PRESS_GOLDEN_CONFIG",
+		"PRINTING_PRESS_GOLDEN_CA_CERT",
+		"PRINTING_PRESS_GOLDEN_CONFIG_DIR",
+		"PRINTING_PRESS_GOLDEN_BASE_URL",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"SSL_CERT_FILE",
+		"SSL_CERT_DIR",
+		"PRINTING_PRESS_GOLDEN_MCP_SERVER_CWD",
+	}
+	got := map[string]string{}
+	for _, key := range keys {
+		got[key] = os.Getenv(key)
+	}
+	wd, _ := os.Getwd()
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": wd, "env": got})
+}
+`)
+	serverCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	sep := string(filepath.Separator)
+	absCA := filepath.Join(t.TempDir(), "ca.pem")
+	configKey := "PRINTING_PRESS_GOLDEN_CONFIG"
+	caKey := "PRINTING_PRESS_GOLDEN_CA_CERT"
+	configDirKey := "PRINTING_PRESS_GOLDEN_CONFIG_DIR"
+	baseURLKey := "PRINTING_PRESS_GOLDEN_BASE_URL"
+	serverCWDKey := "PRINTING_PRESS_GOLDEN_MCP_SERVER_CWD"
+	relConfig := "cfg/app.json"
+	parentConfig := ".." + sep + "outside.json"
+	placeholder := "${user_config.ca_cert}"
+
+	t.Setenv(configKey, relConfig)
+	t.Setenv(caKey, absCA)
+	t.Setenv(configDirKey, "relative-dir")
+	t.Setenv(baseURLKey, "api.example/v1")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "keys/sa.json")
+	t.Setenv("SSL_CERT_FILE", placeholder)
+	absCertDir := filepath.Join(t.TempDir(), "abs-certs")
+	certList := "certs" + string(os.PathListSeparator) + absCertDir + string(os.PathListSeparator) + "vendor-certs"
+	t.Setenv("SSL_CERT_DIR", certList)
+	t.Setenv(serverCWDKey, "")
+
+	readEnv := func(readOnly bool) (string, map[string]string) {
+		t.Helper()
+		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil, nil)
+		result, err := handler(context.Background(), mcplib.CallToolRequest{})
+		if err != nil || result.IsError {
+			t.Fatalf("readOnly=%v handler failed: %v %s", readOnly, err, toolResultText(result))
+		}
+		var got struct {
+			Cwd string            `json:"cwd"`
+			Env map[string]string `json:"env"`
+		}
+		if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+			t.Fatalf("decode env helper: %v; text=%q", err, toolResultText(result))
+		}
+		return got.Cwd, got.Env
+	}
+
+	cwd, env := readEnv(true)
+	if cwd == serverCwd {
+		t.Fatalf("read-only child ran in the server directory %q", cwd)
+	}
+	anchored := serverCwd + sep + relConfig
+	if env[configKey] != anchored {
+		t.Fatalf("config env = %q, want %q", env[configKey], anchored)
+	}
+	if env[caKey] != absCA {
+		t.Fatalf("absolute CA cert env = %q, want %q", env[caKey], absCA)
+	}
+	if env[configDirKey] != "relative-dir" {
+		t.Fatalf("config dir env = %q, want the original relative value", env[configDirKey])
+	}
+	if env[baseURLKey] != "api.example/v1" {
+		t.Fatalf("base url env = %q, want it left unchanged", env[baseURLKey])
+	}
+	if env["GOOGLE_APPLICATION_CREDENTIALS"] != serverCwd+sep+"keys/sa.json" {
+		t.Fatalf("credentials env = %q, want it anchored", env["GOOGLE_APPLICATION_CREDENTIALS"])
+	}
+	if env["SSL_CERT_FILE"] != placeholder {
+		t.Fatalf("placeholder cert env = %q, want it left unchanged", env["SSL_CERT_FILE"])
+	}
+	wantCertDir := serverCwd + sep + "certs" + string(os.PathListSeparator) + absCertDir + string(os.PathListSeparator) + serverCwd + sep + "vendor-certs"
+	if env["SSL_CERT_DIR"] != wantCertDir {
+		t.Fatalf("cert dir env = %q, want %q", env["SSL_CERT_DIR"], wantCertDir)
+	}
+	if env[serverCWDKey] != serverCwd {
+		t.Fatalf("server cwd env = %q, want %q", env[serverCWDKey], serverCwd)
+	}
+	t.Setenv(serverCWDKey, serverCwd)
+	if got := cliutil.AnchorMCPOperatorPath("certs/ca.pem"); got != serverCwd+sep+"certs/ca.pem" {
+		t.Fatalf("AnchorMCPOperatorPath = %q, want the config-file path anchored", got)
+	}
+	if got := cliutil.AnchorMCPOperatorPath(absCA); got != absCA {
+		t.Fatalf("AnchorMCPOperatorPath absolute = %q, want %q", got, absCA)
+	}
+	if got := cliutil.AnchorMCPOperatorPath(placeholder); got != placeholder {
+		t.Fatalf("AnchorMCPOperatorPath placeholder = %q, want it unchanged", got)
+	}
+	t.Setenv(serverCWDKey, "")
+
+	t.Setenv(configKey, parentConfig)
+	_, env = readEnv(true)
+	if env[configKey] != serverCwd+sep+parentConfig {
+		t.Fatalf("parent-relative config env = %q, want it anchored without cleaning", env[configKey])
+	}
+
+	t.Setenv(configKey, relConfig)
+	cwd, env = readEnv(false)
+	if cwd != serverCwd {
+		t.Fatalf("non-read-only child ran in %q, want %q", cwd, serverCwd)
+	}
+	if env[configKey] != relConfig || env["GOOGLE_APPLICATION_CREDENTIALS"] != "keys/sa.json" {
+		t.Fatalf("non-read-only child rewrote path env: %#v", env)
+	}
+	if env[serverCWDKey] != "" {
+		t.Fatalf("non-read-only child saw server cwd %q", env[serverCWDKey])
+	}
+}
+
+func TestAnchorOperatorPathEnv(t *testing.T) {
+	wd := filepath.Join(t.TempDir(), "server")
+	sep := string(filepath.Separator)
+	listSep := string(os.PathListSeparator)
+	configKey := "PRINTING_PRESS_GOLDEN_CONFIG"
+	caKey := "PRINTING_PRESS_GOLDEN_CA_CERT"
+	absDir := filepath.Join(wd, "abs-certs")
+	placeholder := "  ${user_config.ca_cert}  "
+	lowerConfig := strings.ToLower(configKey)
+
+	env := anchorOperatorPathEnv([]string{
+		configKey + "=  cfg/app.json",
+		lowerConfig + "=cfg/app.json",
+		caKey + "=  ca.pem  ",
+		"GOOGLE_APPLICATION_CREDENTIALS=  keys/sa.json",
+		"EXTRA_GOOGLE_APPLICATION_CREDENTIALS=keys/sa.json",
+		caKey + "=   ",
+		"GOOGLE_APPLICATION_CREDENTIALS=\t",
+		"SSL_CERT_FILE=  certs/ca.pem",
+		"SSL_CERT_DIR=certs" + listSep + absDir + listSep + listSep + "vendor-certs",
+		"SSL_CERT_DIR=",
+	}, wd)
+
+	got := map[string][]string{}
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("env entry %q has no '='", entry)
+		}
+		got[name] = append(got[name], value)
+	}
+
+	if want, have := []string{wd + sep + "  cfg/app.json"}, got[configKey]; !reflect.DeepEqual(have, want) {
+		t.Fatalf("config = %#v, want %#v (leading space stays; CONFIG is not trimmed)", have, want)
+	}
+	wantLower := []string{"cfg/app.json"}
+	if runtime.GOOS == "windows" {
+		wantLower = []string{wd + sep + "cfg/app.json"}
+	}
+	if have := got[lowerConfig]; !reflect.DeepEqual(have, wantLower) {
+		t.Fatalf("lowercase config = %#v, want %#v", have, wantLower)
+	}
+	if want, have := []string{wd + sep + "ca.pem", "   "}, got[caKey]; !reflect.DeepEqual(have, want) {
+		t.Fatalf("CA cert = %#v, want trimmed-then-anchored and whitespace-only untouched: %#v", have, want)
+	}
+	if want, have := []string{wd + sep + "keys/sa.json", "\t"}, got["GOOGLE_APPLICATION_CREDENTIALS"]; !reflect.DeepEqual(have, want) {
+		t.Fatalf("credentials = %#v, want %#v", have, want)
+	}
+	if have := got["EXTRA_GOOGLE_APPLICATION_CREDENTIALS"]; !reflect.DeepEqual(have, []string{"keys/sa.json"}) {
+		t.Fatalf("unrelated credentials-like key = %#v, want it unchanged", have)
+	}
+	if have := got["SSL_CERT_FILE"]; !reflect.DeepEqual(have, []string{wd + sep + "  certs/ca.pem"}) {
+		t.Fatalf("SSL_CERT_FILE = %#v, want the raw relative value anchored", have)
+	}
+	wantDir := wd + sep + "certs" + listSep + absDir + listSep + listSep + wd + sep + "vendor-certs"
+	if have := got["SSL_CERT_DIR"]; !reflect.DeepEqual(have, []string{wantDir, ""}) {
+		t.Fatalf("SSL_CERT_DIR = %#v, want %#v", have, []string{wantDir, ""})
+	}
+
+	anchoredPlaceholder := anchorOperatorPathValue(caKey, wd, placeholder)
+	if anchoredPlaceholder != "${user_config.ca_cert}" {
+		t.Fatalf("padded placeholder = %q, want the trimmed placeholder left unresolved", anchoredPlaceholder)
+	}
+	if got := envKeyMatches("ssl_cert_dir", "SSL_CERT_DIR"); got != (runtime.GOOS == "windows") {
+		t.Fatalf("envKeyMatches folded = %v, want %v", got, runtime.GOOS == "windows")
+	}
+	if !envKeyMatches("SSL_CERT_DIR", "SSL_CERT_DIR") || envKeyMatches("SSL_CERT_FILE", "SSL_CERT_DIR") {
+		t.Fatalf("envKeyMatches exact/mismatch failed")
+	}
+}
+
 func TestShellOutBoundsFinalError(t *testing.T) {
 	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
 		t.Run(mode, func(t *testing.T) {
@@ -2483,6 +2972,7 @@ func TestShellOutBoundsFinalError(t *testing.T) {
 				map[string]bool{},
 				nil,
 				false,
+				nil,
 				nil,
 			)
 
@@ -2509,6 +2999,7 @@ func TestShellOutSurfacesSuccessStderrHintsSeparateFromJSON(t *testing.T) {
 		map[string]bool{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 
@@ -2600,6 +3091,7 @@ func TestShellOutRepeatableStringArrayReachesCLI(t *testing.T) {
 		nil,
 		false,
 		nil,
+		nil,
 	)
 	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
 		Arguments: map[string]any{
@@ -2629,6 +3121,7 @@ func TestShellOutNonZeroExitSurfacesStdoutAndStderr(t *testing.T) {
 		map[string]bool{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 
@@ -2761,6 +3254,7 @@ func shellOutFailureText(t *testing.T, bin string, ctx context.Context) string {
 		map[string]bool{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 	result, err := handler(ctx, mcplib.CallToolRequest{})
@@ -3450,9 +3944,7 @@ func main() {
 
 func writeArgvHelper(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	src := filepath.Join(dir, "argvhelper.go")
-	body := `package main
+	return writeGoHelper(t, "argvhelper", `package main
 
 import (
 	"encoding/json"
@@ -3462,17 +3954,23 @@ import (
 func main() {
 	_ = json.NewEncoder(os.Stdout).Encode(os.Args[1:])
 }
-`
+`)
+}
+
+func writeGoHelper(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, name+".go")
 	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
-		t.Fatalf("write argv helper source: %v", err)
+		t.Fatalf("write %s source: %v", name, err)
 	}
-	bin := filepath.Join(dir, "argvhelper")
+	bin := filepath.Join(dir, name)
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
 	cmd := exec.Command("go", "build", "-o", bin, src)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build argv helper: %v\n%s", err, out)
+		t.Fatalf("build %s: %v\n%s", name, err, out)
 	}
 	return bin
 }

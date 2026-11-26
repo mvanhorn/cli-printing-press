@@ -6,6 +6,7 @@ package cliutil
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -156,6 +157,30 @@ const MCPChildEnvVar = "BLE_DESK_LAMP_MCP_CHILD"
 // IsMCPChildEnv reports whether this process was spawned by the MCP server.
 func IsMCPChildEnv() bool {
 	return os.Getenv(MCPChildEnvVar) == "1"
+}
+
+// MCPServerCWDEnvVar is the working directory of the MCP server that spawned
+// this process. A read-only mirror child runs somewhere else, so a relative
+// operator path is resolved against this directory. It is unset otherwise.
+const MCPServerCWDEnvVar = "BLE_DESK_LAMP_MCP_SERVER_CWD"
+
+// AnchorAgainstDir prefixes a relative path with base. Absolute, rooted, and
+// volume paths are returned unchanged, as is an unresolved `${...}` placeholder.
+// The join is not cleaned, so ".." and symlinks stay as written.
+func AnchorAgainstDir(base, path string) string {
+	if path == "" || base == "" || UnresolvedUserConfigPlaceholder(path) {
+		return path
+	}
+	if filepath.IsAbs(path) || filepath.VolumeName(path) != "" || os.IsPathSeparator(path[0]) {
+		return path
+	}
+	return base + string(filepath.Separator) + path
+}
+
+// AnchorMCPOperatorPath resolves path against MCPServerCWDEnvVar. Any other
+// process has an empty base and gets path back unchanged.
+func AnchorMCPOperatorPath(path string) string {
+	return AnchorAgainstDir(strings.TrimSpace(os.Getenv(MCPServerCWDEnvVar)), path)
 }
 
 // EnvOverride returns the named environment variable, treating an
