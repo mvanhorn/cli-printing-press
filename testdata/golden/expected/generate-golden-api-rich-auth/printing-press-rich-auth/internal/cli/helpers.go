@@ -1900,12 +1900,108 @@ func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, pagi
 			next = advanced
 		}
 	}
+	// Same total the --all walker reads. Explicit next links and has-more
+	// values above win. A single page adds the request offset or page stride;
+	// the walker instead counts items from the start of its own loop.
+	if next == "" && !explicitNoMore && (paginationType == "offset" || paginationType == "page") {
+		if advanced, saw := singlePageTotalCursor(obj, paginationType, cursorParam, limitParam, params, requestPath); saw && advanced != "" {
+			next = advanced
+		}
+	}
 	if explicitNoMore {
 		next = ""
 	}
 	fields.NextCursor = next
 	fields.HasMore = next != ""
 	return fields, true
+}
+
+// SinglePageNextCursor is the cursor single-page metadata would report.
+// sawTotal stays true on the last page, when next is empty, so MCP can
+// say has_more false instead of omitting the field.
+func SinglePageNextCursor(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (next string, sawTotal bool, ok bool) {
+	fields, ok := listPageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
+	if !ok {
+		return "", false, false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) == nil {
+		sawTotal = reportedCollectionTotal(obj) > 0
+	}
+	return fields.NextCursor, sawTotal, true
+}
+
+func singlePageTotalCursor(obj map[string]json.RawMessage, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (string, bool) {
+	total := reportedCollectionTotal(obj)
+	if total <= 0 {
+		return "", false
+	}
+	itemCount := fetchedPageItemCount(obj, requestPath)
+	pageSize := positiveQueryParam(params, limitParam)
+	if !singlePageBeforeTotal(params, cursorParam, paginationType, pageSize, itemCount, total) {
+		return "", true
+	}
+	next, ok := nextFullPageOffsetCursor(params, cursorParam, paginationType, pageSize, itemCount, true)
+	if !ok {
+		return "", true
+	}
+	return next, true
+}
+
+func singlePageBeforeTotal(params map[string]string, cursorParam, paginationType string, pageSize, itemCount, total int) bool {
+	if itemCount <= 0 || total <= 0 {
+		return false
+	}
+	var start int
+	switch paginationType {
+	case "offset":
+		n, ok := pagingIndex(params, cursorParam, 0)
+		if !ok {
+			return false
+		}
+		start = n
+	case "page":
+		page, ok := pagingIndex(params, cursorParam, 1)
+		if !ok {
+			return false
+		}
+		if page < 1 {
+			page = 1
+		}
+		size := pageSize
+		if size <= 0 {
+			size = itemCount
+		}
+		start = (page - 1) * size
+	default:
+		return false
+	}
+	if start < 0 {
+		return false
+	}
+	return start+itemCount < total
+}
+
+func pagingIndex(params map[string]string, key string, fallback int) (int, bool) {
+	if key == "" || params == nil || strings.TrimSpace(params[key]) == "" {
+		return fallback, true
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(params[key]))
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func positiveQueryParam(params map[string]string, key string) int {
+	if key == "" || params == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(params[key]))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 func responseCollectionCount(obj map[string]json.RawMessage) (int, bool) {

@@ -525,12 +525,13 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 	}
 	var text string
 	if method == "GET" && (ep.Page.CursorParam != "" || ep.Page.NextCursorPath != "") {
-		text = bound.EndpointPageResponse(method, data, bound.PageOptions{
+		text = bound.EndpointPageResponse(method, data, withSinglePageTotal(bound.PageOptions{
 			Cursor:         mcpCursor,
 			CursorParam:    ep.Page.CursorParam,
 			NextCursorPath: ep.Page.NextCursorPath,
+			HasMoreField:   ep.Page.HasMoreField,
 			RequestCursor:  requestCursor,
-		})
+		}, data, ep.Page, query, path))
 	} else if !gated && codeOrchUnpagedReadGET(ep, method) {
 		// A resolved gated call is not paged. The next page would refetch,
 		// and that refetch would repeat the write.

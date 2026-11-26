@@ -179,7 +179,7 @@ func TestMCPPageConfigPagesReadOnlyPOSTLists(t *testing.T) {
 		Params: []spec.Param{{Name: "offset", In: "query", Type: "integer"}},
 	}
 	assert.Equal(t,
-		`mcpPageConfig{CursorParam: "offset", ContinuationInput: "offset"}`,
+		`mcpPageConfig{CursorParam: "offset", ContinuationInput: "offset", PaginationType: "offset", LimitParam: "limit"}`,
 		mcpToolPageConfig(spec.Resource{}, "list", offset),
 	)
 

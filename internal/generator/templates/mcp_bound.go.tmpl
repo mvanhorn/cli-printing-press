@@ -59,6 +59,10 @@ type PageOptions struct {
 	RequestCursor        string
 	ReadOnly             bool
 	ExternalContinuation bool
+	// TotalSeen means the body had the collection total --all reads.
+	// TotalNextCursor is empty on the last page; explicit has-more false wins.
+	TotalSeen       bool
+	TotalNextCursor string
 }
 
 type endpointCursor struct {
@@ -565,6 +569,9 @@ func boundedSingleArrayPageObjectNote(data json.RawMessage, opts PageOptions, no
 	if nextUpstream != "" && explicitHasMoreFalse(data, opts) {
 		nextUpstream = ""
 	}
+	if nextUpstream == "" && opts.TotalNextCursor != "" && !explicitHasMoreFalse(data, opts) {
+		nextUpstream = opts.TotalNextCursor
+	}
 	return boundedPageListEnvelope(arrayField, items, data, note, opts, obj, nextUpstream), true
 }
 
@@ -761,6 +768,9 @@ func boundedPageListEnvelope(field string, items []json.RawMessage, original jso
 			out["original_bytes"] = len(original)
 			out["max_bytes"] = MaxBytes
 			out["note"] = note
+		}
+		if opts.TotalSeen {
+			out["has_more"] = nextCursor != ""
 		}
 		// The raw cursor resumes after the whole API page. Leaving it on a
 		// truncated page tells the agent to skip entries this response omitted.

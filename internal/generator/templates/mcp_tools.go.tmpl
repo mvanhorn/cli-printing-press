@@ -293,6 +293,8 @@ type mcpPageConfig struct {
 	CursorInBody         bool
 	ExternalContinuation bool
 	BodyPath             []string
+	PaginationType       string
+	LimitParam           string
 }
 
 func formatMCPParamValue(v any) string {
@@ -1582,7 +1584,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			return mcplib.NewToolResultText(result), nil
 		}
 		if pageConfig.CursorParam != "" || pageConfig.NextCursorPath != "" || pageConfig.ExternalContinuation {
-			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession), nil
+			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession, params, path), nil
 		}
 		return mcpToolResultTextWithPlatform(method, data, readOnly, platformSession), nil
 	}
@@ -1768,11 +1770,11 @@ func runeLevenshtein(a, b string) int {
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
-	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, "", false, nil)
+	return mcpToolPageResultTextWithPlatform(method, data, pageConfig, cursor, "", false, nil, nil, "")
 }
 
-func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor, requestCursor string, readOnly bool, platformSession *platform.Session) *mcplib.CallToolResult {
-	result := bound.EndpointPageResponse(method, data, bound.PageOptions{
+func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor, requestCursor string, readOnly bool, platformSession *platform.Session, params map[string]string, requestPath string) *mcplib.CallToolResult {
+	result := bound.EndpointPageResponse(method, data, withSinglePageTotal(bound.PageOptions{
 		Cursor:               cursor,
 		CursorParam:          pageConfig.CursorParam,
 		NextCursorPath:       pageConfig.NextCursorPath,
@@ -1780,11 +1782,24 @@ func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, page
 		RequestCursor:        requestCursor,
 		ReadOnly:             readOnly,
 		ExternalContinuation: pageConfig.ExternalContinuation,
-	})
+	}, data, pageConfig, params, requestPath))
 	if platformSession != nil {
 		result = bound.WithMetadata(result, platformSession.OutputMetadata())
 	}
 	return mcplib.NewToolResultText(result)
+}
+
+func withSinglePageTotal(opts bound.PageOptions, data json.RawMessage, pageConfig mcpPageConfig, params map[string]string, requestPath string) bound.PageOptions {
+	if pageConfig.PaginationType != "offset" && pageConfig.PaginationType != "page" {
+		return opts
+	}
+	next, sawTotal, ok := cli.SinglePageNextCursor(data, pageConfig.NextCursorPath, pageConfig.HasMoreField, pageConfig.PaginationType, pageConfig.CursorParam, pageConfig.LimitParam, params, requestPath)
+	if !ok || !sawTotal {
+		return opts
+	}
+	opts.TotalSeen = true
+	opts.TotalNextCursor = next
+	return opts
 }
 
 func newMCPClient(ctx context.Context) (*client.Client, *platform.Session, error) {
