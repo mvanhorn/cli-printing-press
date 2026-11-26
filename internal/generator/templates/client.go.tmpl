@@ -636,6 +636,7 @@ func resolveTLS(trust tlsSettings) (resolvedTLS, error) {
 var systemCertPool = x509.SystemCertPool
 
 func loadCACertPool(path string) (*x509.CertPool, error) {
+	path = cliutil.AnchorMCPOperatorPath(path)
 	if path == "" {
 		return nil, nil
 	}
@@ -4815,6 +4816,7 @@ func (c *Client) googleServiceAccountAuthHeader(ctx context.Context) (string, er
 	if keyPath == "" {
 		return "", nil
 	}
+	keyPath = cliutil.AnchorMCPOperatorPath(keyPath)
 	keyJSON, err := os.ReadFile(keyPath)
 	if err != nil {
 		return "", fmt.Errorf("reading Google service-account key %q: %w", keyPath, err)
