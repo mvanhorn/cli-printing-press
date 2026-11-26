@@ -4,31 +4,51 @@ This directory is a generated `learn-disabled-example-pp-cli` printed CLI. It wa
 
 ## Local Operating Contract
 
-Start by asking the generated CLI for current runtime truth:
+This file is for agents changing this CLI's source. Build and test here, then run that binary:
 
 ```bash
-learn-disabled-example-pp-cli doctor --json
-learn-disabled-example-pp-cli agent-context --pretty
+go build -o ./learn-disabled-example-pp-cli ./cmd/learn-disabled-example-pp-cli
+go test ./...
 ```
 
-Use runtime discovery instead of relying on a copied command list:
+Leave any installed `learn-disabled-example-pp-cli` on `PATH` unused. It uses the operator's config, data, state, and cache, and commands can write the local store or send live API requests.
+
+Relocate all four directories to an empty absolute directory before every run. `LEARN_DISABLED_EXAMPLE_HOME` does that for the process; `--home` does it for one invocation. Both win over `HOME`, `USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`. `LEARN_DISABLED_EXAMPLE_CONFIG_DIR`, `LEARN_DISABLED_EXAMPLE_DATA_DIR`, `LEARN_DISABLED_EXAMPLE_STATE_DIR`, and `LEARN_DISABLED_EXAMPLE_CACHE_DIR` win over both, so clear them when they were inherited. Those variables must be absolute; a relative value is skipped. `--home` must be absolute. On Unix, `mktemp -d` creates the directory; on Windows, pass an empty absolute path.
+
+Set `LEARN_DISABLED_EXAMPLE_CONFIG` to a file inside that directory, even when the file does not exist yet. A missing config under the relocated directory otherwise loads `~/.config/learn-disabled-example-pp-cli/config.toml` from the real home, and a later save can rewrite that file. An inherited `LEARN_DISABLED_EXAMPLE_CONFIG` is a config path, so replace it. `--home` does not stop the fallback.
 
 ```bash
-learn-disabled-example-pp-cli which "<capability>" --json
-learn-disabled-example-pp-cli <command> --help
+iso="$(mktemp -d)"
+export LEARN_DISABLED_EXAMPLE_HOME="$iso"
+export LEARN_DISABLED_EXAMPLE_CONFIG="$iso/config.toml"
+export LEARN_DISABLED_EXAMPLE_CONFIG_DIR=
+export LEARN_DISABLED_EXAMPLE_DATA_DIR=
+export LEARN_DISABLED_EXAMPLE_STATE_DIR=
+export LEARN_DISABLED_EXAMPLE_CACHE_DIR=
+./learn-disabled-example-pp-cli doctor --json
+./learn-disabled-example-pp-cli agent-context --pretty
+```
+
+Keep those variables set for every `./learn-disabled-example-pp-cli` run in the session, including `which` and `--help`. Send live API requests only when the task requires them.
+
+Use runtime discovery on that binary instead of a copied command list:
+
+```bash
+./learn-disabled-example-pp-cli which "<capability>" --json
+./learn-disabled-example-pp-cli <command> --help
 ```
 
 Add `--agent` to command invocations for JSON, compact output, non-interactive defaults, and no color:
 
 ```bash
-learn-disabled-example-pp-cli <command> --agent
+./learn-disabled-example-pp-cli <command> --agent
 ```
 
 Before running an unfamiliar command that may mutate remote state, inspect its help and prefer a dry run:
 
 ```bash
-learn-disabled-example-pp-cli <command> --help
-learn-disabled-example-pp-cli <command> --dry-run --agent
+./learn-disabled-example-pp-cli <command> --help
+./learn-disabled-example-pp-cli <command> --dry-run --agent
 ```
 
 A completed `--dry-run` reports `"success": true` and `"dry_run": true` and omits HTTP `status`. Hand-written commands should call `writeDryRun` for that shape. A dry run that fails validation exits non-zero with `"success": false`.

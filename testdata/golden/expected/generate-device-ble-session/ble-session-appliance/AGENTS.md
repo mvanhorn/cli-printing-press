@@ -4,29 +4,39 @@ This directory is a generated `ble-session-appliance-pp-cli` BLE device CLI. It 
 
 ## Local Operating Contract
 
-Start by asking the generated CLI for current runtime truth:
+This file is for agents changing this CLI's source. Build and test here, then run that binary:
 
 ```bash
-ble-session-appliance-pp-cli doctor --json
-ble-session-appliance-pp-cli capabilities --json
+go build -o ./ble-session-appliance-pp-cli ./cmd/ble-session-appliance-pp-cli
+go test ./...
+./ble-session-appliance-pp-cli doctor --json
+./ble-session-appliance-pp-cli capabilities --json
 ```
+
+Leave any installed `ble-session-appliance-pp-cli` on `PATH` unused. `doctor` and `capabilities` without `--live` report compile-time and protocol metadata only: they do not open the user cache and they do not actuate the device. Pass `--live`, or build with `-tags ble_live`, only when the task requires the physical device.
 
 `doctor` reports whether live BLE is compiled in, the active verify/dogfood state, the device's service UUIDs, and any operating quirks or proven workflows synthesized from the device's protocol sources. `capabilities` lists every telemetry field and command, including commands withheld from the callable surface and why.
 
 This CLI is **replay-backed by default**: `status`, `telemetry`, and command runs return generated/captured values and never touch hardware. Contacting the physical device requires both a `--live` flag and a binary built with the live BLE backend:
 
 ```bash
-go build -tags ble_live ./...
-ble-session-appliance-pp-cli status --live --json
+go build -tags ble_live -o ./ble-session-appliance-pp-cli ./cmd/ble-session-appliance-pp-cli
+./ble-session-appliance-pp-cli status --live --json
 ```
 
-The default build links no BLE stack (pure-Go, no CGO). `scan` and any `--live` operation are no-ops without `-tags ble_live`; `doctor` and `capabilities` are safe to run anywhere and never actuate the device.
+The default build links no BLE stack (pure-Go, no CGO). `scan` and any `--live` operation are no-ops without `-tags ble_live`.
+
+Telemetry and session files are created under `os.UserCacheDir` unless relocated. On Linux that is `$XDG_CACHE_HOME` when set, otherwise `$HOME/.cache`. On macOS it is `$HOME/Library/Caches`. On Windows it is `%LocalAppData%`. Point the variable this operating system reads at an empty directory before those commands.
+
+Telemetry commands take `--store <file>` (a jsonl path) and then skip the user cache for that file.
+
+The session runtime directory still follows `os.UserCacheDir`.
 
 Inspect any command's help and prefer a dry run before a physical-effect command:
 
 ```bash
-ble-session-appliance-pp-cli <command> --help
-ble-session-appliance-pp-cli <command> --dry-run --json
+./ble-session-appliance-pp-cli <command> --help
+./ble-session-appliance-pp-cli <command> --dry-run --json
 ```
 
 Commands with a `physical-effect` or `configuration-risk` safety class require `--confirm-physical-effect` (or `--dry-run` to preview). Add `--json` for machine-readable output.
