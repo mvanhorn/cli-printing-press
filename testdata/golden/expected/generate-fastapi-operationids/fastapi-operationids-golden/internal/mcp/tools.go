@@ -691,6 +691,7 @@ func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, page
 // mcpPagingParams copies a body or form offset and limit into the map the
 // total check reads. That map otherwise holds query values only, so a
 // restored body offset was ignored and the next cursor repeated.
+// A JSON number stays in bodyArgs and never becomes requestCursor.
 func mcpPagingParams(params map[string]string, bodyArgs map[string]any, pageConfig mcpPageConfig, requestCursor string) map[string]string {
 	if pageConfig.PaginationType != "offset" && pageConfig.PaginationType != "page" {
 		return params
@@ -698,6 +699,9 @@ func mcpPagingParams(params map[string]string, bodyArgs map[string]any, pageConf
 	cursor := ""
 	if pageConfig.CursorInBody && pageConfig.CursorParam != "" {
 		cursor = strings.TrimSpace(requestCursor)
+		if cursor == "" {
+			cursor = mcpBodyCursor(bodyArgs, pageConfig)
+		}
 	}
 	limit := ""
 	if pageConfig.LimitParam != "" {
@@ -719,6 +723,17 @@ func mcpPagingParams(params map[string]string, bodyArgs map[string]any, pageConf
 		merged[pageConfig.LimitParam] = limit
 	}
 	return merged
+}
+
+func mcpBodyCursor(bodyArgs map[string]any, pageConfig mcpPageConfig) string {
+	if bodyArgs == nil || pageConfig.CursorParam == "" {
+		return ""
+	}
+	v, ok := bodyArgs[pageConfig.CursorParam]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(formatMCPParamValue(v))
 }
 
 func withSinglePageTotal(opts bound.PageOptions, data json.RawMessage, pageConfig mcpPageConfig, params map[string]string, requestPath string) bound.PageOptions {

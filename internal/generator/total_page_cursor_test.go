@@ -269,6 +269,7 @@ func TestTotalPageCursorBranches(t *testing.T) {
 		{name: "page last", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3", "per_page": "20"}, wantSaw: true, wantOK: true},
 		{name: "page open without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{}, wantNext: "2", wantSaw: true, wantOK: true},
 		{name: "page later without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3"}, wantSaw: true, wantOK: true},
+		{name: "page full later without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":100}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "2"}, wantSaw: true, wantOK: true},
 		{name: "offset stride is item count", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("o", 40) + ` + "`" + `,"total":100}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"offset": "40"}, wantNext: "80", wantSaw: true, wantOK: true},
 		{name: "offset stride stays the limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("o", 40) + ` + "`" + `,"total":100}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantNext: "20", wantSaw: true, wantOK: true},
 		{name: "no total", body: ` + "`" + `{"results":` + "`" + ` + full + ` + "`" + `}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantOK: true},
@@ -597,6 +598,25 @@ func TestTotalPageMCPReportsHasMore(t *testing.T) {
 	}
 	if _, ok := postLast["next_cursor"]; ok {
 		t.Fatalf("post last cursor = %#v", postLast["next_cursor"])
+	}
+	jumped := callTotalPage(t, tools, "posts_list", map[string]any{"offset": float64(20), "limit": float64(20)})
+	if jumped["has_more"] != true || totalPageUpstream(t, jumped) != "40" || !totalPageHasID(jumped, "b20") || totalPageHasID(jumped, "b0") {
+		t.Fatalf("numeric body offset = %#v", jumped)
+	}
+	jumpedStr := callTotalPage(t, tools, "posts_list", map[string]any{"offset": "20", "limit": float64(20)})
+	if jumpedStr["has_more"] != true || totalPageUpstream(t, jumpedStr) != "40" || !totalPageHasID(jumpedStr, "b20") || totalPageHasID(jumpedStr, "b0") {
+		t.Fatalf("string body offset = %#v", jumpedStr)
+	}
+	jumpedZero := callTotalPage(t, tools, "posts_list", map[string]any{"offset": float64(0), "limit": float64(20)})
+	if jumpedZero["has_more"] != true || totalPageUpstream(t, jumpedZero) != "20" || !totalPageHasID(jumpedZero, "b0") {
+		t.Fatalf("zero body offset = %#v", jumpedZero)
+	}
+	jumpedLast := callTotalPage(t, tools, "posts_list", map[string]any{"offset": float64(40), "limit": float64(20)})
+	if jumpedLast["has_more"] != false || !totalPageHasID(jumpedLast, "b40") || totalPageHasID(jumpedLast, "b0") {
+		t.Fatalf("numeric body offset last = %#v", jumpedLast)
+	}
+	if _, ok := jumpedLast["next_cursor"]; ok {
+		t.Fatalf("numeric body offset last cursor = %#v", jumpedLast["next_cursor"])
 	}
 
 	wide := callTotalPage(t, tools, "posts_list", nil)
