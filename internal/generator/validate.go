@@ -62,89 +62,7 @@ func (g *Generator) Validate() error {
 		})
 	}()
 
-	gates := []validationGate{
-		{
-			name: "go mod tidy",
-			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy")
-				return err
-			},
-		},
-		{
-			name: "ensure safe golang.org/x/net",
-			run: func() error {
-				return ensureSafeXNet(g.OutputDir)
-			},
-		},
-		{
-			name: "ensure safe golang.org/x/text",
-			run: func() error {
-				return ensureSafeXText(g.OutputDir)
-			},
-		},
-		{
-			name: "ensure safe github.com/enetx/http",
-			run: func() error {
-				return ensureSafeEnetxHTTP(g.OutputDir)
-			},
-		},
-		{
-			name: "go test ./...",
-			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "test", "-count=1", "./...")
-				return err
-			},
-		},
-		{
-			name: govulncheckGateName,
-			run: func() error {
-				env := govulncheck.ToolchainEnv(g.OutputDir)
-				_, err := runCommandWithEnv(g.OutputDir, qualityGateTimeout, env, "go", govulncheck.GoRunArgs("./...")...)
-				return err
-			},
-		},
-		{
-			name: "go vet ./...",
-			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "vet", "./...")
-				return err
-			},
-		},
-		{
-			name: "go build ./...",
-			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-trimpath", "-ldflags=-buildid=", "./...")
-				return err
-			},
-		},
-		{
-			name: "build runnable binary",
-			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-trimpath", "-ldflags=-buildid=", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
-				return err
-			},
-		},
-		{
-			name: naming.CLI(g.Spec.Name) + " --help",
-			run: func() error {
-				return validateCommandOutput(g.OutputDir, helpGateTimeout(runtime.GOOS), binPath, "--help")
-			},
-		},
-		{
-			name: naming.CLI(g.Spec.Name) + " version",
-			run: func() error {
-				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "version")
-			},
-		},
-		{
-			name: naming.CLI(g.Spec.Name) + " doctor",
-			run: func() error {
-				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "doctor")
-			},
-		},
-	}
-
-	for _, gate := range gates {
+	for _, gate := range standardValidationGates(g.OutputDir, naming.CLI(g.Spec.Name), binPath) {
 		if gate.name == govulncheckGateName && !govulncheck.LiveDBEnabled() {
 			fmt.Fprintf(os.Stderr, "SKIP %s (set %s=1 to query the live vuln DB)\n", gate.name, govulncheck.LiveEnv)
 			continue
@@ -157,6 +75,105 @@ func (g *Generator) Validate() error {
 	}
 
 	return nil
+}
+
+// StandardQualityGateCount is the number of planned gates for standard CLI generation.
+func StandardQualityGateCount() int {
+	return len(standardValidationGates("", "", ""))
+}
+
+// StandardQualityGateNames returns the verdict names for standard CLI generation.
+func StandardQualityGateNames(cliName string) []string {
+	gates := standardValidationGates("", cliName, "")
+	names := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		names = append(names, gate.name)
+	}
+	return names
+}
+
+func standardValidationGates(outputDir, cliName, binPath string) []validationGate {
+	return []validationGate{
+		{
+			name: "go mod tidy",
+			run: func() error {
+				_, err := runCommand(outputDir, qualityGateTimeout, "go", "mod", "tidy")
+				return err
+			},
+		},
+		{
+			name: "ensure safe golang.org/x/net",
+			run: func() error {
+				return ensureSafeXNet(outputDir)
+			},
+		},
+		{
+			name: "ensure safe golang.org/x/text",
+			run: func() error {
+				return ensureSafeXText(outputDir)
+			},
+		},
+		{
+			name: "ensure safe github.com/enetx/http",
+			run: func() error {
+				return ensureSafeEnetxHTTP(outputDir)
+			},
+		},
+		{
+			name: "go test ./...",
+			run: func() error {
+				_, err := runCommand(outputDir, qualityGateTimeout, "go", "test", "-count=1", "./...")
+				return err
+			},
+		},
+		{
+			name: govulncheckGateName,
+			run: func() error {
+				env := govulncheck.ToolchainEnv(outputDir)
+				_, err := runCommandWithEnv(outputDir, qualityGateTimeout, env, "go", govulncheck.GoRunArgs("./...")...)
+				return err
+			},
+		},
+		{
+			name: "go vet ./...",
+			run: func() error {
+				_, err := runCommand(outputDir, qualityGateTimeout, "go", "vet", "./...")
+				return err
+			},
+		},
+		{
+			name: "go build ./...",
+			run: func() error {
+				_, err := runCommand(outputDir, qualityGateTimeout, "go", "build", "-trimpath", "-ldflags=-buildid=", "./...")
+				return err
+			},
+		},
+		{
+			name: "build runnable binary",
+			run: func() error {
+				_, err := runCommand(outputDir, qualityGateTimeout, "go", "build", "-trimpath", "-ldflags=-buildid=", "-o", binPath, "./cmd/"+cliName)
+				return err
+			},
+		},
+		{
+			name: cliName + " --help",
+			run: func() error {
+				return validateCommandOutput(outputDir, helpGateTimeout(runtime.GOOS), binPath, "--help")
+			},
+		},
+		{
+			name: cliName + " version",
+			run: func() error {
+				return validateCommandOutput(outputDir, 15*time.Second, binPath, "version")
+			},
+		},
+		{
+			name: cliName + " doctor",
+			run: func() error {
+				return validateCommandOutput(outputDir, 15*time.Second, binPath, "doctor")
+			},
+		},
+	}
 }
 
 func helpGateTimeout(goos string) time.Duration {
