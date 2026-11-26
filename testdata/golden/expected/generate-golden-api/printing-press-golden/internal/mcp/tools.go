@@ -885,7 +885,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			return mcplib.NewToolResultText(result), nil
 		}
 		if pageConfig.CursorParam != "" || pageConfig.NextCursorPath != "" || pageConfig.ExternalContinuation {
-			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession, params, path), nil
+			return mcpToolPageResultTextWithPlatform(method, data, pageConfig, mcpCursor, requestCursor, readOnly, platformSession, mcpPagingParams(params, bodyArgs, pageConfig, requestCursor), path), nil
 		}
 		return mcpToolResultTextWithPlatform(method, data, readOnly, platformSession), nil
 	}
@@ -1088,6 +1088,39 @@ func mcpToolPageResultTextWithPlatform(method string, data json.RawMessage, page
 		result = bound.WithMetadata(result, platformSession.OutputMetadata())
 	}
 	return mcplib.NewToolResultText(result)
+}
+
+// mcpPagingParams copies a body or form offset and limit into the map the
+// total check reads. That map otherwise holds query values only, so a
+// restored body offset was ignored and the next cursor repeated.
+func mcpPagingParams(params map[string]string, bodyArgs map[string]any, pageConfig mcpPageConfig, requestCursor string) map[string]string {
+	if pageConfig.PaginationType != "offset" && pageConfig.PaginationType != "page" {
+		return params
+	}
+	cursor := ""
+	if pageConfig.CursorInBody && pageConfig.CursorParam != "" {
+		cursor = strings.TrimSpace(requestCursor)
+	}
+	limit := ""
+	if pageConfig.LimitParam != "" {
+		if v, ok := bodyArgs[pageConfig.LimitParam]; ok {
+			limit = strings.TrimSpace(formatMCPParamValue(v))
+		}
+	}
+	if cursor == "" && limit == "" {
+		return params
+	}
+	merged := make(map[string]string, len(params)+2)
+	for k, v := range params {
+		merged[k] = v
+	}
+	if cursor != "" {
+		merged[pageConfig.CursorParam] = cursor
+	}
+	if limit != "" && pageConfig.LimitParam != "" && strings.TrimSpace(merged[pageConfig.LimitParam]) == "" {
+		merged[pageConfig.LimitParam] = limit
+	}
+	return merged
 }
 
 func withSinglePageTotal(opts bound.PageOptions, data json.RawMessage, pageConfig mcpPageConfig, params map[string]string, requestPath string) bound.PageOptions {

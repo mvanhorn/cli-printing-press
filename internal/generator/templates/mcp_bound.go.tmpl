@@ -172,7 +172,9 @@ func shouldPageReadOnlyNonGET(data json.RawMessage, opts PageOptions) bool {
 	if opts.CursorParam == "" && opts.NextCursorPath == "" && !opts.ExternalContinuation {
 		return false
 	}
-	if opts.Cursor != "" {
+	// A total-only page often fits the byte budget and has no caller cursor.
+	// It still needs the envelope, or has_more never leaves the process.
+	if opts.Cursor != "" || opts.TotalSeen {
 		return true
 	}
 	return len(data) > MaxBytes

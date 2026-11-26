@@ -41,6 +41,7 @@ func totalPageSpec() *spec.APISpec {
 		"tokens":  totalPageResource("Lists with an explicit next offset", "/tokens", "offset", "offset", "limit", "next_offset"),
 		"cursors": totalPageResource("Cursor lists that also report a total", "/cursors", "cursor", "pageCursor", "", "next_cursor"),
 		"stalled": totalPageResource("Cursor lists with a total and no next cursor", "/stalled", "cursor", "pageCursor", "", "next_cursor"),
+		"posts":   totalPagePOSTResource(),
 	}
 	return apiSpec
 }
@@ -87,6 +88,34 @@ func totalPageEndpoint(path, paginationType, cursor, limit, hasMoreOrNext string
 		ResponsePath: "results",
 		Params:       params,
 		Pagination:   pag,
+	}
+}
+
+func totalPagePOSTResource() spec.Resource {
+	read := false
+	return spec.Resource{
+		Description: "POST offset lists",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:       "POST",
+				Path:         "/posts",
+				Description:  "List posts",
+				Mutation:     &read,
+				Response:     spec.ResponseDef{Type: "array"},
+				ResponsePath: "results",
+				Pagination:   &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+				Body: []spec.Param{
+					{Name: "offset", Type: "integer"},
+					{Name: "limit", Type: "integer"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/posts/{id}",
+				Description: "Get one post",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
 	}
 }
 
@@ -152,6 +181,19 @@ func TestTotalPageCLIReportsHasMore(t *testing.T) {
 	}
 	if _, ok := pageLast["next_cursor"]; ok || strings.Contains(pageLastErr, "\"event\":\"truncated\"") || !strings.Contains(pageLastOut, "p40") {
 		t.Fatalf("last page = %s meta %#v\nstderr = %s", pageLastOut, pageLast, pageLastErr)
+	}
+	openOut, _ := runTotalPage(t, "pages", "list", "--json")
+	open := totalPageMeta(t, openOut)
+	if open["has_more"] != true || open["next_cursor"] != "2" {
+		t.Fatalf("first page without per-page = %#v", open)
+	}
+	bareOut, bareErr := runTotalPage(t, "pages", "list", "--page", "3", "--json")
+	bare := totalPageMeta(t, bareOut)
+	if bare["has_more"] != false {
+		t.Fatalf("later page without per-page = %#v", bare)
+	}
+	if _, ok := bare["next_cursor"]; ok || strings.Contains(bareErr, "\"event\":\"truncated\"") {
+		t.Fatalf("later page without per-page advertised more: %#v\n%s", bare, bareErr)
 	}
 
 	plainOut, plainErr := runTotalPage(t, "plain", "list", "--limit", "20", "--json")
@@ -225,6 +267,10 @@ func TestTotalPageCursorBranches(t *testing.T) {
 		{name: "total_count", body: ` + "`" + `{"results":` + "`" + ` + full + ` + "`" + `,"total_count":57}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantNext: "20", wantSaw: true, wantOK: true},
 		{name: "page mid", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"per_page": "20"}, wantNext: "2", wantSaw: true, wantOK: true},
 		{name: "page last", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3", "per_page": "20"}, wantSaw: true, wantOK: true},
+		{name: "page open without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{}, wantNext: "2", wantSaw: true, wantOK: true},
+		{name: "page later without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3"}, wantSaw: true, wantOK: true},
+		{name: "offset stride is item count", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("o", 40) + ` + "`" + `,"total":100}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"offset": "40"}, wantNext: "80", wantSaw: true, wantOK: true},
+		{name: "offset stride stays the limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("o", 40) + ` + "`" + `,"total":100}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantNext: "20", wantSaw: true, wantOK: true},
 		{name: "no total", body: ` + "`" + `{"results":` + "`" + ` + full + ` + "`" + `}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantOK: true},
 		{name: "explicit stop", body: ` + "`" + `{"results":` + "`" + ` + full + ` + "`" + `,"total":57,"has_more":false}` + "`" + `, hasMore: "has_more", kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantSaw: true, wantOK: true},
 		{name: "explicit continue", body: ` + "`" + `{"results":` + "`" + ` + short + ` + "`" + `,"total":57,"has_more":true}` + "`" + `, hasMore: "has_more", kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"offset": "40", "limit": "20"}, wantNext: "60", wantSaw: true, wantOK: true},
@@ -524,6 +570,47 @@ func TestTotalPageMCPReportsHasMore(t *testing.T) {
 	if _, ok := stalled["has_more"]; ok || stalled["next_cursor"] != nil {
 		t.Fatalf("stalled cursor = %#v", stalled)
 	}
+
+	pageOpen := callTotalPage(t, tools, "pages_list", nil)
+	if pageOpen["has_more"] != true || totalPageUpstream(t, pageOpen) != "2" || !totalPageHasID(pageOpen, "p0") {
+		t.Fatalf("page without per_page = %#v", pageOpen)
+	}
+	pageBare := callTotalPage(t, tools, "pages_list", map[string]any{"cursor": pageOpen["next_cursor"]})
+	if pageBare["has_more"] != false || !totalPageHasID(pageBare, "p20") {
+		t.Fatalf("later page without per_page = %#v", pageBare)
+	}
+	if _, ok := pageBare["next_cursor"]; ok {
+		t.Fatalf("later page without per_page advertised %v", pageBare["next_cursor"])
+	}
+
+	post := callTotalPage(t, tools, "posts_list", map[string]any{"limit": float64(20)})
+	if post["has_more"] != true || totalPageUpstream(t, post) != "20" || !totalPageHasID(post, "b0") {
+		t.Fatalf("post = %#v", post)
+	}
+	postMid := callTotalPage(t, tools, "posts_list", map[string]any{"limit": float64(20), "cursor": post["next_cursor"]})
+	if postMid["has_more"] != true || totalPageUpstream(t, postMid) != "40" || !totalPageHasID(postMid, "b20") || totalPageHasID(postMid, "b0") {
+		t.Fatalf("post mid = %#v", postMid)
+	}
+	postLast := callTotalPage(t, tools, "posts_list", map[string]any{"limit": float64(20), "cursor": postMid["next_cursor"]})
+	if postLast["has_more"] != false || !totalPageHasID(postLast, "b40") {
+		t.Fatalf("post last = %#v", postLast)
+	}
+	if _, ok := postLast["next_cursor"]; ok {
+		t.Fatalf("post last cursor = %#v", postLast["next_cursor"])
+	}
+
+	wide := callTotalPage(t, tools, "posts_list", nil)
+	if wide["has_more"] != true || totalPageUpstream(t, wide) != "40" || !totalPageHasID(wide, "w0") {
+		t.Fatalf("wide = %#v", wide)
+	}
+	wideNext := callTotalPage(t, tools, "posts_list", map[string]any{"cursor": wide["next_cursor"]})
+	if wideNext["has_more"] != true || totalPageUpstream(t, wideNext) != "80" || !totalPageHasID(wideNext, "w40") || totalPageHasID(wideNext, "w0") {
+		t.Fatalf("wide next = %#v", wideNext)
+	}
+	wideLast := callTotalPage(t, tools, "posts_list", map[string]any{"cursor": wideNext["next_cursor"]})
+	if wideLast["has_more"] != false || !totalPageHasID(wideLast, "w80") {
+		t.Fatalf("wide last = %#v", wideLast)
+	}
 }
 
 func callTotalPage(t *testing.T, tools map[string]*server.ServerTool, name string, args map[string]any) map[string]any {
@@ -635,6 +722,17 @@ func totalPageMCPHandler(w http.ResponseWriter, r *http.Request) {
 		totalPageMCPSlice(w, "c", 57, 0, 20, true, extra)
 	case "/stalled":
 		totalPageMCPSlice(w, "s", 57, 0, 20, true, nil)
+	case "/posts":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", http.StatusMethodNotAllowed)
+			return
+		}
+		offset, limit := totalPageMCPBody(r)
+		if limit > 0 {
+			totalPageMCPSlice(w, "b", 57, offset, limit, true, nil)
+			return
+		}
+		totalPageMCPSlice(w, "w", 100, offset, 40, true, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -678,6 +776,29 @@ func strconvI(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+func totalPageMCPBody(r *http.Request) (int, int) {
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		return 0, 0
+	}
+	return totalPageMCPJSONInt(raw["offset"]), totalPageMCPJSONInt(raw["limit"])
+}
+
+func totalPageMCPJSONInt(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil {
+		return n
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return totalPageMCPIndex(s, 0)
+	}
+	return 0
 }
 
 func totalPageMCPIndex(raw string, fallback int) int {
