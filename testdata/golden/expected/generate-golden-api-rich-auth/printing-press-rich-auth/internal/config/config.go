@@ -594,13 +594,25 @@ func (c *Config) trustedGlobalCredentialOrigin() (string, bool) {
 	return base, true
 }
 
-// An explicit profile skips the legacy file, so a missing server is unknown.
-// Do not treat that as the built-in origin.
+// An explicit profile does not open the legacy file. If that file exists, its
+// server is unchecked and unscoped credentials are refused; otherwise the built-in origin stands.
 func (c *Config) originWithoutRecord() (string, bool) {
-	if c.ExplicitFile() {
+	if c.ExplicitFile() && legacyServerUnchecked() {
 		return "", false
 	}
 	return usableBuiltinOrigin()
+}
+
+func legacyServerUnchecked() bool {
+	path, err := LegacyConfigPath()
+	if err != nil {
+		return true
+	}
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return true
 }
 
 func usableBuiltinOrigin() (string, bool) {

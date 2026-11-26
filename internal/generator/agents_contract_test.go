@@ -637,6 +637,13 @@ func writeLegacyConfigProbe(t *testing.T, outputDir, cliName, prefix, format, de
 		body.WriteString("\t\t}\n")
 		body.WriteString("\t\tif !refused {\n\t\t\tt.Fatalf(\"refusals = %v\", cfg.CredentialRefusalSummaries())\n\t\t}\n")
 		body.WriteString("\t})\n")
+		body.WriteString("\tt.Run(\"explicit config uses built-in origin when no legacy file exists\", func(t *testing.T) {\n")
+		body.WriteString("\t\thome, iso := legacyHomes(t)\n")
+		body.WriteString("\t\tsetLegacyEnv(t, home, iso, filepath.Join(iso, \"config." + format + "\"))\n")
+		body.WriteString("\t\tcfg := mustLoadConfig(t)\n")
+		body.WriteString("\t\torigin, ok := cfg.trustedGlobalCredentialOrigin()\n")
+		body.WriteString("\t\tif !ok || origin != " + strconv.Quote(defaultBase) + " {\n\t\t\tt.Fatalf(\"origin = %q ok=%v\", origin, ok)\n\t\t}\n")
+		body.WriteString("\t})\n")
 	}
 	body.WriteString("}\n\n")
 	body.WriteString("func legacyHomes(t *testing.T) (string, string) {\n\tt.Helper()\n\treturn t.TempDir(), t.TempDir()\n}\n\n")
