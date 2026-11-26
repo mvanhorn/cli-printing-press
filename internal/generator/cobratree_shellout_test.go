@@ -101,5 +101,5 @@ func TestGeneratedReadOnlyShellOutBareFlagAndAnchoredPaths(t *testing.T) {
 	assert.Contains(t, verifyenv, "func AnchorMCPOperatorPath(")
 
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-count=1", "-run", "^Test(ReadOnlyBareFlagChecksNoOptDefVal|ReadOnlyChildAnchorsOperatorPathEnv|ReadOnlyShellOutRefusesLocalPathValues|FlagTypesForCommandPrefersLocalFlags)$")
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-count=1", "-run", "^Test(ReadOnlyBareFlagChecksNoOptDefVal|ReadOnlyChildAnchorsOperatorPathEnv|AnchorOperatorPathEnv|ReadOnlyShellOutRefusesLocalPathValues|FlagTypesForCommandPrefersLocalFlags)$")
 }

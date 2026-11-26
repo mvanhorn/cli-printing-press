@@ -2732,7 +2732,7 @@ func TestReadOnlyBareFlagChecksNoOptDefVal(t *testing.T) {
 
 	t.Run("optional value that leaves the work dir is refused", func(t *testing.T) {
 		result := call(true, map[string]any{"ids": true})
-		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --ids") || !strings.Contains(got, secret) {
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --ids") || !strings.Contains(got, strconv.Quote("coins,"+secret)) {
 			t.Fatalf("tool error = %q, want refusal of --ids naming the optional path", got)
 		}
 	})
@@ -2807,7 +2807,9 @@ func main() {
 	t.Setenv(baseURLKey, "api.example/v1")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "keys/sa.json")
 	t.Setenv("SSL_CERT_FILE", placeholder)
-	t.Setenv("SSL_CERT_DIR", "certs")
+	absCertDir := filepath.Join(t.TempDir(), "abs-certs")
+	certList := "certs" + string(os.PathListSeparator) + absCertDir + string(os.PathListSeparator) + "vendor-certs"
+	t.Setenv("SSL_CERT_DIR", certList)
 	t.Setenv(serverCWDKey, "")
 
 	readEnv := func(readOnly bool) (string, map[string]string) {
@@ -2850,8 +2852,9 @@ func main() {
 	if env["SSL_CERT_FILE"] != placeholder {
 		t.Fatalf("placeholder cert env = %q, want it left unchanged", env["SSL_CERT_FILE"])
 	}
-	if env["SSL_CERT_DIR"] != serverCwd+sep+"certs" {
-		t.Fatalf("cert dir env = %q, want it anchored", env["SSL_CERT_DIR"])
+	wantCertDir := serverCwd + sep + "certs" + string(os.PathListSeparator) + absCertDir + string(os.PathListSeparator) + serverCwd + sep + "vendor-certs"
+	if env["SSL_CERT_DIR"] != wantCertDir {
+		t.Fatalf("cert dir env = %q, want %q", env["SSL_CERT_DIR"], wantCertDir)
 	}
 	if env[serverCWDKey] != serverCwd {
 		t.Fatalf("server cwd env = %q, want %q", env[serverCWDKey], serverCwd)
@@ -2884,6 +2887,77 @@ func main() {
 	}
 	if env[serverCWDKey] != "" {
 		t.Fatalf("non-read-only child saw server cwd %q", env[serverCWDKey])
+	}
+}
+
+func TestAnchorOperatorPathEnv(t *testing.T) {
+	wd := filepath.Join(t.TempDir(), "server")
+	sep := string(filepath.Separator)
+	listSep := string(os.PathListSeparator)
+	configKey := "PRINTING_PRESS_GOLDEN_CONFIG"
+	caKey := "PRINTING_PRESS_GOLDEN_CA_CERT"
+	absDir := filepath.Join(wd, "abs-certs")
+	placeholder := "  ${user_config.ca_cert}  "
+	lowerConfig := strings.ToLower(configKey)
+
+	env := anchorOperatorPathEnv([]string{
+		configKey + "=  cfg/app.json",
+		lowerConfig + "=cfg/app.json",
+		caKey + "=  ca.pem  ",
+		"GOOGLE_APPLICATION_CREDENTIALS=  keys/sa.json",
+		"EXTRA_GOOGLE_APPLICATION_CREDENTIALS=keys/sa.json",
+		caKey + "=   ",
+		"GOOGLE_APPLICATION_CREDENTIALS=\t",
+		"SSL_CERT_FILE=  certs/ca.pem",
+		"SSL_CERT_DIR=certs" + listSep + absDir + listSep + listSep + "vendor-certs",
+		"SSL_CERT_DIR=",
+	}, wd)
+
+	got := map[string][]string{}
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("env entry %q has no '='", entry)
+		}
+		got[name] = append(got[name], value)
+	}
+
+	if want, have := []string{wd + sep + "  cfg/app.json"}, got[configKey]; !reflect.DeepEqual(have, want) {
+		t.Fatalf("config = %#v, want %#v (leading space stays; CONFIG is not trimmed)", have, want)
+	}
+	wantLower := []string{"cfg/app.json"}
+	if runtime.GOOS == "windows" {
+		wantLower = []string{wd + sep + "cfg/app.json"}
+	}
+	if have := got[lowerConfig]; !reflect.DeepEqual(have, wantLower) {
+		t.Fatalf("lowercase config = %#v, want %#v", have, wantLower)
+	}
+	if want, have := []string{wd + sep + "ca.pem", "   "}, got[caKey]; !reflect.DeepEqual(have, want) {
+		t.Fatalf("CA cert = %#v, want trimmed-then-anchored and whitespace-only untouched: %#v", have, want)
+	}
+	if want, have := []string{wd + sep + "keys/sa.json", "\t"}, got["GOOGLE_APPLICATION_CREDENTIALS"]; !reflect.DeepEqual(have, want) {
+		t.Fatalf("credentials = %#v, want %#v", have, want)
+	}
+	if have := got["EXTRA_GOOGLE_APPLICATION_CREDENTIALS"]; !reflect.DeepEqual(have, []string{"keys/sa.json"}) {
+		t.Fatalf("unrelated credentials-like key = %#v, want it unchanged", have)
+	}
+	if have := got["SSL_CERT_FILE"]; !reflect.DeepEqual(have, []string{wd + sep + "  certs/ca.pem"}) {
+		t.Fatalf("SSL_CERT_FILE = %#v, want the raw relative value anchored", have)
+	}
+	wantDir := wd + sep + "certs" + listSep + absDir + listSep + listSep + wd + sep + "vendor-certs"
+	if have := got["SSL_CERT_DIR"]; !reflect.DeepEqual(have, []string{wantDir, ""}) {
+		t.Fatalf("SSL_CERT_DIR = %#v, want %#v", have, []string{wantDir, ""})
+	}
+
+	anchoredPlaceholder := anchorOperatorPathValue(caKey, wd, placeholder)
+	if anchoredPlaceholder != "${user_config.ca_cert}" {
+		t.Fatalf("padded placeholder = %q, want the trimmed placeholder left unresolved", anchoredPlaceholder)
+	}
+	if got := envKeyMatches("ssl_cert_dir", "SSL_CERT_DIR"); got != (runtime.GOOS == "windows") {
+		t.Fatalf("envKeyMatches folded = %v, want %v", got, runtime.GOOS == "windows")
+	}
+	if !envKeyMatches("SSL_CERT_DIR", "SSL_CERT_DIR") || envKeyMatches("SSL_CERT_FILE", "SSL_CERT_DIR") {
+		t.Fatalf("envKeyMatches exact/mismatch failed")
 	}
 }
 

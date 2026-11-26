@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -789,21 +790,54 @@ func anchorOperatorPathEnv(env []string, wd string) []string {
 	out := append([]string{}, env...)
 	for _, key := range operatorPathEnvKeys() {
 		out = rewriteEnvValues(out, key, func(value string) string {
-			return cliutil.AnchorAgainstDir(wd, value)
+			return anchorOperatorPathValue(key, wd, value)
 		})
 	}
 	return setEnvValue(out, cliutil.MCPServerCWDEnvVar, wd)
 }
 
+// anchorOperatorPathValue anchors one operator path. SSL_CERT_DIR is a list
+// (os.PathListSeparator); each relative entry is anchored and absolute entries
+// stay as written. CA_CERT and GOOGLE_APPLICATION_CREDENTIALS are trimmed the
+// way the CLI trims them before use. Empty and whitespace-only values are left
+// untouched, so a blank CA_CERT still does not override the configured bundle.
+func anchorOperatorPathValue(key, wd, value string) string {
+	if key == "SSL_CERT_DIR" {
+		sep := string(os.PathListSeparator)
+		parts := strings.Split(value, sep)
+		for i, part := range parts {
+			parts[i] = cliutil.AnchorAgainstDir(wd, part)
+		}
+		return strings.Join(parts, sep)
+	}
+	if key == "{{envPrefix .Name}}_CA_CERT" || key == "GOOGLE_APPLICATION_CREDENTIALS" {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return value
+		}
+		value = trimmed
+	}
+	return cliutil.AnchorAgainstDir(wd, value)
+}
+
 func rewriteEnvValues(env []string, key string, value func(string) string) []string {
 	for i, entry := range env {
 		name, current, ok := strings.Cut(entry, "=")
-		if !ok || name != key {
+		if !ok || !envKeyMatches(name, key) {
 			continue
 		}
-		env[i] = key + "=" + value(current)
+		env[i] = name + "=" + value(current)
 	}
 	return env
+}
+
+// envKeyMatches reports whether name is key. Windows environment names are
+// case-insensitive; other platforms keep the exact spelling.
+func envKeyMatches(name, key string) bool {
+	if name == key {
+		return true
+	}
+	return runtime.GOOS == "windows" && strings.EqualFold(name, key)
 }
 
 func setEnvValue(env []string, key, value string) []string {
