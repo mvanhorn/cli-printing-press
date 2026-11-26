@@ -473,10 +473,15 @@ func writeLegacyConfigProbe(t *testing.T, outputDir, cliName, prefix, format, de
 	body.WriteString("\treturn path\n}\n\n")
 	body.WriteString("func setLegacyEnv(t *testing.T, home, iso, configFile string) {\n")
 	body.WriteString("\tt.Helper()\n")
+	body.WriteString("\tt.Setenv(\"MYAPI_TOKEN\", \"inherited-token\")\n")
+	body.WriteString("\tt.Setenv(" + strconv.Quote(prefix+"_BASE_URL") + ", \"https://inherited.example\")\n")
+	body.WriteString("\tt.Setenv(\"PRINTING_PRESS_VERIFY\", \"1\")\n")
+	body.WriteString("\tt.Setenv(\"PRINTING_PRESS_DOGFOOD\", \"1\")\n")
 	body.WriteString("\tt.Setenv(\"HOME\", home)\n\tt.Setenv(\"USERPROFILE\", home)\n")
-	body.WriteString("\tfor _, key := range []string{\"XDG_CONFIG_HOME\", \"XDG_DATA_HOME\", \"XDG_STATE_HOME\", \"XDG_CACHE_HOME\", " +
+	body.WriteString("\tfor _, key := range []string{\"XDG_CONFIG_HOME\", \"XDG_DATA_HOME\", \"XDG_STATE_HOME\", \"XDG_CACHE_HOME\", \"MYAPI_TOKEN\", \"PRINTING_PRESS_VERIFY\", \"PRINTING_PRESS_DOGFOOD\", " +
 		strconv.Quote(prefix+"_CONFIG_DIR") + ", " + strconv.Quote(prefix+"_DATA_DIR") + ", " +
-		strconv.Quote(prefix+"_STATE_DIR") + ", " + strconv.Quote(prefix+"_CACHE_DIR") + "} {\n")
+		strconv.Quote(prefix+"_STATE_DIR") + ", " + strconv.Quote(prefix+"_CACHE_DIR") + ", " +
+		strconv.Quote(prefix+"_BASE_URL") + "} {\n")
 	body.WriteString("\t\tt.Setenv(key, \"\")\n\t}\n")
 	body.WriteString("\tt.Setenv(" + strconv.Quote(prefix+"_HOME") + ", iso)\n")
 	body.WriteString("\tt.Setenv(" + strconv.Quote(prefix+"_CONFIG") + ", configFile)\n}\n\n")
