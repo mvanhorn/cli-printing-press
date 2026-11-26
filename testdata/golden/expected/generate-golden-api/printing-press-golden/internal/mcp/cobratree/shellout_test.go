@@ -2662,6 +2662,231 @@ func main() {
 	}
 }
 
+func TestReadOnlyBareFlagChecksNoOptDefVal(t *testing.T) {
+	bin := writeArgvHelper(t)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("terms", "", "inherited")
+	if flag := root.PersistentFlags().Lookup("terms"); flag != nil {
+		flag.NoOptDefVal = secret
+	}
+	snapshot := &cobra.Command{Use: "snapshot", Run: func(*cobra.Command, []string) {}}
+	snapshot.Flags().Bool("verbose", false, "")
+	snapshot.Flags().String("terms", "", "")
+	snapshot.Flags().String("format", "", "")
+	snapshot.Flags().String("notes", "", "")
+	snapshot.Flags().StringSlice("ids", nil, "")
+	if flag := snapshot.Flags().Lookup("format"); flag != nil {
+		flag.NoOptDefVal = "json"
+	}
+	if flag := snapshot.Flags().Lookup("ids"); flag != nil {
+		flag.NoOptDefVal = "coins," + secret
+	}
+	root.AddCommand(snapshot)
+
+	allowed := map[string]bool{"verbose": true, "terms": true, "format": true, "notes": true, "ids": true}
+	handler := func(readOnly bool) server.ToolHandlerFunc {
+		return shellOutToCLI(
+			func() (string, error) { return bin, nil },
+			[]string{"snapshot"},
+			map[string]bool{},
+			allowed,
+			nil,
+			readOnly,
+			nil,
+			snapshot,
+		)
+	}
+	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
+		t.Helper()
+		result, err := handler(readOnly)(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		return result
+	}
+
+	t.Run("boolean bare flag is forwarded", func(t *testing.T) {
+		result := call(true, map[string]any{"verbose": true})
+		if result.IsError {
+			t.Fatalf("read-only tool refused a boolean: %s", toolResultText(result))
+		}
+		got := decodeArgvResult(t, result)
+		want := []string{"snapshot", "--verbose"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("shellout argv = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("safe optional value is forwarded", func(t *testing.T) {
+		result := call(true, map[string]any{"format": true})
+		if result.IsError {
+			t.Fatalf("read-only tool refused a safe optional value: %s", toolResultText(result))
+		}
+		got := decodeArgvResult(t, result)
+		want := []string{"snapshot", "--format"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("shellout argv = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("optional value that leaves the work dir is refused", func(t *testing.T) {
+		result := call(true, map[string]any{"ids": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --ids") || !strings.Contains(got, secret) {
+			t.Fatalf("tool error = %q, want refusal of --ids naming the optional path", got)
+		}
+	})
+
+	t.Run("bare non-boolean without an optional value is refused", func(t *testing.T) {
+		result := call(true, map[string]any{"notes": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --notes without a value") {
+			t.Fatalf("tool error = %q, want a bare-flag refusal", got)
+		}
+	})
+
+	t.Run("local flag hides an inherited optional path", func(t *testing.T) {
+		result := call(true, map[string]any{"terms": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --terms without a value") || strings.Contains(got, secret) {
+			t.Fatalf("tool error = %q, want the local flag's bare refusal and not the inherited path", got)
+		}
+	})
+
+	t.Run("non-read-only tool still forwards a bare flag", func(t *testing.T) {
+		result := call(false, map[string]any{"ids": true})
+		if result.IsError {
+			t.Fatalf("non-read-only tool refused a bare flag: %s", toolResultText(result))
+		}
+	})
+}
+
+func TestReadOnlyChildAnchorsOperatorPathEnv(t *testing.T) {
+	bin := writeGoHelper(t, "envhelper", `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	keys := []string{
+		"PRINTING_PRESS_GOLDEN_CONFIG",
+		"PRINTING_PRESS_GOLDEN_CA_CERT",
+		"PRINTING_PRESS_GOLDEN_CONFIG_DIR",
+		"PRINTING_PRESS_GOLDEN_BASE_URL",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"SSL_CERT_FILE",
+		"SSL_CERT_DIR",
+		"PRINTING_PRESS_GOLDEN_MCP_SERVER_CWD",
+	}
+	got := map[string]string{}
+	for _, key := range keys {
+		got[key] = os.Getenv(key)
+	}
+	wd, _ := os.Getwd()
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": wd, "env": got})
+}
+`)
+	serverCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	sep := string(filepath.Separator)
+	absCA := filepath.Join(t.TempDir(), "ca.pem")
+	configKey := "PRINTING_PRESS_GOLDEN_CONFIG"
+	caKey := "PRINTING_PRESS_GOLDEN_CA_CERT"
+	configDirKey := "PRINTING_PRESS_GOLDEN_CONFIG_DIR"
+	baseURLKey := "PRINTING_PRESS_GOLDEN_BASE_URL"
+	serverCWDKey := "PRINTING_PRESS_GOLDEN_MCP_SERVER_CWD"
+	relConfig := "cfg/app.json"
+	parentConfig := ".." + sep + "outside.json"
+	placeholder := "${user_config.ca_cert}"
+
+	t.Setenv(configKey, relConfig)
+	t.Setenv(caKey, absCA)
+	t.Setenv(configDirKey, "relative-dir")
+	t.Setenv(baseURLKey, "api.example/v1")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "keys/sa.json")
+	t.Setenv("SSL_CERT_FILE", placeholder)
+	t.Setenv("SSL_CERT_DIR", "certs")
+	t.Setenv(serverCWDKey, "")
+
+	readEnv := func(readOnly bool) (string, map[string]string) {
+		t.Helper()
+		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil, nil)
+		result, err := handler(context.Background(), mcplib.CallToolRequest{})
+		if err != nil || result.IsError {
+			t.Fatalf("readOnly=%v handler failed: %v %s", readOnly, err, toolResultText(result))
+		}
+		var got struct {
+			Cwd string            `json:"cwd"`
+			Env map[string]string `json:"env"`
+		}
+		if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+			t.Fatalf("decode env helper: %v; text=%q", err, toolResultText(result))
+		}
+		return got.Cwd, got.Env
+	}
+
+	cwd, env := readEnv(true)
+	if cwd == serverCwd {
+		t.Fatalf("read-only child ran in the server directory %q", cwd)
+	}
+	anchored := serverCwd + sep + relConfig
+	if env[configKey] != anchored {
+		t.Fatalf("config env = %q, want %q", env[configKey], anchored)
+	}
+	if env[caKey] != absCA {
+		t.Fatalf("absolute CA cert env = %q, want %q", env[caKey], absCA)
+	}
+	if env[configDirKey] != "relative-dir" {
+		t.Fatalf("config dir env = %q, want the original relative value", env[configDirKey])
+	}
+	if env[baseURLKey] != "api.example/v1" {
+		t.Fatalf("base url env = %q, want it left unchanged", env[baseURLKey])
+	}
+	if env["GOOGLE_APPLICATION_CREDENTIALS"] != serverCwd+sep+"keys/sa.json" {
+		t.Fatalf("credentials env = %q, want it anchored", env["GOOGLE_APPLICATION_CREDENTIALS"])
+	}
+	if env["SSL_CERT_FILE"] != placeholder {
+		t.Fatalf("placeholder cert env = %q, want it left unchanged", env["SSL_CERT_FILE"])
+	}
+	if env["SSL_CERT_DIR"] != serverCwd+sep+"certs" {
+		t.Fatalf("cert dir env = %q, want it anchored", env["SSL_CERT_DIR"])
+	}
+	if env[serverCWDKey] != serverCwd {
+		t.Fatalf("server cwd env = %q, want %q", env[serverCWDKey], serverCwd)
+	}
+	t.Setenv(serverCWDKey, serverCwd)
+	if got := cliutil.AnchorMCPOperatorPath("certs/ca.pem"); got != serverCwd+sep+"certs/ca.pem" {
+		t.Fatalf("AnchorMCPOperatorPath = %q, want the config-file path anchored", got)
+	}
+	if got := cliutil.AnchorMCPOperatorPath(absCA); got != absCA {
+		t.Fatalf("AnchorMCPOperatorPath absolute = %q, want %q", got, absCA)
+	}
+	if got := cliutil.AnchorMCPOperatorPath(placeholder); got != placeholder {
+		t.Fatalf("AnchorMCPOperatorPath placeholder = %q, want it unchanged", got)
+	}
+	t.Setenv(serverCWDKey, "")
+
+	t.Setenv(configKey, parentConfig)
+	_, env = readEnv(true)
+	if env[configKey] != serverCwd+sep+parentConfig {
+		t.Fatalf("parent-relative config env = %q, want it anchored without cleaning", env[configKey])
+	}
+
+	t.Setenv(configKey, relConfig)
+	cwd, env = readEnv(false)
+	if cwd != serverCwd {
+		t.Fatalf("non-read-only child ran in %q, want %q", cwd, serverCwd)
+	}
+	if env[configKey] != relConfig || env["GOOGLE_APPLICATION_CREDENTIALS"] != "keys/sa.json" {
+		t.Fatalf("non-read-only child rewrote path env: %#v", env)
+	}
+	if env[serverCWDKey] != "" {
+		t.Fatalf("non-read-only child saw server cwd %q", env[serverCWDKey])
+	}
+}
+
 func TestShellOutBoundsFinalError(t *testing.T) {
 	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
 		t.Run(mode, func(t *testing.T) {

@@ -81,3 +81,25 @@ func TestGeneratedWindowsShelloutLargeOutputUsesPowerShell(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^Test(ShellOutBoundsFinalError|ShellOutSurfacesSuccessStderrHintsSeparateFromJSON|RunCLICommandBoundsFailureOutput|RunCLICommandFiltersSuccessStderrHints)$", "-count=1")
 }
+
+func TestGeneratedReadOnlyShellOutBareFlagAndAnchoredPaths(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("shellout-readonly-paths")
+	outputDir := filepath.Join(t.TempDir(), "shellout-readonly-paths-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	shellout := readGenerated(t, outputDir, "internal", "mcp", "cobratree", "shellout.go")
+	assert.Contains(t, shellout, "meta.noOptDefVal")
+	assert.Contains(t, shellout, "anchorOperatorPathEnv")
+	assert.Contains(t, shellout, `"GOOGLE_APPLICATION_CREDENTIALS"`)
+	assert.Contains(t, shellout, `"SSL_CERT_FILE"`)
+	client := readGenerated(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, client, "cliutil.AnchorMCPOperatorPath(path)")
+	verifyenv := readGenerated(t, outputDir, "internal", "cliutil", "verifyenv.go")
+	assert.Contains(t, verifyenv, "func AnchorAgainstDir(")
+	assert.Contains(t, verifyenv, "func AnchorMCPOperatorPath(")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-count=1", "-run", "^Test(ReadOnlyBareFlagChecksNoOptDefVal|ReadOnlyChildAnchorsOperatorPathEnv|ReadOnlyShellOutRefusesLocalPathValues|FlagTypesForCommandPrefersLocalFlags)$")
+}

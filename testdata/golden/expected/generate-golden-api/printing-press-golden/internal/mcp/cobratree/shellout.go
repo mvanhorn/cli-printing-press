@@ -59,7 +59,7 @@ func (c *cappedCapture) String() string {
 
 func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool, cmd *cobra.Command) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
-	flagTypes := flagTypesForCommand(cmd)
+	flags := commandFlags(cmd)
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		if lookupErr != nil {
@@ -92,7 +92,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 			if cmd != nil && !argsResolveTo(cmd, finalArgs) {
 				return boundedToolResultError("refusing positional arguments that select a different command; call that command's tool instead"), nil
 			}
-			if msg := localPathArgRefusal(finalArgs[len(prefixArgs):], flagTypes); msg != "" {
+			if msg := localPathArgRefusal(finalArgs[len(prefixArgs):], flags); msg != "" {
 				return boundedToolResultError(msg), nil
 			}
 			dir, err := os.MkdirTemp("", "mcp-read-only-")
@@ -131,15 +131,24 @@ func argsResolveTo(cmd *cobra.Command, args []string) bool {
 // the server account can read, whether or not the flag is listed in
 // mcp:read-flags. The rule never touches the filesystem, so a refusal does not
 // reveal whether a path exists.
-func localPathArgRefusal(args []string, flagTypes map[string]string) string {
+func localPathArgRefusal(args []string, flags map[string]commandFlag) string {
 	for _, arg := range args {
 		label, value, items := "argument", arg, []string{arg}
 		if flag, ok := strings.CutPrefix(arg, "--"); ok {
 			name, flagValue, hasValue := strings.Cut(flag, "=")
+			meta := flags[name]
 			if !hasValue {
-				continue
+				// pflag fills a bare flag from NoOptDefVal. A non-boolean with
+				// no optional value would skip the path check, so it is refused.
+				if meta.noOptDefVal == "" {
+					if meta.boolKind {
+						continue
+					}
+					return fmt.Sprintf("refusing --%s without a value: read-only MCP tools accept a bare flag only when it is a boolean", name)
+				}
+				flagValue = meta.noOptDefVal
 			}
-			label, value, items = "--"+name, flagValue, pflagValueItems(flagValue, flagTypes[name])
+			label, value, items = "--"+name, flagValue, pflagValueItems(flagValue, meta.typeName)
 		}
 		for _, item := range items {
 			if leavesWorkDir(item) {
@@ -735,14 +744,18 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (CLIComma
 // runCLICommandIn runs the companion CLI in dir, or in the server's working
 // directory when dir is empty.
 func runCLICommandIn(ctx context.Context, binPath string, args []string, dir string) (CLICommandResult, error) {
+	// os.Getenv returns the first duplicate, so an inherited marker has to
+	// be replaced. A nil Env would inherit the parent and could not force it.
+	env := mcpChildEnviron()
 	if dir != "" {
 		binPath = anchorRelativeCLIPath(binPath)
+		if wd, err := os.Getwd(); err == nil && wd != "" {
+			env = anchorOperatorPathEnv(env, wd)
+		}
 	}
 	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
 	cmd.Dir = dir
-	// os.Getenv returns the first duplicate, so an inherited marker has to
-	// be replaced. A nil Env would inherit the parent and could not force it.
-	cmd.Env = mcpChildEnviron()
+	cmd.Env = env
 	stdout := newCappedCapture()
 	stderr := newCappedCapture()
 	cmd.Stdout = stdout
@@ -764,6 +777,60 @@ func runCLICommandIn(ctx context.Context, binPath string, args []string, dir str
 		return result, fmt.Errorf("cli %s: %w (%s)", binPath, err, bound.Text(detail))
 	}
 	return result, nil
+}
+
+// operatorPathEnvKeys are values the child opens relative to its working
+// directory. Per-kind directory overrides (_CONFIG_DIR, _HOME, XDG_*_HOME)
+// already have to be absolute, and _CLI_PATH is anchored on its own.
+func operatorPathEnvKeys() []string {
+	return []string{
+		"PRINTING_PRESS_GOLDEN_CONFIG",
+		"PRINTING_PRESS_GOLDEN_CA_CERT",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"SSL_CERT_FILE",
+		"SSL_CERT_DIR",
+	}
+}
+
+// anchorOperatorPathEnv makes those values absolute against the server's
+// directory and records that directory for paths stored inside the config
+// file. A read-only child runs in an empty directory, so a relative value
+// would otherwise name a file that is not there.
+func anchorOperatorPathEnv(env []string, wd string) []string {
+	out := append([]string{}, env...)
+	for _, key := range operatorPathEnvKeys() {
+		out = rewriteEnvValues(out, key, func(value string) string {
+			return cliutil.AnchorAgainstDir(wd, value)
+		})
+	}
+	return setEnvValue(out, cliutil.MCPServerCWDEnvVar, wd)
+}
+
+func rewriteEnvValues(env []string, key string, value func(string) string) []string {
+	for i, entry := range env {
+		name, current, ok := strings.Cut(entry, "=")
+		if !ok || name != key {
+			continue
+		}
+		env[i] = key + "=" + value(current)
+	}
+	return env
+}
+
+func setEnvValue(env []string, key, value string) []string {
+	found := false
+	for i, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || name != key {
+			continue
+		}
+		env[i] = key + "=" + value
+		found = true
+	}
+	if !found {
+		env = append(env, key+"="+value)
+	}
+	return env
 }
 
 // anchorRelativeCLIPath prefixes the server's directory to a relative path

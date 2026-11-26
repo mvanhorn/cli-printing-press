@@ -317,6 +317,7 @@ func resolveTLS(trust tlsSettings) (resolvedTLS, error) {
 var systemCertPool = x509.SystemCertPool
 
 func loadCACertPool(path string) (*x509.CertPool, error) {
+	path = cliutil.AnchorMCPOperatorPath(path)
 	if path == "" {
 		return nil, nil
 	}

@@ -359,20 +359,54 @@ func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
 	return blocked
 }
 
-// flagTypesForCommand maps each flag name to its pflag type, letting a local
-// flag shadow an inherited one of the same name.
-func flagTypesForCommand(cmd *cobra.Command) map[string]string {
+// commandFlag is the pflag metadata a read-only mirror needs at call time.
+// A local flag shadows an inherited one of the same name.
+type commandFlag struct {
+	typeName    string
+	noOptDefVal string
+	boolKind    bool
+}
+
+func commandFlags(cmd *cobra.Command) map[string]commandFlag {
 	if cmd == nil {
 		return nil
 	}
-	types := map[string]string{}
+	flags := map[string]commandFlag{}
 	add := func(flag *pflag.Flag) {
-		if _, ok := types[flag.Name]; !ok {
-			types[flag.Name] = flag.Value.Type()
+		if flag == nil || flag.Name == "" {
+			return
 		}
+		if _, ok := flags[flag.Name]; ok {
+			return
+		}
+		meta := commandFlag{noOptDefVal: flag.NoOptDefVal}
+		if flag.Value != nil {
+			meta.typeName = flag.Value.Type()
+			meta.boolKind = meta.typeName == "bool" || flagValueIsBool(flag.Value)
+		}
+		flags[flag.Name] = meta
 	}
 	cmd.NonInheritedFlags().VisitAll(add)
 	cmd.InheritedFlags().VisitAll(add)
+	return flags
+}
+
+func flagValueIsBool(value pflag.Value) bool {
+	boolFlag, ok := value.(interface{ IsBoolFlag() bool })
+	return ok && boolFlag.IsBoolFlag()
+}
+
+// flagTypesForCommand maps each flag name to its pflag type, letting a local
+// flag shadow an inherited one of the same name.
+func flagTypesForCommand(cmd *cobra.Command) map[string]string {
+	flags := commandFlags(cmd)
+	if flags == nil {
+		return nil
+	}
+	types := make(map[string]string, len(flags))
+	for name, flag := range flags {
+		types[name] = flag.typeName
+	}
 	return types
 }
 

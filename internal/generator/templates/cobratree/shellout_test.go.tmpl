@@ -93,23 +93,23 @@ func TestDescriptionForPrefersShort(t *testing.T) {
 // are local command flags, because MCP clients do not get to choose disk paths.
 func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	in := map[string]any{
-		"args":         "contacts",
-		"audit-dir":    "/tmp/evil-audit",
-		"base-url":     "https://evil.example.com",
-		"ca-cert":      "/tmp/evil-ca.pem",
-		"client":       "attacker-client",
-		"config":       "/tmp/evil.yaml",
-		"db":           "/tmp/evil.db",
-		"deliver":      "fd:3",
-		"home":         "/tmp/evil-home",
-		"insecure":     true,
-		"o":            "/tmp/evil-short.json",
-		"output":       "/tmp/evil.json",
-		"profile":      "attacker",
-		"receipt-file": "/tmp/evil-receipt.json",
+		"args":            "contacts",
+		"audit-dir":       "/tmp/evil-audit",
+		"base-url":        "https://evil.example.com",
+		"ca-cert":         "/tmp/evil-ca.pem",
+		"client":          "attacker-client",
+		"config":          "/tmp/evil.yaml",
+		"db":              "/tmp/evil.db",
+		"deliver":         "fd:3",
+		"home":            "/tmp/evil-home",
+		"insecure":        true,
+		"o":               "/tmp/evil-short.json",
+		"output":          "/tmp/evil.json",
+		"profile":         "attacker",
+		"receipt-file":    "/tmp/evil-receipt.json",
 		"tls-server-name": "evil.example",
-		"token":        "your-token-here",
-		"yes":          true,
+		"token":           "your-token-here",
+		"yes":             true,
 		// Keys containing "=" must not be emitted verbatim as flag=value.
 		"base-url=https://evil.example.com": true,
 		"config=/tmp/evil.yaml":             true,
@@ -119,23 +119,23 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"limit": float64(10),
 	}
 	got := cliArgsFromMCP(in, map[string]bool{
-		"args":         true,
-		"audit-dir":    true,
-		"base-url":     true,
-		"ca-cert":      true,
-		"client":       true,
-		"config":       true,
-		"db":           true,
-		"deliver":      true,
-		"home":         true,
-		"insecure":     true,
-		"o":            true,
-		"output":       true,
-		"profile":      true,
-		"receipt-file": true,
+		"args":            true,
+		"audit-dir":       true,
+		"base-url":        true,
+		"ca-cert":         true,
+		"client":          true,
+		"config":          true,
+		"db":              true,
+		"deliver":         true,
+		"home":            true,
+		"insecure":        true,
+		"o":               true,
+		"output":          true,
+		"profile":         true,
+		"receipt-file":    true,
 		"tls-server-name": true,
-		"token":        true,
-		"yes":          true,
+		"token":           true,
+		"yes":             true,
 	})
 	want := []string{"--limit=10"}
 	if !reflect.DeepEqual(got, want) {
@@ -1606,7 +1606,7 @@ func TestMCPVariadicPositionalSchemaAndArgv(t *testing.T) {
 		Short: "Save paths",
 		RunE:  noop,
 		Annotations: map[string]string{
-			"mcp:read-only":        "true",
+			"mcp:read-only":         "true",
 			"mcp:write-positionals": "0",
 		},
 	}
@@ -1744,7 +1744,7 @@ func TestMCPVariadicPositionalRejectsUnhonoredValues(t *testing.T) {
 		Short: "Save paths",
 		RunE:  noop,
 		Annotations: map[string]string{
-			"mcp:read-only":        "true",
+			"mcp:read-only":         "true",
 			"mcp:write-positionals": "0",
 		},
 	}
@@ -1872,102 +1872,102 @@ func TestMCPVariadicPositionalRejectsUnhonoredValues(t *testing.T) {
 
 	packPositionals := positionalArgsForCommand(pack, nil)
 	direct := []struct {
-		name    string
-		use     string
-		args    map[string]any
+		name     string
+		use      string
+		args     map[string]any
 		readOnly bool
-		sinks   map[int]bool
-		want    []string
-		wantErr string
-		absent  []string
+		sinks    map[int]bool
+		want     []string
+		wantErr  string
+		absent   []string
 	}{
 		{
-			name: "scalar typed slice",
-			use:  "lookup <query>",
-			args: map[string]any{"query": []string{"alpha", "beta"}},
+			name:    "scalar typed slice",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": []string{"alpha", "beta"}},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
 		},
 		{
-			name: "scalar fixed array",
-			use:  "lookup <query>",
-			args: map[string]any{"query": [1]string{"alpha"}},
+			name:    "scalar fixed array",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": [1]string{"alpha"}},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
 		},
 		{
-			name: "scalar int map",
-			use:  "lookup <query>",
-			args: map[string]any{"query": map[int]string{1: "secret-value"}},
+			name:    "scalar int map",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": map[int]string{1: "secret-value"}},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got an object`,
 			absent:  []string{"secret-value"},
 		},
 		{
-			name: "scalar stringer",
-			use:  "lookup <query>",
-			args: map[string]any{"query": positionalStringer{}},
+			name:    "scalar stringer",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": positionalStringer{}},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got cobratree.positionalStringer`,
 			absent:  []string{"[alpha beta]"},
 		},
 		{
-			name: "scalar struct",
-			use:  "lookup <query>",
-			args: map[string]any{"query": positionalStruct{Secret: "secret-value"}},
+			name:    "scalar struct",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": positionalStruct{Secret: "secret-value"}},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got cobratree.positionalStruct`,
 			absent:  []string{"secret-value"},
 		},
 		{
-			name: "scalar byte slice",
-			use:  "lookup <query>",
-			args: map[string]any{"query": []byte("alpha")},
+			name:    "scalar byte slice",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": []byte("alpha")},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
 			absent:  []string{"97 108"},
 		},
 		{
-			name: "scalar raw message",
-			use:  "lookup <query>",
-			args: map[string]any{"query": json.RawMessage(`["alpha","beta"]`)},
+			name:    "scalar raw message",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": json.RawMessage(`["alpha","beta"]`)},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got an array`,
 			absent:  []string{`["alpha","beta"]`},
 		},
 		{
-			name: "scalar pointer to slice",
-			use:  "lookup <query>",
-			args: map[string]any{"query": &[]string{"alpha", "beta"}},
+			name:    "scalar pointer to slice",
+			use:     "lookup <query>",
+			args:    map[string]any{"query": &[]string{"alpha", "beta"}},
 			wantErr: `structured positional "query" must be a single string, number, or boolean; got *[]string`,
 			absent:  []string{"alpha"},
 		},
 		{
-			name: "variadic raw message",
-			use:  "bulk [terms...]",
-			args: map[string]any{"terms": json.RawMessage(`["alpha","beta"]`)},
+			name:    "variadic raw message",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": json.RawMessage(`["alpha","beta"]`)},
 			wantErr: `structured positional "terms" must be a string or an array of strings; got an array`,
 			absent:  []string{"alpha"},
 		},
 		{
-			name: "variadic stringer item",
-			use:  "bulk [terms...]",
-			args: map[string]any{"terms": []any{positionalStringer{}}},
+			name:    "variadic stringer item",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": []any{positionalStringer{}}},
 			wantErr: `structured positional "terms" item 0 must be a string, number, or boolean; got cobratree.positionalStringer`,
 			absent:  []string{"[alpha beta]"},
 		},
 		{
-			name: "variadic object item",
-			use:  "bulk [terms...]",
-			args: map[string]any{"terms": []any{map[string]any{"k": "secret-value"}}},
+			name:    "variadic object item",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": []any{map[string]any{"k": "secret-value"}}},
 			wantErr: `structured positional "terms" item 0 must be a string, number, or boolean; got an object`,
 			absent:  []string{"secret-value"},
 		},
 		{
-			name: "variadic struct item",
-			use:  "bulk [terms...]",
-			args: map[string]any{"terms": []any{"ok", positionalStruct{Secret: "secret-value"}}},
+			name:    "variadic struct item",
+			use:     "bulk [terms...]",
+			args:    map[string]any{"terms": []any{"ok", positionalStruct{Secret: "secret-value"}}},
 			wantErr: `structured positional "terms" item 1 must be a string, number, or boolean; got cobratree.positionalStruct`,
 			absent:  []string{"secret-value"},
 		},
 		{
-			name:    "later positional stays contiguous after a variadic",
-			use:     "join <a> [b...] <c>",
-			args:    map[string]any{"a": "x", "b": []any{"y", "z"}, "c": "w"},
-			want:    []string{"x", "y", "z", "w"},
+			name: "later positional stays contiguous after a variadic",
+			use:  "join <a> [b...] <c>",
+			args: map[string]any{"a": "x", "b": []any{"y", "z"}, "c": "w"},
+			want: []string{"x", "y", "z", "w"},
 		},
 		{
 			name:    "omitted variadic still blocks a later positional",
@@ -2001,11 +2001,11 @@ func TestMCPVariadicPositionalRejectsUnhonoredValues(t *testing.T) {
 			wantErr:  `flag-like positional argument "--out=evil" not allowed in structured positional "path"; use structured flag parameters instead`,
 		},
 		{
-			name:    "write sink is ignored when the tool is not read-only",
-			use:     "save [path...]",
-			args:    map[string]any{"path": []any{"evil.txt"}},
-			sinks:   map[int]bool{0: true},
-			want:    []string{"evil.txt"},
+			name:  "write sink is ignored when the tool is not read-only",
+			use:   "save [path...]",
+			args:  map[string]any{"path": []any{"evil.txt"}},
+			sinks: map[int]bool{0: true},
+			want:  []string{"evil.txt"},
 		},
 		{
 			name: "scalar bool number and string",
@@ -2659,6 +2659,231 @@ func main() {
 		if !readOnly && got.Cwd != serverCwd {
 			t.Fatalf("non-read-only child ran in %q, want server directory %q", got.Cwd, serverCwd)
 		}
+	}
+}
+
+func TestReadOnlyBareFlagChecksNoOptDefVal(t *testing.T) {
+	bin := writeArgvHelper(t)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("terms", "", "inherited")
+	if flag := root.PersistentFlags().Lookup("terms"); flag != nil {
+		flag.NoOptDefVal = secret
+	}
+	snapshot := &cobra.Command{Use: "snapshot", Run: func(*cobra.Command, []string) {}}
+	snapshot.Flags().Bool("verbose", false, "")
+	snapshot.Flags().String("terms", "", "")
+	snapshot.Flags().String("format", "", "")
+	snapshot.Flags().String("notes", "", "")
+	snapshot.Flags().StringSlice("ids", nil, "")
+	if flag := snapshot.Flags().Lookup("format"); flag != nil {
+		flag.NoOptDefVal = "json"
+	}
+	if flag := snapshot.Flags().Lookup("ids"); flag != nil {
+		flag.NoOptDefVal = "coins," + secret
+	}
+	root.AddCommand(snapshot)
+
+	allowed := map[string]bool{"verbose": true, "terms": true, "format": true, "notes": true, "ids": true}
+	handler := func(readOnly bool) server.ToolHandlerFunc {
+		return shellOutToCLI(
+			func() (string, error) { return bin, nil },
+			[]string{"snapshot"},
+			map[string]bool{},
+			allowed,
+			nil,
+			readOnly,
+			nil,
+			snapshot,
+		)
+	}
+	call := func(readOnly bool, args map[string]any) *mcplib.CallToolResult {
+		t.Helper()
+		result, err := handler(readOnly)(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Arguments: args}})
+		if err != nil {
+			t.Fatalf("handler returned transport error: %v", err)
+		}
+		return result
+	}
+
+	t.Run("boolean bare flag is forwarded", func(t *testing.T) {
+		result := call(true, map[string]any{"verbose": true})
+		if result.IsError {
+			t.Fatalf("read-only tool refused a boolean: %s", toolResultText(result))
+		}
+		got := decodeArgvResult(t, result)
+		want := []string{"snapshot", "--verbose"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("shellout argv = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("safe optional value is forwarded", func(t *testing.T) {
+		result := call(true, map[string]any{"format": true})
+		if result.IsError {
+			t.Fatalf("read-only tool refused a safe optional value: %s", toolResultText(result))
+		}
+		got := decodeArgvResult(t, result)
+		want := []string{"snapshot", "--format"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("shellout argv = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("optional value that leaves the work dir is refused", func(t *testing.T) {
+		result := call(true, map[string]any{"ids": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --ids") || !strings.Contains(got, secret) {
+			t.Fatalf("tool error = %q, want refusal of --ids naming the optional path", got)
+		}
+	})
+
+	t.Run("bare non-boolean without an optional value is refused", func(t *testing.T) {
+		result := call(true, map[string]any{"notes": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --notes without a value") {
+			t.Fatalf("tool error = %q, want a bare-flag refusal", got)
+		}
+	})
+
+	t.Run("local flag hides an inherited optional path", func(t *testing.T) {
+		result := call(true, map[string]any{"terms": true})
+		if got := toolResultText(result); !result.IsError || !strings.Contains(got, "refusing --terms without a value") || strings.Contains(got, secret) {
+			t.Fatalf("tool error = %q, want the local flag's bare refusal and not the inherited path", got)
+		}
+	})
+
+	t.Run("non-read-only tool still forwards a bare flag", func(t *testing.T) {
+		result := call(false, map[string]any{"ids": true})
+		if result.IsError {
+			t.Fatalf("non-read-only tool refused a bare flag: %s", toolResultText(result))
+		}
+	})
+}
+
+func TestReadOnlyChildAnchorsOperatorPathEnv(t *testing.T) {
+	bin := writeGoHelper(t, "envhelper", `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	keys := []string{
+		"{{envPrefix .Name}}_CONFIG",
+		"{{envPrefix .Name}}_CA_CERT",
+		"{{envPrefix .Name}}_CONFIG_DIR",
+		"{{envPrefix .Name}}_BASE_URL",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"SSL_CERT_FILE",
+		"SSL_CERT_DIR",
+		"{{envPrefix .Name}}_MCP_SERVER_CWD",
+	}
+	got := map[string]string{}
+	for _, key := range keys {
+		got[key] = os.Getenv(key)
+	}
+	wd, _ := os.Getwd()
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": wd, "env": got})
+}
+`)
+	serverCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	sep := string(filepath.Separator)
+	absCA := filepath.Join(t.TempDir(), "ca.pem")
+	configKey := "{{envPrefix .Name}}_CONFIG"
+	caKey := "{{envPrefix .Name}}_CA_CERT"
+	configDirKey := "{{envPrefix .Name}}_CONFIG_DIR"
+	baseURLKey := "{{envPrefix .Name}}_BASE_URL"
+	serverCWDKey := "{{envPrefix .Name}}_MCP_SERVER_CWD"
+	relConfig := "cfg/app.json"
+	parentConfig := ".." + sep + "outside.json"
+	placeholder := "${user_config.ca_cert}"
+
+	t.Setenv(configKey, relConfig)
+	t.Setenv(caKey, absCA)
+	t.Setenv(configDirKey, "relative-dir")
+	t.Setenv(baseURLKey, "api.example/v1")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "keys/sa.json")
+	t.Setenv("SSL_CERT_FILE", placeholder)
+	t.Setenv("SSL_CERT_DIR", "certs")
+	t.Setenv(serverCWDKey, "")
+
+	readEnv := func(readOnly bool) (string, map[string]string) {
+		t.Helper()
+		handler := shellOutToCLI(func() (string, error) { return bin, nil }, nil, map[string]bool{}, map[string]bool{}, nil, readOnly, nil, nil)
+		result, err := handler(context.Background(), mcplib.CallToolRequest{})
+		if err != nil || result.IsError {
+			t.Fatalf("readOnly=%v handler failed: %v %s", readOnly, err, toolResultText(result))
+		}
+		var got struct {
+			Cwd string            `json:"cwd"`
+			Env map[string]string `json:"env"`
+		}
+		if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+			t.Fatalf("decode env helper: %v; text=%q", err, toolResultText(result))
+		}
+		return got.Cwd, got.Env
+	}
+
+	cwd, env := readEnv(true)
+	if cwd == serverCwd {
+		t.Fatalf("read-only child ran in the server directory %q", cwd)
+	}
+	anchored := serverCwd + sep + relConfig
+	if env[configKey] != anchored {
+		t.Fatalf("config env = %q, want %q", env[configKey], anchored)
+	}
+	if env[caKey] != absCA {
+		t.Fatalf("absolute CA cert env = %q, want %q", env[caKey], absCA)
+	}
+	if env[configDirKey] != "relative-dir" {
+		t.Fatalf("config dir env = %q, want the original relative value", env[configDirKey])
+	}
+	if env[baseURLKey] != "api.example/v1" {
+		t.Fatalf("base url env = %q, want it left unchanged", env[baseURLKey])
+	}
+	if env["GOOGLE_APPLICATION_CREDENTIALS"] != serverCwd+sep+"keys/sa.json" {
+		t.Fatalf("credentials env = %q, want it anchored", env["GOOGLE_APPLICATION_CREDENTIALS"])
+	}
+	if env["SSL_CERT_FILE"] != placeholder {
+		t.Fatalf("placeholder cert env = %q, want it left unchanged", env["SSL_CERT_FILE"])
+	}
+	if env["SSL_CERT_DIR"] != serverCwd+sep+"certs" {
+		t.Fatalf("cert dir env = %q, want it anchored", env["SSL_CERT_DIR"])
+	}
+	if env[serverCWDKey] != serverCwd {
+		t.Fatalf("server cwd env = %q, want %q", env[serverCWDKey], serverCwd)
+	}
+	t.Setenv(serverCWDKey, serverCwd)
+	if got := cliutil.AnchorMCPOperatorPath("certs/ca.pem"); got != serverCwd+sep+"certs/ca.pem" {
+		t.Fatalf("AnchorMCPOperatorPath = %q, want the config-file path anchored", got)
+	}
+	if got := cliutil.AnchorMCPOperatorPath(absCA); got != absCA {
+		t.Fatalf("AnchorMCPOperatorPath absolute = %q, want %q", got, absCA)
+	}
+	if got := cliutil.AnchorMCPOperatorPath(placeholder); got != placeholder {
+		t.Fatalf("AnchorMCPOperatorPath placeholder = %q, want it unchanged", got)
+	}
+	t.Setenv(serverCWDKey, "")
+
+	t.Setenv(configKey, parentConfig)
+	_, env = readEnv(true)
+	if env[configKey] != serverCwd+sep+parentConfig {
+		t.Fatalf("parent-relative config env = %q, want it anchored without cleaning", env[configKey])
+	}
+
+	t.Setenv(configKey, relConfig)
+	cwd, env = readEnv(false)
+	if cwd != serverCwd {
+		t.Fatalf("non-read-only child ran in %q, want %q", cwd, serverCwd)
+	}
+	if env[configKey] != relConfig || env["GOOGLE_APPLICATION_CREDENTIALS"] != "keys/sa.json" {
+		t.Fatalf("non-read-only child rewrote path env: %#v", env)
+	}
+	if env[serverCWDKey] != "" {
+		t.Fatalf("non-read-only child saw server cwd %q", env[serverCWDKey])
 	}
 }
 
