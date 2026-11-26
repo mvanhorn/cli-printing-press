@@ -402,6 +402,14 @@ func codeOrchInvoke(ctx context.Context, req mcplib.CallToolRequest, executeTool
 			}
 		}
 	}
+	if method == "GET" && ep.Page.PaginationType == "page" && ep.Page.LimitParam != "" && mcpCursor != "" {
+		if n := bound.CursorPageSize(mcpCursor); n > 0 {
+			limit, present := params[ep.Page.LimitParam]
+			if !present || strings.TrimSpace(formatMCPParamValue(limit)) == "" {
+				params[ep.Page.LimitParam] = fmt.Sprintf("%d", n)
+			}
+		}
+	}
 
 	// Route params to their runtime slots. GET/DELETE params are query
 	// strings; write methods split spec-declared query params from the

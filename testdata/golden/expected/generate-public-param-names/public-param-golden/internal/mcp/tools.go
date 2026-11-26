@@ -437,6 +437,18 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				requestCursor = s
 			}
 		}
+		if pageConfig.PaginationType == "page" && pageConfig.LimitParam != "" && mcpCursor != "" {
+			if n := bound.CursorPageSize(mcpCursor); n > 0 {
+				size := strconv.Itoa(n)
+				if pageConfig.CursorInBody {
+					if _, ok := bodyArgs[pageConfig.LimitParam]; !ok {
+						bodyArgs[pageConfig.LimitParam] = size
+					}
+				} else if strings.TrimSpace(params[pageConfig.LimitParam]) == "" {
+					params[pageConfig.LimitParam] = size
+				}
+			}
+		}
 
 		var data json.RawMessage
 		switch method {
@@ -812,12 +824,15 @@ func withSinglePageTotal(opts bound.PageOptions, data json.RawMessage, pageConfi
 	if pageConfig.PaginationType != "offset" && pageConfig.PaginationType != "page" {
 		return opts
 	}
-	next, sawTotal, ok := cli.SinglePageNextCursor(data, pageConfig.NextCursorPath, pageConfig.HasMoreField, pageConfig.PaginationType, pageConfig.CursorParam, pageConfig.LimitParam, params, requestPath)
+	next, sawTotal, replay, ok := cli.SinglePageNextCursor(data, pageConfig.NextCursorPath, pageConfig.HasMoreField, pageConfig.PaginationType, pageConfig.CursorParam, pageConfig.LimitParam, params, requestPath)
 	if !ok || !sawTotal {
 		return opts
 	}
 	opts.TotalSeen = true
 	opts.TotalNextCursor = next
+	if replay > 0 {
+		opts.ReplayPageSize = replay
+	}
 	return opts
 }
 

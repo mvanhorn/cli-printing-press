@@ -23,7 +23,7 @@ func TestGeneratedTotalOnlyPageReportsHasMore(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "total_page_behavior_test.go"), []byte(totalPageCLITest()), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "total_page_mcp_test.go"), []byte(totalPageMCPTest(modulePath)), 0o644))
 	requireGeneratedCompiles(t, outputDir)
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "./internal/mcp", "-run", "TestTotalPage", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "./internal/mcp", "./internal/mcp/bound", "-run", "TestTotalPage|TestCursorPageSize", "-count=1")
 }
 
 func totalPageSpec() *spec.APISpec {
@@ -187,13 +187,15 @@ func TestTotalPageCLIReportsHasMore(t *testing.T) {
 	if open["has_more"] != true || open["next_cursor"] != "2" {
 		t.Fatalf("first page without per-page = %#v", open)
 	}
-	bareOut, bareErr := runTotalPage(t, "pages", "list", "--page", "3", "--json")
-	bare := totalPageMeta(t, bareOut)
-	if bare["has_more"] != false {
-		t.Fatalf("later page without per-page = %#v", bare)
+	midBareOut, _ := runTotalPage(t, "pages", "list", "--page", "2", "--json")
+	midBare := totalPageMeta(t, midBareOut)
+	if midBare["has_more"] != true || midBare["next_cursor"] != "3" || !strings.Contains(midBareOut, "p20") || strings.Contains(midBareOut, "p0") {
+		t.Fatalf("middle page without per-page = %#v\n%s", midBare, midBareOut)
 	}
-	if _, ok := bare["next_cursor"]; ok || strings.Contains(bareErr, "\"event\":\"truncated\"") {
-		t.Fatalf("later page without per-page advertised more: %#v\n%s", bare, bareErr)
+	bareOut, _ := runTotalPage(t, "pages", "list", "--page", "3", "--json")
+	bare := totalPageMeta(t, bareOut)
+	if bare["has_more"] != true || bare["next_cursor"] != "4" || !strings.Contains(bareOut, "p40") {
+		t.Fatalf("tail page without per-page = %#v\n%s", bare, bareOut)
 	}
 
 	plainOut, plainErr := runTotalPage(t, "plain", "list", "--limit", "20", "--json")
@@ -258,6 +260,7 @@ func TestTotalPageCursorBranches(t *testing.T) {
 		limit      string
 		params     map[string]string
 		wantNext   string
+		wantReplay int
 		wantSaw    bool
 		wantOK     bool
 	}{
@@ -265,11 +268,12 @@ func TestTotalPageCursorBranches(t *testing.T) {
 		{name: "offset last", body: ` + "`" + `{"results":` + "`" + ` + short + ` + "`" + `,"total":57}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"offset": "40", "limit": "20"}, wantSaw: true, wantOK: true},
 		{name: "offset past end", body: ` + "`" + `{"results":` + "`" + ` + short + ` + "`" + `,"total":57}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"offset": "50", "limit": "20"}, wantSaw: true, wantOK: true},
 		{name: "total_count", body: ` + "`" + `{"results":` + "`" + ` + full + ` + "`" + `,"total_count":57}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantNext: "20", wantSaw: true, wantOK: true},
-		{name: "page mid", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"per_page": "20"}, wantNext: "2", wantSaw: true, wantOK: true},
+		{name: "page mid", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"per_page": "20"}, wantNext: "2", wantReplay: 20, wantSaw: true, wantOK: true},
 		{name: "page last", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3", "per_page": "20"}, wantSaw: true, wantOK: true},
-		{name: "page open without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{}, wantNext: "2", wantSaw: true, wantOK: true},
-		{name: "page later without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3"}, wantSaw: true, wantOK: true},
-		{name: "page full later without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":100}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "2"}, wantSaw: true, wantOK: true},
+		{name: "page open without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{}, wantNext: "2", wantReplay: 17, wantSaw: true, wantOK: true},
+		{name: "page middle without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "2"}, wantNext: "3", wantReplay: 20, wantSaw: true, wantOK: true},
+		{name: "page full later without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 20) + ` + "`" + `,"pagination":{"total":100}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "2"}, wantNext: "3", wantReplay: 20, wantSaw: true, wantOK: true},
+		{name: "page tail without limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("p", 17) + ` + "`" + `,"pagination":{"total":57}}` + "`" + `, kind: "page", cursor: "page", limit: "per_page", params: map[string]string{"page": "3"}, wantNext: "4", wantReplay: 17, wantSaw: true, wantOK: true},
 		{name: "offset stride is item count", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("o", 40) + ` + "`" + `,"total":100}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"offset": "40"}, wantNext: "80", wantSaw: true, wantOK: true},
 		{name: "offset stride stays the limit", body: ` + "`" + `{"results":` + "`" + ` + totalPageItems("o", 40) + ` + "`" + `,"total":100}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantNext: "20", wantSaw: true, wantOK: true},
 		{name: "no total", body: ` + "`" + `{"results":` + "`" + ` + full + ` + "`" + `}` + "`" + `, kind: "offset", cursor: "offset", limit: "limit", params: map[string]string{"limit": "20"}, wantOK: true},
@@ -287,9 +291,9 @@ func TestTotalPageCursorBranches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			next, saw, ok := SinglePageNextCursor(json.RawMessage(tc.body), tc.nextPath, tc.hasMore, tc.kind, tc.cursor, tc.limit, tc.params, "/items")
-			if ok != tc.wantOK || saw != tc.wantSaw || next != tc.wantNext {
-				t.Fatalf("next %q saw %v ok %v, want next %q saw %v ok %v", next, saw, ok, tc.wantNext, tc.wantSaw, tc.wantOK)
+			next, saw, replay, ok := SinglePageNextCursor(json.RawMessage(tc.body), tc.nextPath, tc.hasMore, tc.kind, tc.cursor, tc.limit, tc.params, "/items")
+			if ok != tc.wantOK || saw != tc.wantSaw || next != tc.wantNext || replay != tc.wantReplay {
+				t.Fatalf("next %q saw %v replay %d ok %v, want next %q saw %v replay %d ok %v", next, saw, replay, ok, tc.wantNext, tc.wantSaw, tc.wantReplay, tc.wantOK)
 			}
 		})
 	}
@@ -576,12 +580,21 @@ func TestTotalPageMCPReportsHasMore(t *testing.T) {
 	if pageOpen["has_more"] != true || totalPageUpstream(t, pageOpen) != "2" || !totalPageHasID(pageOpen, "p0") {
 		t.Fatalf("page without per_page = %#v", pageOpen)
 	}
-	pageBare := callTotalPage(t, tools, "pages_list", map[string]any{"cursor": pageOpen["next_cursor"]})
-	if pageBare["has_more"] != false || !totalPageHasID(pageBare, "p20") {
-		t.Fatalf("later page without per_page = %#v", pageBare)
+	pageMid := callTotalPage(t, tools, "pages_list", map[string]any{"cursor": pageOpen["next_cursor"]})
+	if pageMid["has_more"] != true || totalPageUpstream(t, pageMid) != "3" || !totalPageHasID(pageMid, "p20") || totalPageHasID(pageMid, "p0") {
+		t.Fatalf("middle page without per_page = %#v", pageMid)
 	}
-	if _, ok := pageBare["next_cursor"]; ok {
-		t.Fatalf("later page without per_page advertised %v", pageBare["next_cursor"])
+	pageTail := callTotalPage(t, tools, "pages_list", map[string]any{"cursor": pageMid["next_cursor"]})
+	if pageTail["has_more"] != false || !totalPageHasID(pageTail, "p40") || totalPageHasID(pageTail, "p20") {
+		t.Fatalf("tail page without per_page = %#v", pageTail)
+	}
+	if _, ok := pageTail["next_cursor"]; ok {
+		t.Fatalf("tail page without per_page advertised %v", pageTail["next_cursor"])
+	}
+	narrow := callTotalPage(t, tools, "pages_list", map[string]any{"per_page": float64(10)})
+	kept := callTotalPage(t, tools, "pages_list", map[string]any{"per_page": float64(20), "cursor": narrow["next_cursor"]})
+	if !totalPageHasID(kept, "p20") || totalPageHasID(kept, "p10") {
+		t.Fatalf("explicit per_page was replaced: %#v", kept)
 	}
 
 	post := callTotalPage(t, tools, "posts_list", map[string]any{"limit": float64(20)})

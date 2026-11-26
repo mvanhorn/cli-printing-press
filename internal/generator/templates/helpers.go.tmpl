@@ -2611,7 +2611,8 @@ func rememberListPage(ctx context.Context, data json.RawMessage, nextCursorPath,
 }
 
 func listPageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (listPageFields, bool) {
-	return pageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
+	fields, _, ok := pageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
+	return fields, ok
 }
 
 func responseCollectionCount(obj map[string]json.RawMessage) (int, bool) {

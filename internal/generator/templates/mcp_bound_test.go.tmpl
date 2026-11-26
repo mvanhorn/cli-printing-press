@@ -219,6 +219,24 @@ func TestEndpointPageResponseContinuesFromOpaqueCursor(t *testing.T) {
 	}
 }
 
+func TestCursorPageSize(t *testing.T) {
+	if CursorPageSize("") != 0 || CursorPageSize("not-a-cursor") != 0 {
+		t.Fatal("a cursor that does not decode reported a page size")
+	}
+	with := encodeEndpointCursor(endpointCursor{Version: 1, UpstreamCursor: "2", PageSize: 20})
+	if CursorPageSize(with) != 20 {
+		t.Fatalf("page size = %d", CursorPageSize(with))
+	}
+	without := encodeEndpointCursor(endpointCursor{Version: 1, UpstreamCursor: "2"})
+	if CursorPageSize(without) != 0 {
+		t.Fatal("a cursor with no page size reported one")
+	}
+	negative := encodeEndpointCursor(endpointCursor{Version: 1, PageSize: -1})
+	if CursorPageSize(negative) != 0 {
+		t.Fatal("a negative page size was replayed")
+	}
+}
+
 func TestEndpointPageResponseWrapsUpstreamCursorOpaquely(t *testing.T) {
 	items := []map[string]string{
 		{"id": "item-0", "payload": "small"},

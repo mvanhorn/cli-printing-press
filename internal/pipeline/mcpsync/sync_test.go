@@ -585,6 +585,23 @@ func RegisterNovelFeatureTools() { shellOutToCLI("items list") }
 	tools, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(tools), "cli.SinglePageNextCursor(")
+
+	// helpers.go on an older print does not call pageFieldsFrom. pagecursor.go
+	// still has to compile against that file.
+	helpersPath := filepath.Join(cliDir, "internal", "cli", "helpers.go")
+	helpers, err := os.ReadFile(helpersPath)
+	require.NoError(t, err)
+	const wrapper = "fields, _, ok := pageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)\n\treturn fields, ok"
+	rewritten := strings.Replace(string(helpers), wrapper, "return listPageFields{}, json.Valid(data)", 1)
+	require.NotEqual(t, string(helpers), rewritten)
+	require.NotContains(t, rewritten, "func SinglePageNextCursor(")
+	require.NoError(t, os.WriteFile(helpersPath, []byte(rewritten), 0o644))
+
+	cmd := exec.Command("go", "build", "-mod=mod", "./internal/cli/", "./internal/mcp/")
+	cmd.Dir = cliDir
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=go1.26.11")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
 }
 
 // TestSyncRefreshesProvenanceFromSpec locks the contract that mcp-sync

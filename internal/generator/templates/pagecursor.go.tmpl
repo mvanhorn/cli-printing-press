@@ -15,26 +15,26 @@ import (
 // say has_more false instead of omitting the field.
 // mcp-sync writes this file and leaves helpers.go in place, so this does
 // not call listPageFieldsFrom.
-func SinglePageNextCursor(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (next string, sawTotal bool, ok bool) {
-	fields, ok := pageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
+func SinglePageNextCursor(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (next string, sawTotal bool, replayPageSize int, ok bool) {
+	fields, replayPageSize, ok := pageFieldsFrom(data, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam, params, requestPath)
 	if !ok {
-		return "", false, false
+		return "", false, 0, false
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) == nil {
 		sawTotal = reportedCollectionTotal(obj) > 0
 	}
-	return fields.NextCursor, sawTotal, true
+	return fields.NextCursor, sawTotal, replayPageSize, true
 }
 
-func pageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (listPageFields, bool) {
+func pageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (listPageFields, int, bool) {
 	var items []json.RawMessage
 	if json.Unmarshal(data, &items) == nil {
-		return listPageFields{}, true
+		return listPageFields{}, 0, true
 	}
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
-		return listPageFields{}, false
+		return listPageFields{}, 0, false
 	}
 	fields := listPageFields{}
 	if n, ok := responseCollectionCount(obj); ok {
@@ -99,34 +99,44 @@ func pageFieldsFrom(data json.RawMessage, nextCursorPath, hasMoreField, paginati
 	// Same total the --all walker reads. Explicit next links and has-more
 	// values above win. A single page adds the request offset or page stride;
 	// the walker instead counts items from the start of its own loop.
+	replay := 0
 	if next == "" && !explicitNoMore && (paginationType == "offset" || paginationType == "page") {
-		if advanced, saw := singlePageTotalCursor(obj, paginationType, cursorParam, limitParam, params, requestPath); saw && advanced != "" {
+		if advanced, size, saw := singlePageTotalCursor(obj, paginationType, cursorParam, limitParam, params, requestPath); saw && advanced != "" {
 			next = advanced
+			replay = size
 		}
 	}
 	if explicitNoMore {
 		next = ""
+		replay = 0
 	}
 	fields.NextCursor = next
 	fields.HasMore = next != ""
-	return fields, true
+	return fields, replay, true
 }
 
-func singlePageTotalCursor(obj map[string]json.RawMessage, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (string, bool) {
+func singlePageTotalCursor(obj map[string]json.RawMessage, paginationType, cursorParam, limitParam string, params map[string]string, requestPath string) (string, int, bool) {
 	total := reportedCollectionTotal(obj)
 	if total <= 0 {
-		return "", false
+		return "", 0, false
 	}
 	itemCount := fetchedPageItemCount(obj, requestPath)
 	pageSize := positiveQueryParam(params, limitParam)
 	if !singlePageBeforeTotal(params, cursorParam, paginationType, pageSize, itemCount, total) {
-		return "", true
+		return "", 0, true
 	}
 	next, ok := nextFullPageOffsetCursor(params, cursorParam, paginationType, pageSize, itemCount, true)
 	if !ok {
-		return "", true
+		return "", 0, true
 	}
-	return next, true
+	replay := 0
+	if paginationType == "page" {
+		replay = pageSize
+		if replay <= 0 {
+			replay = itemCount
+		}
+	}
+	return next, replay, true
 }
 
 func singlePageBeforeTotal(params map[string]string, cursorParam, paginationType string, pageSize, itemCount, total int) bool {
@@ -151,10 +161,10 @@ func singlePageBeforeTotal(params map[string]string, cursorParam, paginationType
 		}
 		size := pageSize
 		if size <= 0 {
-			// This page's length is not the size of earlier pages.
-			// Page 1 still starts at item zero.
+			// This page's length is not the stride of earlier pages.
+			// A shorter-than-total page still continues; MCP replays the length it saw.
 			if page > 1 {
-				return false
+				return itemCount < total
 			}
 			start = 0
 			break
