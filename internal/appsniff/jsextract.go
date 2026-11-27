@@ -756,7 +756,7 @@ func finalizeDiscoveryResult(res *DiscoveryResult, acc *extractorAccumulator, op
 				break
 			}
 		}
-		if strings.HasPrefix(host, "www.") || strings.HasPrefix(host, "docs.") || strings.HasPrefix(host, "help.") || strings.HasPrefix(host, "support.") || strings.HasPrefix(host, "status.") || strings.HasPrefix(host, "blog.") || strings.HasPrefix(host, "cdn.") {
+		if isNonAPISubdomain(host) {
 			score -= 300
 		}
 		if acc.baseURLSource[origin] == "resources.arsc" {
@@ -1242,6 +1242,19 @@ func looksLikeAPIHost(host string) bool {
 		strings.HasPrefix(h, "edgeapi.") ||
 		strings.HasPrefix(h, "graphql.") ||
 		strings.HasPrefix(h, "backend.")
+}
+
+func isNonAPISubdomain(host string) bool {
+	h := strings.ToLower(host)
+	for _, prefix := range []string{
+		"www.", "docs.", "help.", "support.", "status.", "blog.",
+		"cdn.", "media.", "app-media.", "static.", "assets.", "images.", "img.",
+	} {
+		if strings.HasPrefix(h, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeShardHost(rawURL string) bool {

@@ -331,8 +331,6 @@ func TestDEXRetrofitAnnotationsAndARSCAndXAPK(t *testing.T) {
 	// Verify BuildSpec excludes gRPC by default and includes when IncludeGRPC=true.
 	specDefault, err := BuildSpec(res, Options{})
 	require.NoError(t, err)
-	countEndpoints := func(s map[string]struct{ n int }) int { return len(s) }
-	_ = countEndpoints
 	defaultCount := 0
 	for _, r := range specDefault.Resources {
 		defaultCount += len(r.Endpoints)
