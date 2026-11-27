@@ -517,21 +517,35 @@ func buildBoundedRunJSON(res *cartridge.RunResult, maxChars, totalChars int) map
 		out["data"] = nil
 		return out
 	}
+	out["returned_rows"] = len(rows)
+	out["data"] = []any{}
+	baseEncoded, _ := json.MarshalIndent(out, "", "  ")
+	used := len(baseEncoded)
 	kept := make([]any, 0)
 	for _, r := range rows {
-		candidate := append(kept, r)
-		out["returned_rows"] = len(candidate)
-		out["data"] = candidate
-		encoded, err := json.MarshalIndent(out, "", "  ")
+		rowBytes, err := json.MarshalIndent(r, "    ", "  ")
 		if err != nil {
 			continue
 		}
-		if len(encoded) > maxChars {
+		// Account for leading indent + comma/newline separator per element.
+		cost := len(rowBytes) + 6
+		if used+cost > maxChars {
 			break
 		}
-		kept = candidate
+		kept = append(kept, r)
+		used += cost
 	}
 	out["returned_rows"] = len(kept)
 	out["data"] = kept
+	// Single final guard so indented output is strictly <= maxChars.
+	for len(kept) > 0 {
+		encoded, err := json.MarshalIndent(out, "", "  ")
+		if err != nil || len(encoded) <= maxChars {
+			break
+		}
+		kept = kept[:len(kept)-1]
+		out["returned_rows"] = len(kept)
+		out["data"] = kept
+	}
 	return out
 }
