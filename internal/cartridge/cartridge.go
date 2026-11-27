@@ -26,6 +26,7 @@ const (
 	AuthStrategyNone          = "none"
 	AuthStrategyEnvBearer     = "env_bearer"
 	AuthStrategyEnvAPIKey     = "env_api_key"
+	AuthStrategyOnePassword   = "op_secret"
 	AuthStrategyHeader        = "header"
 	AuthStrategyBrowserCookie = "browser_cookie"
 	AuthStrategyAgentCookie   = "agentcookie"
@@ -60,6 +61,7 @@ type TrustPolicy struct {
 type AuthConfig struct {
 	Strategy           string   `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 	EnvVar             string   `yaml:"env_var,omitempty" json:"env_var,omitempty"`
+	OnePasswordRef     string   `yaml:"op_ref,omitempty" json:"op_ref,omitempty"`
 	Header             string   `yaml:"header,omitempty" json:"header,omitempty"`
 	Prefix             string   `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 	QueryParam         string   `yaml:"query_param,omitempty" json:"query_param,omitempty"`

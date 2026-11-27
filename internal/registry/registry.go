@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -235,6 +236,7 @@ type RouteDecision struct {
 	InstallCmd       string           `json:"install_cmd,omitempty"`
 	CompileCmd       string           `json:"compile_cmd,omitempty"`
 	BrowserFallback  string           `json:"browser_fallback,omitempty"`
+	WebMCPHint       string           `json:"webmcp_hint,omitempty"`
 	EstimatedSavings *SavingsEstimate `json:"estimated_savings,omitempty"`
 }
 
@@ -255,10 +257,7 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 	}
 
 	host := extractHost(trimmed)
-	fallback := fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", trimmed)
-	if host == "" {
-		fallback = "ARDIA_BACKGROUND=1 ardia browse open <url>"
-	}
+	fallback, compileBackend, webmcpHint := detectBrowserFallbacks(trimmed, host)
 
 	// 1. Check installed user cartridges first.
 	installed, _ := cartridge.Installed()
@@ -313,9 +312,42 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 		Host:            host,
 		Mode:            "browser-fallback",
 		Installed:       false,
-		CompileCmd:      fmt.Sprintf("pp record --backend ardia %s", compileTarget),
+		CompileCmd:      fmt.Sprintf("pp record --backend %s %s", compileBackend, compileTarget),
 		BrowserFallback: fallback,
+		WebMCPHint:      webmcpHint,
 	}, nil
+}
+
+func detectBrowserFallbacks(trimmed, host string) (fallback, compileBackend, webmcpHint string) {
+	target := trimmed
+	if host == "" {
+		target = "<url>"
+	}
+	if hasBinary("ardia") {
+		return fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", target),
+			"ardia",
+			"check page-native WebMCP tools with `ARDIA_BACKGROUND=1 ardia browse tools`, or compile once with `pp record`"
+	}
+	if hasBinary("browse") {
+		return fmt.Sprintf("browse navigate %s", target),
+			"browse",
+			"check page-native WebMCP tools with `browse webmcp`, or compile once with `pp record --backend browse`"
+	}
+	return fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", target),
+		"auto",
+		"install Ardia (`ardia browse`) or OpenCode `browse` for zero-popup browser fallback and recording"
+}
+
+func hasBinary(name string) bool {
+	if _, err := exec.LookPath(name); err == nil {
+		return true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if info, err := os.Stat(filepath.Join(home, ".local", "bin", name)); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func buildCartridgeDecision(input, host string, cart *cartridge.Cartridge, installed bool, fallback string) *RouteDecision {
@@ -596,6 +628,53 @@ func VerifyInstalledBinary(slug, binPath string) error {
 		return fmt.Errorf("loading lockfile for binary verification: %w", err)
 	}
 	return lf.VerifyBinary(slug, binPath)
+}
+
+// LookupEntry finds an exact catalog entry by app slug.
+func (c *Client) LookupEntry(ctx context.Context, slug string) (*Entry, error) {
+	clean := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(slug)), "-pp-cli")
+	if clean == "" {
+		return nil, errors.New("app slug is required")
+	}
+	cat, err := c.Load(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cat.Entries {
+		if strings.EqualFold(cat.Entries[i].Name, clean) {
+			cp := cat.Entries[i]
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("app %q not found in printing-press-library catalog", clean)
+}
+
+// EnsureInstalled enables zero-install auto-hydration for all 616+ library apps:
+// if the binary is already installed, it verifies its SHA-256 pin and returns it;
+// otherwise it confirms exact slug membership in registry.json, downloads and
+// SHA-256-verifies the prebuilt binary, pins it in lock.json, and returns the path.
+func (c *Client) EnsureInstalled(ctx context.Context, slug string) (string, bool, error) {
+	clean := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(slug)), "-pp-cli")
+	if clean == "" {
+		return "", false, errors.New("app slug is required")
+	}
+	if binPath, ok := InstalledBinaryPath(clean); ok {
+		if err := VerifyInstalledBinary(clean, binPath); err != nil {
+			return "", false, err
+		}
+		return binPath, false, nil
+	}
+	if _, err := c.LookupEntry(ctx, clean); err != nil {
+		return "", false, err
+	}
+	res, err := c.Install(ctx, clean)
+	if err != nil {
+		return "", false, err
+	}
+	if err := VerifyInstalledBinary(clean, res.Path); err != nil {
+		return "", false, err
+	}
+	return res.Path, true, nil
 }
 
 func releaseAssetName(cliName, goos, goarch string) string {

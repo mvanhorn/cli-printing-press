@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -69,6 +68,10 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newHealCmd())
 	root.AddCommand(newArdiaCmd())
 	root.AddCommand(newEjectCmd())
+	root.AddCommand(newOnboardCmd())
+	root.AddCommand(newAuthCmd())
+	root.AddCommand(newBatchCmd())
+	root.AddCommand(newSetupCmd())
 
 	return root
 }
@@ -303,6 +306,10 @@ func newRunCmd() *cobra.Command {
 					compact      bool
 					selectFields []string
 					limit        int
+					maxOutput    int
+					fullOutput   bool
+					noBoundaries bool
+					boundaries   bool
 					dryRun       bool
 					yes          bool
 					asJSON       bool
@@ -315,6 +322,10 @@ func newRunCmd() *cobra.Command {
 				fs.BoolVar(&compact, "compact", false, "Return high-gravity compact fields only (60-80% fewer tokens)")
 				fs.StringSliceVar(&selectFields, "select", nil, "Comma-separated dot-path fields to project")
 				fs.IntVar(&limit, "limit", 0, "Maximum rows to return")
+				fs.IntVar(&maxOutput, "max-output", cartridge.DefaultMaxOutputChars, "Cap serialized output chars (0 disables; --full disables)")
+				fs.BoolVar(&fullOutput, "full", false, "Disable the default 12,000-char output cap")
+				fs.BoolVar(&boundaries, "content-boundaries", false, "Wrap external output in random-nonce prompt-injection fences")
+				fs.BoolVar(&noBoundaries, "no-content-boundaries", false, "Disable prompt-injection fences")
 				fs.BoolVar(&dryRun, "dry-run", false, "Preview the resolved request without executing")
 				fs.BoolVar(&yes, "yes", false, "Confirm execution of mutating commands")
 				fs.BoolVar(&strictLock, "strict-lock", false, "Fail if cartridge is not explicitly pinned in lock.json")
@@ -368,34 +379,26 @@ func newRunCmd() *cobra.Command {
 					return execErr
 				}
 				if wantsJSON(cmd, asJSON) {
-					return writeJSON(cmd.OutOrStdout(), res)
+					encoded, mErr := json.MarshalIndent(res, "", "  ")
+					if mErr != nil {
+						return mErr
+					}
+					text := string(encoded)
+					if !fullOutput && maxOutput > 0 {
+						text, _ = cartridge.CapOutput(text, maxOutput)
+					}
+					if boundaries && !noBoundaries {
+						text = cartridge.WrapUntrustedContent(text, res.Cartridge+"."+res.Command, false)
+					}
+					_, err = fmt.Fprintln(cmd.OutOrStdout(), text)
+					return err
 				}
 				return renderRunHuman(cmd.OutOrStdout(), res)
 			}
 
-			// 2. Fallback to installed zero-Go prebuilt PPL binary (~/.pp/bin/<app>-pp-cli).
-			// Verify SHA-256 pin before exec and forward all child flags/args verbatim.
-			if binPath, ok := registry.InstalledBinaryPath(app); ok {
-				if verr := registry.VerifyInstalledBinary(app, binPath); verr != nil {
-					return &ExitError{Code: cartridge.ExitAuth, Err: verr}
-				}
-				childArgs := rest
-				if len(childArgs) > 0 && childArgs[0] == "--" {
-					childArgs = childArgs[1:]
-				}
-				proc := exec.CommandContext(cmd.Context(), binPath, childArgs...)
-				proc.Stdin = cmd.InOrStdin()
-				proc.Stdout = cmd.OutOrStdout()
-				proc.Stderr = cmd.ErrOrStderr()
-				return proc.Run()
-			}
-
-			return &cartridge.ExecError{
-				Code:    cartridge.ExitNotFound,
-				Class:   cartridge.ClassUsage,
-				Message: fmt.Sprintf("app %q is not installed", app),
-				Hint:    fmt.Sprintf("run `pp use %s` (zero Go) or `pp search %s`", app, app),
-			}
+			// 2. Fallback to zero-install auto-hydrated prebuilt PPL binary (~/.pp/bin/<app>-pp-cli).
+			// Verifies SHA-256 pin before exec and forwards all child flags/args verbatim.
+			return hydrateAndExecLibraryBinary(cmd, app, rest)
 		},
 	}
 	return cmd
@@ -417,7 +420,7 @@ func splitLeadingApp(rawArgs []string) (string, []string) {
 		if strings.HasPrefix(a, "-") {
 			leadingFlags = append(leadingFlags, a)
 			// Flags taking a separate value argument before <app>.
-			if (a == "-p" || a == "--param" || a == "--select" || a == "--limit") && i+1 < len(rawArgs) {
+			if (a == "-p" || a == "--param" || a == "--select" || a == "--limit" || a == "--max-output") && i+1 < len(rawArgs) {
 				i++
 				leadingFlags = append(leadingFlags, rawArgs[i])
 			}
@@ -556,8 +559,16 @@ func newRecordCmd() *cobra.Command {
 				res, err = compiler.CompileFromHAR(fromHAR, nameOverride)
 			case fromSpec != "":
 				res, err = compiler.CompileFromSpecFile(fromSpec, nameOverride)
-			case len(args) == 1 && (backend == "" || strings.EqualFold(backend, "ardia")):
+			case len(args) == 1 && (backend == "" || strings.EqualFold(backend, "auto")):
+				res, err = compiler.RecordAuto(cmd.Context(), args[0], nameOverride, waitSeconds)
+			case len(args) == 1 && strings.EqualFold(backend, "ardia"):
 				res, err = compiler.RecordWithArdia(cmd.Context(), compiler.ArdiaRecordOptions{
+					TargetURL:    args[0],
+					NameOverride: nameOverride,
+					WaitSeconds:  waitSeconds,
+				})
+			case len(args) == 1 && strings.EqualFold(backend, "browse"):
+				res, err = compiler.RecordWithOpenCodeBrowse(cmd.Context(), compiler.BrowseRecordOptions{
 					TargetURL:    args[0],
 					NameOverride: nameOverride,
 					WaitSeconds:  waitSeconds,
@@ -566,7 +577,7 @@ func newRecordCmd() *cobra.Command {
 				return &cartridge.ExecError{
 					Code:    cartridge.ExitUsage,
 					Class:   cartridge.ClassUsage,
-					Message: "provide a target URL (with --backend ardia), --from-har <file>, or --from-spec <file>",
+					Message: "provide a target URL (with --backend auto|ardia|browse), --from-har <file>, or --from-spec <file>",
 				}
 			}
 			if err != nil {
@@ -987,17 +998,30 @@ func newHealCmd() *cobra.Command {
 			switch {
 			case fromHAR != "":
 				compiled, err = compiler.CompileFromHAR(fromHAR, c.Name)
-			case strings.EqualFold(backend, "ardia"):
+			case strings.EqualFold(backend, "ardia"), strings.EqualFold(backend, "browse"), strings.EqualFold(backend, "auto"):
 				u := targetURL
 				if u == "" {
 					u = c.Homepage
 				}
-				compiled, err = compiler.RecordWithArdia(cmd.Context(), compiler.ArdiaRecordOptions{
-					TargetURL:    u,
-					NameOverride: c.Name,
-				})
+				if u == "" {
+					u = c.Commands[cmdName].URL
+				}
+				switch strings.ToLower(backend) {
+				case "ardia":
+					compiled, err = compiler.RecordWithArdia(cmd.Context(), compiler.ArdiaRecordOptions{
+						TargetURL:    u,
+						NameOverride: c.Name,
+					})
+				case "browse":
+					compiled, err = compiler.RecordWithOpenCodeBrowse(cmd.Context(), compiler.BrowseRecordOptions{
+						TargetURL:    u,
+						NameOverride: c.Name,
+					})
+				default:
+					compiled, err = compiler.RecordAuto(cmd.Context(), u, c.Name, 3)
+				}
 			default:
-				return fmt.Errorf("unsupported heal backend %q (use --backend ardia or --from-har <file>)", backend)
+				return fmt.Errorf("unsupported heal backend %q (use --backend auto|ardia|browse or --from-har <file>)", backend)
 			}
 			if err != nil {
 				return err
@@ -1068,11 +1092,25 @@ func newArdiaCmd() *cobra.Command {
 				return err
 			}
 			pluginDir := filepath.Join(home, ".config", "ardia", "plugins", "printing-press")
-			binDir := filepath.Join(pluginDir, "bin")
-			if err := os.MkdirAll(binDir, 0o755); err != nil {
+			if err := installArdiaPlugin(pluginDir); err != nil {
 				return err
 			}
-			manifest := `{
+			fmt.Fprintf(cmd.OutOrStdout(), "Installed Ardia plugin at %s\n", pluginDir)
+			fmt.Fprintln(cmd.OutOrStdout(), "Verify with: ardia plugins check printing-press")
+			fmt.Fprintln(cmd.OutOrStdout(), "Enable in:   Ardia > Settings > Plugins > Printing Press 2.0")
+			return nil
+		},
+	})
+
+	return ardiaCmd
+}
+
+func installArdiaPlugin(pluginDir string) error {
+	binDir := filepath.Join(pluginDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	manifest := `{
   "manifest": 2,
   "name": "printing-press",
   "title": "Printing Press 2.0",
@@ -1093,7 +1131,7 @@ func newArdiaCmd() *cobra.Command {
   }
 }
 `
-			bridge := `#!/usr/bin/env sh
+	bridge := `#!/usr/bin/env sh
 set -eu
 if command -v pp >/dev/null 2>&1; then
   exec pp "$@"
@@ -1104,20 +1142,10 @@ else
   exit 127
 fi
 `
-			if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(manifest), 0o644); err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(binDir, "pp-ardia-bridge"), []byte(bridge), 0o755); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Installed Ardia plugin at %s\n", pluginDir)
-			fmt.Fprintln(cmd.OutOrStdout(), "Verify with: ardia plugins check printing-press")
-			fmt.Fprintln(cmd.OutOrStdout(), "Enable in:   Ardia > Settings > Plugins > Printing Press 2.0")
-			return nil
-		},
-	})
-
-	return ardiaCmd
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(manifest), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(binDir, "pp-ardia-bridge"), []byte(bridge), 0o755)
 }
 
 func newEjectCmd() *cobra.Command {

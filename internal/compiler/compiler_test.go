@@ -108,3 +108,26 @@ resources:
 	assert.Contains(t, cmd.Body, `"title":"{title}"`)
 	assert.Contains(t, cmd.Body, `"count":"{count}"`)
 }
+
+func TestConvertBrowseNetworkToHAR(t *testing.T) {
+	raw := []byte(`{
+  "exchanges": [
+    {
+      "method": "GET",
+      "url": "https://api.shop.example/v1/items?q=milk",
+      "status": 200,
+      "requestHeaders": {"Accept": "application/json"},
+      "responseHeaders": {"Content-Type": "application/json"},
+      "responseBody": "{\"items\":[{\"id\":\"1\",\"name\":\"Chocolate Milk\"}]}"
+    }
+  ]
+}`)
+	harBytes, err := convertBrowseNetworkToHAR(raw)
+	require.NoError(t, err)
+	harPath := filepath.Join(t.TempDir(), "browse.har")
+	require.NoError(t, os.WriteFile(harPath, harBytes, 0o600))
+	res, err := CompileFromHAR(harPath, "shop-browse")
+	require.NoError(t, err)
+	assert.Equal(t, "shop-browse", res.Cartridge.Name)
+	assert.Contains(t, res.AllowedHosts, "api.shop.example")
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -258,6 +259,12 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 			})
 		} else if binPath, ok := registry.InstalledBinaryPath(app); ok {
 			payload, err = runVerifiedBinaryMCP(ctx, app, binPath, cmdName, call.Arguments)
+		} else if s.Registry != nil && strings.TrimSpace(os.Getenv("PP_NO_AUTO_INSTALL")) != "1" {
+			if hydratedPath, _, hydErr := s.Registry.EnsureInstalled(ctx, app); hydErr == nil {
+				payload, err = runVerifiedBinaryMCP(ctx, app, hydratedPath, cmdName, call.Arguments)
+			} else {
+				err = resolveErr
+			}
 		} else {
 			err = resolveErr
 		}
@@ -302,11 +309,15 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 	}
 
 	encoded, _ := json.MarshalIndent(payload, "", "  ")
+	textOut := string(encoded)
+	if call.Name == "pp_run" || call.Name == "pp_lake_search" {
+		textOut = cartridge.WrapUntrustedContent(textOut, call.Name, false)
+	}
 	return rpcResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result: map[string]any{
-			"content": []map[string]any{{"type": "text", "text": string(encoded)}},
+			"content": []map[string]any{{"type": "text", "text": textOut}},
 		},
 	}
 }

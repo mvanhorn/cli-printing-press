@@ -1,6 +1,7 @@
 package sessionbridge
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ type AuthSpec struct {
 	AppName            string
 	Strategy           string
 	EnvVar             string
+	OnePasswordRef     string
 	Header             string
 	Prefix             string
 	QueryParam         string
@@ -80,15 +82,39 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 	}
 
 	switch strategy {
-	case "env_bearer", "env_api_key", "header":
-		val, envName := lookupEnvToken(spec)
-		if val == "" {
-			return nil, fmt.Errorf("missing auth credential: set %s", envName)
+	case "env_bearer", "env_api_key", "header", "op_secret":
+		var (
+			val    string
+			source string
+		)
+		if strings.HasPrefix(strings.TrimSpace(spec.OnePasswordRef), "op://") {
+			resolved, opErr := ResolveOnePassword(context.Background(), spec.OnePasswordRef)
+			if opErr != nil {
+				return nil, opErr
+			}
+			val = resolved
+			source = "1password:" + strings.TrimSpace(spec.OnePasswordRef)
+		} else {
+			envVal, envName := lookupEnvToken(spec)
+			if envVal == "" {
+				return nil, fmt.Errorf("missing auth credential: set %s (or configure op_ref: op://Vault/Item/field for 1Password Touch ID)", envName)
+			}
+			if strings.HasPrefix(envVal, "op://") {
+				resolved, opErr := ResolveOnePassword(context.Background(), envVal)
+				if opErr != nil {
+					return nil, opErr
+				}
+				val = resolved
+				source = "1password:" + envVal
+			} else {
+				val = envVal
+				source = "env:" + envName
+			}
 		}
 		res := &ResolvedAuth{
 			Headers:     make(map[string]string),
 			QueryParams: make(map[string]string),
-			Source:      "env:" + envName,
+			Source:      source,
 		}
 		if spec.QueryParam != "" {
 			res.QueryParams[spec.QueryParam] = val
@@ -99,7 +125,7 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 			header = "Authorization"
 		}
 		prefix := spec.Prefix
-		if prefix == "" && strategy == "env_bearer" {
+		if prefix == "" && (strategy == "env_bearer" || strategy == "op_secret") {
 			prefix = "Bearer "
 		}
 		res.Headers[header] = prefix + val
@@ -107,9 +133,18 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 
 	case "browser_cookie", "agentcookie":
 		if val, envName := lookupEnvToken(spec); val != "" {
+			source := "env:" + envName
+			if strings.HasPrefix(val, "op://") {
+				resolved, opErr := ResolveOnePassword(context.Background(), val)
+				if opErr != nil {
+					return nil, opErr
+				}
+				val = resolved
+				source = "1password:" + val
+			}
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": val},
-				Source:  "env:" + envName,
+				Source:  source,
 			}, nil
 		}
 		target := parseTargetURL(spec.TargetURL)
@@ -120,6 +155,12 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 		}
 
 		if cookieHeader, src, err := loadFromAgentCookie(scopedDomains, target); err == nil && cookieHeader != "" {
+			return &ResolvedAuth{
+				Headers: map[string]string{"Cookie": cookieHeader},
+				Source:  src,
+			}, nil
+		}
+		if cookieHeader, _, src, err := LoadFromArdia(context.Background(), scopedDomains, target); err == nil && cookieHeader != "" {
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": cookieHeader},
 				Source:  src,
@@ -146,8 +187,8 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 				Source:  src,
 			}, nil
 		}
-		return nil, fmt.Errorf("no logged-in session found for %v (sign in via Ardia/Chrome + agentcookie, run `press-auth login`, or set %s)",
-			scopedDomains, defaultEnvVarName(spec))
+		return nil, fmt.Errorf("no logged-in session found for %v (sign in via Ardia/Chrome + agentcookie, run `pp auth sync %s`, or set %s)",
+			scopedDomains, spec.AppName, defaultEnvVarName(spec))
 
 	default:
 		return nil, fmt.Errorf("unsupported auth strategy %q", spec.Strategy)

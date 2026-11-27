@@ -125,3 +125,23 @@ func TestPPRunVerifiesBinaryPinAndForwardsChildFlags(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SHA-256 drift")
 }
+
+func TestPPBatchAndSetupCommands(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("PP_NO_AUTO_INSTALL", "1")
+	t.Setenv("PP_NO_ARDIA_COOKIES", "1")
+
+	out, err := runPP(t, "batch", `[{"op":"route","target":"https://www.espn.com/nba/scoreboard"},{"op":"run","app":"espn","command":"scoreboard","dry_run":true}]`)
+	require.NoError(t, err)
+	assert.Contains(t, out, "PP_UNTRUSTED_DATA_")
+	assert.Contains(t, out, `"espn"`)
+	assert.Contains(t, out, `"dry_run": true`)
+
+	outNoFence, err := runPP(t, "batch", "--no-content-boundaries", `[{"op":"route","target":"https://www.espn.com/nba/scoreboard"}]`)
+	require.NoError(t, err)
+	assert.NotContains(t, outNoFence, "PP_UNTRUSTED_DATA_")
+
+	setupOut, err := runPP(t, "setup", "--json")
+	require.NoError(t, err)
+	assert.Contains(t, setupOut, `"printing-press"`)
+}

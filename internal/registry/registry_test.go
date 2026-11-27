@@ -68,11 +68,12 @@ func TestRouteMatchesBuiltinCatalogAndFallback(t *testing.T) {
 	assert.Equal(t, "prebuilt-binary", instaDec.Mode)
 	assert.Equal(t, "pp use instacart", instaDec.InstallCmd)
 
-	// 3. Unknown site falls back with compile command.
+	// 3. Unknown site falls back with compile command and WebMCP hint.
 	unkDec, err := client.Route(context.Background(), "https://unknown-portal.example/dashboard")
 	require.NoError(t, err)
 	assert.False(t, unkDec.Matched)
-	assert.Contains(t, unkDec.CompileCmd, "pp record --backend ardia")
+	assert.Contains(t, unkDec.CompileCmd, "pp record --backend ")
+	assert.NotEmpty(t, unkDec.WebMCPHint)
 }
 
 func TestZeroGoPrebuiltBinaryInstallVerifiesChecksum(t *testing.T) {
@@ -139,4 +140,63 @@ func TestZeroGoPrebuiltBinaryInstallVerifiesChecksum(t *testing.T) {
 	_, err = client.Install(context.Background(), "acme")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checksum mismatch")
+}
+
+func TestEnsureInstalledAutoHydratesCatalogAppOnce(t *testing.T) {
+	isolatePP(t)
+
+	fakeBin := []byte("#!/bin/sh\necho hydrated\n")
+	sum := sha256.Sum256(fakeBin)
+	goodHash := hex.EncodeToString(sum[:])
+	asset := releaseAssetName("hyd-pp-cli", runtime.GOOS, runtime.GOARCH)
+
+	cat := Catalog{
+		SchemaVersion: 2,
+		Entries: []Entry{
+			{
+				Name:        "hyd",
+				Category:    "productivity",
+				Description: "Hydrated app",
+				Release:     &ReleaseInfo{CLIName: "hyd-pp-cli", Version: "2026.11.1"},
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/registry.json":
+			_ = json.NewEncoder(w).Encode(cat)
+		case "/releases/hyd-current/checksums.txt":
+			_, _ = fmt.Fprintf(w, "%s  %s\n", goodHash, asset)
+		case "/releases/hyd-current/" + asset:
+			_, _ = w.Write(fakeBin)
+		case "/skills/pp-hyd/SKILL.md":
+			_, _ = w.Write([]byte("# Hyd Skill\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		RegistryURL:    srv.URL + "/registry.json",
+		ReleaseBaseURL: srv.URL + "/releases",
+		SkillBaseURL:   srv.URL + "/skills",
+		CachePath:      filepath.Join(t.TempDir(), "registry.json"),
+	}
+
+	// First call auto-hydrates.
+	p1, downloaded1, err := client.EnsureInstalled(context.Background(), "hyd")
+	require.NoError(t, err)
+	assert.True(t, downloaded1)
+	assert.FileExists(t, p1)
+
+	// Second call reuses verified pin without re-downloading.
+	p2, downloaded2, err := client.EnsureInstalled(context.Background(), "hyd")
+	require.NoError(t, err)
+	assert.False(t, downloaded2)
+	assert.Equal(t, p1, p2)
+
+	// Unknown slug fails closed.
+	_, _, err = client.EnsureInstalled(context.Background(), "not-in-catalog")
+	require.Error(t, err)
 }

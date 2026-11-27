@@ -1,52 +1,50 @@
 ---
 name: printing-press-pp
-description: "Printing Press 2.0 local app-to-agent compiler and browser fast-path accelerator. Use BEFORE opening a browser tab or computer-use tool for any website, consumer app, or repeat workflow: routes URLs to 150ms local Cartridges and 616+ prebuilt CLIs, compiles new websites via Ardia/HAR in <60s, queries the unified local SQLite Life Lake, audits MCP trust, and auto-heals drifted endpoints."
+description: "Printing Press 2.0 zero-pixel browser middleware and local app-to-agent runtime. Use BEFORE opening Ardia or Chrome for any website or repeat workflow: routes URLs across 616+ apps, auto-hydrates verified prebuilt CLIs on first call, detects your logged-in Chrome/Ardia apps with `pp onboard`, syncs domain-scoped Ardia cookies and 1Password `op://` secrets, compiles new sites via Ardia or OpenCode `browse`, batches parallel calls, and wraps untrusted output in random-nonce prompt-injection fences."
 ---
 
-# Printing Press 2.0 (`pp`) - Skip Pixels on Repeat Work
+# Printing Press 2.0 (`pp`) - Zero-Pixel Browser Middleware
 
-`pp` sits in front of browser automation (`ardia browse`, OpenCode `browse`) and desktop computer use (`cua-driver`). Every time you replace a browser screenshot loop with a compiled local Cartridge, you save 100x-400x latency and 95%+ tokens with zero remote MCP server in the middle.
+`pp` sits in front of Ardia (`ardia browse`), Google Chrome (OpenCode `browse`), and desktop computer use (`cua-driver`). Before wasting browser tabs and 12,000+ tokens on DOM snapshots, check `pp` first.
 
-## Core Routing Loop
+## Core Middleware Loop
 
 1. Check the fast path before opening a browser tab:
    ```bash
-   pp route "<url-or-intent>" --json
+   pp route "<url-or-app>" --json
    ```
-   - `matched: true`, `installed: true` -> run `recommended_cmd` immediately (~150ms, ~140 tokens).
-   - `matched: true`, `installed: false` -> install with zero Go required:
+   - `matched: true` -> run `pp run <app> <command> --compact` directly. All 616+ library apps auto-hydrate (SHA-256 verified, zero Go) on the first call in ~1s and run in ~150ms thereafter.
+   - `matched: false` and this workflow will repeat -> check page-native WebMCP tools (`ardia browse tools` / `browse webmcp`) or compile once with zero popups:
      ```bash
-     pp use <app>
-     ```
-   - `matched: false` and this workflow will be repeated -> compile once via Ardia (zero focus steal, zero Chrome 144 popups) or HAR:
-     ```bash
-     pp record --backend ardia <url>
-     # or from an exported HAR:
-     pp record --from-har ./capture.har
+     pp record --backend auto <url>     # Ardia first, then OpenCode browse for Chrome
+     pp record --from-har ./capture.har # or exported HAR
      ```
 
-2. Run local Cartridges cleanly (agent-native flags):
+2. Personalize in one command from your local Chrome/Ardia domains:
    ```bash
-   pp run <app> <command> --compact --json
-   pp run <app> <command> --param key=value --limit 10 --json
-   pp run <app> <command> --dry-run --json
+   pp onboard             # reads plaintext host_key + visit counts only (zero Keychain prompts, zero secret values)
+   pp onboard --install   # optionally pre-warm matched apps locally
+   pp setup               # detect agents + wire Ardia plugin + MCP snippet
    ```
-   - Mutating commands are blocked unless `--yes` is explicitly passed.
-   - Every HTTP cartridge is host-locked to `trust.allowed_hosts` (including redirects).
 
-3. Query the Unified Local Personal Life Lake (`~/.pp/lake.db`):
+3. Logged-in sessions (Ardia cookies + 1Password Touch ID):
    ```bash
+   pp auth sync <app>     # pulls strictly one domain's cookies from Ardia into encrypted press-auth store
+   ```
+   - For API-key Cartridges, set `op_ref: op://Vault/Item/field` (or an env var starting with `op://`) to hydrate via 1Password CLI Touch ID with zero plaintext tokens on disk.
+   - At login, 2FA, Passkey, or payment gates, `pp` returns a structured `handoff` hint instead of stealing focus.
+
+4. Batch parallel calls, guard output size, and query the local Life Lake:
+   ```bash
+   pp batch '[{"op":"route","target":"https://www.instacart.com"},{"op":"run","app":"espn","command":"scoreboard","limit":3}]'
    pp lake sync espn hackernews chrome-history
-   pp lake search "nba injury" --json
+   pp lake search "nba" --json
    pp lake sql "SELECT source, title, url FROM lake_items ORDER BY synced_at DESC LIMIT 10" --json
    ```
+   - `pp run` caps serialized output at 12,000 chars by default (`--full` to override); MCP `pp_run`/`pp_lake_search` and `pp batch` wrap untrusted external text in fresh random-nonce content boundaries (`--no-content-boundaries` to disable).
 
-4. Verify Trust Shield and Auto-Heal Drift:
+5. Verify Trust Shield and Auto-Heal Drift:
    ```bash
-   pp audit --json                          # verifies SHA-256 lockfile + scans MCP configs for rug-pull / prompt-injection risks
-   pp heal <app> <command>                  # diagnoses auth vs upstream drift
-   pp heal <app> <command> --backend ardia  # 10s surgical re-sniff + local re-pin
+   pp audit --json
+   pp heal <app> <command> --backend auto
    ```
-
-5. Escape hatch for full custom Go CLI:
-   Need a standalone Go repository with custom multi-source logic? Run `cli-printing-press generate` (or `/printing-press <app>`).

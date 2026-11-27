@@ -1,0 +1,244 @@
+package compiler
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// BrowseRecordOptions configures zero-popup Chrome network capture via OpenCode
+// `browse` (ECDH-paired Chrome extension, zero Chrome 144 remote debugging popups).
+type BrowseRecordOptions struct {
+	TargetURL    string
+	NameOverride string
+	WaitSeconds  int
+	BrowseBin    string
+}
+
+// RecordAuto picks the best available zero-popup browser recorder on this
+// machine: Ardia (`ardia browse`) first, then OpenCode `browse` for Chrome.
+func RecordAuto(ctx context.Context, targetURL, nameOverride string, waitSeconds int) (*CompileResult, error) {
+	if ardiaBin, ok := findCLI("ardia"); ok {
+		return RecordWithArdia(ctx, ArdiaRecordOptions{
+			TargetURL:    targetURL,
+			NameOverride: nameOverride,
+			WaitSeconds:  waitSeconds,
+			ArdiaBin:     ardiaBin,
+		})
+	}
+	if browseBin, ok := findCLI("browse"); ok {
+		return RecordWithOpenCodeBrowse(ctx, BrowseRecordOptions{
+			TargetURL:    targetURL,
+			NameOverride: nameOverride,
+			WaitSeconds:  waitSeconds,
+			BrowseBin:    browseBin,
+		})
+	}
+	return nil, fmt.Errorf("no background browser recorder found: install Ardia (`ardia`) or OpenCode `browse`, or pass --from-har <capture.har>")
+}
+
+// RecordWithOpenCodeBrowse drives Google Chrome through OpenCode `browse`'s
+// paired extension (zero Chrome 144 remote-debugging popups, zero focus steal),
+// captures XHR/Fetch exchanges via `browse network`, synthesizes a HAR, and
+// compiles it into a validated host-locked pp-cartridge/v1 bundle.
+func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*CompileResult, error) {
+	start := time.Now()
+	target := strings.TrimSpace(opts.TargetURL)
+	if target == "" {
+		return nil, fmt.Errorf("target URL is required")
+	}
+	if !strings.Contains(target, "://") {
+		target = "https://" + target
+	}
+
+	browseBin := opts.BrowseBin
+	if browseBin == "" {
+		var ok bool
+		browseBin, ok = findCLI("browse")
+		if !ok {
+			return nil, fmt.Errorf("OpenCode `browse` CLI not found on PATH (install with `curl -fsSL https://opencode.ai/browse/install | bash`, or pass --from-har <file>)")
+		}
+	}
+
+	runBrowse := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, browseBin, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("browse %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+
+	tabLabel := fmt.Sprintf("pp-rec-%d", time.Now().UnixNano())
+	if _, err := runBrowse("tabs", "new", "--tab", tabLabel); err != nil {
+		// Fallback to navigating directly if `tabs new` returns an id.
+		if _, navErr := runBrowse("navigate", target, "--tab", tabLabel); navErr != nil {
+			return nil, err
+		}
+	}
+	defer func() { _, _ = runBrowse("tabs", "close", "--tab", tabLabel) }()
+
+	if _, err := runBrowse("network", tabLabel, "start", "--resourceTypes", `["XHR","Fetch"]`, "--bodies"); err != nil {
+		return nil, err
+	}
+	if _, err := runBrowse("navigate", target, "--tab", tabLabel); err != nil {
+		return nil, err
+	}
+
+	waitSec := opts.WaitSeconds
+	if waitSec <= 0 {
+		waitSec = 3
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(time.Duration(waitSec) * time.Second):
+	}
+
+	rawNet, err := runBrowse("network", tabLabel, "stop")
+	if err != nil {
+		return nil, err
+	}
+
+	harBytes, err := convertBrowseNetworkToHAR(rawNet)
+	if err != nil {
+		return nil, err
+	}
+
+	tmpDir, err := os.MkdirTemp("", "pp-browse-rec-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	harPath := filepath.Join(tmpDir, "capture.har")
+	if err := os.WriteFile(harPath, harBytes, 0o600); err != nil {
+		return nil, err
+	}
+
+	res, err := CompileFromHAR(harPath, opts.NameOverride)
+	if err != nil {
+		return nil, err
+	}
+	res.Source = "browse:" + target
+	res.ElapsedMS = time.Since(start).Milliseconds()
+	return res, nil
+}
+
+// convertBrowseNetworkToHAR translates OpenCode `browse network stop` JSON
+// exchanges into standard HAR 1.2 JSON so internal/browsersniff analyzes them
+// through the same pipeline as Ardia HAR captures.
+func convertBrowseNetworkToHAR(raw []byte) ([]byte, error) {
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parsing browse network capture JSON: %w", err)
+	}
+	var exchanges []any
+	for _, key := range []string{"exchanges", "requests", "entries"} {
+		if list, ok := parsed[key].([]any); ok {
+			exchanges = list
+			break
+		}
+	}
+	if len(exchanges) == 0 {
+		return nil, fmt.Errorf("browse network capture returned zero exchanges")
+	}
+
+	harEntries := make([]map[string]any, 0, len(exchanges))
+	for _, item := range exchanges {
+		ex, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		reqURL, _ := ex["url"].(string)
+		if reqURL == "" {
+			continue
+		}
+		method, _ := ex["method"].(string)
+		if method == "" {
+			method = "GET"
+		}
+		status := 200
+		if st, ok := ex["status"].(float64); ok && st > 0 {
+			status = int(st)
+		}
+		mimeType := "application/json"
+		respText := ""
+		switch body := ex["responseBody"].(type) {
+		case string:
+			respText = body
+		case map[string]any:
+			if mt, ok := body["mimeType"].(string); ok && mt != "" {
+				mimeType = mt
+			}
+			if txt, ok := body["text"].(string); ok {
+				respText = txt
+			}
+		}
+		reqHeaders := mapToHARHeaders(ex["requestHeaders"])
+		respHeaders := mapToHARHeaders(ex["responseHeaders"])
+		reqObj := map[string]any{
+			"method":  method,
+			"url":     reqURL,
+			"headers": reqHeaders,
+		}
+		if reqBody, ok := ex["requestBody"].(string); ok && reqBody != "" {
+			reqObj["postData"] = map[string]any{
+				"mimeType": "application/json",
+				"text":     reqBody,
+			}
+		}
+		harEntries = append(harEntries, map[string]any{
+			"request": reqObj,
+			"response": map[string]any{
+				"status":  status,
+				"headers": respHeaders,
+				"content": map[string]any{
+					"mimeType": mimeType,
+					"size":     len(respText),
+					"text":     respText,
+				},
+			},
+		})
+	}
+
+	harDoc := map[string]any{
+		"log": map[string]any{
+			"version": "1.2",
+			"entries": harEntries,
+		},
+	}
+	return json.Marshal(harDoc)
+}
+
+func mapToHARHeaders(v any) []map[string]string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return []map[string]string{}
+	}
+	out := make([]map[string]string, 0, len(m))
+	for k, val := range m {
+		out = append(out, map[string]string{
+			"name":  k,
+			"value": fmt.Sprint(val),
+		})
+	}
+	return out
+}
+
+func findCLI(name string) (string, bool) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".local", "bin", name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
+}

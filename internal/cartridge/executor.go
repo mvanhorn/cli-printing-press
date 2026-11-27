@@ -47,13 +47,15 @@ const (
 	ClassError       ErrorClass = "error"
 )
 
-// ExecError carries a typed agent exit code and actionable hint.
+// ExecError carries a typed agent exit code, actionable hint, and optional
+// human-in-the-loop handoff descriptor for login/2FA/Passkey gates.
 type ExecError struct {
-	Code       int
-	HTTPStatus int
-	Class      ErrorClass
-	Message    string
-	Hint       string
+	Code       int          `json:"code"`
+	HTTPStatus int          `json:"http_status,omitempty"`
+	Class      ErrorClass   `json:"class"`
+	Message    string       `json:"message"`
+	Hint       string       `json:"hint,omitempty"`
+	Handoff    *HandoffHint `json:"handoff,omitempty"`
 }
 
 func (e *ExecError) Error() string {
@@ -365,6 +367,7 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 		AppName:            c.Name,
 		Strategy:           c.Auth.Strategy,
 		EnvVar:             c.Auth.EnvVar,
+		OnePasswordRef:     c.Auth.OnePasswordRef,
 		Header:             c.Auth.Header,
 		Prefix:             c.Auth.Prefix,
 		QueryParam:         c.Auth.QueryParam,
@@ -373,10 +376,21 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 		AgentCookieAdapter: c.Auth.AgentCookieAdapter,
 	})
 	if authErr != nil {
+		loginURL := c.Homepage
+		if loginURL == "" {
+			loginURL = parsedURL.Scheme + "://" + parsedURL.Hostname()
+		}
 		return nil, 0, "", &ExecError{
 			Code:    ExitAuth,
 			Class:   ClassAuthError,
 			Message: authErr.Error(),
+			Handoff: &HandoffHint{
+				Action:     "sign_in",
+				URL:        loginURL,
+				BrowserCmd: fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", loginURL),
+				Reason:     "active session or credential required for " + c.Name,
+				ResumeCmd:  fmt.Sprintf("pp auth sync %s", c.Name),
+			},
 		}
 	}
 	authRes.Apply(req)
@@ -415,12 +429,23 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		loginURL := c.Homepage
+		if loginURL == "" {
+			loginURL = parsedURL.Scheme + "://" + parsedURL.Hostname()
+		}
 		return nil, resp.StatusCode, authRes.Source, &ExecError{
 			Code:       ExitAuth,
 			HTTPStatus: resp.StatusCode,
 			Class:      ClassAuthError,
 			Message:    fmt.Sprintf("HTTP %d authentication/authorization failure from %s", resp.StatusCode, parsedURL.Hostname()),
-			Hint:       "refresh your browser session / agentcookie or update your token",
+			Hint:       fmt.Sprintf("sign in via Ardia/Chrome or run `pp auth sync %s`", c.Name),
+			Handoff: &HandoffHint{
+				Action:     "sign_in",
+				URL:        loginURL,
+				BrowserCmd: fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", loginURL),
+				Reason:     fmt.Sprintf("HTTP %d from %s - human sign-in, 2FA, or Passkey required", resp.StatusCode, parsedURL.Hostname()),
+				ResumeCmd:  fmt.Sprintf("pp auth sync %s", c.Name),
+			},
 		}
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, resp.StatusCode, authRes.Source, &ExecError{
