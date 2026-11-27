@@ -2,6 +2,7 @@ package cartridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -93,7 +94,7 @@ func TestExecuteViaOpenCodeBrowseRejectsDirectSecretsAndMatchesHostPatterns(t *t
 	script := `#!/bin/sh
 if [ "$1" = "execute" ]; then
   while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--code" ]; then
+    if [ "$1" = "--json" ]; then
       printf '%s' "$2" > "` + capturedCodePath + `"
       break
     fi
@@ -154,16 +155,22 @@ exit 0
 	require.NoError(t, err)
 	assert.Equal(t, "opencode-browse", res.AuthSource)
 
-	rawJS, err := os.ReadFile(capturedCodePath)
+	rawPayload, err := os.ReadFile(capturedCodePath)
 	require.NoError(t, err)
-	js := string(rawJS)
+	var execPayload struct {
+		Tab  string `json:"tab"`
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(rawPayload, &execPayload))
+	js := execPayload.Code
 	assert.Contains(t, js, `redirect: "manual"`)
-	assert.Contains(t, js, `page.route`)
+	assert.Contains(t, js, `parseHTTPURLParts`)
 	assert.Contains(t, js, `allowed_hosts`)
 	assert.Contains(t, js, `a.startsWith(".")`)
 	assert.Contains(t, js, `a.startsWith("*.")`)
 	assert.Contains(t, js, `h === apex || h.endsWith(a)`)
 	assert.Contains(t, js, `h === apex || h.endsWith("." + apex)`)
+	assert.NotContains(t, js, `page.route`, "OpenCode browse execute throws on page.route()")
 
 	// Verify Cartridge.HostAllowed parity across leading-dot, wildcard, and exact patterns
 	// without executing any host binaries from PATH.
@@ -194,4 +201,58 @@ exit 0
 	require.True(t, ok)
 	assert.Equal(t, ClassBlocked, ee.Class)
 	assert.Contains(t, ee.Message, "evil.example")
+
+	// 4. browseAllowedOrigins normalizes leading-dot and wildcard patterns.
+	assert.Equal(t, []string{"example.com", "*.example.com", "api.other.test"},
+		browseAllowedOrigins([]string{".example.com", "*.example.com", "api.other.test"}))
+}
+
+func TestExecuteViaOpenCodeBrowseSpillsLargeResponseToBodyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell mock")
+	}
+	isolateEnv(t)
+
+	tmp := t.TempDir()
+	mockBrowse := filepath.Join(tmp, "browse")
+	// Mock `browse execute --json ...`: extract body_file from the embedded req
+	// JSON, write a valid JSON payload to it, and return {status:200, body_file:true}.
+	script := `#!/bin/sh
+if [ "$1" = "execute" ]; then
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--json" ]; then
+      BODY_FILE=$(printf '%s' "$2" | grep -oE '/[^"\\]*pp-browse-[^"\\]*/body\.txt' | head -n 1)
+      if [ -n "$BODY_FILE" ]; then
+        printf '{"items":[{"id":"big1","name":"Spilled OK"}]}' > "$BODY_FILE"
+        printf 'tab: 99\n\n{"status":200,"body_file":true}\n'
+        exit 0
+      fi
+      break
+    fi
+    shift
+  done
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(mockBrowse, []byte(script), 0o755))
+	t.Setenv("PP_BROWSE_BIN", mockBrowse)
+
+	c := &Cartridge{
+		Schema:      SchemaVersionV1,
+		Name:        "big-shop",
+		Version:     "1.0.0",
+		Description: "Large response spill test",
+		Trust:       TrustPolicy{AllowedHosts: []string{"api.big.example"}, ReadOnly: true},
+		Commands: map[string]CommandSpec{
+			"list": {Driver: DriverHTTP, Method: "GET", URL: "https://api.big.example/v1/items", Extract: "$.items[*]"},
+		},
+	}
+	require.NoError(t, c.Validate())
+
+	res, err := Execute(context.Background(), c, "list", RunOptions{ViaBrowse: true})
+	require.NoError(t, err)
+	assert.Equal(t, 200, res.HTTPStatus)
+	assert.Equal(t, 1, res.RowCount)
+	rows := res.Data.([]any)
+	assert.Equal(t, "Spilled OK", rows[0].(map[string]any)["name"])
 }

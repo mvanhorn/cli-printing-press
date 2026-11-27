@@ -65,21 +65,22 @@ func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*C
 		}
 	}
 
-	runBrowse := func(callCtx context.Context, args ...string) ([]byte, error) {
-		cmd := exec.CommandContext(callCtx, browseBin, args...)
+	runBrowseJSON := func(callCtx context.Context, tool string, payload map[string]any) ([]byte, error) {
+		rawPayload, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		cmd := exec.CommandContext(callCtx, browseBin, tool, "--json", string(rawPayload))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return nil, fmt.Errorf("browse %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+			return nil, fmt.Errorf("browse %s: %w (%s)", tool, err, strings.TrimSpace(string(out)))
 		}
 		return out, nil
 	}
 
 	tabLabel := fmt.Sprintf("pp-rec-%d", time.Now().UnixNano())
-	if _, err := runBrowse(ctx, "tabs", "new", "--tab", tabLabel); err != nil {
-		// Fallback to navigating directly if `tabs new` returns an id.
-		if _, navErr := runBrowse(ctx, "navigate", target, "--tab", tabLabel); navErr != nil {
-			return nil, err
-		}
+	if _, err := runBrowseJSON(ctx, "tabs", map[string]any{"action": "new", "id": tabLabel}); err != nil {
+		return nil, err
 	}
 	captureActive := false
 	defer func() {
@@ -88,16 +89,25 @@ func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*C
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if captureActive {
-			_, _ = runBrowse(cleanCtx, "network", tabLabel, "cancel")
+			_, _ = runBrowseJSON(cleanCtx, "network", map[string]any{"action": "cancel", "tab": tabLabel})
 		}
-		_, _ = runBrowse(cleanCtx, "tabs", "close", "--tab", tabLabel)
+		_, _ = runBrowseJSON(cleanCtx, "tabs", map[string]any{"action": "close", "tab": tabLabel})
 	}()
 
-	if _, err := runBrowse(ctx, "network", tabLabel, "start", "--resourceTypes", `["XHR","Fetch"]`, "--bodies"); err != nil {
+	if _, err := runBrowseJSON(ctx, "network", map[string]any{
+		"action":        "start",
+		"tab":           tabLabel,
+		"resourceTypes": []string{"XHR", "Fetch"},
+		"bodies":        true,
+	}); err != nil {
 		return nil, err
 	}
 	captureActive = true
-	if _, err := runBrowse(ctx, "navigate", target, "--tab", tabLabel); err != nil {
+	if _, err := runBrowseJSON(ctx, "navigate", map[string]any{
+		"tab":       tabLabel,
+		"url":       target,
+		"waitUntil": "commit",
+	}); err != nil {
 		return nil, err
 	}
 
@@ -111,7 +121,7 @@ func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*C
 	case <-time.After(time.Duration(waitSec) * time.Second):
 	}
 
-	rawNet, err := runBrowse(ctx, "network", tabLabel, "stop")
+	rawNet, err := runBrowseJSON(ctx, "network", map[string]any{"action": "stop", "tab": tabLabel})
 	captureActive = false
 	if err != nil {
 		return nil, err
@@ -166,21 +176,45 @@ func convertBrowseNetworkToHAR(raw []byte) ([]byte, error) {
 		if !ok {
 			continue
 		}
+		// Support both OpenCode browse v0.1.5's nested {request, response} shape
+		// and flat exchange objects.
+		reqMap, _ := ex["request"].(map[string]any)
+		respMap, _ := ex["response"].(map[string]any)
+
 		reqURL, _ := ex["url"].(string)
+		if reqURL == "" && reqMap != nil {
+			reqURL, _ = reqMap["url"].(string)
+		}
 		if reqURL == "" {
 			continue
 		}
 		method, _ := ex["method"].(string)
+		if method == "" && reqMap != nil {
+			method, _ = reqMap["method"].(string)
+		}
 		if method == "" {
 			method = "GET"
 		}
 		status := 200
 		if st, ok := ex["status"].(float64); ok && st > 0 {
 			status = int(st)
+		} else if respMap != nil {
+			if st, ok := respMap["status"].(float64); ok && st > 0 {
+				status = int(st)
+			}
 		}
+
 		mimeType := "application/json"
 		respText := ""
-		switch body := ex["responseBody"].(type) {
+		rawRespBody := ex["responseBody"]
+		if rawRespBody == nil && respMap != nil {
+			if b := respMap["body"]; b != nil {
+				rawRespBody = b
+			} else if c := respMap["content"]; c != nil {
+				rawRespBody = c
+			}
+		}
+		switch body := rawRespBody.(type) {
 		case string:
 			respText = body
 		case map[string]any:
@@ -191,19 +225,37 @@ func convertBrowseNetworkToHAR(raw []byte) ([]byte, error) {
 				respText = txt
 			}
 		}
-		reqHeaders := mapToHARHeaders(ex["requestHeaders"])
-		respHeaders := mapToHARHeaders(ex["responseHeaders"])
+
+		rawReqHeaders := ex["requestHeaders"]
+		if rawReqHeaders == nil && reqMap != nil {
+			rawReqHeaders = reqMap["headers"]
+		}
+		rawRespHeaders := ex["responseHeaders"]
+		if rawRespHeaders == nil && respMap != nil {
+			rawRespHeaders = respMap["headers"]
+		}
+		reqHeaders := normalizeHARHeaders(rawReqHeaders)
+		respHeaders := normalizeHARHeaders(rawRespHeaders)
+
 		reqObj := map[string]any{
 			"method":  method,
 			"url":     reqURL,
 			"headers": reqHeaders,
 		}
-		if reqBody, ok := ex["requestBody"].(string); ok && reqBody != "" {
+		reqBodyText, reqBodyMime := extractBodyText(ex["requestBody"])
+		if reqBodyText == "" && reqMap != nil {
+			reqBodyText, reqBodyMime = extractBodyText(reqMap["body"])
+		}
+		if reqBodyText != "" {
+			if reqBodyMime == "" {
+				reqBodyMime = "application/json"
+			}
 			reqObj["postData"] = map[string]any{
-				"mimeType": "application/json",
-				"text":     reqBody,
+				"mimeType": reqBodyMime,
+				"text":     reqBodyText,
 			}
 		}
+
 		harEntries = append(harEntries, map[string]any{
 			"request": reqObj,
 			"response": map[string]any{
@@ -227,19 +279,47 @@ func convertBrowseNetworkToHAR(raw []byte) ([]byte, error) {
 	return json.Marshal(harDoc)
 }
 
-func mapToHARHeaders(v any) []map[string]string {
-	m, ok := v.(map[string]any)
-	if !ok {
+func extractBodyText(v any) (string, string) {
+	switch b := v.(type) {
+	case string:
+		return b, ""
+	case map[string]any:
+		txt, _ := b["text"].(string)
+		mt, _ := b["mimeType"].(string)
+		return txt, mt
+	default:
+		return "", ""
+	}
+}
+
+func normalizeHARHeaders(v any) []map[string]string {
+	switch h := v.(type) {
+	case map[string]any:
+		out := make([]map[string]string, 0, len(h))
+		for k, val := range h {
+			out = append(out, map[string]string{
+				"name":  k,
+				"value": fmt.Sprint(val),
+			})
+		}
+		return out
+	case []any:
+		out := make([]map[string]string, 0, len(h))
+		for _, item := range h {
+			if m, ok := item.(map[string]any); ok {
+				name, _ := m["name"].(string)
+				if name != "" {
+					out = append(out, map[string]string{
+						"name":  name,
+						"value": fmt.Sprint(m["value"]),
+					})
+				}
+			}
+		}
+		return out
+	default:
 		return []map[string]string{}
 	}
-	out := make([]map[string]string, 0, len(m))
-	for k, val := range m {
-		out = append(out, map[string]string{
-			"name":  k,
-			"value": fmt.Sprint(val),
-		})
-	}
-	return out
 }
 
 func findCLI(name string) (string, bool) {

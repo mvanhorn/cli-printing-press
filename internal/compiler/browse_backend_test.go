@@ -85,15 +85,15 @@ func TestRecordWithOpenCodeBrowseHappyPathAndCancelCleanup(t *testing.T) {
 
 	script := `#!/bin/sh
 echo "$*" >> "` + logPath + `"
-if [ "$1" = "network" ] && [ "$3" = "stop" ]; then
-  printf '{"exchanges":[{"url":"https://api.chrome-demo.test/v1/items","method":"GET","status":200,"responseBody":"{\\"items\\":[{\\"id\\":\\"a1\\",\\"title\\":\\"Alpha\\"}]}"}]}\n'
+if [ "$1" = "network" ] && echo "$*" | grep -q '"action":"stop"'; then
+  printf '{"exchanges":[{"id":"request-1","request":{"method":"GET","url":"https://api.chrome-demo.test/v1/items","headers":[{"name":"accept","value":"application/json"}]},"response":{"status":200,"headers":[{"name":"content-type","value":"application/json"}],"body":{"mimeType":"application/json","size":42,"text":"{\\"items\\":[{\\"id\\":\\"a1\\",\\"title\\":\\"Alpha\\"}]}"}}}]}\n'
   exit 0
 fi
 exit 0
 `
 	require.NoError(t, os.WriteFile(mockBrowse, []byte(script), 0o755))
 
-	// 1. Happy path compiles a valid host-locked Cartridge.
+	// 1. Happy path compiles a valid host-locked Cartridge from nested browse v0.1.5 output.
 	res, err := RecordWithOpenCodeBrowse(context.Background(), BrowseRecordOptions{
 		TargetURL:    "https://chrome-demo.test",
 		NameOverride: "chrome-demo",
@@ -105,8 +105,8 @@ exit 0
 	assert.Equal(t, "browse:https://chrome-demo.test", res.Source)
 	assert.GreaterOrEqual(t, res.CommandCount, 1)
 
-	// 2. Cancelled context during wait must STILL run `network <tab> cancel`
-	// and `tabs close --tab <tab>` via the detached cleanup context.
+	// 2. Cancelled context during wait must STILL run `network cancel`
+	// and `tabs close` via the detached cleanup context.
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
@@ -122,6 +122,6 @@ exit 0
 	loggedBytes, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	logged := string(loggedBytes)
-	assert.True(t, strings.Contains(logged, " cancel"), "expected detached `network <tab> cancel` on ctx cancel, got:\n%s", logged)
-	assert.True(t, strings.Contains(logged, "tabs close --tab "), "expected detached `tabs close` on ctx cancel, got:\n%s", logged)
+	assert.True(t, strings.Contains(logged, `"action":"cancel"`), "expected detached network cancel on ctx cancel, got:\n%s", logged)
+	assert.True(t, strings.Contains(logged, `"action":"close"`), "expected detached tabs close on ctx cancel, got:\n%s", logged)
 }
