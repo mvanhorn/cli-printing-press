@@ -166,6 +166,7 @@ func toolDefinitions() []map[string]any {
 					"limit":            map[string]any{"type": "integer", "description": "Optional max rows"},
 					"dry_run":          map[string]any{"type": "boolean", "description": "Preview request without executing"},
 					"confirm_mutation": map[string]any{"type": "boolean", "description": "Explicitly confirm a mutating command"},
+					"via_browse":       map[string]any{"type": "boolean", "description": "Execute HTTP/GraphQL cartridge inside Google Chrome via OpenCode browse (uses Chrome session without exporting cookies)"},
 				},
 				"required": []string{"app", "command"},
 			},
@@ -256,6 +257,7 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 				Limit:        intArg(call.Arguments, "limit", 0),
 				DryRun:       dryRun,
 				ConfirmWrite: confirmMut,
+				ViaBrowse:    boolArg(call.Arguments, "via_browse"),
 				Journal:      s.Journal,
 			})
 		} else if binPath, ok := registry.InstalledBinaryPath(app); ok {

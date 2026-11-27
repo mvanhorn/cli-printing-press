@@ -3,16 +3,21 @@ package ppcli
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/cartridge"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pressauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 )
 
 func isolateHome(t *testing.T) string {
@@ -164,4 +169,71 @@ func TestPPBatchAndSetupCommands(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rawBounded, &parsed))
 	assert.Equal(t, true, parsed["truncated"])
 	assert.Less(t, len(parsed["data"].([]any)), 50)
+}
+
+func TestPPRunViaBrowseDryRunAndAuthSyncChromeAndCacheSkip(t *testing.T) {
+	tmp := isolateHome(t)
+	savedStates := make(map[string]*pressauth.State)
+	origSave := savePressAuthState
+	origLoad := loadPressAuthState
+	savePressAuthState = func(s *pressauth.State) error {
+		savedStates[s.Domain] = s
+		return nil
+	}
+	loadPressAuthState = func(domain string) (*pressauth.State, error) {
+		if s, ok := savedStates[domain]; ok {
+			return s, nil
+		}
+		return nil, pressauth.ErrStateNotFound
+	}
+	t.Cleanup(func() {
+		savePressAuthState = origSave
+		loadPressAuthState = origLoad
+	})
+
+	// 1. `--via browse --dry-run` previews OpenCode browse transport cleanly.
+	out, err := runPP(t, "run", "espn", "scoreboard", "--via", "browse", "--dry-run", "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"transport": "opencode-browse-fetch"`)
+	assert.Contains(t, out, `"auth_source": "opencode-browse"`)
+
+	// Invalid --via transport must return usage error.
+	_, err = runPP(t, "run", "espn", "scoreboard", "--via", "bogus", "--dry-run")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --via transport")
+
+	// 2. `pp auth sync --browser chrome` without agentcookie sidecar returns
+	// structured HandoffHint pointing to --via browse and press-auth login.
+	t.Setenv("AGENTCOOKIE_SIDECAR_DB", filepath.Join(tmp, "missing-agentcookie.db"))
+	_, err = runPP(t, "auth", "sync", "instacart", "--domain", "instacart.com", "--browser", "chrome", "--json")
+	require.Error(t, err)
+	ee, ok := errors.AsType[*cartridge.ExecError](err)
+	require.True(t, ok, "expected structured *cartridge.ExecError")
+	require.NotNil(t, ee.Handoff)
+	assert.Contains(t, ee.Hint, "--via browse")
+
+	// 3. `pp auth sync --browser chrome` with an agentcookie sidecar DB extracts
+	// strictly the requested domain into encrypted press-auth state.
+	sidecarDB := filepath.Join(tmp, "cookies-plain.db")
+	db, err := sql.Open("sqlite", sidecarDB)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, path TEXT, is_secure INTEGER);
+INSERT INTO cookies VALUES ('.instacart.com', '_ic_sess', 'tok_chrome_1', '/', 1);
+INSERT INTO cookies VALUES ('.google.com', 'SID', 'do_not_leak', '/', 1);`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	t.Setenv("AGENTCOOKIE_SIDECAR_DB", sidecarDB)
+
+	syncOut, err := runPP(t, "auth", "sync", "instacart", "--domain", "instacart.com", "--browser", "chrome", "--json")
+	require.NoError(t, err)
+	var syncDoc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(syncOut), &syncDoc))
+	assert.Equal(t, "agentcookie", syncDoc["source"])
+	assert.Equal(t, float64(1), syncDoc["cookie_count"])
+
+	loaded, err := loadPressAuthState("instacart.com")
+	require.NoError(t, err)
+	assert.Equal(t, "tok_chrome_1", loaded.Cookies["_ic_sess"])
+	assert.NotContains(t, loaded.Cookies, "SID")
+	assert.WithinDuration(t, time.Now().UTC(), loaded.CapturedAt, 10*time.Second)
 }

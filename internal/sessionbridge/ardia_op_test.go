@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pressauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,4 +86,69 @@ func TestLoadFromArdiaEnforcesRFC6265DomainPathSchemeAndExpiry(t *testing.T) {
 		isHTTPS: false,
 	})
 	require.Error(t, err)
+}
+
+func TestResolveFreshPressAuthSkipsArdiaCDP(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell mock")
+	}
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("AGENTCOOKIE_SIDECAR_DB", filepath.Join(tmp, "missing.db"))
+	t.Setenv("PP_INSTACART_TOKEN", "")
+	t.Setenv("PP_AUTH_TOKEN", "")
+	t.Setenv("PP_NO_ARDIA_COOKIES", "")
+
+	sentinel := filepath.Join(tmp, "ardia-was-called")
+	mockArdia := filepath.Join(tmp, "ardia")
+	script := "#!/bin/sh\ntouch \"" + sentinel + "\"\nprintf '{\"success\":true,\"data\":{\"cookies\":[{\"name\":\"_instacart_session\",\"value\":\"from_ardia\",\"domain\":\".instacart.com\",\"path\":\"/\",\"expires\":4102444800,\"secure\":true}]}}\\n'\n"
+	require.NoError(t, os.WriteFile(mockArdia, []byte(script), 0o755))
+	t.Setenv("PP_ARDIA_BIN", mockArdia)
+
+	var currentState *pressauth.State
+	origLoad := loadPressAuthState
+	loadPressAuthState = func(domain string) (*pressauth.State, error) {
+		if currentState != nil && currentState.Domain == domain {
+			return currentState, nil
+		}
+		return nil, pressauth.ErrStateNotFound
+	}
+	t.Cleanup(func() { loadPressAuthState = origLoad })
+
+	// Fresh (<24h) press-auth snapshot must be returned without invoking ardia.
+	currentState = &pressauth.State{
+		Domain:     "instacart.com",
+		CapturedAt: time.Now().UTC(),
+		Cookies:    map[string]string{"_instacart_session": "cached_fast"},
+	}
+
+	res, err := Resolve(AuthSpec{
+		AppName:   "instacart",
+		Strategy:  "browser_cookie",
+		Domains:   []string{".instacart.com"},
+		TargetURL: "https://www.instacart.com/store",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "_instacart_session=cached_fast", res.Headers["Cookie"])
+	assert.Equal(t, "press-auth:instacart.com", res.Source)
+	_, statErr := os.Stat(sentinel)
+	assert.True(t, os.IsNotExist(statErr), "fresh press-auth cache must skip Ardia CDP call")
+
+	// Stale (>=24h) press-auth snapshot must fall through to Ardia CDP for refresh.
+	currentState = &pressauth.State{
+		Domain:     "instacart.com",
+		CapturedAt: time.Now().UTC().Add(-48 * time.Hour),
+		Cookies:    map[string]string{"_instacart_session": "stale_old"},
+	}
+	res2, err := Resolve(AuthSpec{
+		AppName:   "instacart",
+		Strategy:  "browser_cookie",
+		Domains:   []string{".instacart.com"},
+		TargetURL: "https://www.instacart.com/store",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "_instacart_session=from_ardia", res2.Headers["Cookie"])
+	assert.Equal(t, "ardia-cdp", res2.Source)
+	assert.FileExists(t, sentinel)
 }

@@ -81,6 +81,7 @@ type RunOptions struct {
 	ConfirmWrite   bool
 	StrictLock     bool
 	SkipLockVerify bool
+	ViaBrowse      bool
 	Timeout        time.Duration
 	HTTPClient     *http.Client
 	Journal        *Journal
@@ -152,7 +153,11 @@ func Execute(ctx context.Context, c *Cartridge, cmdName string, opts RunOptions)
 
 	switch driver {
 	case DriverHTTP, DriverGraphQL:
-		data, httpStatus, authSource, execErr = executeHTTP(runCtx, c, cmd, resolvedParams, opts)
+		if opts.ViaBrowse {
+			data, httpStatus, authSource, execErr = executeViaOpenCodeBrowse(runCtx, c, cmdName, cmd, resolvedParams, opts)
+		} else {
+			data, httpStatus, authSource, execErr = executeHTTP(runCtx, c, cmd, resolvedParams, opts)
+		}
 	case DriverLocalSQLite:
 		data, execErr = executeLocalSQLite(runCtx, cmd, resolvedParams, opts)
 		authSource = "local-sqlite"

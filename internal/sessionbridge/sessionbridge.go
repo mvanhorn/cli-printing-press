@@ -13,10 +13,19 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pressauth"
 	_ "modernc.org/sqlite"
 )
+
+// PressAuthFreshTTL is how long an encrypted press-auth session snapshot is
+// reused before falling back to a full Ardia CDP cookie lookup.
+const PressAuthFreshTTL = 24 * time.Hour
+
+// loadPressAuthState wraps pressauth.Load so unit tests can verify cache TTL
+// behavior hermetically without touching the macOS Keychain.
+var loadPressAuthState = pressauth.Load
 
 // AuthSpec mirrors the minimal auth fields needed to resolve session headers
 // or cookies without creating an import cycle with internal/cartridge.
@@ -155,18 +164,15 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 			return &ResolvedAuth{Source: "none"}, nil
 		}
 
-		if cookieHeader, src, err := loadFromAgentCookie(scopedDomains, target); err == nil && cookieHeader != "" {
+		if cookieHeader, _, src, err := loadFromAgentCookie(scopedDomains, target); err == nil && cookieHeader != "" {
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": cookieHeader},
 				Source:  src,
 			}, nil
 		}
-		if cookieHeader, _, src, err := LoadFromArdia(context.Background(), scopedDomains, target); err == nil && cookieHeader != "" {
-			return &ResolvedAuth{
-				Headers: map[string]string{"Cookie": cookieHeader},
-				Source:  src,
-			}, nil
-		}
+		// Reuse fresh (<24h) press-auth cache before hitting Ardia CDP so repeated
+		// calls stay ~1ms instead of dumping all browser cookies on every run.
+		var stalePressAuth *ResolvedAuth
 		for _, dom := range scopedDomains {
 			clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(dom)), ".")
 			if clean == "" {
@@ -175,14 +181,29 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 			if target != nil && !cookieDomainMatchesHost(dom, target.host) {
 				continue
 			}
-			if state, err := pressauth.Load(clean); err == nil && len(state.Cookies) > 0 {
-				return &ResolvedAuth{
+			if state, err := loadPressAuthState(clean); err == nil && len(state.Cookies) > 0 {
+				candidate := &ResolvedAuth{
 					Headers: map[string]string{"Cookie": joinPressAuthCookies(state.Cookies)},
 					Source:  "press-auth:" + clean,
-				}, nil
+				}
+				if time.Since(state.CapturedAt) < PressAuthFreshTTL {
+					return candidate, nil
+				}
+				if stalePressAuth == nil {
+					stalePressAuth = candidate
+				}
 			}
 		}
-		if cookieHeader, src, err := loadFromFirefoxFamily(scopedDomains, target); err == nil && cookieHeader != "" {
+		if cookieHeader, _, src, err := LoadFromArdia(context.Background(), scopedDomains, target); err == nil && cookieHeader != "" {
+			return &ResolvedAuth{
+				Headers: map[string]string{"Cookie": cookieHeader},
+				Source:  src,
+			}, nil
+		}
+		if stalePressAuth != nil {
+			return stalePressAuth, nil
+		}
+		if cookieHeader, _, src, err := loadFromFirefoxFamily(scopedDomains, target); err == nil && cookieHeader != "" {
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": cookieHeader},
 				Source:  src,
@@ -297,6 +318,11 @@ func defaultEnvVarName(spec AuthSpec) string {
 	return "PP_" + norm + "_TOKEN"
 }
 
+// JoinCookies formats a cookie map into a deterministic HTTP Cookie header.
+func JoinCookies(cookies map[string]string) string {
+	return joinPressAuthCookies(cookies)
+}
+
 func joinPressAuthCookies(cookies map[string]string) string {
 	names := make([]string, 0, len(cookies))
 	for name := range cookies {
@@ -323,34 +349,64 @@ func agentCookieSidecarPath() (string, error) {
 	return filepath.Join(home, ".agentcookie", "cookies-plain.db"), nil
 }
 
-func loadFromAgentCookie(domains []string, target *requestTarget) (string, string, error) {
+// ResolveAgentCookieDomainCookies extracts strictly one domain's active HTTPS
+// cookies from the local agentcookie sidecar database (zero Keychain prompts).
+func ResolveAgentCookieDomainCookies(domain string) (string, map[string]string, error) {
+	clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if clean == "" {
+		return "", nil, errors.New("domain is required")
+	}
+	target := &requestTarget{host: clean, path: "/", isHTTPS: true}
+	hdr, m, _, err := loadFromAgentCookie([]string{"." + clean, clean}, target)
+	if err != nil {
+		return "", nil, err
+	}
+	return hdr, m, nil
+}
+
+// ResolveFirefoxDomainCookies extracts strictly one domain's active HTTPS
+// cookies from local Firefox, Zen, or LibreWolf unencrypted cookies.sqlite.
+func ResolveFirefoxDomainCookies(domain string) (string, map[string]string, error) {
+	clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if clean == "" {
+		return "", nil, errors.New("domain is required")
+	}
+	target := &requestTarget{host: clean, path: "/", isHTTPS: true}
+	hdr, m, _, err := loadFromFirefoxFamily([]string{"." + clean, clean}, target)
+	if err != nil {
+		return "", nil, err
+	}
+	return hdr, m, nil
+}
+
+func loadFromAgentCookie(domains []string, target *requestTarget) (string, map[string]string, string, error) {
 	if len(domains) == 0 && target == nil {
-		return "", "", errors.New("no domains")
+		return "", nil, "", errors.New("no domains")
 	}
 	dbPath, err := agentCookieSidecarPath()
 	if err != nil {
-		return "", "", err
+		return "", nil, "", err
 	}
 	if _, err := os.Stat(dbPath); err != nil {
-		return "", "", err
+		return "", nil, "", err
 	}
-	header, err := queryCookieSQLite(dbPath, domains, target, "cookies", "host_key", "name", "value", "path", "is_secure")
+	header, cookieMap, err := queryCookieSQLite(dbPath, domains, target, "cookies", "host_key", "name", "value", "path", "is_secure")
 	if err != nil {
-		header, err = queryCookieSQLite(dbPath, domains, target, "cookies", "domain", "name", "value", "path", "is_secure")
+		header, cookieMap, err = queryCookieSQLite(dbPath, domains, target, "cookies", "domain", "name", "value", "path", "is_secure")
 	}
 	if err != nil || header == "" {
-		return "", "", fmt.Errorf("agentcookie lookup: %w", err)
+		return "", nil, "", fmt.Errorf("agentcookie lookup: %w", err)
 	}
-	return header, "agentcookie:" + dbPath, nil
+	return header, cookieMap, "agentcookie:" + dbPath, nil
 }
 
-func loadFromFirefoxFamily(domains []string, target *requestTarget) (string, string, error) {
+func loadFromFirefoxFamily(domains []string, target *requestTarget) (string, map[string]string, string, error) {
 	if len(domains) == 0 && target == nil {
-		return "", "", errors.New("no domains")
+		return "", nil, "", errors.New("no domains")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", err
+		return "", nil, "", err
 	}
 	var roots []string
 	switch runtime.GOOS {
@@ -381,27 +437,27 @@ func loadFromFirefoxFamily(domains []string, target *requestTarget) (string, str
 			if _, err := os.Stat(dbPath); err != nil {
 				continue
 			}
-			header, err := queryCookieSQLite(dbPath, domains, target, "moz_cookies", "host", "name", "value", "path", "isSecure")
+			header, cookieMap, err := queryCookieSQLite(dbPath, domains, target, "moz_cookies", "host", "name", "value", "path", "isSecure")
 			if err == nil && header != "" {
-				return header, "firefox-family:" + dbPath, nil
+				return header, cookieMap, "firefox-family:" + dbPath, nil
 			}
 		}
 	}
-	return "", "", errors.New("no matching firefox-family cookies")
+	return "", nil, "", errors.New("no matching firefox-family cookies")
 }
 
 // queryCookieSQLite copies the target SQLite file (plus optional WAL/SHM) into
 // an isolated temp dir so reading never locks a running browser profile.
-func queryCookieSQLite(srcPath string, domains []string, target *requestTarget, table, hostCol, nameCol, valueCol, pathCol, secureCol string) (string, error) {
+func queryCookieSQLite(srcPath string, domains []string, target *requestTarget, table, hostCol, nameCol, valueCol, pathCol, secureCol string) (string, map[string]string, error) {
 	tmpDir, err := os.MkdirTemp("", "pp-cookie-snap-*")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	dstPath := filepath.Join(tmpDir, "cookies.db")
 	if err := copyFile(srcPath, dstPath); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		_ = copyFile(srcPath+suffix, dstPath+suffix)
@@ -409,7 +465,7 @@ func queryCookieSQLite(srcPath string, domains []string, target *requestTarget, 
 
 	db, err := sql.Open("sqlite", dstPath+"?mode=ro")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer func() { _ = db.Close() }()
 
@@ -432,7 +488,7 @@ func queryCookieSQLite(srcPath string, domains []string, target *requestTarget, 
 	query := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selectCols, ", "), table)
 	rows, err := db.Query(query)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -469,18 +525,20 @@ func queryCookieSQLite(srcPath string, domains []string, target *requestTarget, 
 		}
 	}
 	if len(seen) == 0 {
-		return "", errors.New("no cookies matched target")
+		return "", nil, errors.New("no cookies matched target")
 	}
 	names := make([]string, 0, len(seen))
-	for k := range seen {
+	cookieMap := make(map[string]string, len(seen))
+	for k, v := range seen {
 		names = append(names, k)
+		cookieMap[k] = v.value
 	}
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
 	for _, k := range names {
-		parts = append(parts, k+"="+seen[k].value)
+		parts = append(parts, k+"="+cookieMap[k])
 	}
-	return strings.Join(parts, "; "), nil
+	return strings.Join(parts, "; "), cookieMap, nil
 }
 
 func tableColumns(db *sql.DB, table string) map[string]bool {

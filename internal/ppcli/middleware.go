@@ -24,6 +24,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	loadPressAuthState = pressauth.Load
+	savePressAuthState = pressauth.Save
+)
+
 func newOnboardCmd() *cobra.Command {
 	var browserFilter string
 	var install bool
@@ -121,14 +126,15 @@ func newOnboardCmd() *cobra.Command {
 func newAuthCmd() *cobra.Command {
 	authCmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Sync domain-scoped browser sessions from Ardia into encrypted local press-auth state",
+		Short: "Sync domain-scoped browser sessions from Ardia, Chrome, or Firefox into encrypted local press-auth state",
 	}
 
 	var domainOverride string
+	var browser string
 	var asJSON bool
 	syncCmd := &cobra.Command{
 		Use:   "sync <app>",
-		Short: "Pull strictly one app's cookies from Ardia Browser into encrypted ~/.press-auth/<domain>.json",
+		Short: "Pull strictly one app's cookies from Ardia, Chrome (agentcookie), or Firefox into encrypted ~/.press-auth/<domain>.json",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := strings.TrimSpace(args[0])
@@ -140,11 +146,73 @@ func newAuthCmd() *cobra.Command {
 					return err
 				}
 			}
-			_, cookieMap, err := sessionbridge.ResolveArdiaDomainCookies(cmd.Context(), domain)
+
+			var (
+				cookieMap map[string]string
+				source    string
+				err       error
+			)
+			switch strings.ToLower(strings.TrimSpace(browser)) {
+			case "ardia":
+				_, cookieMap, err = sessionbridge.ResolveArdiaDomainCookies(cmd.Context(), domain)
+				source = "ardia-cdp"
+			case "chrome":
+				_, cookieMap, err = sessionbridge.ResolveAgentCookieDomainCookies(domain)
+				source = "agentcookie"
+				if err != nil {
+					return &cartridge.ExecError{
+						Code:    cartridge.ExitAuth,
+						Class:   cartridge.ClassAuthError,
+						Message: fmt.Sprintf("no Chrome agentcookie sidecar cookies found for %s: %v", domain, err),
+						Hint:    fmt.Sprintf("for Chrome without Keychain prompts, run Cartridges directly via `pp run %s <cmd> --via browse`, or capture a session with `press-auth login %s --login-url https://%s`", app, domain, domain),
+						Handoff: &cartridge.HandoffHint{
+							Action:     "sign_in",
+							URL:        "https://" + domain,
+							BrowserCmd: fmt.Sprintf("press-auth login %s --login-url https://%s", domain, domain),
+							Reason:     "Chrome encrypts its SQLite cookie store with macOS Keychain; use --via browse, agentcookie sidecar, or press-auth login",
+							ResumeCmd:  fmt.Sprintf("pp run %s <command> --via browse", app),
+						},
+					}
+				}
+			case "firefox":
+				_, cookieMap, err = sessionbridge.ResolveFirefoxDomainCookies(domain)
+				source = "firefox-family"
+			case "", "auto":
+				if _, m, aerr := sessionbridge.ResolveAgentCookieDomainCookies(domain); aerr == nil && len(m) > 0 {
+					cookieMap = m
+					source = "agentcookie"
+				} else if _, m, rerr := sessionbridge.ResolveArdiaDomainCookies(cmd.Context(), domain); rerr == nil && len(m) > 0 {
+					cookieMap = m
+					source = "ardia-cdp"
+				} else if _, m, ferr := sessionbridge.ResolveFirefoxDomainCookies(domain); ferr == nil && len(m) > 0 {
+					cookieMap = m
+					source = "firefox-family"
+				} else {
+					return &cartridge.ExecError{
+						Code:    cartridge.ExitAuth,
+						Class:   cartridge.ClassAuthError,
+						Message: fmt.Sprintf("no active session cookies found for %s in agentcookie, Ardia, or Firefox", domain),
+						Hint:    fmt.Sprintf("sign in via Ardia and retry `pp auth sync %s`, or run Cartridges inside Chrome with `pp run %s <cmd> --via browse`", app, app),
+						Handoff: &cartridge.HandoffHint{
+							Action:     "sign_in",
+							URL:        "https://" + domain,
+							BrowserCmd: fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open https://%s", domain),
+							Reason:     "no local session found for " + domain,
+							ResumeCmd:  fmt.Sprintf("pp auth sync %s", app),
+						},
+					}
+				}
+			default:
+				return &cartridge.ExecError{
+					Code:    cartridge.ExitUsage,
+					Class:   cartridge.ClassUsage,
+					Message: fmt.Sprintf("invalid --browser %q (expected auto, ardia, chrome, or firefox)", browser),
+				}
+			}
 			if err != nil {
 				return err
 			}
-			if err := pressauth.Save(&pressauth.State{
+			if err := savePressAuthState(&pressauth.State{
 				Domain:     domain,
 				CapturedAt: time.Now().UTC(),
 				Cookies:    cookieMap,
@@ -155,18 +223,19 @@ func newAuthCmd() *cobra.Command {
 				"app":          app,
 				"domain":       domain,
 				"cookie_count": len(cookieMap),
-				"source":       "ardia-cdp",
+				"source":       source,
 				"stored":       "press-auth",
 			}
 			if wantsJSON(cmd, asJSON) {
 				return writeJSON(cmd.OutOrStdout(), res)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Synced %d domain-scoped cookie(s) for %s (%s) from Ardia into encrypted press-auth store.\n",
-				len(cookieMap), app, domain)
+			fmt.Fprintf(cmd.OutOrStdout(), "Synced %d domain-scoped cookie(s) for %s (%s) from %s into encrypted press-auth store.\n",
+				len(cookieMap), app, domain, source)
 			return nil
 		},
 	}
 	syncCmd.Flags().StringVar(&domainOverride, "domain", "", "Explicit target domain (defaults to app homepage domain)")
+	syncCmd.Flags().StringVar(&browser, "browser", "auto", "Browser source: auto, ardia, chrome, firefox")
 	syncCmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	authCmd.AddCommand(syncCmd)
 	return authCmd
@@ -240,29 +309,40 @@ func hydrateAndExecLibraryBinary(cmd *cobra.Command, app string, childArgs []str
 	}
 
 	env := os.Environ()
-	// Best-effort domain-scoped Ardia cookie handoff for cookie-auth library CLIs
-	// when no press-auth state exists yet for the app's homepage domain.
-	if regErr == nil && strings.TrimSpace(os.Getenv("PP_NO_ARDIA_COOKIES")) != "1" {
-		if entry, err := reg.LookupEntry(cmd.Context(), app); err == nil && entry.Homepage != "" {
+	// Domain-scoped cookie handoff for cookie-auth library CLIs. When a fresh
+	// (<24h) encrypted press-auth snapshot already exists, reuse it in ~1ms and
+	// skip the full Ardia CDP cookie dump.
+	if regErr == nil {
+		if entry, err := reg.LookupEntry(cmd.Context(), app); err == nil && entry.Homepage != "" && entryMayUseCookies(entry) {
 			if u, uerr := url.Parse(entry.Homepage); uerr == nil && u.Hostname() != "" {
 				dom := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 				needsCookieEnv := entry.MCP != nil && strings.EqualFold(entry.MCP.AuthType, "cookie")
-				_, existingErr := pressauth.Load(dom)
-				if needsCookieEnv || errors.Is(existingErr, pressauth.ErrStateNotFound) {
+				existingState, existingErr := loadPressAuthState(dom)
+				freshCached := existingErr == nil && existingState != nil && len(existingState.Cookies) > 0 && time.Since(existingState.CapturedAt) < sessionbridge.PressAuthFreshTTL
+				var cookieHeader string
+				switch {
+				case freshCached:
+					if needsCookieEnv {
+						cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
+					}
+				case strings.TrimSpace(os.Getenv("PP_NO_ARDIA_COOKIES")) != "1":
 					if hdr, cookieMap, aerr := sessionbridge.ResolveArdiaDomainCookies(cmd.Context(), dom); aerr == nil && len(cookieMap) > 0 {
-						if errors.Is(existingErr, pressauth.ErrStateNotFound) {
-							_ = pressauth.Save(&pressauth.State{
-								Domain:     dom,
-								CapturedAt: time.Now().UTC(),
-								Cookies:    cookieMap,
-							})
-						}
-						if needsCookieEnv {
-							for _, envName := range entry.MCP.EnvVars {
-								if strings.Contains(strings.ToUpper(envName), "COOKIE") && os.Getenv(envName) == "" {
-									env = append(env, envName+"="+hdr)
-								}
-							}
+						_ = savePressAuthState(&pressauth.State{
+							Domain:     dom,
+							CapturedAt: time.Now().UTC(),
+							Cookies:    cookieMap,
+						})
+						cookieHeader = hdr
+					} else if needsCookieEnv && existingState != nil && len(existingState.Cookies) > 0 {
+						cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
+					}
+				case needsCookieEnv && existingState != nil && len(existingState.Cookies) > 0:
+					cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
+				}
+				if needsCookieEnv && cookieHeader != "" {
+					for _, envName := range entry.MCP.EnvVars {
+						if strings.Contains(strings.ToUpper(envName), "COOKIE") && os.Getenv(envName) == "" {
+							env = append(env, envName+"="+cookieHeader)
 						}
 					}
 				}
@@ -278,17 +358,30 @@ func hydrateAndExecLibraryBinary(cmd *cobra.Command, app string, childArgs []str
 	return proc.Run()
 }
 
+func entryMayUseCookies(entry *registry.Entry) bool {
+	if entry == nil || entry.MCP == nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(entry.MCP.AuthType)) {
+	case "", "cookie", "browser_cookie", "session":
+		return true
+	default:
+		return false
+	}
+}
+
 type batchOp struct {
-	Op      string            `json:"op"` // "route", "run", "lake_search", "lake_sql"
-	Target  string            `json:"target,omitempty"`
-	App     string            `json:"app,omitempty"`
-	Command string            `json:"command,omitempty"`
-	Params  map[string]string `json:"params,omitempty"`
-	Compact *bool             `json:"compact,omitempty"`
-	Limit   int               `json:"limit,omitempty"`
-	DryRun  bool              `json:"dry_run,omitempty"`
-	Query   string            `json:"query,omitempty"`
-	SQL     string            `json:"sql,omitempty"`
+	Op        string            `json:"op"` // "route", "run", "lake_search", "lake_sql"
+	Target    string            `json:"target,omitempty"`
+	App       string            `json:"app,omitempty"`
+	Command   string            `json:"command,omitempty"`
+	Params    map[string]string `json:"params,omitempty"`
+	Compact   *bool             `json:"compact,omitempty"`
+	Limit     int               `json:"limit,omitempty"`
+	DryRun    bool              `json:"dry_run,omitempty"`
+	ViaBrowse bool              `json:"via_browse,omitempty"`
+	Query     string            `json:"query,omitempty"`
+	SQL       string            `json:"sql,omitempty"`
 }
 
 type batchItemResult struct {
@@ -385,10 +478,11 @@ func executeBatchOp(ctx context.Context, reg *registry.Client, item batchOp) (an
 			compact = *item.Compact
 		}
 		return cartridge.Execute(ctx, c, item.Command, cartridge.RunOptions{
-			Params:  item.Params,
-			Compact: compact,
-			Limit:   item.Limit,
-			DryRun:  item.DryRun,
+			Params:    item.Params,
+			Compact:   compact,
+			Limit:     item.Limit,
+			DryRun:    item.DryRun,
+			ViaBrowse: item.ViaBrowse,
 		})
 	case "lake_search":
 		p, err := lake.DefaultPath()

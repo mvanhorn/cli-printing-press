@@ -312,6 +312,7 @@ func newRunCmd() *cobra.Command {
 					boundaries   bool
 					dryRun       bool
 					yes          bool
+					via          string
 					asJSON       bool
 					strictLock   bool
 					showHelp     bool
@@ -328,6 +329,7 @@ func newRunCmd() *cobra.Command {
 				fs.BoolVar(&noBoundaries, "no-content-boundaries", false, "Disable prompt-injection fences")
 				fs.BoolVar(&dryRun, "dry-run", false, "Preview the resolved request without executing")
 				fs.BoolVar(&yes, "yes", false, "Confirm execution of mutating commands")
+				fs.StringVar(&via, "via", "", "HTTP transport: http (default) or browse (execute inside Google Chrome via OpenCode browse)")
 				fs.BoolVar(&strictLock, "strict-lock", false, "Fail if cartridge is not explicitly pinned in lock.json")
 				fs.BoolVar(&asJSON, "json", false, "Output as JSON (auto-enabled when piped)")
 				fs.BoolVarP(&showHelp, "help", "h", false, "Show help")
@@ -336,6 +338,14 @@ func newRunCmd() *cobra.Command {
 				}
 				if showHelp {
 					return printRunUsage(cmd.OutOrStdout())
+				}
+				viaMode := strings.ToLower(strings.TrimSpace(via))
+				if viaMode != "" && viaMode != "http" && viaMode != "browse" {
+					return &cartridge.ExecError{
+						Code:    cartridge.ExitUsage,
+						Class:   cartridge.ClassUsage,
+						Message: fmt.Sprintf("invalid --via transport %q (expected http or browse)", via),
+					}
 				}
 				pos := fs.Args()
 				if len(pos) < 1 {
@@ -373,6 +383,7 @@ func newRunCmd() *cobra.Command {
 					DryRun:       dryRun,
 					ConfirmWrite: yes,
 					StrictLock:   strictLock,
+					ViaBrowse:    viaMode == "browse",
 					Journal:      journal,
 				})
 				if execErr != nil {
@@ -423,7 +434,7 @@ func splitLeadingApp(rawArgs []string) (string, []string) {
 		if strings.HasPrefix(a, "-") {
 			leadingFlags = append(leadingFlags, a)
 			// Flags taking a separate value argument before <app>.
-			if (a == "-p" || a == "--param" || a == "--select" || a == "--limit" || a == "--max-output") && i+1 < len(rawArgs) {
+			if (a == "-p" || a == "--param" || a == "--select" || a == "--limit" || a == "--max-output" || a == "--via") && i+1 < len(rawArgs) {
 				i++
 				leadingFlags = append(leadingFlags, rawArgs[i])
 			}
@@ -447,6 +458,7 @@ Cartridge flags:
       --limit int         Maximum rows to return
       --dry-run           Preview the resolved request without executing
       --yes               Confirm execution of mutating commands
+      --via transport     HTTP transport: http (default) or browse (Chrome via OpenCode browse)
       --strict-lock       Fail if cartridge is not explicitly pinned in lock.json
       --json              Output as JSON (auto-enabled when piped)
 
@@ -633,7 +645,7 @@ func newRecordCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&fromHAR, "from-har", "", "Compile from an existing HAR or EnrichedCapture file")
 	cmd.Flags().StringVar(&fromSpec, "from-spec", "", "Compile from an OpenAPI or Printing Press YAML spec")
-	cmd.Flags().StringVar(&backend, "backend", "ardia", "Live browser capture backend (ardia)")
+	cmd.Flags().StringVar(&backend, "backend", "auto", "Live browser capture backend: auto (Ardia then Chrome browse), ardia, or browse")
 	cmd.Flags().StringVar(&nameOverride, "name", "", "Override generated cartridge slug")
 	cmd.Flags().IntVar(&waitSeconds, "wait", 3, "Seconds to wait for XHR/Fetch calls during live Ardia capture")
 	cmd.Flags().BoolVar(&install, "install", true, "Install and pin compiled cartridge into ~/.pp/cartridges/")
