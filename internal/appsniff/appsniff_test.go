@@ -577,3 +577,52 @@ func TestDistinctHostExactMethodDoesNotHideOtherHostRoute(t *testing.T) {
 	assert.True(t, gotAlphaPost, "expected POST on api.alpha.test")
 	assert.True(t, gotBetaGet, "expected GET on api.beta.test not to be hidden by api.alpha.test POST")
 }
+
+func TestHostRankingPenalizesNonAPISubdomains(t *testing.T) {
+	t.Parallel()
+
+	// Paired positive and negative fixtures for isNonAPISubdomain.
+	penalized := []string{
+		"www.brand.test",
+		"docs.brand.test",
+		"help.brand.test",
+		"support.brand.test",
+		"status.brand.test",
+		"blog.brand.test",
+		"cdn.brand.test",
+		"media.brand.test",
+		"app-media.brand.test",
+		"static.brand.test",
+		"assets.brand.test",
+		"images.brand.test",
+		"img.brand.test",
+	}
+	for _, host := range penalized {
+		assert.True(t, isNonAPISubdomain(host), "expected non-API subdomain penalty for %s", host)
+	}
+
+	nonPenalized := []string{
+		"api.brand.test",
+		"client-api.brand.test",
+		"app-api.brand.test",
+		"brand.test",
+		"gateway.brand.test",
+	}
+	for _, host := range nonPenalized {
+		assert.False(t, isNonAPISubdomain(host), "did not expect penalty for %s", host)
+	}
+
+	// End-to-end ranking: repeated media/static URLs must lose to the first-party API host.
+	js := `
+		const a = "https://app-media.example-brand.test/logo.png";
+		const b = "https://app-media.example-brand.test/banner.png";
+		const c = "https://static.example-brand.test/bundle.js";
+		const d = "https://images.example-brand.test/hero.png";
+		fetch("https://client-api.example-brand.test/v1/status");
+	`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rank.js"), []byte(js), 0o644))
+	res, err := DiscoverDesktopApp(dir, Options{Name: "Example Brand"})
+	require.NoError(t, err)
+	assert.Equal(t, "https://client-api.example-brand.test", res.PrimaryBaseURL)
+}
