@@ -79,10 +79,14 @@ func TestLakeSyncSearchAndReadOnlySQL(t *testing.T) {
 		require.Error(t, err, "query should be rejected: %s", bad)
 	}
 
-	// Row budget caps unbounded recursive queries cleanly.
-	bounded, err := lk.QueryReadOnly(context.Background(), "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000) SELECT x FROM cnt")
+	// Row budget returns an explicit error instead of silently truncating results.
+	_, err = lk.QueryReadOnly(context.Background(), "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000) SELECT x FROM cnt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max row budget")
+
+	bounded, err := lk.QueryReadOnly(context.Background(), "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000) SELECT x FROM cnt LIMIT 10")
 	require.NoError(t, err)
-	assert.Len(t, bounded, DefaultSQLMaxRows)
+	assert.Len(t, bounded, 10)
 
 	st, err := lk.Stats(context.Background())
 	require.NoError(t, err)

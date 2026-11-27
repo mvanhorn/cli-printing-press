@@ -426,18 +426,14 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 	if err := registry.VerifyInstalledBinary(app, binPath); err != nil {
 		return nil, err
 	}
+	confirmMut := boolArg(arguments, "confirm_mutation")
 	argv := make([]string, 0, 8)
 	if trimmed := strings.TrimSpace(cmdName); trimmed != "" {
 		argv = append(argv, strings.Fields(trimmed)...)
 	}
 	if rawArgs, ok := arguments["args"].([]any); ok {
 		for _, a := range rawArgs {
-			s := fmt.Sprint(a)
-			// Never silently pass --yes unless confirm_mutation is explicitly true.
-			if (s == "--yes" || s == "-y") && !boolArg(arguments, "confirm_mutation") {
-				return nil, fmt.Errorf("mutating flag %q requires confirm_mutation=true", s)
-			}
-			argv = append(argv, s)
+			argv = append(argv, fmt.Sprint(a))
 		}
 	}
 	if pm, ok := arguments["params"].(map[string]any); ok {
@@ -447,13 +443,27 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			argv = append(argv, "--"+k, fmt.Sprint(pm[k]))
+			val := pm[k]
+			if b, isBool := val.(bool); isBool {
+				argv = append(argv, fmt.Sprintf("--%s=%t", k, b))
+			} else {
+				argv = append(argv, "--"+k, fmt.Sprint(val))
+			}
+		}
+	}
+	// Reject confirmation/mutation-bypass flags from ANY argument source
+	// (command, args, or params) unless confirm_mutation is explicitly true.
+	if !confirmMut {
+		for _, tok := range argv {
+			if isConfirmationFlagToken(tok) {
+				return nil, fmt.Errorf("mutating confirmation flag %q requires confirm_mutation=true", tok)
+			}
 		}
 	}
 	if boolArg(arguments, "dry_run") {
 		argv = append(argv, "--dry-run")
 	}
-	if boolArg(arguments, "confirm_mutation") {
+	if confirmMut {
 		argv = append(argv, "--yes")
 	}
 	if lim := intArg(arguments, "limit", 0); lim > 0 {
@@ -469,8 +479,10 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 
 	proc := exec.CommandContext(runCtx, binPath, argv...)
 	var stdout, stderr bytes.Buffer
-	proc.Stdout = &limitedBuffer{buf: &stdout, max: maxBinaryOutputBytes}
-	proc.Stderr = &limitedBuffer{buf: &stderr, max: maxBinaryOutputBytes}
+	outCap := &limitedBuffer{buf: &stdout, max: maxBinaryOutputBytes}
+	errCap := &limitedBuffer{buf: &stderr, max: maxBinaryOutputBytes}
+	proc.Stdout = outCap
+	proc.Stderr = errCap
 	err := proc.Run()
 	outText := strings.TrimSpace(stdout.String())
 	errText := strings.TrimSpace(stderr.String())
@@ -479,6 +491,9 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 			return nil, fmt.Errorf("%s failed: %v (%s)", app, err, errText)
 		}
 		return nil, fmt.Errorf("%s failed: %v", app, err)
+	}
+	if outCap.truncated {
+		return nil, fmt.Errorf("%s output exceeded %d KiB MCP budget; narrow the request with --limit or filters", app, maxBinaryOutputBytes/1024)
 	}
 	var decoded any
 	if json.Unmarshal([]byte(outText), &decoded) == nil {
@@ -495,17 +510,39 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 	}, nil
 }
 
+func isConfirmationFlagToken(tok string) bool {
+	s := strings.ToLower(strings.TrimSpace(tok))
+	if s == "" || !strings.HasPrefix(s, "-") {
+		return false
+	}
+	name, _, _ := strings.Cut(s, "=")
+	switch name {
+	case "--yes", "-y", "--force", "-f", "--confirm":
+		return true
+	}
+	// Combined POSIX short flags such as -yf or -fy.
+	if !strings.HasPrefix(name, "--") && len(name) > 2 && strings.ContainsAny(name[1:], "yf") {
+		return true
+	}
+	return false
+}
+
 type limitedBuffer struct {
-	buf *bytes.Buffer
-	max int
+	buf       *bytes.Buffer
+	max       int
+	truncated bool
 }
 
 func (l *limitedBuffer) Write(p []byte) (int, error) {
 	rem := l.max - l.buf.Len()
 	if rem <= 0 {
+		if len(p) > 0 {
+			l.truncated = true
+		}
 		return len(p), nil
 	}
 	if len(p) > rem {
+		l.truncated = true
 		_, _ = l.buf.Write(p[:rem])
 		return len(p), nil
 	}

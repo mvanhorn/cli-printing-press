@@ -345,7 +345,7 @@ func (l *Lake) QueryReadOnly(ctx context.Context, query string) ([]map[string]an
 	totalBytes := 0
 	for rows.Next() {
 		if len(out) >= DefaultSQLMaxRows {
-			break
+			return nil, fmt.Errorf("lake sql query exceeded max row budget (%d rows); add a LIMIT or WHERE clause", DefaultSQLMaxRows)
 		}
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -365,7 +365,7 @@ func (l *Lake) QueryReadOnly(ctx context.Context, query string) ([]map[string]an
 		}
 		if encoded, mErr := json.Marshal(row); mErr == nil {
 			if totalBytes+len(encoded) > DefaultSQLMaxBytes && len(out) > 0 {
-				break
+				return nil, fmt.Errorf("lake sql query exceeded max output budget (%d KiB); narrow columns or add LIMIT", DefaultSQLMaxBytes/1024)
 			}
 			totalBytes += len(encoded)
 		}

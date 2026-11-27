@@ -321,7 +321,7 @@ func newRunCmd() *cobra.Command {
 				fs.BoolVar(&asJSON, "json", false, "Output as JSON (auto-enabled when piped)")
 				fs.BoolVarP(&showHelp, "help", "h", false, "Show help")
 				if parseErr := fs.Parse(rest); parseErr != nil {
-					return &cartridge.ExecError{Code: cartridge.ExitUsage, Class: "usage", Message: parseErr.Error()}
+					return &cartridge.ExecError{Code: cartridge.ExitUsage, Class: cartridge.ClassUsage, Message: parseErr.Error()}
 				}
 				if showHelp {
 					return printRunUsage(cmd.OutOrStdout())
@@ -330,7 +330,7 @@ func newRunCmd() *cobra.Command {
 				if len(pos) < 1 {
 					return &cartridge.ExecError{
 						Code:    cartridge.ExitUsage,
-						Class:   "usage",
+						Class:   cartridge.ClassUsage,
 						Message: fmt.Sprintf("missing command for cartridge %q", app),
 						Hint:    fmt.Sprintf("run `pp info %s` to see available commands", app),
 					}
@@ -341,7 +341,7 @@ func newRunCmd() *cobra.Command {
 				for _, kv := range params {
 					k, v, ok := strings.Cut(kv, "=")
 					if !ok || strings.TrimSpace(k) == "" {
-						return &cartridge.ExecError{Code: cartridge.ExitUsage, Class: "usage", Message: fmt.Sprintf("invalid --param %q (expected key=value)", kv)}
+						return &cartridge.ExecError{Code: cartridge.ExitUsage, Class: cartridge.ClassUsage, Message: fmt.Sprintf("invalid --param %q (expected key=value)", kv)}
 					}
 					paramMap[strings.TrimSpace(k)] = v
 				}
@@ -392,7 +392,7 @@ func newRunCmd() *cobra.Command {
 
 			return &cartridge.ExecError{
 				Code:    cartridge.ExitNotFound,
-				Class:   "usage",
+				Class:   cartridge.ClassUsage,
 				Message: fmt.Sprintf("app %q is not installed", app),
 				Hint:    fmt.Sprintf("run `pp use %s` (zero Go) or `pp search %s`", app, app),
 			}
@@ -565,7 +565,7 @@ func newRecordCmd() *cobra.Command {
 			default:
 				return &cartridge.ExecError{
 					Code:    cartridge.ExitUsage,
-					Class:   "usage",
+					Class:   cartridge.ClassUsage,
 					Message: "provide a target URL (with --backend ardia), --from-har <file>, or --from-spec <file>",
 				}
 			}

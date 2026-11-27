@@ -14,17 +14,30 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/cartridge"
 )
 
+// DiagnosisClass is a typed categorical classification for `pp heal` results.
+type DiagnosisClass string
+
+const (
+	DiagHealthy         DiagnosisClass = "healthy"
+	DiagSkippedMutating DiagnosisClass = "skipped_mutating"
+	DiagAuthError       DiagnosisClass = DiagnosisClass(cartridge.ClassAuthError)
+	DiagRateLimited     DiagnosisClass = DiagnosisClass(cartridge.ClassRateLimited)
+	DiagUpstreamDrift   DiagnosisClass = "upstream_drift"
+	DiagSchemaDrift     DiagnosisClass = "schema_drift"
+	DiagUnknown         DiagnosisClass = "unknown"
+)
+
 // Diagnosis classifies why a cartridge command is failing based on journal
 // history and a live read-only probe.
 type Diagnosis struct {
-	Cartridge   string   `json:"cartridge"`
-	Command     string   `json:"command"`
-	Class       string   `json:"class"` // healthy, auth_error, rate_limited, upstream_drift, schema_drift, unknown
-	HTTPStatus  int      `json:"http_status,omitempty"`
-	Detail      string   `json:"detail"`
-	RecentFails int      `json:"recent_fails"`
-	NextAction  string   `json:"next_action"`
-	Hints       []string `json:"hints,omitempty"`
+	Cartridge   string         `json:"cartridge"`
+	Command     string         `json:"command"`
+	Class       DiagnosisClass `json:"class"`
+	HTTPStatus  int            `json:"http_status,omitempty"`
+	Detail      string         `json:"detail"`
+	RecentFails int            `json:"recent_fails"`
+	NextAction  string         `json:"next_action"`
+	Hints       []string       `json:"hints,omitempty"`
 }
 
 // PatchResult reports the outcome of applying a surgical cartridge heal patch.
@@ -61,7 +74,7 @@ func Diagnose(ctx context.Context, c *cartridge.Cartridge, cmdName string, journ
 	}
 
 	if c.IsMutating(cmdName) {
-		diag.Class = "skipped_mutating"
+		diag.Class = DiagSkippedMutating
 		diag.Detail = "command mutates remote state; live probe skipped for safety"
 		diag.NextAction = "supply a fresh HAR capture via `pp heal <app> <cmd> --from-har <file>`"
 		return diag, nil
@@ -71,7 +84,7 @@ func Diagnose(ctx context.Context, c *cartridge.Cartridge, cmdName string, journ
 	opts.ConfirmWrite = false
 	_, err := cartridge.Execute(ctx, c, cmdName, opts)
 	if err == nil {
-		diag.Class = "healthy"
+		diag.Class = DiagHealthy
 		diag.Detail = "live read-only probe succeeded"
 		diag.NextAction = "no heal required"
 		return diag, nil
@@ -81,27 +94,27 @@ func Diagnose(ctx context.Context, c *cartridge.Cartridge, cmdName string, journ
 		diag.HTTPStatus = ee.HTTPStatus
 		diag.Detail = ee.Message
 		switch ee.Class {
-		case "auth_error":
-			diag.Class = "auth_error"
+		case cartridge.ClassAuthError:
+			diag.Class = DiagAuthError
 			diag.NextAction = "refresh your browser session / agentcookie or API token (endpoint itself did not drift)"
-		case "rate_limited":
-			diag.Class = "rate_limited"
+		case cartridge.ClassRateLimited:
+			diag.Class = DiagRateLimited
 			diag.NextAction = "wait for rate-limit window to reset"
-		case "drift":
+		case cartridge.ClassDrift:
 			if strings.Contains(ee.Message, "extract path") {
-				diag.Class = "schema_drift"
+				diag.Class = DiagSchemaDrift
 			} else {
-				diag.Class = "upstream_drift"
+				diag.Class = DiagUpstreamDrift
 			}
 			diag.NextAction = fmt.Sprintf("re-sniff with `pp heal %s %s --backend ardia` or `--from-har <capture.har>`", c.Name, cmdName)
 		default:
-			diag.Class = "unknown"
+			diag.Class = DiagUnknown
 			diag.NextAction = fmt.Sprintf("inspect error and re-record with `pp heal %s %s --from-har <file>`", c.Name, cmdName)
 		}
 		return diag, nil
 	}
 
-	diag.Class = "unknown"
+	diag.Class = DiagUnknown
 	diag.Detail = err.Error()
 	diag.NextAction = "re-record endpoint via --backend ardia or --from-har"
 	return diag, nil

@@ -34,11 +34,24 @@ const (
 	ExitRateLimited = 7
 )
 
+// ErrorClass is a typed categorical classification for execution failures shared
+// across the cartridge runtime, CLI, and auto-heal diagnostics.
+type ErrorClass string
+
+const (
+	ClassAuthError   ErrorClass = "auth_error"
+	ClassRateLimited ErrorClass = "rate_limited"
+	ClassDrift       ErrorClass = "drift"
+	ClassBlocked     ErrorClass = "blocked"
+	ClassUsage       ErrorClass = "usage"
+	ClassError       ErrorClass = "error"
+)
+
 // ExecError carries a typed agent exit code and actionable hint.
 type ExecError struct {
 	Code       int
 	HTTPStatus int
-	Class      string // auth_error, rate_limited, drift, blocked, usage, error
+	Class      ErrorClass
 	Message    string
 	Hint       string
 }
@@ -82,18 +95,18 @@ type RunResult struct {
 // allowlists, mutation guards, dry-run semantics, field compaction, and journaling.
 func Execute(ctx context.Context, c *Cartridge, cmdName string, opts RunOptions) (*RunResult, error) {
 	if c == nil {
-		return nil, &ExecError{Code: ExitUsage, Class: "usage", Message: "cartridge is nil"}
+		return nil, &ExecError{Code: ExitUsage, Class: ClassUsage, Message: "cartridge is nil"}
 	}
 	if !opts.SkipLockVerify {
 		if err := verifyCartridgeExecutionPin(c, opts.StrictLock); err != nil {
-			return nil, &ExecError{Code: ExitAuth, Class: "blocked", Message: err.Error()}
+			return nil, &ExecError{Code: ExitAuth, Class: ClassBlocked, Message: err.Error()}
 		}
 	}
 	cmd, ok := c.Commands[cmdName]
 	if !ok {
 		return nil, &ExecError{
 			Code:    ExitNotFound,
-			Class:   "usage",
+			Class:   ClassUsage,
 			Message: fmt.Sprintf("unknown command %q on cartridge %q", cmdName, c.Name),
 			Hint:    fmt.Sprintf("run `pp info %s` to list available commands", c.Name),
 		}
@@ -101,13 +114,13 @@ func Execute(ctx context.Context, c *Cartridge, cmdName string, opts RunOptions)
 
 	resolvedParams, err := resolveParams(cmd, opts.Params)
 	if err != nil {
-		return nil, &ExecError{Code: ExitUsage, Class: "usage", Message: err.Error()}
+		return nil, &ExecError{Code: ExitUsage, Class: ClassUsage, Message: err.Error()}
 	}
 
 	if c.IsMutating(cmdName) && !opts.DryRun && !opts.ConfirmWrite {
 		return nil, &ExecError{
 			Code:    ExitUsage,
-			Class:   "blocked",
+			Class:   ClassBlocked,
 			Message: fmt.Sprintf("command %s.%s mutates state and requires --yes (or pass --dry-run to preview)", c.Name, cmdName),
 		}
 	}
@@ -142,16 +155,16 @@ func Execute(ctx context.Context, c *Cartridge, cmdName string, opts RunOptions)
 		data, execErr = executeOSAutomation(runCtx, cmd, resolvedParams, opts)
 		authSource = "os-automation"
 	default:
-		execErr = &ExecError{Code: ExitUsage, Class: "usage", Message: fmt.Sprintf("unsupported driver %q", driver)}
+		execErr = &ExecError{Code: ExitUsage, Class: ClassUsage, Message: fmt.Sprintf("unsupported driver %q", driver)}
 	}
 
 	latencyMS := time.Since(start).Milliseconds()
 
 	if execErr != nil {
-		status := "error"
+		status := string(ClassError)
 		if ee, ok := errors.AsType[*ExecError](execErr); ok {
 			if ee.Class != "" {
-				status = ee.Class
+				status = string(ee.Class)
 			}
 			if ee.HTTPStatus != 0 {
 				httpStatus = ee.HTTPStatus
@@ -177,7 +190,7 @@ func Execute(ctx context.Context, c *Cartridge, cmdName string, opts RunOptions)
 				driftErr := &ExecError{
 					Code:       ExitAPI,
 					HTTPStatus: httpStatus,
-					Class:      "drift",
+					Class:      ClassDrift,
 					Message:    fmt.Sprintf("extract path %q matched nothing in response from %s.%s", cmd.Extract, c.Name, cmdName),
 					Hint:       fmt.Sprintf("upstream response shape may have changed; run `pp heal %s %s`", c.Name, cmdName),
 				}
@@ -268,12 +281,12 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 	rawURL := renderTemplate(cmd.URL, params, true)
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil || parsedURL.Hostname() == "" {
-		return nil, 0, "", &ExecError{Code: ExitUsage, Class: "usage", Message: fmt.Sprintf("invalid rendered url %q", rawURL)}
+		return nil, 0, "", &ExecError{Code: ExitUsage, Class: ClassUsage, Message: fmt.Sprintf("invalid rendered url %q", rawURL)}
 	}
 	if !c.HostAllowed(parsedURL.Hostname()) {
 		return nil, 0, "", &ExecError{
 			Code:    ExitUsage,
-			Class:   "blocked",
+			Class:   ClassBlocked,
 			Message: fmt.Sprintf("outbound host %q blocked by trust.allowed_hosts (%v)", parsedURL.Hostname(), c.Trust.AllowedHosts),
 		}
 	}
@@ -362,7 +375,7 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 	if authErr != nil {
 		return nil, 0, "", &ExecError{
 			Code:    ExitAuth,
-			Class:   "auth_error",
+			Class:   ClassAuthError,
 			Message: authErr.Error(),
 		}
 	}
@@ -390,14 +403,14 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, authRes.Source, &ExecError{Code: ExitAPI, Class: "error", Message: fmt.Sprintf("request failed: %v", err)}
+		return nil, 0, authRes.Source, &ExecError{Code: ExitAPI, Class: ClassError, Message: fmt.Sprintf("request failed: %v", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	const maxBodyBytes = 16 << 20
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		return nil, resp.StatusCode, authRes.Source, &ExecError{Code: ExitAPI, HTTPStatus: resp.StatusCode, Class: "error", Message: fmt.Sprintf("reading response: %v", err)}
+		return nil, resp.StatusCode, authRes.Source, &ExecError{Code: ExitAPI, HTTPStatus: resp.StatusCode, Class: ClassError, Message: fmt.Sprintf("reading response: %v", err)}
 	}
 
 	switch {
@@ -405,7 +418,7 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 		return nil, resp.StatusCode, authRes.Source, &ExecError{
 			Code:       ExitAuth,
 			HTTPStatus: resp.StatusCode,
-			Class:      "auth_error",
+			Class:      ClassAuthError,
 			Message:    fmt.Sprintf("HTTP %d authentication/authorization failure from %s", resp.StatusCode, parsedURL.Hostname()),
 			Hint:       "refresh your browser session / agentcookie or update your token",
 		}
@@ -413,14 +426,14 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 		return nil, resp.StatusCode, authRes.Source, &ExecError{
 			Code:       ExitRateLimited,
 			HTTPStatus: resp.StatusCode,
-			Class:      "rate_limited",
+			Class:      ClassRateLimited,
 			Message:    fmt.Sprintf("HTTP 429 rate limited by %s", parsedURL.Hostname()),
 		}
 	case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
 		return nil, resp.StatusCode, authRes.Source, &ExecError{
 			Code:       ExitNotFound,
 			HTTPStatus: resp.StatusCode,
-			Class:      "drift",
+			Class:      ClassDrift,
 			Message:    fmt.Sprintf("HTTP %d from %s%s", resp.StatusCode, parsedURL.Hostname(), parsedURL.Path),
 			Hint:       fmt.Sprintf("endpoint may have moved; run `pp heal %s`", c.Name),
 		}
@@ -428,7 +441,7 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 		return nil, resp.StatusCode, authRes.Source, &ExecError{
 			Code:       ExitAPI,
 			HTTPStatus: resp.StatusCode,
-			Class:      "drift",
+			Class:      ClassDrift,
 			Message:    fmt.Sprintf("HTTP %d from %s: %s", resp.StatusCode, parsedURL.Hostname(), truncate(string(rawResp), 220)),
 		}
 	}
@@ -443,13 +456,13 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 func executeLocalSQLite(ctx context.Context, cmd CommandSpec, params map[string]string, opts RunOptions) (any, error) {
 	resolvedPath, err := expandLocalPath(renderTemplate(cmd.DBPath, params, false))
 	if err != nil {
-		return nil, &ExecError{Code: ExitNotFound, Class: "error", Message: err.Error()}
+		return nil, &ExecError{Code: ExitNotFound, Class: ClassError, Message: err.Error()}
 	}
 	if opts.DryRun {
 		return map[string]any{"driver": DriverLocalSQLite, "db_path": resolvedPath, "sql": cmd.SQL}, nil
 	}
 	if _, err := os.Stat(resolvedPath); err != nil {
-		return nil, &ExecError{Code: ExitNotFound, Class: "error", Message: fmt.Sprintf("local database not found: %s", resolvedPath)}
+		return nil, &ExecError{Code: ExitNotFound, Class: ClassError, Message: fmt.Sprintf("local database not found: %s", resolvedPath)}
 	}
 
 	// Copy DB + WAL/SHM into an isolated temp directory so we never lock a live app.
@@ -479,7 +492,7 @@ func executeLocalSQLite(ctx context.Context, cmd CommandSpec, params map[string]
 
 	sqlText := strings.TrimSpace(cmd.SQL)
 	if err := ValidateReadOnlySQL(sqlText); err != nil {
-		return nil, &ExecError{Code: ExitUsage, Class: "blocked", Message: err.Error()}
+		return nil, &ExecError{Code: ExitUsage, Class: ClassBlocked, Message: err.Error()}
 	}
 
 	// Bind optional :param placeholders cleanly via named SQL args.
@@ -489,7 +502,7 @@ func executeLocalSQLite(ctx context.Context, cmd CommandSpec, params map[string]
 	}
 	rows, err := db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
-		return nil, &ExecError{Code: ExitAPI, Class: "error", Message: fmt.Sprintf("sqlite query failed: %v", err)}
+		return nil, &ExecError{Code: ExitAPI, Class: ClassError, Message: fmt.Sprintf("sqlite query failed: %v", err)}
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -537,7 +550,7 @@ func executeLocalFiles(cmd CommandSpec, params map[string]string, opts RunOption
 	}
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, &ExecError{Code: ExitUsage, Class: "usage", Message: fmt.Sprintf("invalid glob %q: %v", pattern, err)}
+		return nil, &ExecError{Code: ExitUsage, Class: ClassUsage, Message: fmt.Sprintf("invalid glob %q: %v", pattern, err)}
 	}
 	slices.Sort(matches)
 	query := strings.ToLower(strings.TrimSpace(params["query"]))
@@ -587,7 +600,7 @@ func executeLocalFiles(cmd CommandSpec, params map[string]string, opts RunOption
 
 func executeOSAutomation(ctx context.Context, cmd CommandSpec, params map[string]string, opts RunOptions) (any, error) {
 	if runtime.GOOS != "darwin" {
-		return nil, &ExecError{Code: ExitUsage, Class: "usage", Message: "os-automation driver requires macOS"}
+		return nil, &ExecError{Code: ExitUsage, Class: ClassUsage, Message: "os-automation driver requires macOS"}
 	}
 	// Never interpolate parameter values into script source text; pass them as
 	// argv arguments (in sorted key order) and PP_PARAM_<KEY> env vars so
@@ -627,7 +640,7 @@ func executeOSAutomation(ctx context.Context, cmd CommandSpec, params map[string
 	c.Env = env
 	out, err := c.CombinedOutput()
 	if err != nil {
-		return nil, &ExecError{Code: ExitAPI, Class: "error", Message: fmt.Sprintf("osascript failed: %v (%s)", err, truncate(string(out), 200))}
+		return nil, &ExecError{Code: ExitAPI, Class: ClassError, Message: fmt.Sprintf("osascript failed: %v (%s)", err, truncate(string(out), 200))}
 	}
 	trimmed := strings.TrimSpace(string(out))
 	var parsed any

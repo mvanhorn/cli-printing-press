@@ -54,7 +54,7 @@ func TestDiagnoseAndApplySurgicalPatch(t *testing.T) {
 
 	diag, err := Diagnose(context.Background(), broken, "list", nil, cartridge.RunOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, "upstream_drift", diag.Class)
+	assert.Equal(t, DiagUpstreamDrift, diag.Class)
 	assert.Equal(t, 404, diag.HTTPStatus)
 
 	fresh := &cartridge.Cartridge{
@@ -85,7 +85,7 @@ func TestDiagnoseAndApplySurgicalPatch(t *testing.T) {
 	require.NoError(t, err)
 	diagAfter, err := Diagnose(context.Background(), healed, "list", nil, cartridge.RunOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, "healthy", diagAfter.Class)
+	assert.Equal(t, DiagHealthy, diagAfter.Class)
 
 	prBody, err := os.ReadFile(filepath.Join(prDir, "PR_BODY.md"))
 	require.NoError(t, err)
