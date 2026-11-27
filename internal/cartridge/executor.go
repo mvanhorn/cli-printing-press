@@ -52,15 +52,17 @@ func (e *ExecError) Error() string {
 
 // RunOptions configures a single cartridge command invocation.
 type RunOptions struct {
-	Params       map[string]string
-	Compact      bool
-	SelectFields []string
-	Limit        int
-	DryRun       bool
-	ConfirmWrite bool
-	Timeout      time.Duration
-	HTTPClient   *http.Client
-	Journal      *Journal
+	Params         map[string]string
+	Compact        bool
+	SelectFields   []string
+	Limit          int
+	DryRun         bool
+	ConfirmWrite   bool
+	StrictLock     bool
+	SkipLockVerify bool
+	Timeout        time.Duration
+	HTTPClient     *http.Client
+	Journal        *Journal
 }
 
 // RunResult is the structured execution result returned by Execute.
@@ -81,6 +83,11 @@ type RunResult struct {
 func Execute(ctx context.Context, c *Cartridge, cmdName string, opts RunOptions) (*RunResult, error) {
 	if c == nil {
 		return nil, &ExecError{Code: ExitUsage, Class: "usage", Message: "cartridge is nil"}
+	}
+	if !opts.SkipLockVerify {
+		if err := verifyCartridgeExecutionPin(c, opts.StrictLock); err != nil {
+			return nil, &ExecError{Code: ExitAuth, Class: "blocked", Message: err.Error()}
+		}
 	}
 	cmd, ok := c.Commands[cmdName]
 	if !ok {
@@ -349,6 +356,7 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 		Prefix:             c.Auth.Prefix,
 		QueryParam:         c.Auth.QueryParam,
 		Domains:            c.Auth.Domains,
+		TargetURL:          parsedURL.String(),
 		AgentCookieAdapter: c.Auth.AgentCookieAdapter,
 	})
 	if authErr != nil {
@@ -370,6 +378,10 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 				}
 				if !c.HostAllowed(next.URL.Hostname()) {
 					return fmt.Errorf("redirect to disallowed host %q blocked by trust.allowed_hosts", next.URL.Hostname())
+				}
+				if len(via) > 0 && !strings.EqualFold(via[len(via)-1].URL.Hostname(), next.URL.Hostname()) {
+					next.Header.Del("Cookie")
+					next.Header.Del("Authorization")
 				}
 				return nil
 			},
@@ -466,8 +478,8 @@ func executeLocalSQLite(ctx context.Context, cmd CommandSpec, params map[string]
 	}
 
 	sqlText := strings.TrimSpace(cmd.SQL)
-	if !isReadOnlySQL(sqlText) {
-		return nil, &ExecError{Code: ExitUsage, Class: "blocked", Message: "local-sqlite cartridges only permit read-only SELECT/WITH/PRAGMA queries"}
+	if err := ValidateReadOnlySQL(sqlText); err != nil {
+		return nil, &ExecError{Code: ExitUsage, Class: "blocked", Message: err.Error()}
 	}
 
 	// Bind optional :param placeholders cleanly via named SQL args.
@@ -577,15 +589,42 @@ func executeOSAutomation(ctx context.Context, cmd CommandSpec, params map[string
 	if runtime.GOOS != "darwin" {
 		return nil, &ExecError{Code: ExitUsage, Class: "usage", Message: "os-automation driver requires macOS"}
 	}
-	script := renderTemplate(cmd.OSScript, params, false)
+	// Never interpolate parameter values into script source text; pass them as
+	// argv arguments (in sorted key order) and PP_PARAM_<KEY> env vars so
+	// untrusted parameter values cannot break out into executable script code.
+	script := cmd.OSScript
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	scriptArgs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		scriptArgs = append(scriptArgs, params[k])
+	}
 	if opts.DryRun {
-		return map[string]any{"driver": DriverOSAutomation, "engine": cmd.OSEngine, "script": script}, nil
+		return map[string]any{
+			"driver": DriverOSAutomation,
+			"engine": cmd.OSEngine,
+			"script": script,
+			"argv":   scriptArgs,
+		}, nil
 	}
 	args := []string{"-e", script}
 	if strings.EqualFold(strings.TrimSpace(cmd.OSEngine), "jxa") {
 		args = []string{"-l", "JavaScript", "-e", script}
 	}
+	if len(scriptArgs) > 0 {
+		args = append(args, "--")
+		args = append(args, scriptArgs...)
+	}
 	c := exec.CommandContext(ctx, "osascript", args...)
+	env := os.Environ()
+	for _, k := range keys {
+		envName := "PP_PARAM_" + strings.ToUpper(strings.ReplaceAll(k, "-", "_"))
+		env = append(env, envName+"="+params[k])
+	}
+	c.Env = env
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return nil, &ExecError{Code: ExitAPI, Class: "error", Message: fmt.Sprintf("osascript failed: %v (%s)", err, truncate(string(out), 200))}
@@ -598,14 +637,163 @@ func executeOSAutomation(ctx context.Context, cmd CommandSpec, params map[string
 	return map[string]any{"output": trimmed}, nil
 }
 
-// isReadOnlySQL enforces a strict read-only prefix check in addition to PRAGMA query_only.
-func isReadOnlySQL(q string) bool {
-	upper := strings.ToUpper(strings.TrimSpace(q))
-	return strings.HasPrefix(upper, "SELECT ") ||
-		strings.HasPrefix(upper, "SELECT\n") ||
-		strings.HasPrefix(upper, "WITH ") ||
-		strings.HasPrefix(upper, "WITH\n") ||
-		strings.HasPrefix(upper, "PRAGMA ")
+func verifyCartridgeExecutionPin(c *Cartridge, strict bool) error {
+	isBuiltin := strings.HasPrefix(c.Source, "builtin:")
+	if isBuiltin && !strict {
+		return nil
+	}
+	// Check whether this cartridge is installed under CartridgesDir or strict mode is requested.
+	shouldVerify := strict
+	if !shouldVerify && c.Source != "" && !isBuiltin {
+		if dir, err := CartridgesDir(); err == nil {
+			cleanDir := filepath.Clean(dir) + string(filepath.Separator)
+			cleanSrc := filepath.Clean(c.Source)
+			if strings.HasPrefix(cleanSrc, cleanDir) {
+				shouldVerify = true
+			}
+		}
+	}
+	if !shouldVerify {
+		return nil
+	}
+	lockPath, err := LockfilePath()
+	if err != nil {
+		return fmt.Errorf("resolving lockfile path: %w", err)
+	}
+	lf, err := LoadLockfile(lockPath)
+	if err != nil {
+		return fmt.Errorf("lockfile verification failed: %w", err)
+	}
+	return lf.VerifyCartridge(c, strict)
+}
+
+// ValidateReadOnlySQL enforces a single read-only SELECT or WITH statement after
+// stripping leading whitespace, SQL comments (-- and /* */), and leading
+// statement separators, and rejecting any trailing statement or PRAGMA.
+func ValidateReadOnlySQL(query string) error {
+	stripped := stripLeadingSQLNoise(query)
+	if stripped == "" {
+		return errors.New("SQL query is empty")
+	}
+	if hasTrailingSQLStatement(stripped) {
+		return errors.New("only a single SELECT or WITH statement is allowed")
+	}
+	upper := strings.ToUpper(stripped)
+	startsWithKeyword := func(kw string) bool {
+		if !strings.HasPrefix(upper, kw) {
+			return false
+		}
+		if len(upper) == len(kw) {
+			return false
+		}
+		next := upper[len(kw)]
+		return next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '('
+	}
+	if !startsWithKeyword("SELECT") && !startsWithKeyword("WITH") {
+		return errors.New("only single read-only SELECT or WITH queries are allowed (PRAGMA and write statements are rejected)")
+	}
+	return nil
+}
+
+func stripLeadingSQLNoise(query string) string {
+	for {
+		query = strings.TrimLeft(query, " \t\r\n;")
+		switch {
+		case strings.HasPrefix(query, "--"):
+			if idx := strings.IndexByte(query, '\n'); idx >= 0 {
+				query = query[idx+1:]
+				continue
+			}
+			return ""
+		case strings.HasPrefix(query, "/*"):
+			if idx := strings.Index(query[2:], "*/"); idx >= 0 {
+				query = query[2+idx+2:]
+				continue
+			}
+			return ""
+		default:
+			return query
+		}
+	}
+}
+
+func hasTrailingSQLStatement(query string) bool {
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	inBracket := false
+	inLineComment := false
+	inBlockComment := false
+
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		next := byte(0)
+		if i+1 < len(query) {
+			next = query[i+1]
+		}
+		switch {
+		case inLineComment:
+			if ch == '\n' {
+				inLineComment = false
+			}
+		case inBlockComment:
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				i++
+			}
+		case inSingle:
+			if ch == '\'' {
+				if next == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+		case inDouble:
+			if ch == '"' {
+				if next == '"' {
+					i++
+					continue
+				}
+				inDouble = false
+			}
+		case inBacktick:
+			if ch == '`' {
+				if next == '`' {
+					i++
+					continue
+				}
+				inBacktick = false
+			}
+		case inBracket:
+			if ch == ']' {
+				inBracket = false
+			}
+		default:
+			switch {
+			case ch == '-' && next == '-':
+				inLineComment = true
+				i++
+			case ch == '/' && next == '*':
+				inBlockComment = true
+				i++
+			case ch == '\'':
+				inSingle = true
+			case ch == '"':
+				inDouble = true
+			case ch == '`':
+				inBacktick = true
+			case ch == '[':
+				inBracket = true
+			case ch == ';':
+				rest := stripLeadingSQLNoise(query[i+1:])
+				if rest != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func expandTilde(p string) (string, error) {

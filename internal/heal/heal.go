@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/cartridge"
@@ -115,33 +118,74 @@ func ApplySurgicalPatch(target, fresh *cartridge.Cartridge, cmdName string, prBu
 	if !ok {
 		return nil, fmt.Errorf("command %q not found in target cartridge %q", cmdName, target.Name)
 	}
-	newCmd, ok := matchFreshCommand(fresh, cmdName)
-	if !ok {
-		return nil, fmt.Errorf("no replacement command found in fresh capture for %q", cmdName)
+	newCmd, err := matchFreshCommand(fresh, cmdName, oldCmd)
+	if err != nil {
+		return nil, err
+	}
+
+	wasMutating := target.IsMutating(cmdName)
+	newMethod := strings.ToUpper(strings.TrimSpace(newCmd.Method))
+	if newMethod == "" {
+		newMethod = strings.ToUpper(strings.TrimSpace(oldCmd.Method))
+	}
+	becomesMutating := newCmd.Mutates || isMutatingHTTPMethod(newMethod)
+	if !wasMutating && becomesMutating {
+		return nil, fmt.Errorf("refusing to heal read-only command %q into mutating %s request; inspect capture and update cartridge manually", cmdName, newMethod)
+	}
+
+	// Validate host boundary for the specific replacement command only.
+	var newHost string
+	if newCmd.URL != "" {
+		parsedNew, parseErr := url.Parse(newCmd.URL)
+		if parseErr != nil || parsedNew.Hostname() == "" {
+			return nil, fmt.Errorf("replacement command URL %q is invalid", newCmd.URL)
+		}
+		newHost = strings.ToLower(parsedNew.Hostname())
+		if !target.HostAllowed(newHost) {
+			authStrat := strings.ToLower(strings.TrimSpace(target.Auth.Strategy))
+			if authStrat != "" && authStrat != cartridge.AuthStrategyNone {
+				return nil, fmt.Errorf("refusing to move authenticated command %q to unpinned host %q; update trust.allowed_hosts manually after review", cmdName, newHost)
+			}
+		}
 	}
 
 	var changes []string
+	var scrubbedChanges []string
 	if newCmd.URL != "" && newCmd.URL != oldCmd.URL {
 		changes = append(changes, fmt.Sprintf("url: %s -> %s", oldCmd.URL, newCmd.URL))
+		scrubbedChanges = append(scrubbedChanges, fmt.Sprintf("url: %s -> %s", scrubURLSecrets(oldCmd.URL), scrubURLSecrets(newCmd.URL)))
 		oldCmd.URL = newCmd.URL
 	}
 	if newCmd.Method != "" && !strings.EqualFold(newCmd.Method, oldCmd.Method) {
-		changes = append(changes, fmt.Sprintf("method: %s -> %s", oldCmd.Method, newCmd.Method))
-		oldCmd.Method = newCmd.Method
+		changes = append(changes, fmt.Sprintf("method: %s -> %s", oldCmd.Method, newMethod))
+		scrubbedChanges = append(scrubbedChanges, fmt.Sprintf("method: %s -> %s", oldCmd.Method, newMethod))
+		oldCmd.Method = newMethod
+	}
+	if becomesMutating {
+		if !oldCmd.Mutates {
+			oldCmd.Mutates = true
+			changes = append(changes, "mutates: false -> true")
+			scrubbedChanges = append(scrubbedChanges, "mutates: false -> true")
+		}
+		if !slices.Contains(target.Trust.Mutates, cmdName) {
+			target.Trust.Mutates = append(target.Trust.Mutates, cmdName)
+		}
+		target.Trust.ReadOnly = false
 	}
 	if newCmd.PersistedQuery != "" && newCmd.PersistedQuery != oldCmd.PersistedQuery {
 		changes = append(changes, fmt.Sprintf("persisted_query: %s -> %s", oldCmd.PersistedQuery, newCmd.PersistedQuery))
+		scrubbedChanges = append(scrubbedChanges, fmt.Sprintf("persisted_query: %s -> %s", oldCmd.PersistedQuery, newCmd.PersistedQuery))
 		oldCmd.PersistedQuery = newCmd.PersistedQuery
 	}
 	if newCmd.Extract != "" && newCmd.Extract != oldCmd.Extract {
 		changes = append(changes, fmt.Sprintf("extract: %s -> %s", oldCmd.Extract, newCmd.Extract))
+		scrubbedChanges = append(scrubbedChanges, fmt.Sprintf("extract: %s -> %s", oldCmd.Extract, newCmd.Extract))
 		oldCmd.Extract = newCmd.Extract
 	}
-	for _, host := range fresh.Trust.AllowedHosts {
-		if !target.HostAllowed(host) {
-			target.Trust.AllowedHosts = append(target.Trust.AllowedHosts, host)
-			changes = append(changes, fmt.Sprintf("trust.allowed_hosts: +%s", host))
-		}
+	if newHost != "" && !target.HostAllowed(newHost) {
+		target.Trust.AllowedHosts = append(target.Trust.AllowedHosts, newHost)
+		changes = append(changes, fmt.Sprintf("trust.allowed_hosts: +%s", newHost))
+		scrubbedChanges = append(scrubbedChanges, fmt.Sprintf("trust.allowed_hosts: +%s", newHost))
 	}
 
 	if len(changes) == 0 {
@@ -171,7 +215,7 @@ func ApplySurgicalPatch(target, fresh *cartridge.Cartridge, cmdName string, prBu
 	}
 
 	if prBundleDir != "" {
-		if err := writePRBundle(prBundleDir, updated, raw, changes); err != nil {
+		if err := writePRBundle(prBundleDir, updated, scrubbedChanges); err != nil {
 			return nil, err
 		}
 		res.PRBundleDir = prBundleDir
@@ -179,34 +223,162 @@ func ApplySurgicalPatch(target, fresh *cartridge.Cartridge, cmdName string, prBu
 	return res, nil
 }
 
-func matchFreshCommand(fresh *cartridge.Cartridge, cmdName string) (cartridge.CommandSpec, bool) {
-	if cmd, ok := fresh.Commands[cmdName]; ok {
-		return cmd, true
+func isMutatingHTTPMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return true
+	default:
+		return false
 	}
-	for name, cmd := range fresh.Commands {
-		if strings.Contains(strings.ToLower(name), strings.ToLower(cmdName)) {
-			return cmd, true
-		}
-	}
-	for _, cmd := range fresh.Commands {
-		return cmd, true
-	}
-	return cartridge.CommandSpec{}, false
 }
 
-func writePRBundle(dir string, c *cartridge.Cartridge, yamlBytes []byte, changes []string) error {
+// matchFreshCommand finds an exact or unique unambiguous replacement command in
+// the fresh capture. Missing or ambiguous captures fail closed rather than
+// picking an unrelated endpoint.
+func matchFreshCommand(fresh *cartridge.Cartridge, cmdName string, oldCmd cartridge.CommandSpec) (cartridge.CommandSpec, error) {
+	if cmd, ok := fresh.Commands[cmdName]; ok {
+		return cmd, nil
+	}
+	lowerTarget := strings.ToLower(strings.TrimSpace(cmdName))
+	var matches []string
+	for name := range fresh.Commands {
+		if strings.Contains(strings.ToLower(name), lowerTarget) {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) == 1 {
+		return fresh.Commands[matches[0]], nil
+	}
+	if len(matches) > 1 {
+		sort.Strings(matches)
+		return cartridge.CommandSpec{}, fmt.Errorf("ambiguous fresh capture for %q (matched commands: %v)", cmdName, matches)
+	}
+	// If the fresh capture contains exactly one command on the same host as the
+	// target command, treat it as an unambiguous single-endpoint re-recording.
+	if len(fresh.Commands) == 1 && oldCmd.URL != "" {
+		oldParsed, err1 := url.Parse(oldCmd.URL)
+		for _, cmd := range fresh.Commands {
+			newParsed, err2 := url.Parse(cmd.URL)
+			if err1 == nil && err2 == nil && strings.EqualFold(oldParsed.Hostname(), newParsed.Hostname()) {
+				return cmd, nil
+			}
+		}
+	}
+	return cartridge.CommandSpec{}, fmt.Errorf("no matching command found in fresh capture for %q", cmdName)
+}
+
+func writePRBundle(dir string, c *cartridge.Cartridge, scrubbedChanges []string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cartridge.yaml"), yamlBytes, 0o600); err != nil {
+	scrubbed, err := scrubCartridgeForExport(c)
+	if err != nil {
+		return err
+	}
+	scrubbedYAML, err := scrubbed.MarshalYAML()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cartridge.yaml"), scrubbedYAML, 0o600); err != nil {
 		return err
 	}
 	var md strings.Builder
 	fmt.Fprintf(&md, "# Auto-Heal Patch: %s\n\n", c.Name)
 	fmt.Fprintf(&md, "SHA-256: `%s`\n\n## Changes\n", c.SHA256)
-	for _, ch := range changes {
+	for _, ch := range scrubbedChanges {
 		fmt.Fprintf(&md, "- %s\n", ch)
 	}
-	fmt.Fprintf(&md, "\nGenerated by `pp heal` (PII and session headers excluded).\n")
+	fmt.Fprintf(&md, "\nGenerated by `pp heal` (secret headers and credential query parameters scrubbed).\n")
 	return os.WriteFile(filepath.Join(dir, "PR_BODY.md"), []byte(md.String()), 0o600)
+}
+
+// scrubCartridgeForExport produces a clean deep copy of c with sensitive
+// headers and credential-bearing URL components stripped before sharing.
+func scrubCartridgeForExport(c *cartridge.Cartridge) (*cartridge.Cartridge, error) {
+	raw, err := c.MarshalYAML()
+	if err != nil {
+		return nil, err
+	}
+	clone, err := cartridge.Parse(raw, "export:"+c.Name)
+	if err != nil {
+		return nil, err
+	}
+	for name, cmd := range clone.Commands {
+		if cmd.URL != "" {
+			cmd.URL = scrubURLSecrets(cmd.URL)
+		}
+		if len(cmd.Headers) > 0 {
+			cleanHeaders := make(map[string]string)
+			for k, v := range cmd.Headers {
+				if isSensitiveHeader(k) {
+					continue
+				}
+				cleanHeaders[k] = v
+			}
+			cmd.Headers = cleanHeaders
+		}
+		clone.Commands[name] = cmd
+	}
+	return clone, nil
+}
+
+func isSensitiveHeader(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	sensitiveTokens := []string{
+		"authorization",
+		"cookie",
+		"token",
+		"secret",
+		"api-key",
+		"apikey",
+		"session",
+		"csrf",
+		"xsrf",
+		"auth",
+		"credential",
+		"password",
+		"x-key",
+	}
+	for _, tok := range sensitiveTokens {
+		if strings.Contains(lower, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+func scrubURLSecrets(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if u.User != nil {
+		u.User = nil
+	}
+	q := u.Query()
+	changed := false
+	for k := range q {
+		lk := strings.ToLower(k)
+		if isSensitiveQueryParam(lk) {
+			q.Set(k, "REDACTED")
+			changed = true
+		}
+	}
+	if changed {
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
+func isSensitiveQueryParam(lowerKey string) bool {
+	sensitive := []string{
+		"key", "api_key", "apikey", "token", "access_token", "refresh_token",
+		"secret", "auth", "sig", "signature", "password", "passwd", "session", "jwt",
+	}
+	for _, s := range sensitive {
+		if lowerKey == s || strings.HasSuffix(lowerKey, "_"+s) || strings.HasPrefix(lowerKey, s+"_") {
+			return true
+		}
+	}
+	return false
 }

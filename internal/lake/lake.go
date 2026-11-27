@@ -301,23 +301,37 @@ WHERE lake_items_fts MATCH ?`
 	return items, rows.Err()
 }
 
-// QueryReadOnly runs a strictly read-only SQL query against the Life Lake.
+const (
+	// DefaultSQLTimeout bounds read-only Life Lake SQL queries so recursive
+	// CTEs or heavy joins cannot stall the CLI or single-threaded stdio MCP.
+	DefaultSQLTimeout = 5 * time.Second
+	// DefaultSQLMaxRows caps rows materialized in memory per lake SQL query.
+	DefaultSQLMaxRows = 500
+	// DefaultSQLMaxBytes caps total serialized JSON bytes per lake SQL query.
+	DefaultSQLMaxBytes = 512 * 1024
+)
+
+// QueryReadOnly runs a strictly read-only, single-statement SQL query against
+// the Life Lake with bounded execution time, row count, and byte budget.
 func (l *Lake) QueryReadOnly(ctx context.Context, query string) ([]map[string]any, error) {
-	upper := strings.ToUpper(strings.TrimSpace(query))
-	if !strings.HasPrefix(upper, "SELECT ") && !strings.HasPrefix(upper, "SELECT\n") &&
-		!strings.HasPrefix(upper, "WITH ") && !strings.HasPrefix(upper, "WITH\n") &&
-		!strings.HasPrefix(upper, "PRAGMA ") {
-		return nil, fmt.Errorf("lake sql is strictly read-only (SELECT/WITH/PRAGMA only)")
+	if err := cartridge.ValidateReadOnlySQL(query); err != nil {
+		return nil, fmt.Errorf("lake sql rejected: %w", err)
+	}
+	runCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, DefaultSQLTimeout)
+		defer cancel()
 	}
 	roDB, err := sql.Open("sqlite", l.path+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = roDB.Close() }()
-	if _, err := roDB.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+	if _, err := roDB.ExecContext(runCtx, "PRAGMA query_only = ON"); err != nil {
 		return nil, err
 	}
-	rows, err := roDB.QueryContext(ctx, query)
+	rows, err := roDB.QueryContext(runCtx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +342,11 @@ func (l *Lake) QueryReadOnly(ctx context.Context, query string) ([]map[string]an
 		return nil, err
 	}
 	out := make([]map[string]any, 0)
+	totalBytes := 0
 	for rows.Next() {
+		if len(out) >= DefaultSQLMaxRows {
+			break
+		}
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
 		for i := range cols {
@@ -344,6 +362,12 @@ func (l *Lake) QueryReadOnly(ctx context.Context, query string) ([]map[string]an
 			} else {
 				row[c] = vals[i]
 			}
+		}
+		if encoded, mErr := json.Marshal(row); mErr == nil {
+			if totalBytes+len(encoded) > DefaultSQLMaxBytes && len(out) > 0 {
+				break
+			}
+			totalBytes += len(encoded)
 		}
 		out = append(out, row)
 	}

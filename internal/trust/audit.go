@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -201,8 +203,7 @@ func auditMCPConfigFile(rep *Report, path string) {
 			continue
 		}
 		if rawURL, hasURL := srv["url"].(string); hasURL && rawURL != "" {
-			lower := strings.ToLower(rawURL)
-			if !strings.Contains(lower, "127.0.0.1") && !strings.Contains(lower, "localhost") && !strings.Contains(lower, "[::1]") {
+			if !isLoopbackURL(rawURL) {
 				rep.add(Finding{
 					Severity: SeverityWarning,
 					Code:     "unpinned_remote_mcp",
@@ -247,4 +248,22 @@ func computeGrade(critical, warning int) string {
 	default:
 		return "C"
 	}
+}
+
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

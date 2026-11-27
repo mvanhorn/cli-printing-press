@@ -68,10 +68,21 @@ func TestLakeSyncSearchAndReadOnlySQL(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "Seattle to Tokyo Nonstop", rows[0]["title"])
 
-	// Mutating SQL must be rejected.
-	_, err = lk.QueryReadOnly(context.Background(), "DELETE FROM lake_items")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read-only")
+	// Mutating, PRAGMA, comment-obfuscated, and multi-statement SQL must be rejected.
+	for _, bad := range []string{
+		"DELETE FROM lake_items",
+		"PRAGMA query_only = OFF",
+		"/* bypass */ DELETE FROM lake_items",
+		"SELECT 1; DROP TABLE lake_items",
+	} {
+		_, err = lk.QueryReadOnly(context.Background(), bad)
+		require.Error(t, err, "query should be rejected: %s", bad)
+	}
+
+	// Row budget caps unbounded recursive queries cleanly.
+	bounded, err := lk.QueryReadOnly(context.Background(), "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000) SELECT x FROM cnt")
+	require.NoError(t, err)
+	assert.Len(t, bounded, DefaultSQLMaxRows)
 
 	st, err := lk.Stats(context.Background())
 	require.NoError(t, err)

@@ -24,6 +24,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/trust"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // ExitError wraps an error with a specific exit code.
@@ -280,25 +281,53 @@ func newUseCmd() *cobra.Command {
 }
 
 func newRunCmd() *cobra.Command {
-	var params []string
-	var compact bool
-	var selectFields []string
-	var limit int
-	var dryRun bool
-	var yes bool
-	var asJSON bool
-	var strictLock bool
-
 	cmd := &cobra.Command{
-		Use:   "run <app> <command> [args...]",
-		Short: "Execute a Cartridge command or installed prebuilt PPL CLI",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			app := args[0]
+		Use:                "run <app> <command> [flags/args...]",
+		Short:              "Execute a Cartridge command or installed prebuilt PPL CLI",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, rawArgs []string) error {
+			if len(rawArgs) == 0 || rawArgs[0] == "-h" || rawArgs[0] == "--help" {
+				return printRunUsage(cmd.OutOrStdout())
+			}
+
+			// Extract leading <app> (skipping wrapper flags only if they precede <app>).
+			app, rest := splitLeadingApp(rawArgs)
+			if app == "" {
+				return printRunUsage(cmd.OutOrStdout())
+			}
 
 			// 1. Try Cartridge resolution first.
 			if cart, err := cartridge.Resolve(app); err == nil {
-				if len(args) < 2 {
+				var (
+					params       []string
+					compact      bool
+					selectFields []string
+					limit        int
+					dryRun       bool
+					yes          bool
+					asJSON       bool
+					strictLock   bool
+					showHelp     bool
+				)
+				fs := pflag.NewFlagSet("pp run", pflag.ContinueOnError)
+				fs.SetOutput(cmd.ErrOrStderr())
+				fs.StringArrayVarP(&params, "param", "p", nil, "Command parameter as key=value (repeatable)")
+				fs.BoolVar(&compact, "compact", false, "Return high-gravity compact fields only (60-80% fewer tokens)")
+				fs.StringSliceVar(&selectFields, "select", nil, "Comma-separated dot-path fields to project")
+				fs.IntVar(&limit, "limit", 0, "Maximum rows to return")
+				fs.BoolVar(&dryRun, "dry-run", false, "Preview the resolved request without executing")
+				fs.BoolVar(&yes, "yes", false, "Confirm execution of mutating commands")
+				fs.BoolVar(&strictLock, "strict-lock", false, "Fail if cartridge is not explicitly pinned in lock.json")
+				fs.BoolVar(&asJSON, "json", false, "Output as JSON (auto-enabled when piped)")
+				fs.BoolVarP(&showHelp, "help", "h", false, "Show help")
+				if parseErr := fs.Parse(rest); parseErr != nil {
+					return &cartridge.ExecError{Code: cartridge.ExitUsage, Class: "usage", Message: parseErr.Error()}
+				}
+				if showHelp {
+					return printRunUsage(cmd.OutOrStdout())
+				}
+				pos := fs.Args()
+				if len(pos) < 1 {
 					return &cartridge.ExecError{
 						Code:    cartridge.ExitUsage,
 						Class:   "usage",
@@ -306,14 +335,7 @@ func newRunCmd() *cobra.Command {
 						Hint:    fmt.Sprintf("run `pp info %s` to see available commands", app),
 					}
 				}
-				cmdName := args[1]
-				if lockPath, lerr := cartridge.LockfilePath(); lerr == nil {
-					if lf, lerr := cartridge.LoadLockfile(lockPath); lerr == nil {
-						if verr := lf.VerifyCartridge(cart, strictLock); verr != nil {
-							return &ExitError{Code: 4, Err: verr}
-						}
-					}
-				}
+				cmdName := pos[0]
 
 				paramMap := make(map[string]string, len(params))
 				for _, kv := range params {
@@ -339,6 +361,7 @@ func newRunCmd() *cobra.Command {
 					Limit:        limit,
 					DryRun:       dryRun,
 					ConfirmWrite: yes,
+					StrictLock:   strictLock,
 					Journal:      journal,
 				})
 				if execErr != nil {
@@ -351,9 +374,16 @@ func newRunCmd() *cobra.Command {
 			}
 
 			// 2. Fallback to installed zero-Go prebuilt PPL binary (~/.pp/bin/<app>-pp-cli).
+			// Verify SHA-256 pin before exec and forward all child flags/args verbatim.
 			if binPath, ok := registry.InstalledBinaryPath(app); ok {
-				subArgs := args[1:]
-				proc := exec.CommandContext(cmd.Context(), binPath, subArgs...)
+				if verr := registry.VerifyInstalledBinary(app, binPath); verr != nil {
+					return &ExitError{Code: cartridge.ExitAuth, Err: verr}
+				}
+				childArgs := rest
+				if len(childArgs) > 0 && childArgs[0] == "--" {
+					childArgs = childArgs[1:]
+				}
+				proc := exec.CommandContext(cmd.Context(), binPath, childArgs...)
 				proc.Stdin = cmd.InOrStdin()
 				proc.Stdout = cmd.OutOrStdout()
 				proc.Stderr = cmd.ErrOrStderr()
@@ -368,16 +398,56 @@ func newRunCmd() *cobra.Command {
 			}
 		},
 	}
-
-	cmd.Flags().StringArrayVarP(&params, "param", "p", nil, "Command parameter as key=value (repeatable)")
-	cmd.Flags().BoolVar(&compact, "compact", false, "Return high-gravity compact fields only (60-80% fewer tokens)")
-	cmd.Flags().StringSliceVar(&selectFields, "select", nil, "Comma-separated dot-path fields to project")
-	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum rows to return")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview the resolved request without executing")
-	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm execution of mutating commands")
-	cmd.Flags().BoolVar(&strictLock, "strict-lock", false, "Fail if cartridge is not explicitly pinned in lock.json")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON (auto-enabled when piped)")
 	return cmd
+}
+
+func splitLeadingApp(rawArgs []string) (string, []string) {
+	// Support both `pp run <app> <cmd> --flag` and `pp run --compact <app> <cmd>`.
+	var leadingFlags []string
+	i := 0
+	for i < len(rawArgs) {
+		a := rawArgs[i]
+		if a == "--" {
+			if i+1 < len(rawArgs) {
+				rest := append(leadingFlags, rawArgs[i+2:]...)
+				return rawArgs[i+1], rest
+			}
+			return "", nil
+		}
+		if strings.HasPrefix(a, "-") {
+			leadingFlags = append(leadingFlags, a)
+			// Flags taking a separate value argument before <app>.
+			if (a == "-p" || a == "--param" || a == "--select" || a == "--limit") && i+1 < len(rawArgs) {
+				i++
+				leadingFlags = append(leadingFlags, rawArgs[i])
+			}
+			i++
+			continue
+		}
+		rest := append(leadingFlags, rawArgs[i+1:]...)
+		return a, rest
+	}
+	return "", nil
+}
+
+func printRunUsage(w io.Writer) error {
+	_, err := fmt.Fprint(w, `Usage:
+  pp run <app> <command> [flags]
+
+Cartridge flags:
+  -p, --param key=value   Command parameter (repeatable)
+      --compact           Return high-gravity compact fields only
+      --select fields     Comma-separated dot-path fields to project
+      --limit int         Maximum rows to return
+      --dry-run           Preview the resolved request without executing
+      --yes               Confirm execution of mutating commands
+      --strict-lock       Fail if cartridge is not explicitly pinned in lock.json
+      --json              Output as JSON (auto-enabled when piped)
+
+Prebuilt library binaries:
+  All arguments and flags after <app> are forwarded verbatim to the verified binary.
+`)
+	return err
 }
 
 func renderRunHuman(w io.Writer, res *cartridge.RunResult) error {
@@ -609,17 +679,38 @@ func newLakeSyncCmd() *cobra.Command {
 			}
 
 			reports := make([]*lake.SyncReport, 0, len(targets))
+			var syncErrs []string
 			for _, c := range targets {
-				rep, _ := lk.SyncCartridge(cmd.Context(), c, cartridge.RunOptions{})
+				rep, syncErr := lk.SyncCartridge(cmd.Context(), c, cartridge.RunOptions{})
+				if rep == nil && syncErr != nil {
+					rep = &lake.SyncReport{
+						Source: c.Name,
+						Status: "error",
+						Error:  syncErr.Error(),
+					}
+				}
 				if rep != nil {
 					reports = append(reports, rep)
 				}
+				if syncErr != nil {
+					syncErrs = append(syncErrs, fmt.Sprintf("%s: %v", c.Name, syncErr))
+				}
 			}
 			if wantsJSON(cmd, asJSON) {
-				return writeJSON(cmd.OutOrStdout(), reports)
+				if err := writeJSON(cmd.OutOrStdout(), reports); err != nil {
+					return err
+				}
+			} else {
+				for _, r := range reports {
+					if r.Error != "" {
+						fmt.Fprintf(cmd.OutOrStdout(), "%-18s %-8s %4d rows (%dms) error: %s\n", r.Source, r.Status, r.RowsSynced, r.DurationMS, r.Error)
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "%-18s %-8s %4d rows (%dms)\n", r.Source, r.Status, r.RowsSynced, r.DurationMS)
+					}
+				}
 			}
-			for _, r := range reports {
-				fmt.Fprintf(cmd.OutOrStdout(), "%-18s %-8s %4d rows (%dms)\n", r.Source, r.Status, r.RowsSynced, r.DurationMS)
+			if len(syncErrs) > 0 {
+				return fmt.Errorf("lake sync failed for %d source(s): %s", len(syncErrs), strings.Join(syncErrs, "; "))
 			}
 			return nil
 		},
@@ -832,19 +923,17 @@ func newTrustCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			lf, err := cartridge.LoadLockfile(lockPath)
-			if err != nil {
-				return err
-			}
-			lf.Pin(cartridge.LockEntry{
-				Kind:         "cartridge",
-				Name:         c.Name,
-				Version:      c.Version,
-				SHA256:       c.SHA256,
-				Path:         c.Source,
-				AllowedHosts: c.Trust.AllowedHosts,
-			})
-			if err := lf.Save(lockPath); err != nil {
+			if err := cartridge.UpdateLockfile(lockPath, func(lf *cartridge.Lockfile) error {
+				lf.Pin(cartridge.LockEntry{
+					Kind:         "cartridge",
+					Name:         c.Name,
+					Version:      c.Version,
+					SHA256:       c.SHA256,
+					Path:         c.Source,
+					AllowedHosts: c.Trust.AllowedHosts,
+				})
+				return nil
+			}); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Pinned %s (sha256:%s, hosts:%v) in %s\n",

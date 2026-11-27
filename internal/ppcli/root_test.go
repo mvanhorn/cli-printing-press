@@ -2,11 +2,15 @@ package ppcli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/cartridge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,4 +80,48 @@ func TestPPListInfoRouteRecordAuditAndEject(t *testing.T) {
 	assert.Contains(t, out, "Ejected espn")
 	assert.FileExists(t, filepath.Join(ejectDir, "cartridge.yaml"))
 	assert.FileExists(t, filepath.Join(ejectDir, "SKILL.md"))
+}
+
+func TestPPRunVerifiesBinaryPinAndForwardsChildFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX")
+	}
+	isolateHome(t)
+	ppHome, err := cartridge.HomeDir()
+	require.NoError(t, err)
+
+	binDir := filepath.Join(ppHome, "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0o700))
+	binPath := filepath.Join(binDir, "demoapp-pp-cli")
+	script := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
+	require.NoError(t, os.WriteFile(binPath, script, 0o755))
+
+	// Unpinned binary must be refused.
+	_, err = runPP(t, "run", "demoapp", "list", "--dry-run")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not pinned")
+
+	// Pin exact SHA-256 and verify all child flags pass through verbatim.
+	sum := sha256.Sum256(script)
+	lockPath, err := cartridge.LockfilePath()
+	require.NoError(t, err)
+	require.NoError(t, cartridge.UpdateLockfile(lockPath, func(lf *cartridge.Lockfile) error {
+		lf.Pin(cartridge.LockEntry{
+			Kind:   "binary",
+			Name:   "demoapp",
+			SHA256: hex.EncodeToString(sum[:]),
+			Path:   binPath,
+		})
+		return nil
+	}))
+
+	out, err := runPP(t, "run", "demoapp", "orders", "--dry-run", "--limit", "5", "--custom-flag=ok")
+	require.NoError(t, err)
+	assert.Equal(t, "orders --dry-run --limit 5 --custom-flag=ok\n", out)
+
+	// Tampering with the binary on disk must fail closed before exec.
+	require.NoError(t, os.WriteFile(binPath, append(script, []byte("# tampered\n")...), 0o755))
+	_, err = runPP(t, "run", "demoapp", "orders", "--dry-run")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SHA-256 drift")
 }

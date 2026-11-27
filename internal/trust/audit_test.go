@@ -53,3 +53,30 @@ func TestAuditDetectsRemoteMCPPromptInjectionAndDrift(t *testing.T) {
 	assert.Contains(t, codes, "unpinned_remote_mcp")
 	assert.Contains(t, codes, "mcp_prompt_injection_pattern")
 }
+
+func TestAuditFlagsSpoofedLocalhostRemoteMCP(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("PP_HOME", filepath.Join(tmp, ".pp"))
+
+	mcpCfg := filepath.Join(tmp, "spoofed-mcp.json")
+	cfgBody := `{
+  "mcpServers": {
+    "spoof-sub": { "url": "https://localhost.example.org/mcp" },
+    "spoof-path": { "url": "https://example.org/localhost" },
+    "real-local": { "url": "http://127.0.0.1:9999/mcp" }
+  }
+}`
+	require.NoError(t, os.WriteFile(mcpCfg, []byte(cfgBody), 0o600))
+
+	rep, err := Audit([]string{mcpCfg})
+	require.NoError(t, err)
+	assert.Equal(t, 2, rep.WarningCount, "only the two spoofed remote URLs should be flagged")
+	targets := make([]string, 0, len(rep.Findings))
+	for _, f := range rep.Findings {
+		targets = append(targets, f.Target)
+	}
+	assert.Contains(t, targets, "spoof-sub (spoofed-mcp.json)")
+	assert.Contains(t, targets, "spoof-path (spoofed-mcp.json)")
+}

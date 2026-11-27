@@ -280,11 +280,8 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 	cat, _ := c.Load(ctx, false)
 	if cat != nil {
 		if match := matchCatalogEntry(cat, trimmed, host); match != nil {
-			binPath, isInstalled := InstalledBinaryPath(match.Name)
+			_, isInstalled := InstalledBinaryPath(match.Name)
 			recCmd := fmt.Sprintf("pp run %s --help", match.Name)
-			if isInstalled {
-				recCmd = fmt.Sprintf("%s --help", filepath.Base(binPath))
-			}
 			return &RouteDecision{
 				Matched:         true,
 				Input:           trimmed,
@@ -543,19 +540,17 @@ func (c *Client) Install(ctx context.Context, slug string) (*InstallResult, erro
 	if err != nil {
 		return nil, err
 	}
-	lf, err := cartridge.LoadLockfile(lockPath)
-	if err != nil {
-		return nil, err
-	}
-	lf.Pin(cartridge.LockEntry{
-		Kind:    "binary",
-		Name:    clean,
-		Version: version,
-		SHA256:  actualHash,
-		Path:    destPath,
-		Source:  assetURL,
-	})
-	if err := lf.Save(lockPath); err != nil {
+	if err := cartridge.UpdateLockfile(lockPath, func(lf *cartridge.Lockfile) error {
+		lf.Pin(cartridge.LockEntry{
+			Kind:    "binary",
+			Name:    clean,
+			Version: version,
+			SHA256:  actualHash,
+			Path:    destPath,
+			Source:  assetURL,
+		})
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 
@@ -586,6 +581,21 @@ func InstalledBinaryPath(slug string) (string, bool) {
 		return p, true
 	}
 	return "", false
+}
+
+// VerifyInstalledBinary checks the SHA-256 of an installed prebuilt binary
+// against ~/.pp/lock.json, failing closed on missing pin, corrupt lockfile, or
+// digest mismatch.
+func VerifyInstalledBinary(slug, binPath string) error {
+	lockPath, err := cartridge.LockfilePath()
+	if err != nil {
+		return fmt.Errorf("resolving lockfile path: %w", err)
+	}
+	lf, err := cartridge.LoadLockfile(lockPath)
+	if err != nil {
+		return fmt.Errorf("loading lockfile for binary verification: %w", err)
+	}
+	return lf.VerifyBinary(slug, binPath)
 }
 
 func releaseAssetName(cliName, goos, goarch string) string {

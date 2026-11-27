@@ -274,3 +274,53 @@ func TestExecuteOmitsUnsetOptionalQueryParams(t *testing.T) {
 	assert.Equal(t, 1, res.RowCount)
 	assert.Empty(t, seenRawQuery, "unset optional query param must not be sent as literal placeholder")
 }
+
+func TestExecuteBlocksTamperedInstalledCartridgeAndCorruptLockfile(t *testing.T) {
+	isolateEnv(t)
+
+	raw, ok := BuiltinRaw("espn")
+	require.True(t, ok)
+	_, path, err := InstallBytes(raw, "builtin:espn.yaml")
+	require.NoError(t, err)
+
+	// Tamper with installed cartridge on disk.
+	require.NoError(t, os.WriteFile(path, append(raw, []byte("\n# tampered\n")...), 0o600))
+	tampered, err := LoadFile(path)
+	require.NoError(t, err)
+
+	_, err = Execute(context.Background(), tampered, "scoreboard", RunOptions{DryRun: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SHA-256 drift")
+
+	// Corrupt lockfile must also fail closed.
+	lockPath, err := LockfilePath()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(lockPath, []byte("{not-json"), 0o600))
+	_, err = Execute(context.Background(), tampered, "scoreboard", RunOptions{DryRun: true, StrictLock: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lockfile verification failed")
+}
+
+func TestValidateReadOnlySQLRejectsBypassVectors(t *testing.T) {
+	rejected := []string{
+		"",
+		"PRAGMA query_only = OFF",
+		"PRAGMA writable_schema = ON",
+		"/* comment */ DELETE FROM lake_items",
+		"-- line\nVACUUM INTO '/tmp/x.db'",
+		"; ATTACH DATABASE '/tmp/x.db' AS evil",
+		"SELECT 1; DROP TABLE lake_items",
+		"SELECT 1; PRAGMA query_only = OFF",
+	}
+	for _, q := range rejected {
+		assert.Error(t, ValidateReadOnlySQL(q), "expected query to be rejected: %q", q)
+	}
+	allowed := []string{
+		"SELECT id FROM lake_items LIMIT 5",
+		"/* ok */ SELECT ';' AS semi FROM lake_items;",
+		"-- ok\nWITH cte AS (SELECT 1) SELECT * FROM cte",
+	}
+	for _, q := range allowed {
+		assert.NoError(t, ValidateReadOnlySQL(q), "expected query to be allowed: %q", q)
+	}
+}

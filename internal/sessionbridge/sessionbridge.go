@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,6 +27,7 @@ type AuthSpec struct {
 	Prefix             string
 	QueryParam         string
 	Domains            []string
+	TargetURL          string
 	AgentCookieAdapter string
 }
 
@@ -36,11 +38,41 @@ type ResolvedAuth struct {
 	Source      string
 }
 
+type requestTarget struct {
+	host    string
+	path    string
+	isHTTPS bool
+}
+
+func parseTargetURL(raw string) *requestTarget {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Hostname() == "" {
+		return nil
+	}
+	p := u.Path
+	if p == "" {
+		p = "/"
+	}
+	return &requestTarget{
+		host:    strings.ToLower(u.Hostname()),
+		path:    p,
+		isHTTPS: strings.EqualFold(u.Scheme, "https"),
+	}
+}
+
 // Resolve attempts to hydrate auth for an app from (in order):
 //  1. Explicit environment variable (AuthSpec.EnvVar or PP_<APP>_TOKEN)
 //  2. agentcookie plaintext sidecar (~/.agentcookie/cookies-plain.db)
 //  3. press-auth captured session store
 //  4. Local Firefox/Zen/LibreWolf unencrypted cookies.sqlite (WAL-safe copy)
+//
+// When TargetURL is populated, cookie selection is strictly scoped to that
+// request's host, path, and scheme so multi-host cartridges cannot leak one
+// site's session cookies to another site.
 func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 	strategy := strings.ToLower(strings.TrimSpace(spec.Strategy))
 	if strategy == "" || strategy == "none" {
@@ -80,15 +112,25 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 				Source:  "env:" + envName,
 			}, nil
 		}
-		if cookieHeader, src, err := loadFromAgentCookie(spec.Domains); err == nil && cookieHeader != "" {
+		target := parseTargetURL(spec.TargetURL)
+		scopedDomains := filterDomainsForTarget(spec.Domains, target)
+		if target != nil && len(scopedDomains) == 0 {
+			// Request host is outside declared auth domains; send no site cookies.
+			return &ResolvedAuth{Source: "none"}, nil
+		}
+
+		if cookieHeader, src, err := loadFromAgentCookie(scopedDomains, target); err == nil && cookieHeader != "" {
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": cookieHeader},
 				Source:  src,
 			}, nil
 		}
-		for _, dom := range spec.Domains {
+		for _, dom := range scopedDomains {
 			clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(dom)), ".")
 			if clean == "" {
+				continue
+			}
+			if target != nil && !cookieDomainMatchesHost(dom, target.host) {
 				continue
 			}
 			if state, err := pressauth.Load(clean); err == nil && len(state.Cookies) > 0 {
@@ -98,18 +140,73 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 				}, nil
 			}
 		}
-		if cookieHeader, src, err := loadFromFirefoxFamily(spec.Domains); err == nil && cookieHeader != "" {
+		if cookieHeader, src, err := loadFromFirefoxFamily(scopedDomains, target); err == nil && cookieHeader != "" {
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": cookieHeader},
 				Source:  src,
 			}, nil
 		}
 		return nil, fmt.Errorf("no logged-in session found for %v (sign in via Ardia/Chrome + agentcookie, run `press-auth login`, or set %s)",
-			spec.Domains, defaultEnvVarName(spec))
+			scopedDomains, defaultEnvVarName(spec))
 
 	default:
 		return nil, fmt.Errorf("unsupported auth strategy %q", spec.Strategy)
 	}
+}
+
+func filterDomainsForTarget(domains []string, target *requestTarget) []string {
+	if target == nil {
+		return domains
+	}
+	if len(domains) == 0 {
+		return []string{target.host}
+	}
+	var out []string
+	for _, d := range domains {
+		if cookieDomainMatchesHost(d, target.host) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// cookieDomainMatchesHost implements RFC 6265 domain matching:
+// a cookie with a leading dot (".example.com") matches "example.com" and its
+// subdomains; a host-only cookie ("api.example.com") matches only exact host.
+func cookieDomainMatchesHost(cookieHost, reqHost string) bool {
+	req := strings.ToLower(strings.TrimSpace(reqHost))
+	raw := strings.ToLower(strings.TrimSpace(cookieHost))
+	if req == "" || raw == "" {
+		return false
+	}
+	if apex, hasDot := strings.CutPrefix(raw, "."); hasDot {
+		if apex == "" {
+			return false
+		}
+		return req == apex || strings.HasSuffix(req, "."+apex)
+	}
+	return req == raw
+}
+
+// cookiePathMatches implements RFC 6265 path matching.
+func cookiePathMatches(cookiePath, reqPath string) bool {
+	cp := strings.TrimSpace(cookiePath)
+	if cp == "" || cp == "/" {
+		return true
+	}
+	rp := strings.TrimSpace(reqPath)
+	if rp == "" {
+		rp = "/"
+	}
+	if rp == cp {
+		return true
+	}
+	if strings.HasPrefix(rp, cp) {
+		if strings.HasSuffix(cp, "/") || rp[len(cp)] == '/' {
+			return true
+		}
+	}
+	return false
 }
 
 // Apply writes resolved headers and query parameters onto an outgoing HTTP request.
@@ -184,8 +281,8 @@ func agentCookieSidecarPath() (string, error) {
 	return filepath.Join(home, ".agentcookie", "cookies-plain.db"), nil
 }
 
-func loadFromAgentCookie(domains []string) (string, string, error) {
-	if len(domains) == 0 {
+func loadFromAgentCookie(domains []string, target *requestTarget) (string, string, error) {
+	if len(domains) == 0 && target == nil {
 		return "", "", errors.New("no domains")
 	}
 	dbPath, err := agentCookieSidecarPath()
@@ -195,9 +292,9 @@ func loadFromAgentCookie(domains []string) (string, string, error) {
 	if _, err := os.Stat(dbPath); err != nil {
 		return "", "", err
 	}
-	header, err := queryCookieSQLite(dbPath, domains, "cookies", "host_key", "name", "value")
+	header, err := queryCookieSQLite(dbPath, domains, target, "cookies", "host_key", "name", "value", "path", "is_secure")
 	if err != nil {
-		header, err = queryCookieSQLite(dbPath, domains, "cookies", "domain", "name", "value")
+		header, err = queryCookieSQLite(dbPath, domains, target, "cookies", "domain", "name", "value", "path", "is_secure")
 	}
 	if err != nil || header == "" {
 		return "", "", fmt.Errorf("agentcookie lookup: %w", err)
@@ -205,8 +302,8 @@ func loadFromAgentCookie(domains []string) (string, string, error) {
 	return header, "agentcookie:" + dbPath, nil
 }
 
-func loadFromFirefoxFamily(domains []string) (string, string, error) {
-	if len(domains) == 0 {
+func loadFromFirefoxFamily(domains []string, target *requestTarget) (string, string, error) {
+	if len(domains) == 0 && target == nil {
 		return "", "", errors.New("no domains")
 	}
 	home, err := os.UserHomeDir()
@@ -242,7 +339,7 @@ func loadFromFirefoxFamily(domains []string) (string, string, error) {
 			if _, err := os.Stat(dbPath); err != nil {
 				continue
 			}
-			header, err := queryCookieSQLite(dbPath, domains, "moz_cookies", "host", "name", "value")
+			header, err := queryCookieSQLite(dbPath, domains, target, "moz_cookies", "host", "name", "value", "path", "isSecure")
 			if err == nil && header != "" {
 				return header, "firefox-family:" + dbPath, nil
 			}
@@ -253,7 +350,7 @@ func loadFromFirefoxFamily(domains []string) (string, string, error) {
 
 // queryCookieSQLite copies the target SQLite file (plus optional WAL/SHM) into
 // an isolated temp dir so reading never locks a running browser profile.
-func queryCookieSQLite(srcPath string, domains []string, table, hostCol, nameCol, valueCol string) (string, error) {
+func queryCookieSQLite(srcPath string, domains []string, target *requestTarget, table, hostCol, nameCol, valueCol, pathCol, secureCol string) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "pp-cookie-snap-*")
 	if err != nil {
 		return "", err
@@ -274,28 +371,63 @@ func queryCookieSQLite(srcPath string, domains []string, table, hostCol, nameCol
 	}
 	defer func() { _ = db.Close() }()
 
-	query := fmt.Sprintf("SELECT %s, %s, %s FROM %s", hostCol, nameCol, valueCol, table)
+	cols := tableColumns(db, table)
+	hasPath := cols[strings.ToLower(pathCol)]
+	hasSecure := cols[strings.ToLower(secureCol)]
+
+	selectCols := []string{hostCol, nameCol, valueCol}
+	if hasPath {
+		selectCols = append(selectCols, pathCol)
+	} else {
+		selectCols = append(selectCols, "'/'")
+	}
+	if hasSecure {
+		selectCols = append(selectCols, secureCol)
+	} else {
+		selectCols = append(selectCols, "0")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selectCols, ", "), table)
 	rows, err := db.Query(query)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = rows.Close() }()
 
-	seen := make(map[string]string)
+	type cookieMatch struct {
+		value   string
+		pathLen int
+	}
+	seen := make(map[string]cookieMatch)
 	for rows.Next() {
-		var host, name, value string
-		if err := rows.Scan(&host, &name, &value); err != nil {
+		var host, name, value, cpath string
+		var isSecure int
+		if err := rows.Scan(&host, &name, &value, &cpath, &isSecure); err != nil {
 			continue
 		}
 		if name == "" || value == "" {
 			continue
 		}
-		if matchesAnyDomain(host, domains) {
-			seen[name] = value
+		if target != nil {
+			if !cookieDomainMatchesHost(host, target.host) {
+				continue
+			}
+			if !cookiePathMatches(cpath, target.path) {
+				continue
+			}
+			if isSecure != 0 && !target.isHTTPS {
+				continue
+			}
+		} else if !matchesAnyDomain(host, domains) {
+			continue
+		}
+		// More specific path wins when duplicate cookie names exist.
+		if prev, exists := seen[name]; !exists || len(cpath) >= prev.pathLen {
+			seen[name] = cookieMatch{value: value, pathLen: len(cpath)}
 		}
 	}
 	if len(seen) == 0 {
-		return "", errors.New("no cookies matched domains")
+		return "", errors.New("no cookies matched target")
 	}
 	names := make([]string, 0, len(seen))
 	for k := range seen {
@@ -304,9 +436,29 @@ func queryCookieSQLite(srcPath string, domains []string, table, hostCol, nameCol
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
 	for _, k := range names {
-		parts = append(parts, k+"="+seen[k])
+		parts = append(parts, k+"="+seen[k].value)
 	}
 	return strings.Join(parts, "; "), nil
+}
+
+func tableColumns(db *sql.DB, table string) map[string]bool {
+	out := make(map[string]bool)
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt any
+		var pk int
+		if rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk) == nil {
+			out[strings.ToLower(name)] = true
+		}
+	}
+	return out
 }
 
 func matchesAnyDomain(host string, domains []string) bool {

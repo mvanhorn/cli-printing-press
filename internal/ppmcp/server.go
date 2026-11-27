@@ -2,11 +2,15 @@ package ppmcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os/exec"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/cartridge"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/lake"
@@ -14,9 +18,11 @@ import (
 )
 
 const (
-	ProtocolVersion = "2025-03-26"
-	ServerName      = "printing-press"
-	ServerVersion   = "2.0.0"
+	ProtocolVersion      = "2025-03-26"
+	ServerName           = "printing-press"
+	ServerVersion        = "2.0.0"
+	defaultBinaryTimeout = 30 * time.Second
+	maxBinaryOutputBytes = 512 * 1024
 )
 
 // Server exposes all 616+ Printing Press apps and the local Life Lake through
@@ -134,7 +140,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "pp_discover",
-			"description": "Search installed Cartridges, embedded starter tools, and the 616-app Printing Press Library.",
+			"description": "Search installed Cartridges, embedded starter tools, and the 616-app Printing Press Library (returns local commands, parameters, and catalog matches).",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -146,12 +152,13 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "pp_run",
-			"description": "Execute a command on a local host-locked Printing Press Cartridge (~150ms, compact JSON). Mutating commands require confirm_mutation=true.",
+			"description": "Execute a command on a local host-locked Printing Press Cartridge or verified installed prebuilt library CLI (~150ms, compact JSON). Mutating commands require confirm_mutation=true.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"app":              map[string]any{"type": "string", "description": "Cartridge name (e.g. espn, hackernews, weather, chrome-history)"},
-					"command":          map[string]any{"type": "string", "description": "Command name inside the cartridge"},
+					"app":              map[string]any{"type": "string", "description": "Cartridge or installed library CLI name (e.g. espn, hackernews, digg)"},
+					"command":          map[string]any{"type": "string", "description": "Command name inside the cartridge or subcommand for a prebuilt CLI"},
+					"args":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional extra CLI arguments for installed prebuilt binaries"},
 					"params":           map[string]any{"type": "object", "description": "Key-value parameters for the command"},
 					"compact":          map[string]any{"type": "boolean", "description": "Return high-gravity compact fields only (default true)"},
 					"limit":            map[string]any{"type": "integer", "description": "Optional max rows"},
@@ -176,11 +183,11 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "pp_lake_sql",
-			"description": "Run a strictly read-only SQLite SELECT query across your local Personal Life Lake (table: lake_items).",
+			"description": "Run a strictly read-only single-statement SQLite SELECT/WITH query across your local Personal Life Lake (table: lake_items; bounded to 5s, 500 rows, 512 KiB).",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"sql": map[string]any{"type": "string", "description": "Read-only SELECT/WITH SQL query"},
+					"sql": map[string]any{"type": "string", "description": "Read-only single SELECT/WITH SQL query"},
 				},
 				"required": []string{"sql"},
 			},
@@ -214,21 +221,21 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 		query := stringArg(call.Arguments, "query")
 		catFilter := stringArg(call.Arguments, "category")
 		limit := intArg(call.Arguments, "limit", 15)
-		cat, loadErr := s.Registry.Load(ctx, false)
-		if loadErr != nil {
-			err = loadErr
-		} else {
-			payload = map[string]any{
-				"catalog_matches": s.Registry.Search(cat, query, catFilter, limit),
+		localMatches := discoverLocalCartridges(query, catFilter, limit)
+		var catalogMatches []registry.Entry
+		if s.Registry != nil {
+			if cat, loadErr := s.Registry.Load(ctx, false); loadErr == nil {
+				catalogMatches = s.Registry.Search(cat, query, catFilter, limit)
 			}
+		}
+		payload = map[string]any{
+			"local_cartridges": localMatches,
+			"catalog_matches":  catalogMatches,
 		}
 	case "pp_run":
 		app := stringArg(call.Arguments, "app")
 		cmdName := stringArg(call.Arguments, "command")
-		cart, resolveErr := cartridge.Resolve(app)
-		if resolveErr != nil {
-			err = resolveErr
-		} else {
+		if cart, resolveErr := cartridge.Resolve(app); resolveErr == nil {
 			compact := true
 			if v, ok := call.Arguments["compact"].(bool); ok {
 				compact = v
@@ -249,6 +256,10 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 				ConfirmWrite: confirmMut,
 				Journal:      s.Journal,
 			})
+		} else if binPath, ok := registry.InstalledBinaryPath(app); ok {
+			payload, err = runVerifiedBinaryMCP(ctx, app, binPath, cmdName, call.Arguments)
+		} else {
+			err = resolveErr
 		}
 	case "pp_lake_search":
 		lk, openErr := s.openLake()
@@ -300,6 +311,207 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 	}
 }
 
+type localCommandInfo struct {
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	Mutates        bool     `json:"mutates"`
+	RequiredParams []string `json:"required_params,omitempty"`
+	OptionalParams []string `json:"optional_params,omitempty"`
+}
+
+type localCartridgeInfo struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Category    string             `json:"category,omitempty"`
+	Kind        string             `json:"kind"` // "installed" or "builtin"
+	Commands    []localCommandInfo `json:"commands"`
+}
+
+func discoverLocalCartridges(query, catFilter string, limit int) []localCartridgeInfo {
+	if limit <= 0 {
+		limit = 15
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	cf := strings.ToLower(strings.TrimSpace(catFilter))
+
+	seen := make(map[string]bool)
+	var all []*cartridge.Cartridge
+	if installed, err := cartridge.Installed(); err == nil {
+		for _, c := range installed {
+			seen[c.Name] = true
+			all = append(all, c)
+		}
+	}
+	if builtins, err := cartridge.Builtins(); err == nil {
+		for _, c := range builtins {
+			if !seen[c.Name] {
+				all = append(all, c)
+			}
+		}
+	}
+
+	out := make([]localCartridgeInfo, 0)
+	for _, c := range all {
+		if cf != "" && !strings.EqualFold(c.Category, cf) {
+			continue
+		}
+		if q != "" && !cartridgeMatchesQuery(c, q) {
+			continue
+		}
+		kind := "installed"
+		if strings.HasPrefix(c.Source, "builtin:") {
+			kind = "builtin"
+		}
+		cmdNames := make([]string, 0, len(c.Commands))
+		for name := range c.Commands {
+			cmdNames = append(cmdNames, name)
+		}
+		sort.Strings(cmdNames)
+		cmds := make([]localCommandInfo, 0, len(cmdNames))
+		for _, name := range cmdNames {
+			spec := c.Commands[name]
+			var reqParams, optParams []string
+			for pName, pSpec := range spec.Params {
+				if pSpec.Required && pSpec.Default == "" {
+					reqParams = append(reqParams, pName)
+				} else {
+					optParams = append(optParams, pName)
+				}
+			}
+			sort.Strings(reqParams)
+			sort.Strings(optParams)
+			cmds = append(cmds, localCommandInfo{
+				Name:           name,
+				Description:    spec.Description,
+				Mutates:        c.IsMutating(name),
+				RequiredParams: reqParams,
+				OptionalParams: optParams,
+			})
+		}
+		out = append(out, localCartridgeInfo{
+			Name:        c.Name,
+			Description: c.Description,
+			Category:    c.Category,
+			Kind:        kind,
+			Commands:    cmds,
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func cartridgeMatchesQuery(c *cartridge.Cartridge, lowerQuery string) bool {
+	if strings.Contains(strings.ToLower(c.Name), lowerQuery) ||
+		strings.Contains(strings.ToLower(c.Description), lowerQuery) ||
+		strings.Contains(strings.ToLower(c.Category), lowerQuery) {
+		return true
+	}
+	for _, d := range c.Domains {
+		if strings.Contains(strings.ToLower(d), lowerQuery) {
+			return true
+		}
+	}
+	for cmdName, cmd := range c.Commands {
+		if strings.Contains(strings.ToLower(cmdName), lowerQuery) ||
+			strings.Contains(strings.ToLower(cmd.Description), lowerQuery) {
+			return true
+		}
+	}
+	return false
+}
+
+func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arguments map[string]any) (any, error) {
+	if err := registry.VerifyInstalledBinary(app, binPath); err != nil {
+		return nil, err
+	}
+	argv := make([]string, 0, 8)
+	if trimmed := strings.TrimSpace(cmdName); trimmed != "" {
+		argv = append(argv, strings.Fields(trimmed)...)
+	}
+	if rawArgs, ok := arguments["args"].([]any); ok {
+		for _, a := range rawArgs {
+			s := fmt.Sprint(a)
+			// Never silently pass --yes unless confirm_mutation is explicitly true.
+			if (s == "--yes" || s == "-y") && !boolArg(arguments, "confirm_mutation") {
+				return nil, fmt.Errorf("mutating flag %q requires confirm_mutation=true", s)
+			}
+			argv = append(argv, s)
+		}
+	}
+	if pm, ok := arguments["params"].(map[string]any); ok {
+		keys := make([]string, 0, len(pm))
+		for k := range pm {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			argv = append(argv, "--"+k, fmt.Sprint(pm[k]))
+		}
+	}
+	if boolArg(arguments, "dry_run") {
+		argv = append(argv, "--dry-run")
+	}
+	if boolArg(arguments, "confirm_mutation") {
+		argv = append(argv, "--yes")
+	}
+	if lim := intArg(arguments, "limit", 0); lim > 0 {
+		argv = append(argv, "--limit", fmt.Sprint(lim))
+	}
+
+	runCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, defaultBinaryTimeout)
+		defer cancel()
+	}
+
+	proc := exec.CommandContext(runCtx, binPath, argv...)
+	var stdout, stderr bytes.Buffer
+	proc.Stdout = &limitedBuffer{buf: &stdout, max: maxBinaryOutputBytes}
+	proc.Stderr = &limitedBuffer{buf: &stderr, max: maxBinaryOutputBytes}
+	err := proc.Run()
+	outText := strings.TrimSpace(stdout.String())
+	errText := strings.TrimSpace(stderr.String())
+	if err != nil {
+		if errText != "" {
+			return nil, fmt.Errorf("%s failed: %v (%s)", app, err, errText)
+		}
+		return nil, fmt.Errorf("%s failed: %v", app, err)
+	}
+	var decoded any
+	if json.Unmarshal([]byte(outText), &decoded) == nil {
+		return map[string]any{
+			"app":  app,
+			"mode": "prebuilt-binary",
+			"data": decoded,
+		}, nil
+	}
+	return map[string]any{
+		"app":    app,
+		"mode":   "prebuilt-binary",
+		"output": outText,
+	}, nil
+}
+
+type limitedBuffer struct {
+	buf *bytes.Buffer
+	max int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	rem := l.max - l.buf.Len()
+	if rem <= 0 {
+		return len(p), nil
+	}
+	if len(p) > rem {
+		_, _ = l.buf.Write(p[:rem])
+		return len(p), nil
+	}
+	return l.buf.Write(p)
+}
+
 func (s *Server) openLake() (*lake.Lake, error) {
 	p := s.LakePath
 	if p == "" {
@@ -324,6 +536,14 @@ func stringArg(m map[string]any, key string) string {
 		return s
 	}
 	return fmt.Sprint(v)
+}
+
+func boolArg(m map[string]any, key string) bool {
+	if m == nil {
+		return false
+	}
+	b, _ := m[key].(bool)
+	return b
 }
 
 func intArg(m map[string]any, key string, def int) int {

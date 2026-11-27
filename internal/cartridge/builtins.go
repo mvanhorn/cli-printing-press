@@ -132,20 +132,18 @@ func InstallBytes(raw []byte, source string) (*Cartridge, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	lf, err := LoadLockfile(lockPath)
-	if err != nil {
-		return nil, "", err
-	}
-	lf.Pin(LockEntry{
-		Kind:         "cartridge",
-		Name:         c.Name,
-		Version:      c.Version,
-		SHA256:       c.SHA256,
-		Path:         targetFile,
-		Source:       source,
-		AllowedHosts: c.Trust.AllowedHosts,
-	})
-	if err := lf.Save(lockPath); err != nil {
+	if err := UpdateLockfile(lockPath, func(lf *Lockfile) error {
+		lf.Pin(LockEntry{
+			Kind:         "cartridge",
+			Name:         c.Name,
+			Version:      c.Version,
+			SHA256:       c.SHA256,
+			Path:         targetFile,
+			Source:       source,
+			AllowedHosts: c.Trust.AllowedHosts,
+		})
+		return nil
+	}); err != nil {
 		return nil, "", err
 	}
 	return c, targetFile, nil

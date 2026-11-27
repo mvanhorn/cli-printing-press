@@ -60,4 +60,17 @@ func TestMCPHandshakeToolsListAndRoute(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(firstContent["text"].(string)), &decision))
 	assert.Equal(t, "espn", decision["app"])
 	assert.Equal(t, "pp run espn scoreboard --compact", decision["recommended_cmd"])
+
+	// pp_discover must include local cartridges with their commands.
+	discResp := srv.Handle(context.Background(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      4,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"pp_discover","arguments":{"query":"espn"}}`),
+	})
+	discMap, ok := discResp.Result.(map[string]any)
+	require.True(t, ok)
+	discContent := discMap["content"].([]map[string]any)
+	assert.Contains(t, discContent[0]["text"], `"local_cartridges"`)
+	assert.Contains(t, discContent[0]["text"], `"scoreboard"`)
 }

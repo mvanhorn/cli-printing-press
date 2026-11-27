@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -245,6 +246,7 @@ func CompileSpecToCartridge(apiSpec *spec.APISpec, source string) (*CompileResul
 
 			params := make(map[string]cartridge.ParamSpec)
 			queryMap := make(map[string]string)
+			headerMap := make(map[string]string)
 			for _, p := range ep.Params {
 				pName := strings.TrimSpace(p.Name)
 				if pName == "" {
@@ -254,13 +256,109 @@ func CompileSpecToCartridge(apiSpec *spec.APISpec, source string) (*CompileResul
 				if pType == "" {
 					pType = "string"
 				}
+				defVal := formatParamDefault(p.Default)
 				params[pName] = cartridge.ParamSpec{
 					Type:        pType,
-					Required:    p.Required,
+					Required:    p.Required && defVal == "",
+					Default:     defVal,
 					Description: p.Description,
 				}
-				if strings.EqualFold(p.In, "query") {
-					queryMap[pName] = "{" + pName + "}"
+				inLower := strings.ToLower(strings.TrimSpace(p.In))
+				isPath := inLower == "path" || p.PathParam || p.Positional || strings.Contains(fullURL, "{"+pName+"}")
+				switch {
+				case isPath:
+					// Rendered directly into URL path template.
+				case inLower == "header":
+					wireHeader := p.URLName
+					if wireHeader == "" {
+						wireHeader = pName
+					}
+					headerMap[wireHeader] = "{" + pName + "}"
+				default:
+					// Spec convention: non-positional, non-header params (including
+					// browsersniff's In=="") bind to URL query parameters.
+					wireQuery := p.URLName
+					if wireQuery == "" {
+						wireQuery = pName
+					}
+					queryMap[wireQuery] = "{" + pName + "}"
+				}
+			}
+
+			driver := cartridge.DriverHTTP
+			bodyTemplate := ""
+			gqlQuery := ""
+			gqlOp := ""
+			if ep.BodyJSONFallback {
+				params["body_json"] = cartridge.ParamSpec{
+					Type:        "string",
+					Required:    ep.BodyRequired,
+					Description: "Raw JSON request body",
+				}
+				bodyTemplate = "{body_json}"
+			} else if len(ep.Body) > 0 {
+				if isGraphQLBody(ep.Body) {
+					driver = cartridge.DriverGraphQL
+					for _, bp := range ep.Body {
+						bName := strings.TrimSpace(bp.Name)
+						defVal := formatParamDefault(bp.Default)
+						switch strings.ToLower(bName) {
+						case "query":
+							if defVal != "" {
+								gqlQuery = defVal
+							}
+						case "operationname", "operation_name":
+							if defVal != "" {
+								gqlOp = defVal
+							}
+						case "variables":
+							// Variables are supplied as cartridge params.
+						default:
+							if bName != "" {
+								bType := bp.Type
+								if bType == "" {
+									bType = "string"
+								}
+								params[bName] = cartridge.ParamSpec{
+									Type:        bType,
+									Required:    bp.Required && defVal == "",
+									Default:     defVal,
+									Description: bp.Description,
+								}
+							}
+						}
+					}
+				} else {
+					bodyFields := make([]string, 0, len(ep.Body))
+					bodyMap := make(map[string]string, len(ep.Body))
+					for _, bp := range ep.Body {
+						bName := strings.TrimSpace(bp.Name)
+						if bName == "" {
+							continue
+						}
+						bType := bp.Type
+						if bType == "" {
+							bType = "string"
+						}
+						defVal := formatParamDefault(bp.Default)
+						params[bName] = cartridge.ParamSpec{
+							Type:        bType,
+							Required:    bp.Required && defVal == "",
+							Default:     defVal,
+							Description: bp.Description,
+						}
+						wireKey := bp.BodyName
+						if wireKey == "" {
+							wireKey = bName
+						}
+						bodyFields = append(bodyFields, wireKey)
+						bodyMap[wireKey] = "{" + bName + "}"
+					}
+					if len(bodyFields) > 0 {
+						if encodedBody, mErr := json.Marshal(bodyMap); mErr == nil {
+							bodyTemplate = string(encodedBody)
+						}
+					}
 				}
 			}
 
@@ -277,15 +375,19 @@ func CompileSpecToCartridge(apiSpec *spec.APISpec, source string) (*CompileResul
 			}
 
 			cmdSpec := cartridge.CommandSpec{
-				Description: desc,
-				Driver:      cartridge.DriverHTTP,
-				Method:      method,
-				URL:         fullURL,
-				Query:       queryMap,
-				Extract:     extract,
-				Params:      params,
-				Mutates:     isMut,
-				SyncDefault: method == "GET" && !isMut && len(params) == 0,
+				Description:    desc,
+				Driver:         driver,
+				Method:         method,
+				URL:            fullURL,
+				Headers:        headerMap,
+				Query:          queryMap,
+				Body:           bodyTemplate,
+				GraphQLQuery:   gqlQuery,
+				PersistedQuery: gqlOp,
+				Extract:        extract,
+				Params:         params,
+				Mutates:        isMut,
+				SyncDefault:    method == "GET" && !isMut && len(params) == 0,
 			}
 			commands[cmdName] = cmdSpec
 		}
@@ -497,4 +599,35 @@ func isNoiseHost(host string) bool {
 		}
 	}
 	return false
+}
+
+func formatParamDefault(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch d := v.(type) {
+	case string:
+		return d
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return fmt.Sprint(d)
+	default:
+		if raw, err := json.Marshal(d); err == nil {
+			return string(raw)
+		}
+		return fmt.Sprint(d)
+	}
+}
+
+func isGraphQLBody(body []spec.Param) bool {
+	hasQuery := false
+	hasVarsOrOp := false
+	for _, bp := range body {
+		switch strings.ToLower(strings.TrimSpace(bp.Name)) {
+		case "query":
+			hasQuery = true
+		case "variables", "operationname", "operation_name":
+			hasVarsOrOp = true
+		}
+	}
+	return hasQuery && hasVarsOrOp
 }
