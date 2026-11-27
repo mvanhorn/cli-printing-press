@@ -2067,6 +2067,14 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 				nextCursor = c
 				break
 			}
+			// HubSpot CRM v3 nests the cursor one level deeper:
+			// {"paging":{"next":{"after":"10","link":"...?after=10"}}}.
+			// findCursorInMap skips "next" there because its value is an
+			// object, so without this the walk stops after the first page.
+			if c := cursorFromNextObject(inner, cursorParam, cursorKeys); c != "" {
+				nextCursor = c
+				break
+			}
 		}
 	}
 
@@ -2154,6 +2162,42 @@ func envelopeExplicitHasMore(envelope map[string]json.RawMessage) (bool, bool) {
 // whose key matches one of cursorKeys. Used by extractPaginationFromEnvelope
 // to scan both the top-level envelope and well-known wrapper objects with
 // the same name-match rules — extracted so the two scans can't drift.
+// cursorFromNextObject reads a cursor from a "next" object inside a
+// pagination wrapper: the request's own cursor param name first ("after"),
+// then the common cursor names, then the object's "link" URL. A "next" that
+// is a string is left to findCursorInMap and the URL followers.
+func cursorFromNextObject(wrapper map[string]json.RawMessage, cursorParam string, cursorKeys []string) string {
+	raw, ok := wrapper["next"]
+	if !ok {
+		return ""
+	}
+	var next map[string]json.RawMessage
+	if json.Unmarshal(raw, &next) != nil {
+		return ""
+	}
+	if cursorParam != "" {
+		if v, ok := next[cursorParam]; ok {
+			if c := cursorValue(v); c != "" {
+				return c
+			}
+		}
+	}
+	if c := findCursorInMap(next, cursorKeys); c != "" {
+		return c
+	}
+	for _, key := range []string{"link", "href", "url"} {
+		if v, ok := next[key]; ok {
+			var link string
+			if json.Unmarshal(v, &link) == nil && isFollowableNextURL(link) {
+				if c := cursorFromNextURL(link, cursorParam); c != "" {
+					return c
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func findCursorInMap(m map[string]json.RawMessage, cursorKeys []string) string {
 	for _, key := range cursorKeys {
 		raw, ok := m[key]
