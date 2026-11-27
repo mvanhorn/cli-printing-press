@@ -202,41 +202,43 @@ var (
 )
 
 type extractorAccumulator struct {
-	endpoints         map[string]*Endpoint
-	grpcEndpoints     map[string]*Endpoint
-	baseURLCounts     map[string]int
-	baseURLSource     map[string]string
-	shards            map[string]ShardRoute
-	authHeaders       map[string]bool
-	authCookies       map[string]bool
-	tokenURLs         map[string]bool
-	graphqlOps        map[string]bool
-	hasBearer         bool
-	hasOAuth          bool
-	hasAPIKey         bool
-	hasCookie         bool
-	hasBasic          bool
-	pinning           []PinningFinding
-	pinningSeen       map[string]bool
-	warnings          []string
-	warningSeen       map[string]bool
-	exactMethodByPath map[string]string
+	endpoints               map[string]*Endpoint
+	grpcEndpoints           map[string]*Endpoint
+	baseURLCounts           map[string]int
+	baseURLSource           map[string]string
+	shards                  map[string]ShardRoute
+	authHeaders             map[string]bool
+	authCookies             map[string]bool
+	tokenURLs               map[string]bool
+	graphqlOps              map[string]bool
+	hasBearer               bool
+	hasOAuth                bool
+	hasAPIKey               bool
+	hasCookie               bool
+	hasBasic                bool
+	pinning                 []PinningFinding
+	pinningSeen             map[string]bool
+	warnings                []string
+	warningSeen             map[string]bool
+	exactMethodByOriginPath map[string]string
+	exactMethodHostless     map[string]string
 }
 
 func newExtractorAccumulator() *extractorAccumulator {
 	return &extractorAccumulator{
-		endpoints:         make(map[string]*Endpoint),
-		grpcEndpoints:     make(map[string]*Endpoint),
-		baseURLCounts:     make(map[string]int),
-		baseURLSource:     make(map[string]string),
-		shards:            make(map[string]ShardRoute),
-		authHeaders:       make(map[string]bool),
-		authCookies:       make(map[string]bool),
-		tokenURLs:         make(map[string]bool),
-		graphqlOps:        make(map[string]bool),
-		pinningSeen:       make(map[string]bool),
-		warningSeen:       make(map[string]bool),
-		exactMethodByPath: make(map[string]string),
+		endpoints:               make(map[string]*Endpoint),
+		grpcEndpoints:           make(map[string]*Endpoint),
+		baseURLCounts:           make(map[string]int),
+		baseURLSource:           make(map[string]string),
+		shards:                  make(map[string]ShardRoute),
+		authHeaders:             make(map[string]bool),
+		authCookies:             make(map[string]bool),
+		tokenURLs:               make(map[string]bool),
+		graphqlOps:              make(map[string]bool),
+		pinningSeen:             make(map[string]bool),
+		warningSeen:             make(map[string]bool),
+		exactMethodByOriginPath: make(map[string]string),
+		exactMethodHostless:     make(map[string]string),
 	}
 }
 
@@ -375,23 +377,35 @@ func (a *extractorAccumulator) addEndpoint(ep Endpoint) {
 	key := ep.Method + " " + originKey + " " + ep.Path
 
 	// Generic URL/string scans default to GET when no HTTP verb is known.
-	// Do not invent a GET if an exact call-site method (fetch/axios/Retrofit/RPC)
-	// already exists for the same route, and let exact call-site methods replace
-	// earlier unknown-method GET hits.
+	// Do not invent a GET if an exact call-site method already exists for the
+	// same origin+path (or for a hostless entry when this entry's origin is
+	// unknown), and never let one host's method hide a distinct host's route.
 	isUnknownMethodGuess := ep.Method == "GET" && ep.Confidence != ConfidenceHigh
 	if isUnknownMethodGuess {
-		if m, ok := a.exactMethodByPath[originKey+" "+ep.Path]; ok && m != "GET" {
-			return
-		}
-		if m, ok := a.exactMethodByPath[ep.Path]; ok && m != "GET" {
-			return
+		if originKey != "" {
+			if m, ok := a.exactMethodByOriginPath[originKey+" "+ep.Path]; ok && m != "GET" {
+				return
+			}
+		} else {
+			if m, ok := a.exactMethodHostless[ep.Path]; ok && m != "GET" {
+				return
+			}
 		}
 	}
 	if ep.Confidence == ConfidenceHigh {
-		a.exactMethodByPath[originKey+" "+ep.Path] = ep.Method
-		a.exactMethodByPath[ep.Path] = ep.Method
+		if originKey != "" {
+			a.exactMethodByOriginPath[originKey+" "+ep.Path] = ep.Method
+		} else {
+			a.exactMethodHostless[ep.Path] = ep.Method
+		}
 		if ep.Method != "GET" {
-			for _, guessKey := range []string{"GET " + originKey + " " + ep.Path, "GET  " + ep.Path} {
+			if originKey != "" {
+				guessKey := "GET " + originKey + " " + ep.Path
+				if prev, ok := targetMap[guessKey]; ok && prev.Confidence != ConfidenceHigh {
+					delete(targetMap, guessKey)
+				}
+			} else {
+				guessKey := "GET  " + ep.Path
 				if prev, ok := targetMap[guessKey]; ok && prev.Confidence != ConfidenceHigh {
 					delete(targetMap, guessKey)
 				}

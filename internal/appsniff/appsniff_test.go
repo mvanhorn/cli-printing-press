@@ -509,4 +509,71 @@ func TestBinaryPlistPureGoAndExecutableContainment(t *testing.T) {
 	assert.Error(t, err)
 	_, err = safeBundleExecutablePath(appDir, ".env")
 	assert.Error(t, err)
+
+	// Shared-reference DAG (billion-laughs style) bplist must decode in O(N) via cache
+	// without exponential blowup, and cyclic references must fail cleanly.
+	var dag bytes.Buffer
+	dag.WriteString(bplistMagic)
+	const levels = 25
+	dagOffsets := make([]byte, levels+1)
+	for i := range levels {
+		dagOffsets[i] = byte(dag.Len())
+		next := byte(i + 1)
+		dag.Write([]byte{0xa2, next, next}) // array of 2 refs to next level
+	}
+	dagOffsets[levels] = byte(dag.Len())
+	dag.Write([]byte{0x51, 'x'}) // leaf "x"
+	dagOffTable := uint64(dag.Len())
+	dag.Write(dagOffsets)
+	dag.Write(make([]byte, 6))
+	dag.WriteByte(1)
+	dag.WriteByte(1)
+	_ = binary.Write(&dag, binary.BigEndian, uint64(levels+1))
+	_ = binary.Write(&dag, binary.BigEndian, uint64(0))
+	_ = binary.Write(&dag, binary.BigEndian, dagOffTable)
+
+	val, err := parseBinaryPlist(dag.Bytes())
+	require.NoError(t, err)
+	require.NotNil(t, val)
+
+	// Cyclic bplist (obj 0 -> [0]) must return an error.
+	var cyc bytes.Buffer
+	cyc.WriteString(bplistMagic)
+	cycOff := byte(cyc.Len())
+	cyc.Write([]byte{0xa1, 0})
+	cycOffTable := uint64(cyc.Len())
+	cyc.WriteByte(cycOff)
+	cyc.Write(make([]byte, 6))
+	cyc.WriteByte(1)
+	cyc.WriteByte(1)
+	_ = binary.Write(&cyc, binary.BigEndian, uint64(1))
+	_ = binary.Write(&cyc, binary.BigEndian, uint64(0))
+	_ = binary.Write(&cyc, binary.BigEndian, cycOffTable)
+	_, err = parseBinaryPlist(cyc.Bytes())
+	assert.Error(t, err)
+}
+
+func TestDistinctHostExactMethodDoesNotHideOtherHostRoute(t *testing.T) {
+	t.Parallel()
+
+	js := `
+		axios.post("https://api.alpha.test/v1/users");
+		const other = "https://api.beta.test/v1/users";
+	`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "multi.js"), []byte(js), 0o644))
+	res, err := DiscoverDesktopApp(dir, Options{Name: "Multi"})
+	require.NoError(t, err)
+
+	var gotAlphaPost, gotBetaGet bool
+	for _, ep := range res.Endpoints {
+		if ep.Host == "api.alpha.test" && ep.Path == "/v1/users" && ep.Method == "POST" {
+			gotAlphaPost = true
+		}
+		if ep.Host == "api.beta.test" && ep.Path == "/v1/users" && ep.Method == "GET" {
+			gotBetaGet = true
+		}
+	}
+	assert.True(t, gotAlphaPost, "expected POST on api.alpha.test")
+	assert.True(t, gotBetaGet, "expected GET on api.beta.test not to be hidden by api.alpha.test POST")
 }

@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	bplistMagic       = "bplist00"
-	bplistTrailerSize = 32
-	bplistMaxObjects  = 200000
-	bplistMaxDepth    = 32
+	bplistMagic           = "bplist00"
+	bplistTrailerSize     = 32
+	bplistMaxObjects      = 200000
+	bplistMaxDecodedNodes = 200000
+	bplistMaxDepth        = 32
 )
 
 // parseBinaryPlist decodes Apple binary plist (bplist00) payloads in pure Go
@@ -60,6 +61,8 @@ func parseBinaryPlist(data []byte) (any, error) {
 		offsets:       offsets,
 		objectRefSize: objectRefSize,
 		limit:         int(offsetTableOffset),
+		cache:         make(map[uint64]any),
+		visiting:      make(map[uint64]bool),
 	}
 	return dec.decodeObject(topObject, 0)
 }
@@ -69,6 +72,9 @@ type bplistDecoder struct {
 	offsets       []uint64
 	objectRefSize int
 	limit         int
+	cache         map[uint64]any
+	visiting      map[uint64]bool
+	decodedNodes  int
 }
 
 func (d *bplistDecoder) decodeObject(ref uint64, depth int) (any, error) {
@@ -78,6 +84,28 @@ func (d *bplistDecoder) decodeObject(ref uint64, depth int) (any, error) {
 	if ref >= uint64(len(d.offsets)) {
 		return nil, fmt.Errorf("bplist object ref %d out of range", ref)
 	}
+	d.decodedNodes++
+	if d.decodedNodes > bplistMaxDecodedNodes {
+		return nil, errors.New("bplist decoded node budget exceeded")
+	}
+	if d.visiting[ref] {
+		return nil, fmt.Errorf("bplist cyclic object reference %d", ref)
+	}
+	if cached, ok := d.cache[ref]; ok {
+		return cached, nil
+	}
+	d.visiting[ref] = true
+	defer delete(d.visiting, ref)
+
+	val, err := d.decodeObjectUncached(ref, depth)
+	if err != nil {
+		return nil, err
+	}
+	d.cache[ref] = val
+	return val, nil
+}
+
+func (d *bplistDecoder) decodeObjectUncached(ref uint64, depth int) (any, error) {
 	pos := int(d.offsets[ref])
 	if pos >= d.limit {
 		return nil, errors.New("bplist object offset out of bounds")
