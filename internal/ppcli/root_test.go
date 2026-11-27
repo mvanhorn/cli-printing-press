@@ -157,8 +157,9 @@ func TestPPBatchAndSetupCommands(t *testing.T) {
 		RowCount:  len(bigRows),
 		Data:      bigRows,
 	}, 900, 4000)
-	rawBounded, err := json.Marshal(bounded)
+	rawBounded, err := json.MarshalIndent(bounded, "", "  ")
 	require.NoError(t, err)
+	assert.LessOrEqual(t, len(rawBounded), 900)
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal(rawBounded, &parsed))
 	assert.Equal(t, true, parsed["truncated"])
