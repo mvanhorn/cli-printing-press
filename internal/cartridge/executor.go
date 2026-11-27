@@ -432,6 +432,50 @@ func executeHTTP(ctx context.Context, c *Cartridge, cmd CommandSpec, params map[
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// If a cached press-auth cookie was rejected with 401/403 on a safe read-only
+	// HTTP method, retry once bypassing the press-auth cache so a live Ardia /
+	// browser session can recover transparently without double-mutating state.
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) &&
+		strings.HasPrefix(authRes.Source, "press-auth:") &&
+		(method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions) {
+		freshAuth, freshErr := sessionbridge.Resolve(sessionbridge.AuthSpec{
+			AppName:            c.Name,
+			Strategy:           c.Auth.Strategy,
+			EnvVar:             c.Auth.EnvVar,
+			OnePasswordRef:     c.Auth.OnePasswordRef,
+			Header:             c.Auth.Header,
+			Prefix:             c.Auth.Prefix,
+			QueryParam:         c.Auth.QueryParam,
+			Domains:            c.Auth.Domains,
+			TargetURL:          parsedURL.String(),
+			AgentCookieAdapter: c.Auth.AgentCookieAdapter,
+			SkipPressAuthCache: true,
+		})
+		if freshErr == nil && freshAuth != nil && freshAuth.Headers["Cookie"] != "" && freshAuth.Headers["Cookie"] != authRes.Headers["Cookie"] {
+			var retryBody io.Reader
+			if len(bodyBytes) > 0 {
+				retryBody = bytes.NewReader(bodyBytes)
+			}
+			retryReq, rErr := http.NewRequestWithContext(ctx, method, parsedURL.String(), retryBody)
+			if rErr == nil {
+				retryReq.Header.Set("User-Agent", "pp/2.0 (Printing Press Local Runtime)")
+				retryReq.Header.Set("Accept", "application/json, text/plain;q=0.9, */*;q=0.1")
+				if contentType != "" {
+					retryReq.Header.Set("Content-Type", contentType)
+				}
+				for k, v := range cmd.Headers {
+					retryReq.Header.Set(k, renderTemplate(v, params, false))
+				}
+				freshAuth.Apply(retryReq)
+				if retryResp, doErr := client.Do(retryReq); doErr == nil {
+					_ = resp.Body.Close()
+					resp = retryResp
+					authRes = freshAuth
+				}
+			}
+		}
+	}
+
 	const maxBodyBytes = 16 << 20
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {

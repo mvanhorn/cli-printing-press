@@ -46,13 +46,22 @@ func TestResolveOnePasswordViaMockOP(t *testing.T) {
 	assert.NotContains(t, cookieRes.Source, "sk_live_touchid_123")
 }
 
+func isolateSessionTestHome(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, ".cache"))
+	return tmp
+}
+
 func TestLoadFromArdiaEnforcesRFC6265DomainPathSchemeAndExpiry(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell mock")
 	}
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
+	tmp := isolateSessionTestHome(t)
 	t.Setenv("PP_INSTACART_TOKEN", "")
 	t.Setenv("PP_AUTH_TOKEN", "")
 	t.Setenv("AGENTCOOKIE_SIDECAR_DB", filepath.Join(tmp, "missing.db"))
@@ -92,9 +101,7 @@ func TestResolveFreshPressAuthSkipsArdiaCDP(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell mock")
 	}
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
+	tmp := isolateSessionTestHome(t)
 	t.Setenv("AGENTCOOKIE_SIDECAR_DB", filepath.Join(tmp, "missing.db"))
 	t.Setenv("PP_INSTACART_TOKEN", "")
 	t.Setenv("PP_AUTH_TOKEN", "")
@@ -116,10 +123,11 @@ func TestResolveFreshPressAuthSkipsArdiaCDP(t *testing.T) {
 	}
 	t.Cleanup(func() { loadPressAuthState = origLoad })
 
-	// Fresh (<24h) press-auth snapshot must be returned without invoking ardia.
+	// 1. Fresh (<24h and unexpired JWT) press-auth snapshot skips Ardia CDP.
 	currentState = &pressauth.State{
 		Domain:     "instacart.com",
 		CapturedAt: time.Now().UTC(),
+		JWTExpiry:  time.Now().UTC().Add(2 * time.Hour),
 		Cookies:    map[string]string{"_instacart_session": "cached_fast"},
 	}
 
@@ -135,7 +143,41 @@ func TestResolveFreshPressAuthSkipsArdiaCDP(t *testing.T) {
 	_, statErr := os.Stat(sentinel)
 	assert.True(t, os.IsNotExist(statErr), "fresh press-auth cache must skip Ardia CDP call")
 
-	// Stale (>=24h) press-auth snapshot must fall through to Ardia CDP for refresh.
+	// 2. SkipPressAuthCache forces a live Ardia lookup even when cache is fresh.
+	resBypass, err := Resolve(AuthSpec{
+		AppName:            "instacart",
+		Strategy:           "browser_cookie",
+		Domains:            []string{".instacart.com"},
+		TargetURL:          "https://www.instacart.com/store",
+		SkipPressAuthCache: true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "_instacart_session=from_ardia", resBypass.Headers["Cookie"])
+	assert.Equal(t, "ardia-cdp", resBypass.Source)
+	assert.FileExists(t, sentinel)
+
+	// 3. Recently captured (<24h) snapshot whose JWTExpiry is in the past must
+	// NOT be reused; it must refresh via Ardia CDP.
+	require.NoError(t, os.Remove(sentinel))
+	currentState = &pressauth.State{
+		Domain:     "instacart.com",
+		CapturedAt: time.Now().UTC().Add(-10 * time.Minute),
+		JWTExpiry:  time.Now().UTC().Add(-2 * time.Minute),
+		Cookies:    map[string]string{"_instacart_session": "expired_jwt"},
+	}
+	resExpired, err := Resolve(AuthSpec{
+		AppName:   "instacart",
+		Strategy:  "browser_cookie",
+		Domains:   []string{".instacart.com"},
+		TargetURL: "https://www.instacart.com/store",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "_instacart_session=from_ardia", resExpired.Headers["Cookie"])
+	assert.Equal(t, "ardia-cdp", resExpired.Source)
+	assert.FileExists(t, sentinel)
+
+	// 4. Stale (>=24h) press-auth snapshot must also fall through to Ardia CDP.
+	require.NoError(t, os.Remove(sentinel))
 	currentState = &pressauth.State{
 		Domain:     "instacart.com",
 		CapturedAt: time.Now().UTC().Add(-48 * time.Hour),

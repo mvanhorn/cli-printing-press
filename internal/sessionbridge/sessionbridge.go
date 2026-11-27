@@ -40,6 +40,20 @@ type AuthSpec struct {
 	Domains            []string
 	TargetURL          string
 	AgentCookieAdapter string
+	SkipPressAuthCache bool
+}
+
+// IsPressAuthFresh reports whether a cached press-auth snapshot is usable
+// without hitting the live browser: it must have cookies, must not be past
+// its known JWTExpiry, and must have been captured within PressAuthFreshTTL.
+func IsPressAuthFresh(state *pressauth.State, now time.Time) bool {
+	if state == nil || len(state.Cookies) == 0 {
+		return false
+	}
+	if !state.JWTExpiry.IsZero() && !state.JWTExpiry.After(now) {
+		return false
+	}
+	return now.Sub(state.CapturedAt) < PressAuthFreshTTL
 }
 
 // ResolvedAuth carries the resolved auth headers/query params and provenance.
@@ -170,27 +184,31 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 				Source:  src,
 			}, nil
 		}
-		// Reuse fresh (<24h) press-auth cache before hitting Ardia CDP so repeated
-		// calls stay ~1ms instead of dumping all browser cookies on every run.
+		// Reuse fresh (<24h and unexpired JWT) press-auth cache before hitting Ardia
+		// CDP so repeated calls stay ~1ms instead of dumping all browser cookies.
 		var stalePressAuth *ResolvedAuth
-		for _, dom := range scopedDomains {
-			clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(dom)), ".")
-			if clean == "" {
-				continue
-			}
-			if target != nil && !cookieDomainMatchesHost(dom, target.host) {
-				continue
-			}
-			if state, err := loadPressAuthState(clean); err == nil && len(state.Cookies) > 0 {
-				candidate := &ResolvedAuth{
-					Headers: map[string]string{"Cookie": joinPressAuthCookies(state.Cookies)},
-					Source:  "press-auth:" + clean,
+		now := time.Now().UTC()
+		if !spec.SkipPressAuthCache {
+			for _, dom := range scopedDomains {
+				clean := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(dom)), ".")
+				if clean == "" {
+					continue
 				}
-				if time.Since(state.CapturedAt) < PressAuthFreshTTL {
-					return candidate, nil
+				if target != nil && !cookieDomainMatchesHost(dom, target.host) {
+					continue
 				}
-				if stalePressAuth == nil {
-					stalePressAuth = candidate
+				if state, err := loadPressAuthState(clean); err == nil && len(state.Cookies) > 0 {
+					candidate := &ResolvedAuth{
+						Headers: map[string]string{"Cookie": joinPressAuthCookies(state.Cookies)},
+						Source:  "press-auth:" + clean,
+					}
+					if IsPressAuthFresh(state, now) {
+						return candidate, nil
+					}
+					// Only keep as fallback if not known-expired via JWTExpiry.
+					if stalePressAuth == nil && (state.JWTExpiry.IsZero() || state.JWTExpiry.After(now)) {
+						stalePressAuth = candidate
+					}
 				}
 			}
 		}

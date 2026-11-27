@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/sessionbridge"
 )
 
 const defaultBrowseExecTimeout = 30 * time.Second
@@ -84,6 +86,18 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 		}
 	}
 
+	authStrategy := strings.ToLower(strings.TrimSpace(c.Auth.Strategy))
+	switch authStrategy {
+	case "", AuthStrategyNone, AuthStrategyBrowserCookie, AuthStrategyAgentCookie,
+		AuthStrategyEnvBearer, AuthStrategyEnvAPIKey, AuthStrategyHeader, AuthStrategyOnePassword:
+	default:
+		return nil, 0, "", &ExecError{
+			Code:    ExitUsage,
+			Class:   ClassUsage,
+			Message: fmt.Sprintf("unsupported auth strategy %q for --via browse", c.Auth.Strategy),
+		}
+	}
+
 	if opts.DryRun {
 		return map[string]any{
 			"transport":     "opencode-browse-fetch",
@@ -91,7 +105,51 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 			"method":        method,
 			"url":           parsedURL.String(),
 			"allowed_hosts": c.Trust.AllowedHosts,
+			"auth_strategy": c.Auth.Strategy,
 		}, 0, "opencode-browse", nil
+	}
+
+	// Apply configured non-cookie credentials (env_bearer, env_api_key, header,
+	// op_secret) before issuing the browser fetch, matching executeHTTP.
+	authSource := "opencode-browse"
+	switch authStrategy {
+	case AuthStrategyEnvBearer, AuthStrategyEnvAPIKey, AuthStrategyHeader, AuthStrategyOnePassword:
+		authRes, authErr := sessionbridge.Resolve(sessionbridge.AuthSpec{
+			AppName:            c.Name,
+			Strategy:           c.Auth.Strategy,
+			EnvVar:             c.Auth.EnvVar,
+			OnePasswordRef:     c.Auth.OnePasswordRef,
+			Header:             c.Auth.Header,
+			Prefix:             c.Auth.Prefix,
+			QueryParam:         c.Auth.QueryParam,
+			Domains:            c.Auth.Domains,
+			TargetURL:          parsedURL.String(),
+			AgentCookieAdapter: c.Auth.AgentCookieAdapter,
+		})
+		if authErr != nil {
+			return nil, 0, "", &ExecError{
+				Code:    ExitAuth,
+				Class:   ClassAuthError,
+				Message: authErr.Error(),
+			}
+		}
+		for k, v := range authRes.Headers {
+			if _, exists := headers[k]; !exists {
+				headers[k] = v
+			}
+		}
+		if len(authRes.QueryParams) > 0 {
+			q := parsedURL.Query()
+			for k, v := range authRes.QueryParams {
+				if !q.Has(k) {
+					q.Set(k, v)
+				}
+			}
+			parsedURL.RawQuery = q.Encode()
+		}
+		if authRes.Source != "" {
+			authSource = "opencode-browse+" + authRes.Source
+		}
 	}
 
 	browseBin, err := findOpenCodeBrowseBinary()
@@ -100,11 +158,12 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 	}
 
 	reqDesc := map[string]any{
-		"origin":  origin,
-		"url":     parsedURL.String(),
-		"method":  method,
-		"headers": headers,
-		"body":    bodyStr,
+		"origin":        origin,
+		"url":           parsedURL.String(),
+		"method":        method,
+		"headers":       headers,
+		"body":          bodyStr,
+		"allowed_hosts": c.Trust.AllowedHosts,
 	}
 	reqJSON, err := json.Marshal(reqDesc)
 	if err != nil {
@@ -113,27 +172,120 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 
 	// Build a safe JS body passing the JSON descriptor as a literal parsed JSON
 	// string (escaped by json.Marshal, never interpolated into JS code).
+	// Enforce trust.allowed_hosts on EVERY browser request and redirect hop via
+	// both page.route interception and manual fetch redirect verification.
 	escapedJSON, err := json.Marshal(string(reqJSON))
 	if err != nil {
 		return nil, 0, "", err
 	}
 	jsCode := fmt.Sprintf(`
 const req = JSON.parse(%s);
-try {
-  await page.goto(req.origin, { waitUntil: "domcontentloaded", timeout: 15000 });
-  const result = await page.evaluate(async (r) => {
-    const init = {
-      method: r.method || "GET",
-      credentials: "include",
-      headers: r.headers || {}
-    };
-    if (r.body && r.method !== "GET" && r.method !== "HEAD") {
-      init.body = r.body;
+const isHostAllowed = (host, allowed) => {
+  const h = String(host || "").toLowerCase();
+  if (!h || !Array.isArray(allowed) || allowed.length === 0) return false;
+  for (const raw of allowed) {
+    const a = String(raw || "").toLowerCase().trim();
+    if (!a) continue;
+    if (a.startsWith("*.")) {
+      const suf = a.slice(1);
+      if (h.endsWith(suf) && h.length > suf.length) return true;
+    } else if (h === a) {
+      return true;
     }
-    const resp = await fetch(r.url, init);
-    const text = await resp.text();
-    return { status: resp.status, text };
+  }
+  return false;
+};
+let blockedReason = "";
+try {
+  if (typeof page.route === "function") {
+    await page.route("**/*", async (route) => {
+      try {
+        const u = new URL(route.request().url());
+        if ((u.protocol === "http:" || u.protocol === "https:") && !isHostAllowed(u.hostname, req.allowed_hosts)) {
+          if (!blockedReason) {
+            blockedReason = "outbound host " + u.hostname + " blocked by trust.allowed_hosts";
+          }
+          await route.abort("blockedbyclient");
+          return;
+        }
+      } catch (_) {}
+      await route.continue();
+    });
+  }
+  await page.goto(req.origin, { waitUntil: "domcontentloaded", timeout: 15000 });
+  const landedHost = new URL(page.url()).hostname;
+  if (!isHostAllowed(landedHost, req.allowed_hosts)) {
+    return { blocked: "redirect to disallowed host " + landedHost + " blocked by trust.allowed_hosts" };
+  }
+  const result = await page.evaluate(async (r) => {
+    const allow = (host) => {
+      const h = String(host || "").toLowerCase();
+      if (!h || !Array.isArray(r.allowed_hosts) || r.allowed_hosts.length === 0) return false;
+      for (const raw of r.allowed_hosts) {
+        const a = String(raw || "").toLowerCase().trim();
+        if (!a) continue;
+        if (a.startsWith("*.")) {
+          const suf = a.slice(1);
+          if (h.endsWith(suf) && h.length > suf.length) return true;
+        } else if (h === a) {
+          return true;
+        }
+      }
+      return false;
+    };
+    let curURL = r.url;
+    let curMethod = r.method || "GET";
+    let curHeaders = Object.assign({}, r.headers || {});
+    let curBody = r.body;
+    for (let hop = 0; hop < 5; hop++) {
+      const init = {
+        method: curMethod,
+        credentials: "include",
+        redirect: "manual",
+        headers: curHeaders
+      };
+      if (curBody && curMethod !== "GET" && curMethod !== "HEAD") {
+        init.body = curBody;
+      }
+      const resp = await fetch(curURL, init);
+      if (resp.type === "opaqueredirect") {
+        return { blocked: "redirect blocked: browser hid redirect target (opaqueredirect) so trust.allowed_hosts could not be verified" };
+      }
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get("location");
+        if (!loc) {
+          return { blocked: "redirect blocked: HTTP " + resp.status + " missing Location header" };
+        }
+        const prevHost = new URL(curURL).hostname.toLowerCase();
+        const nextURL = new URL(loc, curURL);
+        if (!allow(nextURL.hostname)) {
+          return { blocked: "redirect to disallowed host " + nextURL.hostname + " blocked by trust.allowed_hosts" };
+        }
+        if (nextURL.hostname.toLowerCase() !== prevHost) {
+          for (const hk of Object.keys(curHeaders)) {
+            if (hk.toLowerCase() === "authorization" || hk.toLowerCase() === "cookie") {
+              delete curHeaders[hk];
+            }
+          }
+        }
+        if (resp.status === 301 || resp.status === 302 || resp.status === 303) {
+          curMethod = "GET";
+          curBody = "";
+        }
+        curURL = nextURL.toString();
+        continue;
+      }
+      const text = await resp.text();
+      return { status: resp.status, text };
+    }
+    return { blocked: "stopped after 5 redirects" };
   }, req);
+  if (result && result.blocked) {
+    return result;
+  }
+  if (blockedReason && (!result || !result.status)) {
+    return { blocked: blockedReason };
+  }
   return result;
 } finally {
   await page.close().catch(() => {});
@@ -160,7 +312,7 @@ try {
 	proc.Stderr = &stderr
 	if err := proc.Run(); err != nil {
 		errDetail := truncate(strings.TrimSpace(stderr.String()), 220)
-		return nil, 0, "opencode-browse", &ExecError{
+		return nil, 0, authSource, &ExecError{
 			Code:    ExitAPI,
 			Class:   ClassError,
 			Message: fmt.Sprintf("OpenCode browse execute failed: %v (%s)", err, errDetail),
@@ -168,18 +320,25 @@ try {
 		}
 	}
 
-	status, bodyText, err := parseBrowseExecuteFetchResult(stdout.Bytes())
+	status, bodyText, blockedMsg, err := parseBrowseExecuteFetchResult(stdout.Bytes())
 	if err != nil {
-		return nil, 0, "opencode-browse", &ExecError{
+		return nil, 0, authSource, &ExecError{
 			Code:    ExitAPI,
 			Class:   ClassError,
 			Message: err.Error(),
 		}
 	}
+	if blockedMsg != "" {
+		return nil, 0, authSource, &ExecError{
+			Code:    ExitUsage,
+			Class:   ClassBlocked,
+			Message: blockedMsg,
+		}
+	}
 
 	switch {
 	case status == 401 || status == 403:
-		return nil, status, "opencode-browse", &ExecError{
+		return nil, status, authSource, &ExecError{
 			Code:       ExitAuth,
 			HTTPStatus: status,
 			Class:      ClassAuthError,
@@ -194,14 +353,14 @@ try {
 			},
 		}
 	case status == 429:
-		return nil, status, "opencode-browse", &ExecError{
+		return nil, status, authSource, &ExecError{
 			Code:       ExitRateLimited,
 			HTTPStatus: status,
 			Class:      ClassRateLimited,
 			Message:    fmt.Sprintf("HTTP 429 rate limited by %s", parsedURL.Hostname()),
 		}
 	case status >= 400:
-		return nil, status, "opencode-browse", &ExecError{
+		return nil, status, authSource, &ExecError{
 			Code:       ExitAPI,
 			HTTPStatus: status,
 			Class:      ClassDrift,
@@ -211,40 +370,43 @@ try {
 
 	var decoded any
 	if err := json.Unmarshal([]byte(bodyText), &decoded); err != nil {
-		return map[string]any{"text": bodyText}, status, "opencode-browse", nil
+		return map[string]any{"text": bodyText}, status, authSource, nil
 	}
-	return decoded, status, "opencode-browse", nil
+	return decoded, status, authSource, nil
 }
 
-// parseBrowseExecuteFetchResult extracts {status, text} from OpenCode browse's
-// stdout (which may prefix metadata lines like `tab: <id>` before the JSON
-// return value, or wrap it under `result`/`value`).
-func parseBrowseExecuteFetchResult(raw []byte) (int, string, error) {
+// parseBrowseExecuteFetchResult extracts {status, text} or {blocked} from
+// OpenCode browse's stdout (which may prefix metadata lines like `tab: <id>`
+// before the JSON return value, or wrap it under `result`/`value`).
+func parseBrowseExecuteFetchResult(raw []byte) (int, string, string, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		return 0, "", errors.New("OpenCode browse execute returned empty output")
+		return 0, "", "", errors.New("OpenCode browse execute returned empty output")
 	}
 	// Locate the first JSON object in stdout (skipping any `tab: ...` header line).
 	start := strings.IndexByte(trimmed, '{')
 	if start < 0 {
-		return 0, "", fmt.Errorf("unexpected browse execute output (no JSON object): %s", truncate(trimmed, 200))
+		return 0, "", "", fmt.Errorf("unexpected browse execute output (no JSON object): %s", truncate(trimmed, 200))
 	}
 	dec := json.NewDecoder(strings.NewReader(trimmed[start:]))
 	var doc map[string]any
 	if err := dec.Decode(&doc); err != nil {
-		return 0, "", fmt.Errorf("parsing browse execute JSON: %w", err)
+		return 0, "", "", fmt.Errorf("parsing browse execute JSON: %w", err)
 	}
 	if nested, ok := doc["result"].(map[string]any); ok {
 		doc = nested
 	} else if nested, ok := doc["value"].(map[string]any); ok {
 		doc = nested
 	}
+	if blocked, ok := doc["blocked"].(string); ok && strings.TrimSpace(blocked) != "" {
+		return 0, "", strings.TrimSpace(blocked), nil
+	}
 	statusFloat, ok := doc["status"].(float64)
 	if !ok {
-		return 0, "", fmt.Errorf("browse execute response missing HTTP status field")
+		return 0, "", "", fmt.Errorf("browse execute response missing HTTP status field")
 	}
 	text, _ := doc["text"].(string)
-	return int(statusFloat), text, nil
+	return int(statusFloat), text, "", nil
 }
 
 func findOpenCodeBrowseBinary() (string, error) {

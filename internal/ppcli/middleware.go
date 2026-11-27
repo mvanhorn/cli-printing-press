@@ -212,11 +212,8 @@ func newAuthCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := savePressAuthState(&pressauth.State{
-				Domain:     domain,
-				CapturedAt: time.Now().UTC(),
-				Cookies:    cookieMap,
-			}); err != nil {
+			existingState, _ := loadPressAuthState(domain)
+			if err := savePressAuthState(mergePressAuthCookies(existingState, domain, cookieMap)); err != nil {
 				return err
 			}
 			res := map[string]any{
@@ -318,7 +315,7 @@ func hydrateAndExecLibraryBinary(cmd *cobra.Command, app string, childArgs []str
 				dom := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 				needsCookieEnv := entry.MCP != nil && strings.EqualFold(entry.MCP.AuthType, "cookie")
 				existingState, existingErr := loadPressAuthState(dom)
-				freshCached := existingErr == nil && existingState != nil && len(existingState.Cookies) > 0 && time.Since(existingState.CapturedAt) < sessionbridge.PressAuthFreshTTL
+				freshCached := existingErr == nil && sessionbridge.IsPressAuthFresh(existingState, time.Now().UTC())
 				var cookieHeader string
 				switch {
 				case freshCached:
@@ -327,11 +324,7 @@ func hydrateAndExecLibraryBinary(cmd *cobra.Command, app string, childArgs []str
 					}
 				case strings.TrimSpace(os.Getenv("PP_NO_ARDIA_COOKIES")) != "1":
 					if hdr, cookieMap, aerr := sessionbridge.ResolveArdiaDomainCookies(cmd.Context(), dom); aerr == nil && len(cookieMap) > 0 {
-						_ = savePressAuthState(&pressauth.State{
-							Domain:     dom,
-							CapturedAt: time.Now().UTC(),
-							Cookies:    cookieMap,
-						})
+						_ = savePressAuthState(mergePressAuthCookies(existingState, dom, cookieMap))
 						cookieHeader = hdr
 					} else if needsCookieEnv && existingState != nil && len(existingState.Cookies) > 0 {
 						cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
@@ -368,6 +361,33 @@ func entryMayUseCookies(entry *registry.Entry) bool {
 	default:
 		return false
 	}
+}
+
+// mergePressAuthCookies updates stored cookies while preserving any existing
+// press-auth refresh configuration (RefreshEndpoint, JWTCarrierCookie) and
+// recomputing JWTExpiry from the newly synced carrier cookie when present.
+func mergePressAuthCookies(existing *pressauth.State, domain string, cookies map[string]string) *pressauth.State {
+	next := &pressauth.State{
+		Domain:     domain,
+		CapturedAt: time.Now().UTC(),
+		Cookies:    cookies,
+	}
+	if existing != nil {
+		next.RefreshEndpoint = existing.RefreshEndpoint
+		next.JWTCarrierCookie = existing.JWTCarrierCookie
+		if existing.JWTCarrierCookie != "" {
+			if carrierVal, ok := cookies[existing.JWTCarrierCookie]; ok {
+				if token, err := pressauth.ExtractJWT(carrierVal); err == nil {
+					if claims, err := pressauth.DecodeJWT(token); err == nil {
+						if exp, err := pressauth.Exp(claims); err == nil {
+							next.JWTExpiry = exp
+						}
+					}
+				}
+			}
+		}
+	}
+	return next
 }
 
 type batchOp struct {

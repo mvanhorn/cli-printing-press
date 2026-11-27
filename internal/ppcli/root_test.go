@@ -236,4 +236,22 @@ INSERT INTO cookies VALUES ('.google.com', 'SID', 'do_not_leak', '/', 1);`)
 	assert.Equal(t, "tok_chrome_1", loaded.Cookies["_ic_sess"])
 	assert.NotContains(t, loaded.Cookies, "SID")
 	assert.WithinDuration(t, time.Now().UTC(), loaded.CapturedAt, 10*time.Second)
+
+	// 4. Updating cookies via mergePressAuthCookies must preserve existing
+	// RefreshEndpoint and JWTCarrierCookie and recompute JWTExpiry.
+	// eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig -> exp = 2100-01-01T00:00:00Z
+	freshJWT := "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig"
+	existing := &pressauth.State{
+		Domain:           "instacart.com",
+		CapturedAt:       time.Now().UTC().Add(-48 * time.Hour),
+		RefreshEndpoint:  "https://www.instacart.com/api/refresh",
+		JWTCarrierCookie: "session_jwt",
+		JWTExpiry:        time.Now().UTC().Add(-1 * time.Hour),
+		Cookies:          map[string]string{"session_jwt": "old"},
+	}
+	merged := mergePressAuthCookies(existing, "instacart.com", map[string]string{"session_jwt": freshJWT})
+	assert.Equal(t, "https://www.instacart.com/api/refresh", merged.RefreshEndpoint)
+	assert.Equal(t, "session_jwt", merged.JWTCarrierCookie)
+	assert.Equal(t, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC), merged.JWTExpiry)
+	assert.Equal(t, freshJWT, merged.Cookies["session_jwt"])
 }

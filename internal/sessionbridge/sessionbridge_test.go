@@ -29,9 +29,7 @@ func TestResolveEnvBearerAndAPIKey(t *testing.T) {
 }
 
 func TestResolveAgentCookieSidecar(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
+	tmp := isolateSessionTestHome(t)
 	t.Setenv("PP_INSTACART_TOKEN", "")
 	t.Setenv("PP_AUTH_TOKEN", "")
 	dbPath := filepath.Join(tmp, "cookies-plain.db")
