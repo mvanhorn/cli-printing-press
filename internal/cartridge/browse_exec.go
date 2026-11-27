@@ -472,12 +472,22 @@ func readBoundedRegularFile(path string, maxBytes int64) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("expected regular file at %s", path)
 	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("browse response body (%d bytes) exceeds %d-byte limit", info.Size(), maxBytes)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return io.ReadAll(io.LimitReader(f, maxBytes))
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("browse response body exceeds %d-byte limit", maxBytes)
+	}
+	return data, nil
 }
 
 func findOpenCodeBrowseBinary() (string, error) {

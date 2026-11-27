@@ -255,4 +255,12 @@ exit 0
 	assert.Equal(t, 1, res.RowCount)
 	rows := res.Data.([]any)
 	assert.Equal(t, "Spilled OK", rows[0].(map[string]any)["name"])
+
+	// readBoundedRegularFile must error explicitly rather than silently truncating
+	// when a response exceeds maxBytes.
+	oversize := filepath.Join(tmp, "oversize.txt")
+	require.NoError(t, os.WriteFile(oversize, []byte("0123456789"), 0o600))
+	_, err = readBoundedRegularFile(oversize, 5)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds 5-byte limit")
 }
