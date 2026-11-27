@@ -310,3 +310,23 @@ func TestPrintingPressSkillAgenticSkillReviewGateDoesNotSkipToDogfood(t *testing
 	require.Contains(t, gate, "15-readme-skill-agents-correctness-audit.md")
 	require.NotContains(t, gate, "18-dogfood-testing.md")
 }
+
+func TestPrintingPressSkillAppSniffIntegration(t *testing.T) {
+	t.Parallel()
+
+	content := readPrintingPressSkill(t)
+	require.Contains(t, content, "references/app-sniff.md")
+	require.Contains(t, content, "cli-printing-press app-sniff")
+
+	refBytes, err := os.ReadFile("../../skills/printing-press/references/app-sniff.md")
+	require.NoError(t, err)
+	ref := string(refBytes)
+	require.Contains(t, ref, "--apkeep")
+	require.Contains(t, ref, "--audit-cli")
+	require.Contains(t, ref, "--include-grpc")
+	require.Contains(t, ref, "FairPlay")
+
+	polishBytes, err := os.ReadFile("../../skills/printing-press-polish/SKILL.md")
+	require.NoError(t, err)
+	require.Contains(t, string(polishBytes), "app-sniff --audit-cli")
+}

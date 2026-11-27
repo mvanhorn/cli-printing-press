@@ -237,7 +237,7 @@ capture, replayability analysis, and discovery report writing.
 
 Append it to `$PRESS_RUNSTATE/runs/$RUN_ID/browser-browser-sniff-gate.json`.
 
-Proceed with whatever spec source exists. If no spec was found, fall back to `--docs` or ask the user to provide a spec/HAR manually.
+Proceed with whatever spec source exists. If no spec was found and the target ships a desktop or mobile app binary (or browser capture hit a mobile-only or login wall), evaluate `cli-printing-press app-sniff` in [Phase 1.8](07-crowd-sniff-gate.md) using [references/app-sniff.md](../references/app-sniff.md). Otherwise fall back to `--docs` or ask the user to provide a spec/HAR manually.
 
 ### Before leaving Phase 1.7
 

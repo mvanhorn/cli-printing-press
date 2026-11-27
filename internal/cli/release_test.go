@@ -85,6 +85,7 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 	const reuseLiveHappyPathFloor = "4.34.3"
 	const postAcceptanceShipcheckFloor = "4.35.2"
 	const phase5SkipWriterFloor = "4.35.4"
+	const appSniffFloor = "4.37.0"
 	paths := []struct {
 		frontmatter string
 		setup       string
@@ -123,6 +124,8 @@ func TestInternalSkillMinimumBinaryVersions(t *testing.T) {
 					"printing-press min-binary-version must cover read-only shipcheck verify after a valid phase5 acceptance marker (%s)", postAcceptanceShipcheckFloor)
 				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+phase5SkipWriterFloor) < 0,
 					"printing-press min-binary-version must cover dogfood --write-skip (%s)", phase5SkipWriterFloor)
+				assert.False(t, semver.Compare("v"+frontmatter[1], "v"+appSniffFloor) < 0,
+					"printing-press min-binary-version must cover app-sniff (%s)", appSniffFloor)
 				assign := assignRe.FindStringSubmatch(string(setupData))
 				require.Len(t, assign, 2, "setup contract must assign _min_binary_version")
 				assert.Equal(t, frontmatter[1], assign[1])
