@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.36.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.36.1...v4.36.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **cli:** accept arrays for variadic MCP positionals ([#5487](https://github.com/mvanhorn/cli-printing-press/issues/5487)) ([8ca2235](https://github.com/mvanhorn/cli-printing-press/commit/8ca223509cf204b3fa3a05c50d9b44880d9ab577))
+* **cli:** derive full-run results from validation gates ([#5475](https://github.com/mvanhorn/cli-printing-press/issues/5475)) ([a4acdce](https://github.com/mvanhorn/cli-printing-press/commit/a4acdcebe591642b2fc5b7296c800c442ede81ce))
+* **cli:** fail doctor when a bot interstitial blocks reachability ([#5491](https://github.com/mvanhorn/cli-printing-press/issues/5491)) ([52f2786](https://github.com/mvanhorn/cli-printing-press/commit/52f27863d0ea61a9343b252c08afab6172141aaf))
+* **cli:** follow paging.next.after so sync walks past the first page ([#5499](https://github.com/mvanhorn/cli-printing-press/issues/5499)) ([db78ab9](https://github.com/mvanhorn/cli-printing-press/commit/db78ab9fe22cbddda09991f3810909322139e103))
+* **cli:** rank which against the live command tree ([#5489](https://github.com/mvanhorn/cli-printing-press/issues/5489)) ([d07dac3](https://github.com/mvanhorn/cli-printing-press/commit/d07dac321888c28d4c1983ccec83efa901d5320a))
+* **cli:** refuse local path arguments on read-only MCP mirror tools ([#5481](https://github.com/mvanhorn/cli-printing-press/issues/5481)) ([6ab23d7](https://github.com/mvanhorn/cli-printing-press/commit/6ab23d79cc069aaa79248b03d92ff9e05594e579))
+* **cli:** report has_more when offset or page lists include a total ([#5503](https://github.com/mvanhorn/cli-printing-press/issues/5503)) ([63ab687](https://github.com/mvanhorn/cli-printing-press/commit/63ab6873f21be6c45f1220517913cfe67ac3577a))
+* **cli:** return documented exit codes for arg validation errors and persistent 429s ([#5490](https://github.com/mvanhorn/cli-printing-press/issues/5490)) ([ee15e16](https://github.com/mvanhorn/cli-printing-press/commit/ee15e161bb2b6007810b173a33f43474b34e2ddd))
+* **cli:** steer printed AGENTS.md to an isolated dev binary ([#5504](https://github.com/mvanhorn/cli-printing-press/issues/5504)) ([b5827ee](https://github.com/mvanhorn/cli-printing-press/commit/b5827ee2d37dd0fd27b025c0c52f70cc66c6abcb))
+* **cli:** stop read-only learn commands from creating or migrating the store ([#5492](https://github.com/mvanhorn/cli-printing-press/issues/5492)) ([1c47695](https://github.com/mvanhorn/cli-printing-press/commit/1c47695ad167d9ff3000cc98ca8695c663fd92c3))
+* **cli:** stop retrying client-hook transport refusals ([#5477](https://github.com/mvanhorn/cli-printing-press/issues/5477)) ([e08ac29](https://github.com/mvanhorn/cli-printing-press/commit/e08ac290238a22c9cd0a5bf207fd4388b0f31916))
+
 ## [4.36.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.36.0...v4.36.1) (2026-11-23)
 
 
