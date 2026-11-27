@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -298,12 +299,18 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 	}
 
 	if err != nil {
+		errText := err.Error()
+		if ee, ok := errors.AsType[*cartridge.ExecError](err); ok && ee.Handoff != nil {
+			if rawErr, mErr := json.MarshalIndent(ee, "", "  "); mErr == nil {
+				errText = string(rawErr)
+			}
+		}
 		return rpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]any{
 				"isError": true,
-				"content": []map[string]any{{"type": "text", "text": err.Error()}},
+				"content": []map[string]any{{"type": "text", "text": errText}},
 			},
 		}
 	}

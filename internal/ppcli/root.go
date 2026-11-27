@@ -384,8 +384,11 @@ func newRunCmd() *cobra.Command {
 						return mErr
 					}
 					text := string(encoded)
-					if !fullOutput && maxOutput > 0 {
-						text, _ = cartridge.CapOutput(text, maxOutput)
+					if !fullOutput && maxOutput > 0 && len(text) > maxOutput {
+						bounded := buildBoundedRunJSON(res, maxOutput, len(text))
+						if bEncoded, bErr := json.MarshalIndent(bounded, "", "  "); bErr == nil {
+							text = string(bEncoded)
+						}
 					}
 					if boundaries && !noBoundaries {
 						text = cartridge.WrapUntrustedContent(text, res.Cartridge+"."+res.Command, false)

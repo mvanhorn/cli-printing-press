@@ -135,12 +135,13 @@ func Resolve(spec AuthSpec) (*ResolvedAuth, error) {
 		if val, envName := lookupEnvToken(spec); val != "" {
 			source := "env:" + envName
 			if strings.HasPrefix(val, "op://") {
-				resolved, opErr := ResolveOnePassword(context.Background(), val)
+				opRef := val
+				resolved, opErr := ResolveOnePassword(context.Background(), opRef)
 				if opErr != nil {
 					return nil, opErr
 				}
 				val = resolved
-				source = "1password:" + val
+				source = "1password:" + opRef
 			}
 			return &ResolvedAuth{
 				Headers: map[string]string{"Cookie": val},

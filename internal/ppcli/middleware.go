@@ -292,11 +292,12 @@ type batchOp struct {
 }
 
 type batchItemResult struct {
-	Index  int    `json:"index"`
-	Op     string `json:"op"`
-	OK     bool   `json:"ok"`
-	Result any    `json:"result,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Index   int                    `json:"index"`
+	Op      string                 `json:"op"`
+	OK      bool                   `json:"ok"`
+	Result  any                    `json:"result,omitempty"`
+	Error   string                 `json:"error,omitempty"`
+	Handoff *cartridge.HandoffHint `json:"handoff,omitempty"`
 }
 
 func newBatchCmd() *cobra.Command {
@@ -339,7 +340,11 @@ func newBatchCmd() *cobra.Command {
 					defer func() { <-sem }()
 					res, runErr := executeBatchOp(cmd.Context(), reg, item)
 					if runErr != nil {
-						results[idx] = batchItemResult{Index: idx, Op: item.Op, OK: false, Error: runErr.Error()}
+						var handoff *cartridge.HandoffHint
+						if ee, ok := errors.AsType[*cartridge.ExecError](runErr); ok {
+							handoff = ee.Handoff
+						}
+						results[idx] = batchItemResult{Index: idx, Op: item.Op, OK: false, Error: runErr.Error(), Handoff: handoff}
 						return
 					}
 					results[idx] = batchItemResult{Index: idx, Op: item.Op, OK: true, Result: res}
@@ -488,4 +493,45 @@ func newSetupCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
+}
+
+// buildBoundedRunJSON preserves strict JSON validity whenever a RunResult
+// exceeds --max-output by fitting whole rows within budget and explicitly
+// flagging truncated=true with total_chars and recovery hints.
+func buildBoundedRunJSON(res *cartridge.RunResult, maxChars, totalChars int) map[string]any {
+	out := map[string]any{
+		"cartridge":        res.Cartridge,
+		"command":          res.Command,
+		"driver":           res.Driver,
+		"http_status":      res.HTTPStatus,
+		"latency_ms":       res.LatencyMS,
+		"row_count":        res.RowCount,
+		"auth_source":      res.AuthSource,
+		"truncated":        true,
+		"max_output_chars": maxChars,
+		"total_chars":      totalChars,
+		"hint":             "response exceeded --max-output budget; re-run with --compact, --limit, or --full",
+	}
+	rows, ok := res.Data.([]any)
+	if !ok {
+		out["data"] = nil
+		return out
+	}
+	budget := max(maxChars-512, 256)
+	kept := make([]any, 0)
+	used := 0
+	for _, r := range rows {
+		rawRow, err := json.Marshal(r)
+		if err != nil {
+			continue
+		}
+		if used+len(rawRow) > budget {
+			break
+		}
+		kept = append(kept, r)
+		used += len(rawRow)
+	}
+	out["returned_rows"] = len(kept)
+	out["data"] = kept
+	return out
 }

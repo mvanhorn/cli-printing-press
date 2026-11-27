@@ -59,10 +59,16 @@ type ExecError struct {
 }
 
 func (e *ExecError) Error() string {
+	var parts []string
+	parts = append(parts, e.Message)
 	if e.Hint != "" {
-		return fmt.Sprintf("%s (hint: %s)", e.Message, e.Hint)
+		parts = append(parts, fmt.Sprintf("hint: %s", e.Hint))
 	}
-	return e.Message
+	if e.Handoff != nil {
+		parts = append(parts, fmt.Sprintf("handoff(%s): %s -> %s (then: %s)",
+			e.Handoff.Action, e.Handoff.URL, e.Handoff.BrowserCmd, e.Handoff.ResumeCmd))
+	}
+	return strings.Join(parts, " | ")
 }
 
 // RunOptions configures a single cartridge command invocation.

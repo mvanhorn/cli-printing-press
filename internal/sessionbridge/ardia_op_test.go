@@ -29,7 +29,19 @@ func TestResolveOnePasswordViaMockOP(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer sk_live_touchid_123", res.Headers["Authorization"])
-	assert.Contains(t, res.Source, "1password:")
+	assert.Equal(t, "1password:op://Personal/Stripe/api_key", res.Source)
+	assert.NotContains(t, res.Source, "sk_live_touchid_123")
+
+	// Cookie auth with op:// must also keep Source as the op:// ref, never the secret.
+	cookieRes, err := Resolve(AuthSpec{
+		AppName:  "stripe",
+		Strategy: "browser_cookie",
+		EnvVar:   "STRIPE_KEY",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "sk_live_touchid_123", cookieRes.Headers["Cookie"])
+	assert.Equal(t, "1password:op://Personal/Stripe/api_key", cookieRes.Source)
+	assert.NotContains(t, cookieRes.Source, "sk_live_touchid_123")
 }
 
 func TestLoadFromArdiaEnforcesRFC6265DomainPathSchemeAndExpiry(t *testing.T) {

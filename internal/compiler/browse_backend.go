@@ -65,8 +65,8 @@ func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*C
 		}
 	}
 
-	runBrowse := func(args ...string) ([]byte, error) {
-		cmd := exec.CommandContext(ctx, browseBin, args...)
+	runBrowse := func(callCtx context.Context, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(callCtx, browseBin, args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return nil, fmt.Errorf("browse %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -75,18 +75,29 @@ func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*C
 	}
 
 	tabLabel := fmt.Sprintf("pp-rec-%d", time.Now().UnixNano())
-	if _, err := runBrowse("tabs", "new", "--tab", tabLabel); err != nil {
+	if _, err := runBrowse(ctx, "tabs", "new", "--tab", tabLabel); err != nil {
 		// Fallback to navigating directly if `tabs new` returns an id.
-		if _, navErr := runBrowse("navigate", target, "--tab", tabLabel); navErr != nil {
+		if _, navErr := runBrowse(ctx, "navigate", target, "--tab", tabLabel); navErr != nil {
 			return nil, err
 		}
 	}
-	defer func() { _, _ = runBrowse("tabs", "close", "--tab", tabLabel) }()
+	captureActive := false
+	defer func() {
+		// Use a fresh bounded background context so cancellation or timeouts
+		// still cleanly cancel active network capture and close the tab.
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if captureActive {
+			_, _ = runBrowse(cleanCtx, "network", tabLabel, "cancel")
+		}
+		_, _ = runBrowse(cleanCtx, "tabs", "close", "--tab", tabLabel)
+	}()
 
-	if _, err := runBrowse("network", tabLabel, "start", "--resourceTypes", `["XHR","Fetch"]`, "--bodies"); err != nil {
+	if _, err := runBrowse(ctx, "network", tabLabel, "start", "--resourceTypes", `["XHR","Fetch"]`, "--bodies"); err != nil {
 		return nil, err
 	}
-	if _, err := runBrowse("navigate", target, "--tab", tabLabel); err != nil {
+	captureActive = true
+	if _, err := runBrowse(ctx, "navigate", target, "--tab", tabLabel); err != nil {
 		return nil, err
 	}
 
@@ -100,7 +111,8 @@ func RecordWithOpenCodeBrowse(ctx context.Context, opts BrowseRecordOptions) (*C
 	case <-time.After(time.Duration(waitSec) * time.Second):
 	}
 
-	rawNet, err := runBrowse("network", tabLabel, "stop")
+	rawNet, err := runBrowse(ctx, "network", tabLabel, "stop")
+	captureActive = false
 	if err != nil {
 		return nil, err
 	}

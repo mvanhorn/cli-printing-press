@@ -119,8 +119,8 @@ func RecordWithArdia(ctx context.Context, opts ArdiaRecordOptions) (*CompileResu
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 	harPath := filepath.Join(tmpDir, "capture.har")
 
-	runArdia := func(args ...string) error {
-		cmd := exec.CommandContext(ctx, ardiaBin, args...)
+	runArdia := func(callCtx context.Context, args ...string) error {
+		cmd := exec.CommandContext(callCtx, ardiaBin, args...)
 		cmd.Env = append(os.Environ(), "ARDIA_BACKGROUND=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -130,15 +130,19 @@ func RecordWithArdia(ctx context.Context, opts ArdiaRecordOptions) (*CompileResu
 	}
 
 	// Open background tab, start HAR capture, reload so initial XHR/Fetch calls are captured, then stop and close tab.
-	if err := runArdia("browse", "open", target); err != nil {
+	if err := runArdia(ctx, "browse", "open", target); err != nil {
 		return nil, err
 	}
-	defer func() { _ = runArdia("browse", "close") }()
+	defer func() {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = runArdia(cleanCtx, "browse", "close")
+	}()
 
-	if err := runArdia("browse", "network", "har", "start", "--content", "text"); err != nil {
+	if err := runArdia(ctx, "browse", "network", "har", "start", "--content", "text"); err != nil {
 		return nil, err
 	}
-	if err := runArdia("browse", "reload"); err != nil {
+	if err := runArdia(ctx, "browse", "reload"); err != nil {
 		return nil, err
 	}
 	waitSec := opts.WaitSeconds
@@ -150,7 +154,7 @@ func RecordWithArdia(ctx context.Context, opts ArdiaRecordOptions) (*CompileResu
 		return nil, ctx.Err()
 	case <-time.After(time.Duration(waitSec) * time.Second):
 	}
-	if err := runArdia("browse", "network", "har", "stop", harPath); err != nil {
+	if err := runArdia(ctx, "browse", "network", "har", "stop", harPath); err != nil {
 		return nil, err
 	}
 

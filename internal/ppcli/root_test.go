@@ -144,4 +144,23 @@ func TestPPBatchAndSetupCommands(t *testing.T) {
 	setupOut, err := runPP(t, "setup", "--json")
 	require.NoError(t, err)
 	assert.Contains(t, setupOut, `"printing-press"`)
+
+	// buildBoundedRunJSON must always produce valid JSON with truncated=true.
+	bigRows := make([]any, 0, 50)
+	for i := range 50 {
+		bigRows = append(bigRows, map[string]any{"id": i, "body": "0123456789abcdefghijklmnopqrstuvwxyz0123456789"})
+	}
+	bounded := buildBoundedRunJSON(&cartridge.RunResult{
+		Cartridge: "demo",
+		Command:   "list",
+		Driver:    cartridge.DriverHTTP,
+		RowCount:  len(bigRows),
+		Data:      bigRows,
+	}, 900, 4000)
+	rawBounded, err := json.Marshal(bounded)
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(rawBounded, &parsed))
+	assert.Equal(t, true, parsed["truncated"])
+	assert.Less(t, len(parsed["data"].([]any)), 50)
 }
