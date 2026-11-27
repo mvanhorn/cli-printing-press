@@ -2,13 +2,10 @@ package cartridge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -164,36 +161,29 @@ exit 0
 	assert.Contains(t, js, `page.route`)
 	assert.Contains(t, js, `allowed_hosts`)
 	assert.Contains(t, js, `a.startsWith(".")`)
+	assert.Contains(t, js, `a.startsWith("*.")`)
+	assert.Contains(t, js, `h === apex || h.endsWith(a)`)
+	assert.Contains(t, js, `h === apex || h.endsWith("." + apex)`)
 
-	// Verify exact parity between jsHostAllowedHelper and Go's Cartridge.HostAllowed
-	// whenever node is available.
-	if nodeBin, lookErr := exec.LookPath("node"); lookErr == nil {
-		cases := []struct {
-			Host    string   `json:"host"`
-			Allowed []string `json:"allowed"`
-		}{
-			{"api.example.com", []string{".example.com"}},
-			{"example.com", []string{".example.com"}},
-			{"notexample.com", []string{".example.com"}},
-			{"api.example.com", []string{"*.example.com"}},
-			{"example.com", []string{"*.example.com"}},
-			{"notexample.com", []string{"*.example.com"}},
-			{"api.example.com", []string{"api.example.com"}},
-			{"other.example.com", []string{"api.example.com"}},
-		}
-		casesJSON, mErr := json.Marshal(cases)
-		require.NoError(t, mErr)
-		evalScript := jsHostAllowedHelper + "\nconst cases = " + string(casesJSON) + ";\nconsole.log(JSON.stringify(cases.map(c => isHostAllowed(c.host, c.allowed))));\n"
-		out, nErr := exec.Command(nodeBin, "-e", evalScript).Output()
-		require.NoError(t, nErr)
-		var jsResults []bool
-		require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(out))), &jsResults))
-		require.Len(t, jsResults, len(cases))
-		for i, tc := range cases {
-			cTest := &Cartridge{Trust: TrustPolicy{AllowedHosts: tc.Allowed}}
-			assert.Equal(t, cTest.HostAllowed(tc.Host), jsResults[i],
-				"JS isHostAllowed mismatch vs Go HostAllowed for host=%q allowed=%v", tc.Host, tc.Allowed)
-		}
+	// Verify Cartridge.HostAllowed parity across leading-dot, wildcard, and exact patterns
+	// without executing any host binaries from PATH.
+	for _, tc := range []struct {
+		host    string
+		allowed []string
+		want    bool
+	}{
+		{"api.example.com", []string{".example.com"}, true},
+		{"example.com", []string{".example.com"}, true},
+		{"notexample.com", []string{".example.com"}, false},
+		{"api.example.com", []string{"*.example.com"}, true},
+		{"example.com", []string{"*.example.com"}, true},
+		{"notexample.com", []string{"*.example.com"}, false},
+		{"api.example.com", []string{"api.example.com"}, true},
+		{"other.example.com", []string{"api.example.com"}, false},
+	} {
+		cTest := &Cartridge{Trust: TrustPolicy{AllowedHosts: tc.allowed}}
+		assert.Equal(t, tc.want, cTest.HostAllowed(tc.host),
+			"HostAllowed mismatch for host=%q allowed=%v", tc.host, tc.allowed)
 	}
 
 	// 3. Blocked redirect reported by the browser sandbox maps to ClassBlocked.
