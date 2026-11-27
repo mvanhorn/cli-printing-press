@@ -12,11 +12,33 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/mvanhorn/cli-printing-press/v4/internal/sessionbridge"
 )
 
 const defaultBrowseExecTimeout = 30 * time.Second
+
+// jsHostAllowedHelper mirrors Cartridge.HostAllowed in JavaScript so page.route,
+// post-navigation checks, and manual fetch redirect verification enforce the
+// exact same host allowlist semantics (exact host, ".example.com", "*.example.com").
+const jsHostAllowedHelper = `const isHostAllowed = (host, allowed) => {
+  const h = String(host || "").toLowerCase().trim();
+  if (!h || !Array.isArray(allowed) || allowed.length === 0) return false;
+  for (const raw of allowed) {
+    const a = String(raw || "").toLowerCase().trim();
+    if (!a) continue;
+    if (a.startsWith(".")) {
+      const apex = a.slice(1);
+      if (apex && (h === apex || h.endsWith(a))) return true;
+      continue;
+    }
+    if (a.startsWith("*.")) {
+      const apex = a.slice(2);
+      if (apex && (h === apex || h.endsWith("." + apex))) return true;
+      continue;
+    }
+    if (h === a) return true;
+  }
+  return false;
+};`
 
 // executeViaOpenCodeBrowse runs an HTTP or GraphQL Cartridge command inside
 // the user's real Google Chrome session via OpenCode `browse execute` (zero
@@ -88,8 +110,16 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 
 	authStrategy := strings.ToLower(strings.TrimSpace(c.Auth.Strategy))
 	switch authStrategy {
-	case "", AuthStrategyNone, AuthStrategyBrowserCookie, AuthStrategyAgentCookie,
-		AuthStrategyEnvBearer, AuthStrategyEnvAPIKey, AuthStrategyHeader, AuthStrategyOnePassword:
+	case "", AuthStrategyNone, AuthStrategyBrowserCookie, AuthStrategyAgentCookie:
+		// Chrome supplies session cookies internally via credentials: "include"
+		// without ever placing secrets into subprocess arguments.
+	case AuthStrategyEnvBearer, AuthStrategyEnvAPIKey, AuthStrategyHeader, AuthStrategyOnePassword:
+		return nil, 0, "", &ExecError{
+			Code:    ExitUsage,
+			Class:   ClassUsage,
+			Message: fmt.Sprintf("auth strategy %q is not supported with --via browse (direct credentials must not be passed through browser CLI arguments)", c.Auth.Strategy),
+			Hint:    fmt.Sprintf("omit --via browse so `pp run %s %s` sends configured credentials directly over TLS", c.Name, cmdName),
+		}
 	default:
 		return nil, 0, "", &ExecError{
 			Code:    ExitUsage,
@@ -109,48 +139,7 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 		}, 0, "opencode-browse", nil
 	}
 
-	// Apply configured non-cookie credentials (env_bearer, env_api_key, header,
-	// op_secret) before issuing the browser fetch, matching executeHTTP.
 	authSource := "opencode-browse"
-	switch authStrategy {
-	case AuthStrategyEnvBearer, AuthStrategyEnvAPIKey, AuthStrategyHeader, AuthStrategyOnePassword:
-		authRes, authErr := sessionbridge.Resolve(sessionbridge.AuthSpec{
-			AppName:            c.Name,
-			Strategy:           c.Auth.Strategy,
-			EnvVar:             c.Auth.EnvVar,
-			OnePasswordRef:     c.Auth.OnePasswordRef,
-			Header:             c.Auth.Header,
-			Prefix:             c.Auth.Prefix,
-			QueryParam:         c.Auth.QueryParam,
-			Domains:            c.Auth.Domains,
-			TargetURL:          parsedURL.String(),
-			AgentCookieAdapter: c.Auth.AgentCookieAdapter,
-		})
-		if authErr != nil {
-			return nil, 0, "", &ExecError{
-				Code:    ExitAuth,
-				Class:   ClassAuthError,
-				Message: authErr.Error(),
-			}
-		}
-		for k, v := range authRes.Headers {
-			if _, exists := headers[k]; !exists {
-				headers[k] = v
-			}
-		}
-		if len(authRes.QueryParams) > 0 {
-			q := parsedURL.Query()
-			for k, v := range authRes.QueryParams {
-				if !q.Has(k) {
-					q.Set(k, v)
-				}
-			}
-			parsedURL.RawQuery = q.Encode()
-		}
-		if authRes.Source != "" {
-			authSource = "opencode-browse+" + authRes.Source
-		}
-	}
 
 	browseBin, err := findOpenCodeBrowseBinary()
 	if err != nil {
@@ -180,21 +169,7 @@ func executeViaOpenCodeBrowse(ctx context.Context, c *Cartridge, cmdName string,
 	}
 	jsCode := fmt.Sprintf(`
 const req = JSON.parse(%s);
-const isHostAllowed = (host, allowed) => {
-  const h = String(host || "").toLowerCase();
-  if (!h || !Array.isArray(allowed) || allowed.length === 0) return false;
-  for (const raw of allowed) {
-    const a = String(raw || "").toLowerCase().trim();
-    if (!a) continue;
-    if (a.startsWith("*.")) {
-      const suf = a.slice(1);
-      if (h.endsWith(suf) && h.length > suf.length) return true;
-    } else if (h === a) {
-      return true;
-    }
-  }
-  return false;
-};
+%s
 let blockedReason = "";
 try {
   if (typeof page.route === "function") {
@@ -218,21 +193,7 @@ try {
     return { blocked: "redirect to disallowed host " + landedHost + " blocked by trust.allowed_hosts" };
   }
   const result = await page.evaluate(async (r) => {
-    const allow = (host) => {
-      const h = String(host || "").toLowerCase();
-      if (!h || !Array.isArray(r.allowed_hosts) || r.allowed_hosts.length === 0) return false;
-      for (const raw of r.allowed_hosts) {
-        const a = String(raw || "").toLowerCase().trim();
-        if (!a) continue;
-        if (a.startsWith("*.")) {
-          const suf = a.slice(1);
-          if (h.endsWith(suf) && h.length > suf.length) return true;
-        } else if (h === a) {
-          return true;
-        }
-      }
-      return false;
-    };
+    %s
     let curURL = r.url;
     let curMethod = r.method || "GET";
     let curHeaders = Object.assign({}, r.headers || {});
@@ -258,7 +219,7 @@ try {
         }
         const prevHost = new URL(curURL).hostname.toLowerCase();
         const nextURL = new URL(loc, curURL);
-        if (!allow(nextURL.hostname)) {
+        if (!isHostAllowed(nextURL.hostname, r.allowed_hosts)) {
           return { blocked: "redirect to disallowed host " + nextURL.hostname + " blocked by trust.allowed_hosts" };
         }
         if (nextURL.hostname.toLowerCase() !== prevHost) {
@@ -290,7 +251,7 @@ try {
 } finally {
   await page.close().catch(() => {});
 }
-`, string(escapedJSON))
+`, string(escapedJSON), jsHostAllowedHelper, jsHostAllowedHelper)
 
 	runCtx := ctx
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

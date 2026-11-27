@@ -2,10 +2,13 @@ package cartridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,7 +84,7 @@ exit 0
 	assert.Contains(t, err.Error(), "blocked by trust.allowed_hosts")
 }
 
-func TestExecuteViaOpenCodeBrowseAppliesAuthAndBlocksRedirects(t *testing.T) {
+func TestExecuteViaOpenCodeBrowseRejectsDirectSecretsAndMatchesHostPatterns(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell mock")
 	}
@@ -112,62 +115,90 @@ exit 0
 	t.Setenv("PP_BROWSE_BIN", mockBrowse)
 	t.Setenv("SHOP_API_KEY", "k_secret_42")
 
-	// 1. Non-cookie credentials (header + query param) must be applied before browse fetch.
-	cKey := &Cartridge{
+	// 1. Direct-credential auth strategies must be rejected cleanly so secrets
+	// never leak into subprocess CLI arguments (--code).
+	for _, strat := range []string{AuthStrategyEnvAPIKey, AuthStrategyEnvBearer, AuthStrategyHeader, AuthStrategyOnePassword} {
+		cSecret := &Cartridge{
+			Schema:      SchemaVersionV1,
+			Name:        "secret-shop",
+			Version:     "1.0.0",
+			Description: "Direct secret cartridge",
+			Trust:       TrustPolicy{AllowedHosts: []string{"api.shop.example"}, ReadOnly: true},
+			Auth:        AuthConfig{Strategy: strat, EnvVar: "SHOP_API_KEY"},
+			Commands: map[string]CommandSpec{
+				"status": {Driver: DriverHTTP, Method: "GET", URL: "https://api.shop.example/v1/status"},
+			},
+		}
+		_, err := Execute(context.Background(), cSecret, "status", RunOptions{ViaBrowse: true})
+		require.Error(t, err, "strategy %s must not be allowed with --via browse", strat)
+		ee, ok := errors.AsType[*ExecError](err)
+		require.True(t, ok)
+		assert.Equal(t, ClassUsage, ee.Class)
+		assert.Contains(t, ee.Message, "not supported with --via browse")
+	}
+	_, statErr := os.Stat(capturedCodePath)
+	assert.True(t, os.IsNotExist(statErr), "browse must never be invoked for direct-credential auth")
+
+	// 2. Leading-dot and wildcard allowed_hosts patterns work and JS helper
+	// matches Go's Cartridge.HostAllowed across all pattern shapes.
+	cCookie := &Cartridge{
 		Schema:      SchemaVersionV1,
-		Name:        "keyed-shop",
+		Name:        "cookie-shop",
 		Version:     "1.0.0",
-		Description: "API key cartridge",
-		Trust:       TrustPolicy{AllowedHosts: []string{"api.shop.example"}, ReadOnly: true},
-		Auth: AuthConfig{
-			Strategy: AuthStrategyEnvAPIKey,
-			EnvVar:   "SHOP_API_KEY",
-			Header:   "X-Api-Key",
-		},
+		Description: "Browser cookie cartridge",
+		Trust:       TrustPolicy{AllowedHosts: []string{".shop.example", "*.cdn.example"}, ReadOnly: true},
+		Auth:        AuthConfig{Strategy: AuthStrategyBrowserCookie, Domains: []string{".shop.example"}},
 		Commands: map[string]CommandSpec{
 			"status": {Driver: DriverHTTP, Method: "GET", URL: "https://api.shop.example/v1/status"},
 		},
 	}
-	require.NoError(t, cKey.Validate())
-	res, err := Execute(context.Background(), cKey, "status", RunOptions{ViaBrowse: true})
+	require.NoError(t, cCookie.Validate())
+	res, err := Execute(context.Background(), cCookie, "status", RunOptions{ViaBrowse: true})
 	require.NoError(t, err)
-	assert.Equal(t, "opencode-browse+env:SHOP_API_KEY", res.AuthSource)
+	assert.Equal(t, "opencode-browse", res.AuthSource)
 
 	rawJS, err := os.ReadFile(capturedCodePath)
 	require.NoError(t, err)
 	js := string(rawJS)
-	assert.Contains(t, js, "k_secret_42")
-	assert.Contains(t, js, "X-Api-Key")
 	assert.Contains(t, js, `redirect: "manual"`)
 	assert.Contains(t, js, `page.route`)
 	assert.Contains(t, js, `allowed_hosts`)
+	assert.Contains(t, js, `a.startsWith(".")`)
 
-	// Query-param API key must also be injected into the target URL.
-	cQuery := &Cartridge{
-		Schema:      SchemaVersionV1,
-		Name:        "query-shop",
-		Version:     "1.0.0",
-		Description: "Query API key cartridge",
-		Trust:       TrustPolicy{AllowedHosts: []string{"api.shop.example"}, ReadOnly: true},
-		Auth: AuthConfig{
-			Strategy:   AuthStrategyEnvAPIKey,
-			EnvVar:     "SHOP_API_KEY",
-			QueryParam: "api_key",
-		},
-		Commands: map[string]CommandSpec{
-			"status": {Driver: DriverHTTP, Method: "GET", URL: "https://api.shop.example/v1/status"},
-		},
+	// Verify exact parity between jsHostAllowedHelper and Go's Cartridge.HostAllowed
+	// whenever node is available.
+	if nodeBin, lookErr := exec.LookPath("node"); lookErr == nil {
+		cases := []struct {
+			Host    string   `json:"host"`
+			Allowed []string `json:"allowed"`
+		}{
+			{"api.example.com", []string{".example.com"}},
+			{"example.com", []string{".example.com"}},
+			{"notexample.com", []string{".example.com"}},
+			{"api.example.com", []string{"*.example.com"}},
+			{"example.com", []string{"*.example.com"}},
+			{"notexample.com", []string{"*.example.com"}},
+			{"api.example.com", []string{"api.example.com"}},
+			{"other.example.com", []string{"api.example.com"}},
+		}
+		casesJSON, mErr := json.Marshal(cases)
+		require.NoError(t, mErr)
+		evalScript := jsHostAllowedHelper + "\nconst cases = " + string(casesJSON) + ";\nconsole.log(JSON.stringify(cases.map(c => isHostAllowed(c.host, c.allowed))));\n"
+		out, nErr := exec.Command(nodeBin, "-e", evalScript).Output()
+		require.NoError(t, nErr)
+		var jsResults []bool
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(out))), &jsResults))
+		require.Len(t, jsResults, len(cases))
+		for i, tc := range cases {
+			cTest := &Cartridge{Trust: TrustPolicy{AllowedHosts: tc.Allowed}}
+			assert.Equal(t, cTest.HostAllowed(tc.Host), jsResults[i],
+				"JS isHostAllowed mismatch vs Go HostAllowed for host=%q allowed=%v", tc.Host, tc.Allowed)
+		}
 	}
-	require.NoError(t, cQuery.Validate())
-	_, err = Execute(context.Background(), cQuery, "status", RunOptions{ViaBrowse: true})
-	require.NoError(t, err)
-	rawJS, err = os.ReadFile(capturedCodePath)
-	require.NoError(t, err)
-	assert.Contains(t, string(rawJS), "api_key=k_secret_42")
 
-	// 2. Blocked redirect reported by the browser sandbox maps to ClassBlocked.
+	// 3. Blocked redirect reported by the browser sandbox maps to ClassBlocked.
 	t.Setenv("MOCK_BLOCK_REDIRECT", "1")
-	_, err = Execute(context.Background(), cKey, "status", RunOptions{ViaBrowse: true})
+	_, err = Execute(context.Background(), cCookie, "status", RunOptions{ViaBrowse: true})
 	require.Error(t, err)
 	ee, ok := errors.AsType[*ExecError](err)
 	require.True(t, ok)
