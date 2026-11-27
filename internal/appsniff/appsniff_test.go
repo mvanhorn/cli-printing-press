@@ -293,7 +293,7 @@ func TestReconcileWithHARAndAuditCLI(t *testing.T) {
 	harPath := filepath.Join(t.TempDir(), "capture.har")
 	require.NoError(t, os.WriteFile(harPath, []byte(har), 0o644))
 
-	require.NoError(t, ReconcileWithHAR(res, harPath))
+	require.NoError(t, ReconcileWithHAR(res, harPath, Options{}))
 	require.NotNil(t, res.Reconciliation)
 	assert.Equal(t, 1, res.Reconciliation.Confirmed)
 	assert.Equal(t, 1, res.Reconciliation.ObservedOnly)
@@ -311,10 +311,13 @@ func TestReconcileWithHARAndAuditCLI(t *testing.T) {
 	}
 	assert.True(t, foundNotes)
 
-	// Audit a synthetic printed CLI directory.
+	// Audit a synthetic printed CLI directory. Include a saved spec YAML listing
+	// /v1/folders to ensure AuditCLI only counts implemented Go source routes
+	// and does not falsely match /v1/notes as a substring of /v1/notes/{id}.
 	cliDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "client"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), []byte("path: /v1/folders\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "client", "client.go"), []byte(`
 		package client
 		const ClientVersion = "7.299.0"
@@ -336,4 +339,174 @@ func TestReconcileWithHARAndAuditCLI(t *testing.T) {
 	assert.Equal(t, 1, audit.CoveredCount)
 	assert.Equal(t, 2, audit.MissingCount)
 	assert.Contains(t, audit.MCPParityGaps, "/v1/extra")
+}
+
+func TestHardeningAndReviewRegressions(t *testing.T) {
+	t.Parallel()
+
+	// 1. Nested fetch options, no fake GET on axios.delete, JWT redaction in URL paths,
+	// no fabricated /graphql/<OpName> routes, and port-distinct origins.
+	js := `
+		async function run() {
+			await fetch("https://api.vendor.test/v1/items", {
+				headers: { "x-trace": "1", "authorization": "Bearer secret-tok" },
+				method: "POST",
+				body: JSON.stringify({ title: "hello", count: 3 })
+			});
+			await axios.delete("https://api.vendor.test/v1/widgets");
+			await fetch("https://api.vendor.test:8443/v1/admin", { method: "GET" });
+			const leak = "https://api.vendor.test/v1/reset/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+			const gql = "query GetUser($id: ID!) { user(id: $id) { id } }";
+		}
+	`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app.js"), []byte(js), 0o644))
+	// Symlink pointing at a forbidden .env file must be skipped.
+	secretFile := filepath.Join(t.TempDir(), ".env")
+	require.NoError(t, os.WriteFile(secretFile, []byte(`fetch("https://secret.vendor.test/v1/leaked")`), 0o644))
+	_ = os.Symlink(secretFile, filepath.Join(dir, "linked.js"))
+
+	res, err := DiscoverDesktopApp(dir, Options{Name: "Vendor"})
+	require.NoError(t, err)
+
+	var methodsForWidgets []string
+	var foundItemsPost, foundItemsTitle, foundAdminPort, foundRedactedReset bool
+	for _, ep := range res.Endpoints {
+		assert.NotContains(t, ep.Path, "eyJhbGci", "JWT must be redacted from path")
+		assert.NotEqual(t, "/graphql/GetUser", ep.Path, "must not fabricate /graphql/<OpName>")
+		assert.NotContains(t, ep.Path, "leaked", "symlinked secret file must be skipped")
+		if ep.Path == "/v1/widgets" {
+			methodsForWidgets = append(methodsForWidgets, ep.Method)
+		}
+		if ep.Path == "/v1/items" && ep.Method == "POST" {
+			foundItemsPost = true
+			for _, bk := range ep.BodyKeys {
+				if bk == "title" {
+					foundItemsTitle = true
+				}
+			}
+		}
+		if ep.Path == "/v1/admin" && ep.BaseURL == "https://api.vendor.test:8443" {
+			foundAdminPort = true
+		}
+		if ep.Path == "/v1/reset/{token}" {
+			foundRedactedReset = true
+		}
+	}
+	assert.Equal(t, []string{"DELETE"}, methodsForWidgets, "axios.delete must not emit invented GET")
+	assert.True(t, foundItemsPost, "nested fetch options must recover POST")
+	assert.True(t, foundItemsTitle, "nested fetch options must recover body keys")
+	assert.True(t, foundAdminPort, "non-default port origin must stay distinct")
+	assert.True(t, foundRedactedReset, "JWT segment in path must become {token}")
+
+	// BuildSpec must keep per-endpoint BaseURL for the :8443 port endpoint.
+	apiSpec, err := BuildSpec(res, Options{Name: "Vendor", BaseURL: "https://api.vendor.test"})
+	require.NoError(t, err)
+	var adminEpBase string
+	for _, r := range apiSpec.Resources {
+		for _, ep := range r.Endpoints {
+			if ep.Path == "/v1/admin" {
+				adminEpBase = ep.BaseURL
+			}
+		}
+	}
+	assert.Equal(t, "https://api.vendor.test:8443", adminEpBase)
+
+	// 2. CacheStorage stem preserves directory path across distinct bundles.
+	assert.NotEqual(t,
+		normalizedCacheStem("https://cdn.vendor.test/editor/main.abcdef12.js"),
+		normalizedCacheStem("https://cdn.vendor.test/settings/main.123456ab.js"),
+	)
+	assert.Equal(t,
+		normalizedCacheStem("https://cdn.vendor.test/editor/main.abcdef12.js"),
+		normalizedCacheStem("https://cdn.vendor.test/editor/main.99887766.js"),
+	)
+
+	// 3. HAR reconciliation: respects origin, routes gRPC to GRPCEndpoints, enforces --host and --top.
+	harRes := &DiscoveryResult{
+		PrimaryBaseURL: "https://api.alpha.test",
+		Endpoints: []Endpoint{
+			{Method: "GET", Path: "/v1/users", Host: "api.alpha.test", BaseURL: "https://api.alpha.test", Protocol: ProtocolREST, Confidence: ConfidenceLow},
+			{Method: "GET", Path: "/v1/users", Host: "api.beta.test", BaseURL: "https://api.beta.test", Protocol: ProtocolREST, Confidence: ConfidenceLow},
+		},
+	}
+	harBody := `{
+		"log": {
+			"entries": [
+				{"request":{"method":"POST","url":"https://api.beta.test/v1/users","headers":[]},"response":{"status":201,"content":{"mimeType":"application/json","text":"{}"}}},
+				{"request":{"method":"POST","url":"https://api.beta.test/com.beta.v1.UserService/GetUser","headers":[]},"response":{"status":200,"content":{"mimeType":"application/grpc","text":""}}},
+				{"request":{"method":"GET","url":"https://api.gamma.test/v1/ignored","headers":[]},"response":{"status":200,"content":{"mimeType":"application/json","text":"{}"}}}
+			]
+		}
+	}`
+	harFile := filepath.Join(t.TempDir(), "reconcile.har")
+	require.NoError(t, os.WriteFile(harFile, []byte(harBody), 0o644))
+	require.NoError(t, ReconcileWithHAR(harRes, harFile, Options{HostFilters: []string{"api.alpha.test", "api.beta.test"}}))
+
+	for _, ep := range harRes.Endpoints {
+		assert.NotEqual(t, ProtocolGRPC, ep.Protocol, "HAR gRPC route must not leak into REST Endpoints")
+		assert.NotEqual(t, "api.gamma.test", ep.Host, "HAR route must honor --host filter")
+		if ep.Host == "api.alpha.test" {
+			assert.Equal(t, ReconcileStaticOnly, ep.ReconcileState, "beta HAR must not confirm alpha route")
+			assert.Equal(t, "GET", ep.Method)
+		}
+		if ep.Host == "api.beta.test" {
+			assert.Equal(t, ReconcileConfirmed, ep.ReconcileState)
+			assert.Equal(t, "POST", ep.Method)
+		}
+	}
+	require.Len(t, harRes.GRPCEndpoints, 1)
+	assert.Equal(t, "/com.beta.v1.UserService/GetUser", harRes.GRPCEndpoints[0].Path)
+}
+
+func TestBinaryPlistPureGoAndExecutableContainment(t *testing.T) {
+	t.Parallel()
+
+	// Build a minimal valid bplist00 dict:
+	//   obj 0: dict { 1 -> 2, 3 -> 4 }
+	//   obj 1: "CFBundleDisplayName"
+	//   obj 2: "BinApp"
+	//   obj 3: "CFBundleExecutable"
+	//   obj 4: "BinApp"
+	var b bytes.Buffer
+	b.WriteString(bplistMagic)
+	offsets := make([]byte, 5)
+	offsets[0] = byte(b.Len())
+	b.Write([]byte{0xd2, 1, 3, 2, 4}) // dict of 2 entries: keys [1,3], vals [2,4]
+	writeASCII := func(idx int, s string) {
+		offsets[idx] = byte(b.Len())
+		if len(s) < 15 {
+			b.WriteByte(0x50 | byte(len(s)))
+		} else {
+			b.WriteByte(0x5f)
+			b.WriteByte(0x10)
+			b.WriteByte(byte(len(s)))
+		}
+		b.WriteString(s)
+	}
+	writeASCII(1, "CFBundleDisplayName")
+	writeASCII(2, "BinApp")
+	writeASCII(3, "CFBundleExecutable")
+	writeASCII(4, "BinApp")
+
+	offTable := uint64(b.Len())
+	b.Write(offsets)
+	// 32-byte trailer: 6 unused, offsetIntSize=1, objectRefSize=1, numObjects=5, topObject=0, offTable
+	b.Write(make([]byte, 6))
+	b.WriteByte(1)
+	b.WriteByte(1)
+	_ = binary.Write(&b, binary.BigEndian, uint64(5))
+	_ = binary.Write(&b, binary.BigEndian, uint64(0))
+	_ = binary.Write(&b, binary.BigEndian, offTable)
+
+	info, err := ParseInfoPlist(b.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, "BinApp", info.AppName)
+
+	// Path traversal in CFBundleExecutable must be rejected.
+	appDir := t.TempDir()
+	_, err = safeBundleExecutablePath(appDir, "../../.env")
+	assert.Error(t, err)
+	_, err = safeBundleExecutablePath(appDir, ".env")
+	assert.Error(t, err)
 }

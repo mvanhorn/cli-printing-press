@@ -89,21 +89,22 @@ type EndpointParam struct {
 
 // Endpoint is a single API route discovered by static analysis or HAR reconciliation.
 type Endpoint struct {
-	Method         string          `json:"method"`
-	Path           string          `json:"path"`
-	Host           string          `json:"host,omitempty"`
-	BaseURL        string          `json:"base_url,omitempty"`
-	Protocol       ProtocolKind    `json:"protocol"`
-	Source         string          `json:"source"`
-	Confidence     ConfidenceLevel `json:"confidence"`
-	Params         []EndpointParam `json:"params,omitempty"`
-	BodyKeys       []string        `json:"body_keys,omitempty"`
-	HeaderNames    []string        `json:"header_names,omitempty"`
-	ObservedAuth   []string        `json:"observed_auth,omitempty"`
-	ReconcileState ReconcileState  `json:"reconcile_state,omitempty"`
-	Statuses       []int           `json:"statuses,omitempty"`
-	SampleCount    int             `json:"sample_count,omitempty"`
-	Notes          []string        `json:"notes,omitempty"`
+	Method             string          `json:"method"`
+	Path               string          `json:"path"`
+	Host               string          `json:"host,omitempty"`
+	BaseURL            string          `json:"base_url,omitempty"`
+	Protocol           ProtocolKind    `json:"protocol"`
+	Source             string          `json:"source"`
+	Confidence         ConfidenceLevel `json:"confidence"`
+	Params             []EndpointParam `json:"params,omitempty"`
+	BodyKeys           []string        `json:"body_keys,omitempty"`
+	RequestContentType string          `json:"request_content_type,omitempty"`
+	HeaderNames        []string        `json:"header_names,omitempty"`
+	ObservedAuth       []string        `json:"observed_auth,omitempty"`
+	ReconcileState     ReconcileState  `json:"reconcile_state,omitempty"`
+	Statuses           []int           `json:"statuses,omitempty"`
+	SampleCount        int             `json:"sample_count,omitempty"`
+	Notes              []string        `json:"notes,omitempty"`
 }
 
 // ShardRoute records a multi-shard or service-specific backend host discovered

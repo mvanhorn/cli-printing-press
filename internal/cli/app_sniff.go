@@ -226,7 +226,7 @@ func runAppSniff(ctx context.Context, a appSniffRunArgs, opts appSniffOptions) e
 	}
 
 	if a.harPath != "" {
-		if err := appsniff.ReconcileWithHAR(result, a.harPath); err != nil {
+		if err := appsniff.ReconcileWithHAR(result, a.harPath, sniffOpts); err != nil {
 			return err
 		}
 	}

@@ -14,9 +14,9 @@ var (
 	// Absolute HTTPS API URLs embedded in bundles or binary strings.
 	reAbsHTTPSURL = regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?::\d{2,5})?(?:/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%{}-]*)?`)
 
-	// fetch("...", { method: "POST" }) and axios.post("...") patterns.
-	reFetchCall      = regexp.MustCompile(`(?s)\bfetch\s*\(\s*["'\x60]([^"'\x60\n]{2,240})["'\x60](?:\s*,\s*\{([^}]{0,600})\})?`)
+	// axios.post("...") and similar HTTP client method calls.
 	reAxiosMethod    = regexp.MustCompile(`\b(?:axios|http|api|client|request|ky|got|superagent)\.(get|post|put|patch|delete|head)\s*\(\s*["'\x60]([^"'\x60\n]{2,240})["'\x60]`)
+	reFetchStart     = regexp.MustCompile(`\bfetch\s*\(\s*(["'\x60])([^"'\x60\n]{2,240})["'\x60]`)
 	reMethodProp     = regexp.MustCompile(`(?i)\bmethod\s*:\s*["'](GET|POST|PUT|PATCH|DELETE|HEAD)["']`)
 	reBodyKeysObj    = regexp.MustCompile(`(?:JSON\.stringify|body|data)\s*[:(]\s*\{([^{}]{1,500})\}`)
 	reJSObjectKey    = regexp.MustCompile(`(?:^|[,{\s])["']?([a-zA-Z_][a-zA-Z0-9_-]{1,40})["']?\s*:`)
@@ -202,39 +202,41 @@ var (
 )
 
 type extractorAccumulator struct {
-	endpoints      map[string]*Endpoint
-	grpcEndpoints  map[string]*Endpoint
-	baseURLCounts  map[string]int
-	baseURLSource  map[string]string
-	shards         map[string]ShardRoute
-	authHeaders    map[string]bool
-	authCookies    map[string]bool
-	tokenURLs      map[string]bool
-	hasBearer      bool
-	hasOAuth       bool
-	hasAPIKey      bool
-	hasCookie      bool
-	hasBasic       bool
-	pinning        []PinningFinding
-	pinningSeen    map[string]bool
-	warnings       []string
-	warningSeen    map[string]bool
-	retrofitByPath map[string]*Endpoint
+	endpoints         map[string]*Endpoint
+	grpcEndpoints     map[string]*Endpoint
+	baseURLCounts     map[string]int
+	baseURLSource     map[string]string
+	shards            map[string]ShardRoute
+	authHeaders       map[string]bool
+	authCookies       map[string]bool
+	tokenURLs         map[string]bool
+	graphqlOps        map[string]bool
+	hasBearer         bool
+	hasOAuth          bool
+	hasAPIKey         bool
+	hasCookie         bool
+	hasBasic          bool
+	pinning           []PinningFinding
+	pinningSeen       map[string]bool
+	warnings          []string
+	warningSeen       map[string]bool
+	exactMethodByPath map[string]string
 }
 
 func newExtractorAccumulator() *extractorAccumulator {
 	return &extractorAccumulator{
-		endpoints:      make(map[string]*Endpoint),
-		grpcEndpoints:  make(map[string]*Endpoint),
-		baseURLCounts:  make(map[string]int),
-		baseURLSource:  make(map[string]string),
-		shards:         make(map[string]ShardRoute),
-		authHeaders:    make(map[string]bool),
-		authCookies:    make(map[string]bool),
-		tokenURLs:      make(map[string]bool),
-		pinningSeen:    make(map[string]bool),
-		warningSeen:    make(map[string]bool),
-		retrofitByPath: make(map[string]*Endpoint),
+		endpoints:         make(map[string]*Endpoint),
+		grpcEndpoints:     make(map[string]*Endpoint),
+		baseURLCounts:     make(map[string]int),
+		baseURLSource:     make(map[string]string),
+		shards:            make(map[string]ShardRoute),
+		authHeaders:       make(map[string]bool),
+		authCookies:       make(map[string]bool),
+		tokenURLs:         make(map[string]bool),
+		graphqlOps:        make(map[string]bool),
+		pinningSeen:       make(map[string]bool),
+		warningSeen:       make(map[string]bool),
+		exactMethodByPath: make(map[string]string),
 	}
 }
 
@@ -322,18 +324,31 @@ func (a *extractorAccumulator) addEndpoint(ep Endpoint) {
 	if ep.BaseURL != "" {
 		ep.BaseURL = normalizeOrigin(ep.BaseURL)
 		if u, err := url.Parse(ep.BaseURL); err == nil && u.Hostname() != "" {
-			ep.Host = strings.ToLower(u.Hostname())
+			if isIgnoredHost(strings.ToLower(u.Hostname())) {
+				return
+			}
+			ep.Host = strings.ToLower(u.Host)
 			a.addBaseURL(ep.BaseURL)
 		}
 	} else if ep.Host != "" {
 		ep.Host = strings.ToLower(strings.TrimSpace(ep.Host))
-		if isIgnoredHost(ep.Host) {
+		hostOnly := ep.Host
+		if idx := strings.IndexByte(hostOnly, ':'); idx >= 0 {
+			hostOnly = hostOnly[:idx]
+		}
+		if isIgnoredHost(hostOnly) {
 			return
 		}
 		ep.BaseURL = "https://" + ep.Host
 	}
-	if ep.Host != "" && isIgnoredHost(ep.Host) {
-		return
+	if ep.Host != "" {
+		hostOnly := ep.Host
+		if idx := strings.IndexByte(hostOnly, ':'); idx >= 0 {
+			hostOnly = hostOnly[:idx]
+		}
+		if isIgnoredHost(hostOnly) {
+			return
+		}
 	}
 	if reTokenURL.MatchString(ep.Path) {
 		tokenURL := ep.Path
@@ -356,24 +371,31 @@ func (a *extractorAccumulator) addEndpoint(ep Endpoint) {
 		targetMap = a.grpcEndpoints
 	}
 
-	key := ep.Method + " " + ep.Host + " " + ep.Path
-	// If we already have a Retrofit-annotated endpoint for the same path with a
-	// specific non-GET method, don't let a generic GET string-pool hit duplicate it.
-	if ep.Method == "GET" && ep.Confidence == ConfidenceLow {
-		if existing, ok := a.retrofitByPath[ep.Path]; ok && existing.Method != "GET" {
+	originKey := ep.BaseURL
+	key := ep.Method + " " + originKey + " " + ep.Path
+
+	// Generic URL/string scans default to GET when no HTTP verb is known.
+	// Do not invent a GET if an exact call-site method (fetch/axios/Retrofit/RPC)
+	// already exists for the same route, and let exact call-site methods replace
+	// earlier unknown-method GET hits.
+	isUnknownMethodGuess := ep.Method == "GET" && ep.Confidence != ConfidenceHigh
+	if isUnknownMethodGuess {
+		if m, ok := a.exactMethodByPath[originKey+" "+ep.Path]; ok && m != "GET" {
+			return
+		}
+		if m, ok := a.exactMethodByPath[ep.Path]; ok && m != "GET" {
 			return
 		}
 	}
-	if ep.Source == "dex-retrofit" {
-		a.retrofitByPath[ep.Path] = &ep
-		// Drop any earlier low-confidence GET duplicate for the same path.
-		lowKey := "GET " + ep.Host + " " + ep.Path
-		if prev, ok := targetMap[lowKey]; ok && prev.Confidence == ConfidenceLow && ep.Method != "GET" {
-			delete(targetMap, lowKey)
-		}
-		lowNoHostKey := "GET  " + ep.Path
-		if prev, ok := targetMap[lowNoHostKey]; ok && prev.Confidence == ConfidenceLow && ep.Method != "GET" {
-			delete(targetMap, lowNoHostKey)
+	if ep.Confidence == ConfidenceHigh {
+		a.exactMethodByPath[originKey+" "+ep.Path] = ep.Method
+		a.exactMethodByPath[ep.Path] = ep.Method
+		if ep.Method != "GET" {
+			for _, guessKey := range []string{"GET " + originKey + " " + ep.Path, "GET  " + ep.Path} {
+				if prev, ok := targetMap[guessKey]; ok && prev.Confidence != ConfidenceHigh {
+					delete(targetMap, guessKey)
+				}
+			}
 		}
 	}
 
@@ -382,9 +404,12 @@ func (a *extractorAccumulator) addEndpoint(ep Endpoint) {
 			existing.Confidence = ep.Confidence
 			existing.Source = ep.Source
 		}
-		if existing.Host == "" && ep.Host != "" {
+		if existing.BaseURL == "" && ep.BaseURL != "" {
 			existing.Host = ep.Host
 			existing.BaseURL = ep.BaseURL
+		}
+		if existing.RequestContentType == "" && ep.RequestContentType != "" {
+			existing.RequestContentType = ep.RequestContentType
 		}
 		existing.Params = mergeParams(existing.Params, ep.Params)
 		existing.BodyKeys = mergeStrings(existing.BodyKeys, ep.BodyKeys)
@@ -446,26 +471,24 @@ func (a *extractorAccumulator) scanJS(fileName, content, source string) {
 		}
 	}
 
-	// 3. fetch(...) calls with method + body keys.
-	for _, m := range reFetchCall.FindAllStringSubmatch(content, 512) {
-		rawTarget := m[1]
-		initObj := m[2]
+	// 3. fetch(...) calls with balanced options object for method + body keys.
+	for _, fc := range scanFetchCalls(content, 512) {
 		method := "GET"
-		if mm := reMethodProp.FindStringSubmatch(initObj); len(mm) == 2 {
+		if mm := reMethodProp.FindStringSubmatch(fc.options); len(mm) == 2 {
 			method = strings.ToUpper(mm[1])
 		}
-		bodyKeys := extractBodyKeys(initObj)
+		bodyKeys := extractBodyKeys(fc.options)
 		if len(bodyKeys) > 0 && method == "GET" {
 			method = "POST"
 		}
-		a.addCandidateURLOrPath(method, rawTarget, source, ConfidenceHigh, bodyKeys, fileHeaders)
+		a.addCandidateURLOrPath(method, fc.target, source, ConfidenceHigh, bodyKeys, fileHeaders, "")
 	}
 
 	// 4. axios.get/post/put/patch/delete(...) calls.
 	for _, m := range reAxiosMethod.FindAllStringSubmatch(content, 512) {
 		method := strings.ToUpper(m[1])
 		rawTarget := m[2]
-		a.addCandidateURLOrPath(method, rawTarget, source, ConfidenceHigh, nil, fileHeaders)
+		a.addCandidateURLOrPath(method, rawTarget, source, ConfidenceHigh, nil, fileHeaders, "")
 	}
 
 	// 5. Dot-RPC calls (e.g. Slack web-client methods).
@@ -499,18 +522,12 @@ func (a *extractorAccumulator) scanJS(fileName, content, source string) {
 		})
 	}
 
-	// 7. GraphQL operations.
+	// 7. GraphQL operation names: record as protocol evidence rather than
+	// inventing fake `/graphql/<OpName>` HTTP routes.
 	for _, m := range reGraphQLOp.FindAllStringSubmatch(content, 256) {
 		opKind := strings.ToLower(m[1])
 		opName := m[2]
-		a.addEndpoint(Endpoint{
-			Method:     "POST",
-			Path:       "/graphql/" + opName,
-			Protocol:   ProtocolGraphQL,
-			Source:     source,
-			Confidence: ConfidenceMedium,
-			Notes:      []string{"graphql " + opKind + " " + opName},
-		})
+		a.graphqlOps[opKind+" "+opName] = true
 	}
 
 	// 8. Absolute HTTPS URLs (extract origins + API paths).
@@ -520,7 +537,7 @@ func (a *extractorAccumulator) scanJS(fileName, content, source string) {
 
 	// 9. Relative API path literals.
 	for _, m := range reRelativeAPIPath.FindAllStringSubmatch(content, 1024) {
-		a.addCandidateURLOrPath("GET", m[1], source, ConfidenceLow, nil, nil)
+		a.addCandidateURLOrPath("GET", m[1], source, ConfidenceLow, nil, nil, "")
 	}
 
 	// 10. Pinning references.
@@ -625,7 +642,7 @@ func (a *extractorAccumulator) ingestAbsoluteURL(raw, source string, conf Confid
 		ep := Endpoint{
 			Method:     "GET",
 			Path:       u.Path,
-			Host:       host,
+			Host:       strings.ToLower(u.Host),
 			BaseURL:    origin,
 			Protocol:   classifyProtocol(u.Path),
 			Source:     source,
@@ -640,7 +657,7 @@ func (a *extractorAccumulator) ingestAbsoluteURL(raw, source string, conf Confid
 	}
 }
 
-func (a *extractorAccumulator) addCandidateURLOrPath(method, raw, source string, conf ConfidenceLevel, bodyKeys, headers []string) {
+func (a *extractorAccumulator) addCandidateURLOrPath(method, raw, source string, conf ConfidenceLevel, bodyKeys, headers []string, reqContentType string) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return
@@ -651,21 +668,22 @@ func (a *extractorAccumulator) addCandidateURLOrPath(method, raw, source string,
 		if err != nil || u.Hostname() == "" || isIgnoredHost(strings.ToLower(u.Hostname())) {
 			return
 		}
-		origin := "https://" + u.Host
+		origin := "https://" + strings.ToLower(u.Host)
 		a.addBaseURLWithWeight(origin, 3, source)
 		if u.Path == "" || u.Path == "/" || !looksLikeAPIPath(u.Path) {
 			return
 		}
 		a.addEndpoint(Endpoint{
-			Method:      method,
-			Path:        u.Path,
-			Host:        strings.ToLower(u.Hostname()),
-			BaseURL:     origin,
-			Protocol:    classifyProtocol(u.Path),
-			Source:      source,
-			Confidence:  conf,
-			BodyKeys:    bodyKeys,
-			HeaderNames: headers,
+			Method:             method,
+			Path:               u.Path,
+			Host:               strings.ToLower(u.Host),
+			BaseURL:            origin,
+			Protocol:           classifyProtocol(u.Path),
+			Source:             source,
+			Confidence:         conf,
+			BodyKeys:           bodyKeys,
+			HeaderNames:        headers,
+			RequestContentType: reqContentType,
 		})
 		return
 	}
@@ -683,13 +701,14 @@ func (a *extractorAccumulator) addCandidateURLOrPath(method, raw, source string,
 		return
 	}
 	a.addEndpoint(Endpoint{
-		Method:      method,
-		Path:        trimmed,
-		Protocol:    classifyProtocol(trimmed),
-		Source:      source,
-		Confidence:  conf,
-		BodyKeys:    bodyKeys,
-		HeaderNames: headers,
+		Method:             method,
+		Path:               trimmed,
+		Protocol:           classifyProtocol(trimmed),
+		Source:             source,
+		Confidence:         conf,
+		BodyKeys:           bodyKeys,
+		HeaderNames:        headers,
+		RequestContentType: reqContentType,
 	})
 }
 
@@ -766,15 +785,37 @@ func finalizeDiscoveryResult(res *DiscoveryResult, acc *extractorAccumulator, op
 	primaryHost := ""
 	if res.PrimaryBaseURL != "" {
 		if u, err := url.Parse(res.PrimaryBaseURL); err == nil {
-			primaryHost = strings.ToLower(u.Hostname())
+			primaryHost = strings.ToLower(u.Host)
 		}
 	}
 
-	// Flatten, filter by host, rank, and optionally cap endpoints.
+	// Attach discovered GraphQL operation names as metadata notes on any real
+	// /graphql endpoint (or a summary warning) without inventing fake routes.
+	if len(acc.graphqlOps) > 0 {
+		ops := make([]string, 0, len(acc.graphqlOps))
+		for op := range acc.graphqlOps {
+			ops = append(ops, op)
+		}
+		sort.Strings(ops)
+		attached := false
+		for _, ep := range acc.endpoints {
+			if ep.Protocol == ProtocolGraphQL || strings.HasSuffix(strings.ToLower(ep.Path), "/graphql") {
+				ep.Notes = mergeStrings(ep.Notes, ops)
+				attached = true
+			}
+		}
+		if !attached {
+			limit := min(len(ops), 10)
+			acc.addWarning(fmt.Sprintf("detected %d GraphQL operation(s) without an observed /graphql route: %s", len(ops), strings.Join(ops[:limit], ", ")))
+		}
+	}
+
+	// Flatten and rank endpoints. Defer --top when HAR reconciliation will run
+	// next so HAR-confirmed and HAR-only routes are ranked together before capping.
 	rest := collectEndpoints(acc.endpoints, primaryHost, res.PrimaryBaseURL, opts.HostFilters)
 	grpc := collectEndpoints(acc.grpcEndpoints, primaryHost, res.PrimaryBaseURL, opts.HostFilters)
 
-	if opts.Top > 0 && len(rest) > opts.Top {
+	if opts.HARPath == "" && opts.Top > 0 && len(rest) > opts.Top {
 		rest = rest[:opts.Top]
 	}
 
@@ -789,23 +830,64 @@ func finalizeDiscoveryResult(res *DiscoveryResult, acc *extractorAccumulator, op
 	res.Warnings = append(res.Warnings, acc.warnings...)
 }
 
+// ApplyResultFilters applies --host filtering, deterministic ranking, and --top
+// capping to a DiscoveryResult (used after HAR reconciliation).
+func ApplyResultFilters(res *DiscoveryResult, opts Options) {
+	if res == nil {
+		return
+	}
+	filterSlice := func(in []Endpoint) []Endpoint {
+		out := make([]Endpoint, 0, len(in))
+		for _, ep := range in {
+			if len(opts.HostFilters) > 0 && !matchesHostFilters(ep.Host, opts.HostFilters) {
+				continue
+			}
+			out = append(out, ep)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			ci, cj := confidenceRank(out[i].Confidence), confidenceRank(out[j].Confidence)
+			if ci != cj {
+				return ci > cj
+			}
+			if out[i].Path != out[j].Path {
+				return out[i].Path < out[j].Path
+			}
+			if out[i].Method != out[j].Method {
+				return out[i].Method < out[j].Method
+			}
+			return out[i].BaseURL < out[j].BaseURL
+		})
+		return out
+	}
+	res.Endpoints = filterSlice(res.Endpoints)
+	res.GRPCEndpoints = filterSlice(res.GRPCEndpoints)
+	if opts.Top > 0 && len(res.Endpoints) > opts.Top {
+		res.Endpoints = res.Endpoints[:opts.Top]
+	}
+	res.Stats.RESTEndpoints = len(res.Endpoints)
+	res.Stats.GRPCEndpoints = len(res.GRPCEndpoints)
+}
+
 func collectEndpoints(m map[string]*Endpoint, primaryHost, primaryBaseURL string, hostFilters []string) []Endpoint {
-	// Deduplicate across hostless and primary-host copies of the same method+path.
+	// Deduplicate across hostless and primary-origin copies of the same method+path.
 	dedup := make(map[string]Endpoint, len(m))
 	for _, ep := range m {
 		cp := *ep
-		if cp.Host == "" && primaryHost != "" {
+		if cp.BaseURL == "" && primaryBaseURL != "" {
 			cp.Host = primaryHost
 			cp.BaseURL = primaryBaseURL
 		}
 		if len(hostFilters) > 0 && !matchesHostFilters(cp.Host, hostFilters) {
 			continue
 		}
-		key := cp.Method + " " + cp.Host + " " + cp.Path
+		key := cp.Method + " " + cp.BaseURL + " " + cp.Path
 		if prev, ok := dedup[key]; ok {
 			if confidenceRank(cp.Confidence) > confidenceRank(prev.Confidence) {
 				prev.Confidence = cp.Confidence
 				prev.Source = cp.Source
+			}
+			if prev.RequestContentType == "" && cp.RequestContentType != "" {
+				prev.RequestContentType = cp.RequestContentType
 			}
 			prev.Params = mergeParams(prev.Params, cp.Params)
 			prev.BodyKeys = mergeStrings(prev.BodyKeys, cp.BodyKeys)
@@ -831,7 +913,7 @@ func collectEndpoints(m map[string]*Endpoint, primaryHost, primaryBaseURL string
 		if out[i].Method != out[j].Method {
 			return out[i].Method < out[j].Method
 		}
-		return out[i].Host < out[j].Host
+		return out[i].BaseURL < out[j].BaseURL
 	})
 	return out
 }
@@ -928,7 +1010,92 @@ func normalizeEndpointPath(raw string) string {
 	if raw == "/" || len(raw) > 220 || strings.ContainsAny(raw, " \t\r\n<>\"'\\") {
 		return ""
 	}
-	return raw
+	// Redact any embedded credentials (JWTs, provider tokens, emails) inside path
+	// segments before storing or writing specs, traffic analysis, or manifests.
+	segs := strings.Split(raw, "/")
+	for i, seg := range segs {
+		if seg == "" || (strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")) {
+			continue
+		}
+		if RedactString(seg) != seg {
+			segs[i] = "{token}"
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+type fetchCall struct {
+	target  string
+	options string
+}
+
+// scanFetchCalls finds `fetch("...", { ... })` calls and extracts balanced
+// nested options objects (so nested `headers: { ... }` does not truncate
+// subsequent `method:` or `body:` fields).
+func scanFetchCalls(content string, maxCalls int) []fetchCall {
+	locs := reFetchStart.FindAllStringSubmatchIndex(content, maxCalls)
+	if len(locs) == 0 {
+		return nil
+	}
+	out := make([]fetchCall, 0, len(locs))
+	for _, loc := range locs {
+		target := content[loc[4]:loc[5]]
+		pos := loc[1]
+		for pos < len(content) && (content[pos] == ' ' || content[pos] == '\t' || content[pos] == '\n' || content[pos] == '\r') {
+			pos++
+		}
+		var opts string
+		if pos < len(content) && content[pos] == ',' {
+			pos++
+			for pos < len(content) && (content[pos] == ' ' || content[pos] == '\t' || content[pos] == '\n' || content[pos] == '\r') {
+				pos++
+			}
+			if pos < len(content) && content[pos] == '{' {
+				opts = extractBalancedBraces(content, pos, 4096)
+			}
+		}
+		out = append(out, fetchCall{target: target, options: opts})
+	}
+	return out
+}
+
+func extractBalancedBraces(s string, start, maxLen int) string {
+	if start >= len(s) || s[start] != '{' {
+		return ""
+	}
+	limit := min(len(s), start+maxLen)
+	depth := 0
+	var quote byte
+	escaped := false
+	for i := start; i < limit; i++ {
+		c := s[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'', '`':
+			quote = c
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start+1 : i]
+			}
+		}
+	}
+	return s[start+1 : limit]
 }
 
 func sanitizeParamName(raw string) string {

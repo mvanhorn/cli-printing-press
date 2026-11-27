@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -168,22 +167,19 @@ type PlistInfo struct {
 	URLSchemes  []string
 }
 
-// ParseInfoPlist parses XML Info.plist files directly in pure Go, and falls back
-// to macOS plutil when encountering binary bplist00 payloads.
+// ParseInfoPlist parses both XML and binary (bplist00) Info.plist files
+// directly in pure Go with no external subprocess dependency.
 func ParseInfoPlist(data []byte) (PlistInfo, error) {
 	if len(data) == 0 {
 		return PlistInfo{}, errors.New("empty plist")
 	}
-	xmlData := data
-	if bytes.HasPrefix(data, []byte("bplist")) {
-		converted, err := convertBinaryPlistToXML(data)
-		if err != nil {
-			return PlistInfo{}, err
-		}
-		xmlData = converted
+	var root any
+	var err error
+	if bytes.HasPrefix(data, []byte(bplistMagic)) {
+		root, err = parseBinaryPlist(data)
+	} else {
+		root, err = parseXMLPlist(data)
 	}
-
-	root, err := parseXMLPlist(xmlData)
 	if err != nil {
 		return PlistInfo{}, err
 	}
@@ -242,21 +238,6 @@ func firstNonEmptyString(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
-}
-
-func convertBinaryPlistToXML(data []byte) ([]byte, error) {
-	plutil, err := exec.LookPath("plutil")
-	if err != nil {
-		return nil, fmt.Errorf("binary plist detected and plutil is unavailable: %w", err)
-	}
-	cmd := exec.Command(plutil, "-convert", "xml1", "-o", "-", "--", "-")
-	cmd.Stdin = bytes.NewReader(data)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("plutil conversion failed: %w", err)
-	}
-	return out.Bytes(), nil
 }
 
 func parseXMLPlist(data []byte) (any, error) {
@@ -496,10 +477,18 @@ func scanCodeDirectory(dir string, opts Options, res *DiscoveryResult, acc *extr
 		if err != nil {
 			return nil
 		}
+		// Never follow symlinks: a link can point outside the inspected bundle
+		// (e.g. .env or /dev/zero) and bypass path or size guards.
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if d.IsDir() {
 			if path != dir && (shouldSkipWalkDir(d.Name()) || IsForbiddenSecretPath(path)) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if IsForbiddenSecretPath(path) {
@@ -513,10 +502,11 @@ func scanCodeDirectory(dir string, opts Options, res *DiscoveryResult, acc *extr
 		if err != nil || fi.Size() <= 0 || fi.Size() > maxFile {
 			return nil
 		}
-		if total+fi.Size() > maxTotal {
+		remaining := maxTotal - total
+		if remaining <= 0 || fi.Size() > remaining {
 			return filepath.SkipAll
 		}
-		data, err := os.ReadFile(path)
+		data, err := readBoundedFile(path, min(maxFile, remaining))
 		if err != nil {
 			return nil
 		}

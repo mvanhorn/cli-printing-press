@@ -11,6 +11,11 @@ import (
 const (
 	dexHeaderMinSize = 112
 
+	// Guard against crafted DEX string tables where thousands of string_ids
+	// alias one large string_data_item.
+	maxDEXSingleStringBytes = 64 * 1024
+	maxDEXTotalStringBytes  = 32 * 1024 * 1024
+
 	// DEX encoded_value types (Dalvik Executable Format spec).
 	dexValueByte       = 0x00
 	dexValueShort      = 0x02
@@ -41,10 +46,11 @@ const (
 // DEX runtime annotations (@retrofit2.http.GET/POST/PUT/PATCH/DELETE/HEAD/HTTP
 // plus @Query/@Path/@Header/@Field/@Body parameter annotations).
 type RetrofitMethodAnnotation struct {
-	Method      string
-	Path        string
-	Params      []EndpointParam
-	HeaderNames []string
+	Method             string
+	Path               string
+	Params             []EndpointParam
+	HeaderNames        []string
+	RequestContentType string
 }
 
 // IsDEX returns true if data starts with a valid Dalvik Executable magic header.
@@ -53,7 +59,9 @@ func IsDEX(data []byte) bool {
 }
 
 // ExtractDEXStrings parses the exact DEX string_ids table with ULEB128 length
-// decoding so strings are never corrupted by leading length bytes.
+// decoding so strings are never corrupted by leading length bytes. Repeated
+// string_data_item offsets share a single copy and total decoded bytes are
+// bounded so a small crafted DEX cannot exhaust memory.
 func ExtractDEXStrings(data []byte) ([]string, error) {
 	if !IsDEX(data) {
 		return nil, errors.New("not a valid dex binary")
@@ -65,20 +73,33 @@ func ExtractDEXStrings(data []byte) ([]string, error) {
 	}
 
 	out := make([]string, stringIDsSize)
+	byOffset := make(map[int]string)
+	totalBytes := 0
 	for i := range stringIDsSize {
 		dataOff := int(binary.LittleEndian.Uint32(data[stringIDsOff+i*4 : stringIDsOff+i*4+4]))
 		if dataOff <= 0 || dataOff >= len(data) {
+			continue
+		}
+		if cached, ok := byOffset[dataOff]; ok {
+			out[i] = cached
 			continue
 		}
 		_, pos, ok := readULEB128(data, dataOff)
 		if !ok || pos >= len(data) {
 			continue
 		}
-		end := bytes.IndexByte(data[pos:], 0)
+		searchEnd := min(len(data), pos+maxDEXSingleStringBytes+1)
+		end := bytes.IndexByte(data[pos:searchEnd], 0)
 		if end < 0 {
 			continue
 		}
-		out[i] = string(data[pos : pos+end])
+		if totalBytes+end > maxDEXTotalStringBytes {
+			break
+		}
+		s := string(data[pos : pos+end])
+		byOffset[dataOff] = s
+		totalBytes += end
+		out[i] = s
 	}
 	return out, nil
 }
@@ -172,7 +193,11 @@ func ExtractDEXRetrofitEndpoints(data []byte) ([]RetrofitMethodAnnotation, []str
 			}
 
 			if refListOff, ok := paramAnnByMethod[mIdx]; ok && refListOff > 0 {
-				parsed.Params = append(parsed.Params, parseParamAnnotationSetRefList(data, refListOff, typeDesc, stringAt)...)
+				parsedParams, hasFormField := parseParamAnnotationSetRefList(data, refListOff, typeDesc, stringAt)
+				parsed.Params = append(parsed.Params, parsedParams...)
+				if hasFormField && parsed.RequestContentType == "" {
+					parsed.RequestContentType = "application/x-www-form-urlencoded"
+				}
 			}
 			results = append(results, *parsed)
 		}
@@ -195,7 +220,7 @@ func parseMethodRetrofitAnnotationSet(
 		return nil
 	}
 
-	var method, path string
+	var method, path, reqContentType string
 	var headers []string
 
 	for i := range count {
@@ -235,6 +260,8 @@ func parseMethodRetrofitAnnotationSet(
 				method = strings.ToUpper(hm)
 			}
 			path = firstStringField(fields, "path")
+		case "Lretrofit2/http/FormUrlEncoded;", "Lretrofit/http/FormUrlEncoded;":
+			reqContentType = "application/x-www-form-urlencoded"
 		case "Lretrofit2/http/Headers;", "Lretrofit/http/Headers;":
 			for _, h := range fields["value"] {
 				// Record only header name, never literal header values.
@@ -252,9 +279,10 @@ func parseMethodRetrofitAnnotationSet(
 		return nil
 	}
 	return &RetrofitMethodAnnotation{
-		Method:      method,
-		Path:        strings.TrimSpace(path),
-		HeaderNames: headers,
+		Method:             method,
+		Path:               strings.TrimSpace(path),
+		HeaderNames:        headers,
+		RequestContentType: reqContentType,
 	}
 }
 
@@ -263,16 +291,17 @@ func parseParamAnnotationSetRefList(
 	refListOff int,
 	typeDesc func(uint32) string,
 	stringAt func(uint32) string,
-) []EndpointParam {
+) ([]EndpointParam, bool) {
 	if refListOff <= 0 || refListOff+4 > len(data) {
-		return nil
+		return nil, false
 	}
 	paramCount := int(binary.LittleEndian.Uint32(data[refListOff : refListOff+4]))
 	if paramCount <= 0 || paramCount > 64 || refListOff+4+paramCount*4 > len(data) {
-		return nil
+		return nil, false
 	}
 
 	var out []EndpointParam
+	hasFormField := false
 	for p := range paramCount {
 		annSetOff := int(binary.LittleEndian.Uint32(data[refListOff+4+p*4 : refListOff+8+p*4]))
 		if annSetOff <= 0 || annSetOff+4 > len(data) {
@@ -307,12 +336,13 @@ func parseParamAnnotationSetRefList(
 				}
 			case "Lretrofit2/http/Field;", "Lretrofit/http/Field;":
 				if val != "" {
+					hasFormField = true
 					out = append(out, EndpointParam{Name: val, In: ParamInBody, Type: "string"})
 				}
 			}
 		}
 	}
-	return out
+	return out, hasFormField
 }
 
 func firstStringField(fields map[string][]string, name string) string {

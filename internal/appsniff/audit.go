@@ -11,15 +11,16 @@ import (
 )
 
 var (
-	reCLIVersionLit     = regexp.MustCompile(`(?i)(?:ClientVersion|AppVersion|UserAgent|x-client-version|x-app-version)[^"\n]{0,40}"[^"\n]*?(\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?)"`)
-	reCodeOrchEntry     = regexp.MustCompile(`Path:\s*"([^"]+)"`)
-	reEndpointPathInGo  = regexp.MustCompile(`"(/(?:api|v\d+(?:\.\d+)?|graphql|trpc|rpc|oauth2?|auth)/[^"\s]{1,180})"`)
-	reClientMethodInCLI = regexp.MustCompile(`func\s*\([^)]*\*Client\)\s*([A-Z][A-Za-z0-9_]+)\s*\(`)
+	reCLIVersionLit    = regexp.MustCompile(`(?i)(?:ClientVersion|AppVersion|UserAgent|x-client-version|x-app-version)[^"\n]{0,40}"[^"\n]*?(\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?)"`)
+	reCodeOrchEntry    = regexp.MustCompile(`Path:\s*"([^"]+)"`)
+	reEndpointPathInGo = regexp.MustCompile(`"(/(?:api|v\d+(?:\.\d+)?|graphql|trpc|rpc|oauth2?|auth)(?:/[^"\s]{1,180})?)"`)
 )
 
 // AuditCLI compares an existing printed CLI directory against discovered app
 // endpoints, version numbers, backend shards, and MCP code-orchestration
-// endpoint registration. All reads are strictly read-only.
+// endpoint registration. Only compiled Go implementation files (excluding
+// tests, saved specs, and JSON manifests) count toward implemented route
+// coverage, and matches require exact canonical path equality.
 func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 	if res == nil {
 		return nil, fmt.Errorf("discovery result is required")
@@ -39,12 +40,15 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 	}
 
 	coveredPaths := make(map[string]bool)
-	allSourceText := strings.Builder{}
+	goSourceText := strings.Builder{}
 	mcpPaths := make(map[string]bool)
 	clientGoPaths := make(map[string]bool)
 
 	_ = filepath.WalkDir(absDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if d.IsDir() {
@@ -54,14 +58,11 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 			}
 			return nil
 		}
-		if IsForbiddenSecretPath(path) {
+		if !d.Type().IsRegular() || IsForbiddenSecretPath(path) {
 			return nil
 		}
 		lower := strings.ToLower(path)
-		if !strings.HasSuffix(lower, ".go") && !strings.HasSuffix(lower, ".yaml") && !strings.HasSuffix(lower, ".yml") && !strings.HasSuffix(lower, ".json") {
-			return nil
-		}
-		if strings.HasSuffix(lower, "_test.go") {
+		if !strings.HasSuffix(lower, ".go") || strings.HasSuffix(lower, "_test.go") {
 			return nil
 		}
 		data, rerr := readBoundedFile(path, 2*1024*1024)
@@ -69,8 +70,8 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 			return nil
 		}
 		text := string(data)
-		allSourceText.WriteString(text)
-		allSourceText.WriteByte('\n')
+		goSourceText.WriteString(text)
+		goSourceText.WriteByte('\n')
 
 		if report.CLIVersion == "" {
 			if m := reCLIVersionLit.FindStringSubmatch(text); len(m) == 2 {
@@ -78,15 +79,15 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 			}
 		}
 
+		relSlash := filepath.ToSlash(path)
 		for _, m := range reEndpointPathInGo.FindAllStringSubmatch(text, 512) {
 			canon := canonicalizePathForMatch(m[1])
 			coveredPaths[canon] = true
-			relSlash := filepath.ToSlash(path)
 			if strings.Contains(relSlash, "/internal/client/") {
 				clientGoPaths[canon] = true
 			}
 		}
-		if strings.Contains(filepath.ToSlash(path), "/internal/mcp/") && strings.Contains(text, "codeOrchEndpoints") {
+		if strings.Contains(relSlash, "/internal/mcp/") && strings.Contains(text, "codeOrchEndpoints") {
 			for _, m := range reCodeOrchEntry.FindAllStringSubmatch(text, 512) {
 				mcpPaths[canonicalizePathForMatch(m[1])] = true
 			}
@@ -94,7 +95,7 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 		return nil
 	})
 
-	sourceCorpus := strings.ToLower(allSourceText.String())
+	sourceCorpus := strings.ToLower(goSourceText.String())
 
 	// 1. Version drift check.
 	if report.AppVersion != "" && report.CLIVersion != "" && report.AppVersion != report.CLIVersion {
@@ -109,10 +110,10 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 		}
 	}
 
-	// 3. Endpoint coverage diff.
+	// 3. Exact canonical endpoint coverage diff (no substring matching).
 	for _, ep := range res.Endpoints {
 		canon := canonicalizePathForMatch(ep.Path)
-		if coveredPaths[canon] || strings.Contains(sourceCorpus, strings.ToLower(ep.Path)) {
+		if coveredPaths[canon] {
 			report.CoveredCount++
 		} else {
 			report.MissingEndpoints = append(report.MissingEndpoints, ep)
@@ -134,6 +135,5 @@ func AuditCLI(cliDir string, res *DiscoveryResult) (*AuditReport, error) {
 			report.Notes = append(report.Notes, fmt.Sprintf("MCP codeOrchEndpoints is missing %d path(s) present in internal/client/", len(gaps)))
 		}
 	}
-	_ = reClientMethodInCLI
 	return report, nil
 }

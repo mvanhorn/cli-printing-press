@@ -65,10 +65,7 @@ func BuildSpec(res *DiscoveryResult, opts Options) (*spec.APISpec, error) {
 		return nil, fmt.Errorf("base URL must be a valid HTTPS URL: %s", baseURL)
 	}
 
-	primaryHost := ""
-	if u, err := url.Parse(baseURL); err == nil {
-		primaryHost = strings.ToLower(u.Hostname())
-	}
+	primaryOrigin := normalizeOrigin(baseURL)
 
 	resources := make(map[string]spec.Resource)
 	for _, ep := range endpoints {
@@ -81,7 +78,7 @@ func BuildSpec(res *DiscoveryResult, opts Options) (*spec.APISpec, error) {
 			resource.Endpoints = make(map[string]spec.Endpoint)
 		}
 
-		specEp := buildSpecEndpoint(ep, primaryHost)
+		specEp := buildSpecEndpoint(ep, primaryOrigin)
 		epName := discovery.EndpointName(specEp.Method, specEp.Path)
 		if epName == "" {
 			epName = strings.ToLower(specEp.Method) + "_endpoint"
@@ -93,6 +90,10 @@ func BuildSpec(res *DiscoveryResult, opts Options) (*spec.APISpec, error) {
 		resources[resourceKey] = resource
 	}
 
+	primaryHost := ""
+	if u, err := url.Parse(baseURL); err == nil {
+		primaryHost = strings.ToLower(u.Hostname())
+	}
 	authCfg := buildSpecAuthConfig(apiName, primaryHost, res.Auth)
 	desc := fmt.Sprintf("Discovered API spec for %s (app-sniff %s)", apiName, res.TargetKind)
 	if res.Meta.Version != "" {
@@ -156,7 +157,7 @@ func isReservedSpecResource(name string) bool {
 	return dummy.ParseTimeReservedCobraUseName(spec.NormalizeCobraCommandName(name))
 }
 
-func buildSpecEndpoint(ep Endpoint, primaryHost string) spec.Endpoint {
+func buildSpecEndpoint(ep Endpoint, primaryOrigin string) spec.Endpoint {
 	meta := map[string]string{
 		"source":     ep.Source,
 		"protocol":   string(ep.Protocol),
@@ -231,21 +232,24 @@ func buildSpecEndpoint(ep Endpoint, primaryHost string) spec.Endpoint {
 		}
 	}
 
-	// Preserve shard/secondary host on per-endpoint BaseURL when different from primary.
+	// Preserve shard/secondary origin (including non-default port) when it
+	// differs from the primary origin.
 	epBaseURL := ""
-	if ep.BaseURL != "" && ep.Host != "" && primaryHost != "" && !strings.EqualFold(ep.Host, primaryHost) {
-		epBaseURL = ep.BaseURL
+	epOrigin := normalizeOrigin(ep.BaseURL)
+	if epOrigin != "" && primaryOrigin != "" && !strings.EqualFold(epOrigin, primaryOrigin) {
+		epBaseURL = epOrigin
 	}
 
 	return spec.Endpoint{
-		Method:       ep.Method,
-		Path:         ep.Path,
-		BaseURL:      epBaseURL,
-		Description:  fmt.Sprintf("%s %s", ep.Method, ep.Path),
-		Params:       params,
-		Body:         body,
-		ObservedAuth: ep.ObservedAuth,
-		Meta:         meta,
+		Method:             ep.Method,
+		Path:               ep.Path,
+		BaseURL:            epBaseURL,
+		Description:        fmt.Sprintf("%s %s", ep.Method, ep.Path),
+		Params:             params,
+		Body:               body,
+		RequestContentType: ep.RequestContentType,
+		ObservedAuth:       ep.ObservedAuth,
+		Meta:               meta,
 	}
 }
 

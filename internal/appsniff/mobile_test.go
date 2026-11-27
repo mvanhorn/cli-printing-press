@@ -344,6 +344,100 @@ func TestDEXRetrofitAnnotationsAndARSCAndXAPK(t *testing.T) {
 		grpcCount += len(r.Endpoints)
 	}
 	assert.Equal(t, defaultCount+1, grpcCount)
+
+	// Also verify repeated DEX string_ids offsets share allocations cleanly and
+	// @Field annotations emit application/x-www-form-urlencoded.
+	dexStrings, err := ExtractDEXStrings(dexBytes)
+	require.NoError(t, err)
+	assert.NotEmpty(t, dexStrings)
+
+	// Build a minimal DEX with @POST + @Field("grant_type") to verify form content type.
+	formDEX := buildSyntheticFormDEX(t)
+	formAnns, _, err := ExtractDEXRetrofitEndpoints(formDEX)
+	require.NoError(t, err)
+	require.Len(t, formAnns, 1)
+	assert.Equal(t, "application/x-www-form-urlencoded", formAnns[0].RequestContentType)
+}
+
+func buildSyntheticFormDEX(t *testing.T) []byte {
+	t.Helper()
+	stringsList := []string{
+		"Lapi/Auth;",
+		"Lretrofit2/http/POST;",
+		"Lretrofit2/http/Field;",
+		"value",
+		"oauth/token",
+		"grant_type",
+	}
+	typeStringIndices := []uint32{0, 1, 2}
+	buf := make([]byte, 2048)
+	copy(buf[0:8], []byte("dex\n035\x00"))
+	stringIDsOff := 112
+	typeIDsOff := stringIDsOff + len(stringsList)*4
+	classDefsOff := typeIDsOff + len(typeStringIndices)*4
+	pos := classDefsOff + 32
+
+	for i, s := range stringsList {
+		binary.LittleEndian.PutUint32(buf[stringIDsOff+i*4:], uint32(pos))
+		buf[pos] = byte(len(s))
+		pos++
+		copy(buf[pos:], s)
+		pos += len(s)
+		buf[pos] = 0
+		pos++
+	}
+	pos = (pos + 3) &^ 3
+	for i, si := range typeStringIndices {
+		binary.LittleEndian.PutUint32(buf[typeIDsOff+i*4:], si)
+	}
+	annPostOff := pos
+	buf[pos] = 0x01
+	buf[pos+1] = 1
+	buf[pos+2] = 1
+	buf[pos+3] = 3
+	buf[pos+4] = dexValueString
+	buf[pos+5] = 4
+	pos += 6
+	annFieldOff := pos
+	buf[pos] = 0x01
+	buf[pos+1] = 2
+	buf[pos+2] = 1
+	buf[pos+3] = 3
+	buf[pos+4] = dexValueString
+	buf[pos+5] = 5
+	pos += 6
+	pos = (pos + 3) &^ 3
+	setPostOff := pos
+	binary.LittleEndian.PutUint32(buf[pos:], 1)
+	binary.LittleEndian.PutUint32(buf[pos+4:], uint32(annPostOff))
+	pos += 8
+	setFieldOff := pos
+	binary.LittleEndian.PutUint32(buf[pos:], 1)
+	binary.LittleEndian.PutUint32(buf[pos+4:], uint32(annFieldOff))
+	pos += 8
+	refListOff := pos
+	binary.LittleEndian.PutUint32(buf[pos:], 1)
+	binary.LittleEndian.PutUint32(buf[pos+4:], uint32(setFieldOff))
+	pos += 8
+	annDirOff := pos
+	binary.LittleEndian.PutUint32(buf[pos+8:], 1)
+	binary.LittleEndian.PutUint32(buf[pos+12:], 1)
+	pos += 16
+	binary.LittleEndian.PutUint32(buf[pos:], 0)
+	binary.LittleEndian.PutUint32(buf[pos+4:], uint32(setPostOff))
+	pos += 8
+	binary.LittleEndian.PutUint32(buf[pos:], 0)
+	binary.LittleEndian.PutUint32(buf[pos+4:], uint32(refListOff))
+	pos += 8
+	binary.LittleEndian.PutUint32(buf[classDefsOff+20:], uint32(annDirOff))
+	binary.LittleEndian.PutUint32(buf[32:36], uint32(pos))
+	binary.LittleEndian.PutUint32(buf[56:60], uint32(len(stringsList)))
+	binary.LittleEndian.PutUint32(buf[60:64], uint32(stringIDsOff))
+	binary.LittleEndian.PutUint32(buf[64:68], uint32(len(typeStringIndices)))
+	binary.LittleEndian.PutUint32(buf[68:72], uint32(typeIDsOff))
+	binary.LittleEndian.PutUint32(buf[96:100], 1)
+	binary.LittleEndian.PutUint32(buf[100:104], uint32(classDefsOff))
+	return buf[:pos]
 }
 
 func buildSyntheticMachO64(cryptID uint32, trailingStrings string) []byte {

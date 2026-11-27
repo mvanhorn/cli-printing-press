@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	stdpath "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -187,11 +188,17 @@ func scanCacheDirInto(dir string, opts Options, res *DiscoveryResult, acc *extra
 		if walkErr != nil {
 			return nil
 		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if d.IsDir() {
 			if IsForbiddenSecretPath(path) {
 				res.Stats.FilesSkippedSecret++
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if IsForbiddenSecretPath(path) {
@@ -267,7 +274,7 @@ func scanCacheDirInto(dir string, opts Options, res *DiscoveryResult, acc *extra
 		if total+c.size > maxTotal {
 			break
 		}
-		raw, err := os.ReadFile(c.path)
+		raw, err := readBoundedFile(c.path, min(maxFile, maxTotal-total))
 		if err != nil {
 			continue
 		}
@@ -309,9 +316,13 @@ func normalizedCacheStem(rawURL string) string {
 	if err != nil {
 		return ""
 	}
-	base := filepath.Base(u.Path)
+	cleanPath := stdpath.Clean(u.Path)
+	base := stdpath.Base(cleanPath)
 	if base == "" || base == "." || base == "/" {
 		return ""
 	}
-	return hashedStemPattern.ReplaceAllString(base, "$2")
+	dir := stdpath.Dir(cleanPath)
+	strippedBase := hashedStemPattern.ReplaceAllString(base, "$2")
+	origin := strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+	return origin + stdpath.Join(dir, strippedBase)
 }

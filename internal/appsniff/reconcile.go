@@ -18,11 +18,13 @@ var (
 )
 
 // ReconcileWithHAR overlays an optional HAR or enriched capture onto a static
-// DiscoveryResult. Matching endpoints are promoted to "confirmed" with real
-// HTTP methods, statuses, query parameters, and observed auth header names;
-// HAR-only routes are appended as "observed-only"; unmatched binary routes are
-// tagged "static-only".
-func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
+// DiscoveryResult. Matching endpoints are matched by origin + canonical path
+// (falling back to hostless static entries only when no origin is known) and
+// promoted to "confirmed" with real HTTP methods, statuses, query parameters,
+// and observed auth header names. Observed gRPC routes are stored in
+// GRPCEndpoints so default gRPC exclusion stays intact, and --host / --top
+// filters are enforced afterward.
+func ReconcileWithHAR(res *DiscoveryResult, harPath string, opts Options) error {
 	if res == nil || strings.TrimSpace(harPath) == "" {
 		return nil
 	}
@@ -31,12 +33,19 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		return fmt.Errorf("loading reconciliation HAR %s: %w", harPath, err)
 	}
 
-	// Build normalized index of static endpoints by canonical path template.
-	byCanonPath := make(map[string][]int, len(res.Endpoints))
+	// Index static endpoints by (origin + canonical path), plus a separate
+	// fallback index ONLY for static endpoints whose origin is genuinely empty.
+	byOriginCanon := make(map[string][]int, len(res.Endpoints))
+	byHostlessCanon := make(map[string][]int)
 	for i := range res.Endpoints {
 		res.Endpoints[i].ReconcileState = ReconcileStaticOnly
 		canon := canonicalizePathForMatch(res.Endpoints[i].Path)
-		byCanonPath[canon] = append(byCanonPath[canon], i)
+		origin := normalizeOrigin(res.Endpoints[i].BaseURL)
+		if origin != "" {
+			byOriginCanon[origin+" "+canon] = append(byOriginCanon[origin+" "+canon], i)
+		} else {
+			byHostlessCanon[canon] = append(byHostlessCanon[canon], i)
+		}
 	}
 
 	type obsGroup struct {
@@ -45,6 +54,7 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		baseURL      string
 		path         string
 		canon        string
+		isGRPC       bool
 		statuses     []int
 		sampleCount  int
 		params       []EndpointParam
@@ -60,8 +70,12 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			continue
 		}
-		host := strings.ToLower(u.Hostname())
-		if isIgnoredHost(host) || isStaticAssetPath(u.Path) {
+		hostname := strings.ToLower(u.Hostname())
+		if isIgnoredHost(hostname) || isStaticAssetPath(u.Path) {
+			continue
+		}
+		hostWithPort := strings.ToLower(u.Host)
+		if len(opts.HostFilters) > 0 && !matchesHostFilters(hostWithPort, opts.HostFilters) {
 			continue
 		}
 		method := strings.ToUpper(strings.TrimSpace(entry.Method))
@@ -72,16 +86,20 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		if normPath == "" {
 			continue
 		}
+		origin := strings.ToLower(u.Scheme) + "://" + hostWithPort
 		canon := canonicalizePathForMatch(normPath)
-		key := method + " " + host + " " + canon
+		key := method + " " + origin + " " + canon
 		grp, ok := observed[key]
 		if !ok {
+			ct := strings.ToLower(entry.ResponseContentType)
+			isGRPC := classifyProtocol(normPath) == ProtocolGRPC || strings.Contains(ct, "application/grpc")
 			grp = &obsGroup{
 				method:  method,
-				host:    host,
-				baseURL: u.Scheme + "://" + u.Host,
+				host:    hostWithPort,
+				baseURL: origin,
 				path:    normPath,
 				canon:   canon,
+				isGRPC:  isGRPC,
 			}
 			observed[key] = grp
 		}
@@ -108,7 +126,6 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 	confirmed := 0
 	observedOnly := 0
 
-	// Sort keys for deterministic reconciliation order.
 	obsKeys := make([]string, 0, len(observed))
 	for k := range observed {
 		obsKeys = append(obsKeys, k)
@@ -120,7 +137,33 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		sort.Ints(grp.statuses)
 		sort.Strings(grp.observedAuth)
 
-		indices := byCanonPath[grp.canon]
+		// Route observed gRPC calls into GRPCEndpoints so default gRPC
+		// exclusion holds even when --har is passed.
+		if grp.isGRPC {
+			res.GRPCEndpoints = append(res.GRPCEndpoints, Endpoint{
+				Method:         grp.method,
+				Path:           grp.path,
+				Host:           grp.host,
+				BaseURL:        grp.baseURL,
+				Protocol:       ProtocolGRPC,
+				Source:         "har-observed",
+				Confidence:     ConfidenceHigh,
+				ObservedAuth:   grp.observedAuth,
+				ReconcileState: ReconcileObservedOnly,
+				Statuses:       grp.statuses,
+				SampleCount:    grp.sampleCount,
+			})
+			observedOnly++
+			continue
+		}
+
+		// Prefer exact origin + canonical path match; only fall back to
+		// hostless static entries when no exact origin match exists.
+		indices := byOriginCanon[grp.baseURL+" "+grp.canon]
+		if len(indices) == 0 {
+			indices = byHostlessCanon[grp.canon]
+		}
+
 		matchedIdx := -1
 		for _, idx := range indices {
 			if res.Endpoints[idx].Method == grp.method {
@@ -128,10 +171,9 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 				break
 			}
 		}
-		// Promote low-confidence static GET placeholder to observed method (e.g. POST/PUT).
 		if matchedIdx < 0 {
 			for _, idx := range indices {
-				if res.Endpoints[idx].Confidence == ConfidenceLow && res.Endpoints[idx].Method == "GET" {
+				if res.Endpoints[idx].Confidence != ConfidenceHigh && res.Endpoints[idx].Method == "GET" {
 					matchedIdx = idx
 					res.Endpoints[idx].Method = grp.method
 					break
@@ -147,7 +189,7 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 			ep.ReconcileState = ReconcileConfirmed
 			ep.Confidence = ConfidenceHigh
 			ep.SampleCount += grp.sampleCount
-			if ep.Host == "" {
+			if ep.BaseURL == "" {
 				ep.Host = grp.host
 				ep.BaseURL = grp.baseURL
 			}
@@ -179,6 +221,8 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		})
 	}
 
+	ApplyResultFilters(res, opts)
+
 	staticOnly := 0
 	for _, ep := range res.Endpoints {
 		if ep.ReconcileState == ReconcileStaticOnly {
@@ -192,7 +236,6 @@ func ReconcileWithHAR(res *DiscoveryResult, harPath string) error {
 		ObservedOnly: observedOnly,
 		StaticOnly:   staticOnly,
 	}
-	res.Stats.RESTEndpoints = len(res.Endpoints)
 	return nil
 }
 
@@ -204,6 +247,8 @@ func normalizeObservedPath(raw string) string {
 	for i, s := range segs {
 		if reUUIDSegment.MatchString(s) || reHexIDSegment.MatchString(s) || reNumIDSegment.MatchString(s) {
 			segs[i] = "{id}"
+		} else if RedactString(s) != s {
+			segs[i] = "{token}"
 		}
 	}
 	return "/" + strings.Join(segs, "/")

@@ -314,22 +314,20 @@ func scanAPKZipReader(zr *zip.Reader, archiveLabel string, opts Options, res *Di
 		for _, ann := range retrofitAnns {
 			res.Stats.RetrofitMethods++
 			epPath := ann.Path
-			var host, baseURL string
 			if strings.HasPrefix(epPath, "https://") {
 				epPath = reTemplateExpr.ReplaceAllString(epPath, "{param}")
-				acc.addCandidateURLOrPath(ann.Method, epPath, "dex-retrofit", ConfidenceHigh, nil, ann.HeaderNames)
+				acc.addCandidateURLOrPath(ann.Method, epPath, "dex-retrofit", ConfidenceHigh, nil, ann.HeaderNames, ann.RequestContentType)
 				continue
 			}
 			acc.addEndpoint(Endpoint{
-				Method:      ann.Method,
-				Path:        epPath,
-				Host:        host,
-				BaseURL:     baseURL,
-				Protocol:    classifyProtocol(epPath),
-				Source:      "dex-retrofit",
-				Confidence:  ConfidenceHigh,
-				Params:      ann.Params,
-				HeaderNames: ann.HeaderNames,
+				Method:             ann.Method,
+				Path:               epPath,
+				Protocol:           classifyProtocol(epPath),
+				Source:             "dex-retrofit",
+				Confidence:         ConfidenceHigh,
+				Params:             ann.Params,
+				HeaderNames:        ann.HeaderNames,
+				RequestContentType: ann.RequestContentType,
 			})
 		}
 		acc.scanStringSlice(strs, "dex:"+archiveLabel+":"+f.Name)
@@ -339,7 +337,7 @@ func scanAPKZipReader(zr *zip.Reader, archiveLabel string, opts Options, res *Di
 func scanUnpackedAndroidDir(dir string, opts Options, res *DiscoveryResult, acc *extractorAccumulator) error {
 	maxFile := opts.maxFileBytes()
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || d.IsDir() || d.Type()&os.ModeSymlink != 0 || !d.Type().IsRegular() {
 			return nil
 		}
 		if IsForbiddenSecretPath(path) {
@@ -359,13 +357,14 @@ func scanUnpackedAndroidDir(dir string, opts Options, res *DiscoveryResult, acc 
 					for _, ann := range anns {
 						res.Stats.RetrofitMethods++
 						acc.addEndpoint(Endpoint{
-							Method:      ann.Method,
-							Path:        ann.Path,
-							Protocol:    classifyProtocol(ann.Path),
-							Source:      "dex-retrofit",
-							Confidence:  ConfidenceHigh,
-							Params:      ann.Params,
-							HeaderNames: ann.HeaderNames,
+							Method:             ann.Method,
+							Path:               ann.Path,
+							Protocol:           classifyProtocol(ann.Path),
+							Source:             "dex-retrofit",
+							Confidence:         ConfidenceHigh,
+							Params:             ann.Params,
+							HeaderNames:        ann.HeaderNames,
+							RequestContentType: ann.RequestContentType,
 						})
 					}
 					acc.scanStringSlice(strs, "dex:"+filepath.Base(path))
@@ -462,8 +461,14 @@ func scanIPAArchive(ipaPath string, opts Options, res *DiscoveryResult, acc *ext
 				res.Stats.FilesScanned++
 				if pinfo, perr := ParseInfoPlist(data); perr == nil {
 					applyIOSPlistInfo(res, acc, pinfo)
+				} else {
+					acc.addWarning(fmt.Sprintf("failed to parse Info.plist: %v", perr))
 				}
-				execName = extractExecutableNameFromPlist(data)
+				var eerr error
+				execName, eerr = extractExecutableNameFromPlist(data)
+				if eerr != nil {
+					acc.addWarning(fmt.Sprintf("could not resolve CFBundleExecutable from Info.plist: %v", eerr))
+				}
 			}
 			break
 		}
@@ -536,23 +541,31 @@ func scanUnpackedIOSApp(appDir string, opts Options, res *DiscoveryResult, acc *
 	maxFile := opts.maxFileBytes()
 	var execName string
 	plistPath := filepath.Join(appDir, "Info.plist")
-	if data, err := os.ReadFile(plistPath); err == nil {
+	if data, err := readBoundedFile(plistPath, 2*1024*1024); err == nil {
 		res.Stats.FilesScanned++
 		if pinfo, perr := ParseInfoPlist(data); perr == nil {
 			applyIOSPlistInfo(res, acc, pinfo)
+		} else {
+			acc.addWarning(fmt.Sprintf("failed to parse Info.plist: %v", perr))
 		}
-		execName = extractExecutableNameFromPlist(data)
+		var eerr error
+		execName, eerr = extractExecutableNameFromPlist(data)
+		if eerr != nil {
+			acc.addWarning(fmt.Sprintf("could not resolve CFBundleExecutable from Info.plist: %v", eerr))
+		}
 	}
 	if execName != "" {
-		binPath := filepath.Join(appDir, execName)
-		if data, err := readBoundedFile(binPath, maxFile); err == nil {
+		binPath, berr := safeBundleExecutablePath(appDir, execName)
+		if berr != nil {
+			acc.addWarning(fmt.Sprintf("skipped unsafe CFBundleExecutable %q: %v", execName, berr))
+		} else if data, err := readBoundedFile(binPath, maxFile); err == nil {
 			res.Stats.FilesScanned++
 			inspectIOSMachO(data, execName, res, acc)
 		}
 	}
 
 	return filepath.WalkDir(appDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || d.IsDir() || d.Type()&os.ModeSymlink != 0 || !d.Type().IsRegular() {
 			return nil
 		}
 		if IsForbiddenSecretPath(path) {
@@ -617,24 +630,61 @@ func applyIOSPlistInfo(res *DiscoveryResult, acc *extractorAccumulator, pinfo Pl
 	}
 }
 
-func extractExecutableNameFromPlist(data []byte) string {
-	xmlData := data
-	if bytes.HasPrefix(data, []byte("bplist")) {
-		converted, err := convertBinaryPlistToXML(data)
-		if err != nil {
-			return ""
-		}
-		xmlData = converted
+func extractExecutableNameFromPlist(data []byte) (string, error) {
+	var root any
+	var err error
+	if bytes.HasPrefix(data, []byte(bplistMagic)) {
+		root, err = parseBinaryPlist(data)
+	} else {
+		root, err = parseXMLPlist(data)
 	}
-	root, err := parseXMLPlist(xmlData)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	dict, ok := root.(map[string]any)
 	if !ok {
-		return ""
+		return "", fmt.Errorf("plist root is not a dictionary")
 	}
-	return firstNonEmptyString(dict, "CFBundleExecutable")
+	return firstNonEmptyString(dict, "CFBundleExecutable"), nil
+}
+
+// safeBundleExecutablePath validates that CFBundleExecutable is a plain
+// single-segment filename resolving strictly inside appDir, is a regular
+// non-symlink file, and is not a forbidden credential path.
+func safeBundleExecutablePath(appDir, execName string) (string, error) {
+	execName = strings.TrimSpace(execName)
+	if execName == "" || execName == "." || execName == ".." ||
+		strings.ContainsAny(execName, "/\\\x00") ||
+		filepath.Base(execName) != execName {
+		return "", fmt.Errorf("must be a single filename inside the app bundle")
+	}
+	if IsForbiddenSecretPath(execName) {
+		return "", fmt.Errorf("refusing forbidden secret path")
+	}
+	absDir, err := filepath.EvalSymlinks(appDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving app bundle dir: %w", err)
+	}
+	candidate := filepath.Join(absDir, execName)
+	lfi, err := os.Lstat(candidate)
+	if err != nil {
+		return "", err
+	}
+	if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
+		return "", fmt.Errorf("executable must be a regular non-symlink file")
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(absDir, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("resolved path escapes app bundle")
+	}
+	if IsForbiddenSecretPath(resolved) {
+		return "", fmt.Errorf("resolved path is forbidden")
+	}
+	return resolved, nil
 }
 
 func inspectIOSMachO(data []byte, rel string, res *DiscoveryResult, acc *extractorAccumulator) {
