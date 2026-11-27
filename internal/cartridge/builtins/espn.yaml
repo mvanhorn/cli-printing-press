@@ -1,0 +1,99 @@
+schema: pp-cartridge/v1
+name: espn
+version: "2.0.0"
+description: Live ESPN scores, game states, and sports news across NBA, NFL, MLB, NHL, and MLS in ~150ms without opening a browser.
+category: media-and-entertainment
+homepage: https://www.espn.com
+domains:
+  - espn.com
+  - site.api.espn.com
+trust:
+  allowed_hosts:
+    - site.api.espn.com
+  read_only: true
+auth:
+  strategy: none
+commands:
+  scoreboard:
+    description: Live scoreboard for a sport and league (defaults to NBA).
+    driver: http
+    method: GET
+    url: https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard
+    params:
+      sport:
+        type: string
+        default: basketball
+        description: Sport path segment (basketball, football, baseball, hockey, soccer)
+      league:
+        type: string
+        default: nba
+        description: League slug (nba, nfl, mlb, nhl, usa.1, mens-college-basketball)
+      dates:
+        type: string
+        description: Optional YYYYMMDD date filter
+    query:
+      dates: "{dates}"
+    extract: "$.events[*]"
+    compact_fields:
+      - id
+      - shortName
+      - date
+      - status=status.type.shortDetail
+      - state=status.type.state
+    sync_default: true
+    lake_projection:
+      entity: event
+      key: id
+      title: name
+      summary: status.type.shortDetail
+      timestamp: date
+  news:
+    description: Latest breaking headlines and injury news for a sport and league.
+    driver: http
+    method: GET
+    url: https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/news
+    params:
+      sport:
+        type: string
+        default: basketball
+      league:
+        type: string
+        default: nba
+      limit:
+        type: string
+        default: "10"
+    query:
+      limit: "{limit}"
+    extract: "$.articles[*]"
+    compact_fields:
+      - id=dataSourceIdentifier
+      - headline
+      - published
+      - description
+      - url=links.web.href
+    sync_default: true
+    lake_projection:
+      entity: item
+      key: dataSourceIdentifier
+      title: headline
+      summary: description
+      url: links.web.href
+      timestamp: published
+  teams:
+    description: List teams in a league.
+    driver: http
+    method: GET
+    url: https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams
+    params:
+      sport:
+        type: string
+        default: basketball
+      league:
+        type: string
+        default: nba
+    extract: "$.sports[0].leagues[0].teams[*].team"
+    compact_fields:
+      - id
+      - displayName
+      - abbreviation
+      - location

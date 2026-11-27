@@ -1,0 +1,92 @@
+schema: pp-cartridge/v1
+name: hackernews
+version: "2.0.0"
+description: Hacker News front page, Show HN, Ask HN, and Algolia full-text search in ~120ms (~150 tokens instead of 19,000-char DOM snapshots).
+category: media-and-entertainment
+homepage: https://news.ycombinator.com
+domains:
+  - news.ycombinator.com
+  - hn.algolia.com
+trust:
+  allowed_hosts:
+    - hn.algolia.com
+  read_only: true
+auth:
+  strategy: none
+commands:
+  frontpage:
+    description: Current Hacker News front page stories with points and comment counts.
+    driver: http
+    method: GET
+    url: https://hn.algolia.com/api/v1/search
+    params:
+      hitsPerPage:
+        type: string
+        default: "20"
+    query:
+      tags: front_page
+      hitsPerPage: "{hitsPerPage}"
+    extract: "$.hits[*]"
+    compact_fields:
+      - id=objectID
+      - title
+      - url
+      - points
+      - comments=num_comments
+      - author
+      - created_at
+    sync_default: true
+    lake_projection:
+      entity: item
+      key: objectID
+      title: title
+      summary: author
+      url: url
+      timestamp: created_at
+  search:
+    description: Search Hacker News stories by keyword.
+    driver: http
+    method: GET
+    url: https://hn.algolia.com/api/v1/search_by_date
+    params:
+      query:
+        type: string
+        required: true
+        description: Search query string
+      hitsPerPage:
+        type: string
+        default: "15"
+    query:
+      query: "{query}"
+      tags: story
+      hitsPerPage: "{hitsPerPage}"
+    extract: "$.hits[*]"
+    compact_fields:
+      - id=objectID
+      - title
+      - url
+      - points
+      - comments=num_comments
+      - author
+      - created_at
+  show-hn:
+    description: Latest Show HN launches.
+    driver: http
+    method: GET
+    url: https://hn.algolia.com/api/v1/search_by_date
+    params:
+      hitsPerPage:
+        type: string
+        default: "15"
+    query:
+      tags: show_hn
+      hitsPerPage: "{hitsPerPage}"
+    extract: "$.hits[*]"
+    compact_fields:
+      - id=objectID
+      - title
+      - url
+      - points
+      - comments=num_comments
+      - author
+      - created_at

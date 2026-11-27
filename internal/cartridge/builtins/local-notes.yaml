@@ -1,0 +1,39 @@
+schema: pp-cartridge/v1
+name: local-notes
+version: "2.0.0"
+description: Index and search local Markdown notes or research briefs directly into your Personal Life Lake.
+category: productivity
+domains:
+  - local.notes
+trust:
+  read_only: true
+auth:
+  strategy: none
+commands:
+  search:
+    description: Search local Markdown documents matching a glob pattern (defaults to ~/Documents/Last30Days/*.md).
+    driver: local-files
+    glob: "{glob}"
+    format: markdown
+    params:
+      glob:
+        type: string
+        default: "~/Documents/Last30Days/*.md"
+        description: File glob pattern to scan
+      query:
+        type: string
+        default: ""
+        description: Optional case-insensitive text filter
+    compact_fields:
+      - name
+      - title
+      - modified
+      - path
+    sync_default: true
+    lake_projection:
+      entity: document
+      key: path
+      title: title
+      summary: excerpt
+      url: path
+      timestamp: modified

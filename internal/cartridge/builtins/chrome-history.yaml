@@ -1,0 +1,52 @@
+schema: pp-cartridge/v1
+name: chrome-history
+version: "2.0.0"
+description: Read-only WAL-safe local query of Ardia or Chrome browser history directly into your Personal Life Lake (zero network, zero browser locks).
+category: productivity
+domains:
+  - local.chrome-history
+trust:
+  read_only: true
+auth:
+  strategy: none
+commands:
+  recent:
+    description: Most recently visited pages from Ardia or Google Chrome history.
+    driver: local-sqlite
+    db_path: "~/Library/Application Support/com.ardia.browser/Chromium/Default/History|~/Library/Application Support/Google/Chrome/Default/History|~/.config/google-chrome/Default/History"
+    params:
+      limit:
+        type: string
+        default: "25"
+    sql: "SELECT id, url, title, visit_count, datetime(last_visit_time/1000000 - 11644473600, 'unixepoch') AS last_visited FROM urls WHERE title != '' ORDER BY last_visit_time DESC LIMIT CAST(:limit AS INTEGER)"
+    compact_fields:
+      - title
+      - url
+      - visit_count
+      - last_visited
+    sync_default: true
+    lake_projection:
+      entity: item
+      key: id
+      title: title
+      summary: url
+      url: url
+      timestamp: last_visited
+  search:
+    description: Search local Ardia/Chrome history by URL or title substring.
+    driver: local-sqlite
+    db_path: "~/Library/Application Support/com.ardia.browser/Chromium/Default/History|~/Library/Application Support/Google/Chrome/Default/History|~/.config/google-chrome/Default/History"
+    params:
+      query:
+        type: string
+        required: true
+        description: Substring to match in title or URL
+      limit:
+        type: string
+        default: "25"
+    sql: "SELECT id, url, title, visit_count, datetime(last_visit_time/1000000 - 11644473600, 'unixepoch') AS last_visited FROM urls WHERE lower(title) LIKE '%' || lower(:query) || '%' OR lower(url) LIKE '%' || lower(:query) || '%' ORDER BY last_visit_time DESC LIMIT CAST(:limit AS INTEGER)"
+    compact_fields:
+      - title
+      - url
+      - visit_count
+      - last_visited
