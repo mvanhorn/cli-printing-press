@@ -42,6 +42,17 @@ Present to the user via `AskUserQuestion`:
 > 2. **No — use docs instead** (attempt `--docs` generation from documentation pages)
 > 3. **No — I'll provide a spec or HAR** (user will supply input manually)
 
+### App-sniff alternative (desktop or mobile binaries)
+
+When no complete OpenAPI spec exists and the target ships a local macOS/Electron
+`.app`, Chromium `CacheStorage`, Android `.apk`/`.xapk`/`.aab` (local,
+`--apkeep`, or `--adb`), or iOS `.ipa`/Simulator `.app` — especially when
+`browser-sniff` hit a mobile-only or auth wall — offer `cli-printing-press app-sniff`
+alongside or ahead of `crowd-sniff`. When approved (or when the user already
+supplied `--app`, `--android`, `--apkeep`, `--adb`, `--ios`, or `--simulator`),
+read and follow [references/app-sniff.md](../references/app-sniff.md) to emit
+`$RESEARCH_DIR/<api>-app-sniff-spec.yaml` and `$DISCOVERY_DIR/traffic-analysis.json`.
+
 ### If user approves crowd-sniff
 
 Read and follow [references/crowd-sniff.md](../references/crowd-sniff.md) for the crowd-sniff

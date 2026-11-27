@@ -430,6 +430,16 @@ After sync (or explicit skip), the rest of polish operates on `$CLI_DIR` as cano
 
 **The check has run only when one of the four outcomes above is explicitly stated in your response.** Silent omission counts as not having run it.
 
+### Optional app-bundle drift audit (`app-sniff --audit-cli`)
+
+If the target service ships a local desktop app (`/Applications/<App>.app`) or a mobile package (`.apk`/`.xapk`/`.ipa`) and the binary supports `app-sniff`, run a read-only drift audit to surface client version drift, unwired backend shards, missing endpoints, and MCP `codeOrchEndpoints` parity gaps:
+
+```bash
+if "$PRINTING_PRESS_BIN" app-sniff --help >/dev/null 2>&1 && [ -d "/Applications/<App>.app" ]; then
+  "$PRINTING_PRESS_BIN" app-sniff --app "/Applications/<App>.app" --audit-cli "$CLI_DIR" --json || true
+fi
+```
+
 ## Phase 1: Baseline diagnostics
 
 ```bash

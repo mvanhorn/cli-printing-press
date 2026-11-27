@@ -28,7 +28,7 @@ On-disk locations for the artifact concepts — local library, manuscripts, runs
 
 Concrete names that back the concepts — kept here, out of `CONCEPTS.md`, because they are file paths, package names, and subcommands that move as the code moves.
 
-Many concepts are also `cli-printing-press` subcommands (`generate`, `verify`, `dogfood`, `scorecard`, `emboss`, `browser-sniff`, `crowd-sniff`, `device-sniff` / `bluetooth-sniff`, …) or skill workflows (`polish`, `reprint`, `retro`); their *meaning* is in `CONCEPTS.md`. The table below lists names that are **purely** tooling — packages, conventions, diagnostic subcommands, and on-disk files with no standalone domain meaning.
+Many concepts are also `cli-printing-press` subcommands (`generate`, `verify`, `dogfood`, `scorecard`, `emboss`, `browser-sniff`, `crowd-sniff`, `app-sniff`, `device-sniff` / `bluetooth-sniff`, …) or skill workflows (`polish`, `reprint`, `retro`); their *meaning* is in `CONCEPTS.md`. The table below lists names that are **purely** tooling — packages, conventions, diagnostic subcommands, and on-disk files with no standalone domain meaning.
 
 | Term | What it is |
 |------|------------|
