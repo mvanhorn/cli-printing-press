@@ -74,6 +74,10 @@ func TestRouteMatchesBuiltinCatalogAndFallback(t *testing.T) {
 	assert.Equal(t, "pp use instacart", instaDec.InstallCmd)
 	require.NotNil(t, instaDec.MCPCall)
 	assert.Equal(t, "pp_run", instaDec.MCPCall["tool"])
+	instaArgs, ok := instaDec.MCPCall["arguments"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "instacart", instaArgs["app"])
+	assert.Equal(t, "--help", instaArgs["command"])
 
 	// 3. Unknown site falls back with compile command and WebMCP hint.
 	unkDec, err := client.Route(context.Background(), "https://unknown-portal.example/dashboard")

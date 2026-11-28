@@ -82,9 +82,8 @@ func ResolveCookieEnvVars(ctx context.Context, opts CookieEnvOptions) []string {
 	if IsMetaOrHelpArgs(opts.ChildArgs) {
 		return nil
 	}
-	switch strings.ToLower(strings.TrimSpace(opts.AuthType)) {
-	case "cookie", "browser_cookie", "session":
-	default:
+	authType := strings.ToLower(strings.TrimSpace(opts.AuthType))
+	if authType != "cookie" && authType != "browser_cookie" && authType != "session" {
 		return nil
 	}
 	var missingEnvNames []string

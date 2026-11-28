@@ -618,12 +618,13 @@ func isBinaryAuthFailure(output string) bool {
 	return false
 }
 
-func truncateForError(s string, maxLen int) string {
+func truncateForError(s string, maxRunes int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxRunes]) + "..."
 }
 
 func isConfirmationFlagToken(tok string) bool {

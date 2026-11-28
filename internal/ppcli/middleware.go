@@ -252,11 +252,21 @@ func newAuthCmd() *cobra.Command {
 	return authCmd
 }
 
+type authDoctorStatus string
+
+const (
+	authDoctorStatusOK        authDoctorStatus = "ok"
+	authDoctorStatusNeedsAuth authDoctorStatus = "needs_auth"
+	authDoctorStatusNoAuth    authDoctorStatus = "no_auth_required"
+	authDoctorStatusTimeout   authDoctorStatus = "timeout"
+	authDoctorStatusError     authDoctorStatus = "error"
+)
+
 type authDoctorItem struct {
-	App    string `json:"app"`
-	Status string `json:"status"` // "ok", "needs_auth", "no_auth_required", "timeout", "error"
-	Detail string `json:"detail,omitempty"`
-	Hint   string `json:"hint,omitempty"`
+	App    string           `json:"app"`
+	Status authDoctorStatus `json:"status"`
+	Detail string           `json:"detail,omitempty"`
+	Hint   string           `json:"hint,omitempty"`
 }
 
 func runAuthDoctor(cmd *cobra.Command, asJSON bool) error {
@@ -300,7 +310,18 @@ func runAuthDoctor(cmd *cobra.Command, asJSON bool) error {
 		return strings.Compare(a.app, b.app)
 	})
 
-	reg, _ := registry.NewClient()
+	// Read local catalog cache once without network access so doctor checks
+	// never stall on GitHub or burn per-binary timeouts on registry lookups.
+	catalogByApp := make(map[string]*registry.Entry)
+	if reg, rErr := registry.NewClient(); rErr == nil {
+		if cat, cErr := reg.LoadCachedOnly(); cErr == nil && cat != nil {
+			for i := range cat.Entries {
+				e := &cat.Entries[i]
+				catalogByApp[strings.ToLower(e.Name)] = e
+			}
+		}
+	}
+
 	results := make([]authDoctorItem, len(targets))
 	sem := make(chan struct{}, 6)
 	var wg sync.WaitGroup
@@ -310,7 +331,7 @@ func runAuthDoctor(cmd *cobra.Command, asJSON bool) error {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[idx] = probeBinaryAuth(cmd.Context(), reg, t.app, t.binPath)
+			results[idx] = probeBinaryAuth(cmd.Context(), catalogByApp[strings.ToLower(t.app)], t.app, t.binPath)
 		}(i, tgt)
 	}
 	wg.Wait()
@@ -329,17 +350,25 @@ func runAuthDoctor(cmd *cobra.Command, asJSON bool) error {
 	return tw.Flush()
 }
 
-func probeBinaryAuth(ctx context.Context, reg *registry.Client, app, binPath string) authDoctorItem {
+func probeBinaryAuth(ctx context.Context, entry *registry.Entry, app, binPath string) authDoctorItem {
+	// Refuse to execute unpinned or checksum-mismatched binaries.
+	if err := registry.VerifyInstalledBinary(app, binPath); err != nil {
+		return authDoctorItem{
+			App:    app,
+			Status: authDoctorStatusError,
+			Detail: firstNonEmptyLine(err.Error(), 90),
+			Hint:   fmt.Sprintf("reinstall verified binary via `~/.local/bin/pp use %s`", app),
+		}
+	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var authType string
 	var envVars []string
-	if reg != nil {
-		if entry, err := reg.LookupEntry(probeCtx, app); err == nil && entry != nil && entry.MCP != nil {
-			authType = entry.MCP.AuthType
-			envVars = entry.MCP.EnvVars
-		}
+	if entry != nil && entry.MCP != nil {
+		authType = entry.MCP.AuthType
+		envVars = entry.MCP.EnvVars
 	}
 
 	proc := exec.CommandContext(probeCtx, binPath, "auth", "status")
@@ -350,14 +379,22 @@ func probeBinaryAuth(ctx context.Context, reg *registry.Client, app, binPath str
 	lower := strings.ToLower(out)
 
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-		return authDoctorItem{App: app, Status: "timeout", Detail: "auth status timed out after 5s"}
+		return authDoctorItem{App: app, Status: authDoctorStatusTimeout, Detail: "auth status timed out after 5s"}
 	}
 	if strings.Contains(lower, "unknown command \"auth\"") || strings.Contains(lower, "unknown command 'auth'") {
-		return authDoctorItem{App: app, Status: "no_auth_required", Detail: "public or no auth subcommand"}
+		return authDoctorItem{App: app, Status: authDoctorStatusNoAuth, Detail: "public or no auth subcommand"}
 	}
 	firstLine := firstNonEmptyLine(out, 90)
-	if err == nil && !strings.Contains(lower, "not authenticated") && !strings.Contains(lower, "fail ") && !strings.Contains(lower, "expired") {
-		return authDoctorItem{App: app, Status: "ok", Detail: firstLine}
+	isAuthProblem := looksLikeAuthFailure(lower)
+	if err == nil && !isAuthProblem {
+		return authDoctorItem{App: app, Status: authDoctorStatusOK, Detail: firstLine}
+	}
+	if !isAuthProblem {
+		detail := firstLine
+		if detail == "" && err != nil {
+			detail = firstNonEmptyLine(err.Error(), 90)
+		}
+		return authDoctorItem{App: app, Status: authDoctorStatusError, Detail: detail}
 	}
 	hint := fmt.Sprintf("~/.local/bin/pp run %s auth login", app)
 	if strings.EqualFold(authType, "cookie") {
@@ -365,17 +402,39 @@ func probeBinaryAuth(ctx context.Context, reg *registry.Client, app, binPath str
 	} else if len(envVars) > 0 {
 		hint = fmt.Sprintf("set %s (or run ~/.local/bin/pp run %s auth --help)", envVars[0], app)
 	}
-	return authDoctorItem{App: app, Status: "needs_auth", Detail: firstLine, Hint: hint}
+	return authDoctorItem{App: app, Status: authDoctorStatusNeedsAuth, Detail: firstLine, Hint: hint}
 }
 
-func firstNonEmptyLine(s string, maxLen int) string {
+func looksLikeAuthFailure(lower string) bool {
+	for _, needle := range []string{
+		"not authenticated",
+		"fail ",
+		"expired",
+		"set your token",
+		"set credentials",
+		"unauthorized",
+		"sign-in",
+		"sign in",
+		"login",
+		"401",
+		"403",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmptyLine(s string, maxRunes int) string {
 	for line := range strings.SplitSeq(s, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		if len(trimmed) > maxLen {
-			return trimmed[:maxLen] + "..."
+		runes := []rune(trimmed)
+		if len(runes) > maxRunes {
+			return string(runes[:maxRunes]) + "..."
 		}
 		return trimmed
 	}
@@ -479,12 +538,8 @@ func entryMayUseCookies(entry *registry.Entry) bool {
 	if entry == nil || entry.MCP == nil {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(entry.MCP.AuthType)) {
-	case "cookie", "browser_cookie", "session":
-		return true
-	default:
-		return false
-	}
+	authType := strings.ToLower(strings.TrimSpace(entry.MCP.AuthType))
+	return authType == "cookie" || authType == "browser_cookie" || authType == "session"
 }
 
 // mergePressAuthCookies updates stored cookies while preserving any existing

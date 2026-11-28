@@ -254,6 +254,20 @@ type SavingsEstimate struct {
 	PPTokens      int `json:"pp_tokens"`
 }
 
+// LoadCachedOnly reads the local registry cache file without making any network
+// requests. Returns os.ErrNotExist when no cache has been populated yet.
+func (c *Client) LoadCachedOnly() (*Catalog, error) {
+	raw, err := os.ReadFile(c.CachePath)
+	if err != nil {
+		return nil, err
+	}
+	var cat Catalog
+	if err := json.Unmarshal(raw, &cat); err != nil {
+		return nil, err
+	}
+	return &cat, nil
+}
+
 // Route resolves a URL or intent string against installed cartridges, built-in
 // cartridges, and the 616-app PPL registry in milliseconds.
 func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error) {
@@ -311,7 +325,7 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 				Mode:            "prebuilt-binary",
 				Installed:       isInstalled,
 				Description:     match.Description,
-				MCPCall:         map[string]any{"tool": "pp_run", "arguments": map[string]any{"app": match.Name, "args": []string{"--help"}}},
+				MCPCall:         map[string]any{"tool": "pp_run", "arguments": map[string]any{"app": match.Name, "command": "--help"}},
 				RecommendedCmd:  recCmd,
 				InstallCmd:      fmt.Sprintf("pp use %s", match.Name),
 				BrowserFallback: fallback,
