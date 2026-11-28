@@ -97,7 +97,7 @@ func NewClient() (*Client, error) {
 		RegistryURL:    DefaultRegistryURL,
 		ReleaseBaseURL: DefaultReleaseBaseURL,
 		SkillBaseURL:   DefaultSkillBaseURL,
-		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:     &http.Client{Timeout: 3 * time.Minute},
 		CachePath:      filepath.Join(home, "cache", "registry.json"),
 		LocalRepoPath:  localRepo,
 	}, nil
@@ -115,7 +115,9 @@ func (c *Client) Load(ctx context.Context, forceRefresh bool) (*Catalog, error) 
 	}
 
 	if c.RegistryURL != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.RegistryURL, nil)
+		metaCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(metaCtx, http.MethodGet, c.RegistryURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -686,7 +688,9 @@ func releaseAssetName(cliName, goos, goarch string) string {
 }
 
 func (c *Client) fetchExpectedChecksum(ctx context.Context, checksumsURL, assetName string) (string, error) {
-	raw, err := c.downloadBytes(ctx, checksumsURL, 1<<20)
+	metaCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	raw, err := c.downloadBytes(metaCtx, checksumsURL, 1<<20)
 	if err != nil {
 		return "", err
 	}
@@ -718,14 +722,21 @@ func (c *Client) downloadBytes(ctx context.Context, rawURL string, maxBytes int6
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("download from %s exceeds %d-byte limit", rawURL, maxBytes)
+	}
+	return data, nil
 }
 
 func (c *Client) httpClient() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: 3 * time.Minute}
 }
 
 func readCatalogFile(path string) (*Catalog, error) {
