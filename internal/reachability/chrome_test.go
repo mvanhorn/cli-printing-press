@@ -348,3 +348,35 @@ func TestChromeProxyCONNECT_PreservesBufferedTrailingBytes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "trailing-tls-bytes", string(buf))
 }
+
+func TestChromeProxyCONNECT_RespectsContextCancellation(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+
+	// Drain the CONNECT request on the proxy side, then stall without replying
+	// so chromeProxyCONNECT must unblock via context cancellation.
+	reqRead := make(chan struct{})
+	go func() {
+		defer close(reqRead)
+		req, err := http.ReadRequest(bufio.NewReader(serverSide))
+		if err != nil {
+			return
+		}
+		_ = req.Body.Close()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-reqRead
+		cancel()
+	}()
+
+	proxyURL, err := url.Parse("http://proxy.example:8080")
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = chromeProxyCONNECT(ctx, clientSide, "example.com:443", proxyURL)
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 2*time.Second, "cancelled context should unblock stalled CONNECT read")
+}
