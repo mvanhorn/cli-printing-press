@@ -278,17 +278,17 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 		}
 	}
 
-	// 2b. For natural-language queries (no URL host), match installed/built-in
-	// cartridges by explicit app name or high-confidence intent keywords before
-	// falling through to the catalog.
+	// 2b. For natural-language queries (no URL host), check explicit cartridge
+	// names across all installed and built-in candidates before checking the
+	// catalog or falling back to topic aliases.
 	if host == "" {
 		for _, cart := range installed {
-			if matchCartridgeIntent(cart, trimmed) {
+			if matchCartridgeName(cart, trimmed) {
 				return buildCartridgeDecision(trimmed, host, cart, true, fallback), nil
 			}
 		}
 		for _, cart := range builtins {
-			if matchCartridgeIntent(cart, trimmed) {
+			if matchCartridgeName(cart, trimmed) {
 				return buildCartridgeDecision(trimmed, host, cart, true, fallback), nil
 			}
 		}
@@ -318,6 +318,21 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 					PPTokens:      180,
 				},
 			}, nil
+		}
+	}
+
+	// 4. Only after no explicit app name or domain matched anywhere, check
+	// topic aliases on installed and built-in cartridges.
+	if host == "" {
+		for _, cart := range installed {
+			if matchCartridgeAlias(cart, trimmed) {
+				return buildCartridgeDecision(trimmed, host, cart, true, fallback), nil
+			}
+		}
+		for _, cart := range builtins {
+			if matchCartridgeAlias(cart, trimmed) {
+				return buildCartridgeDecision(trimmed, host, cart, true, fallback), nil
+			}
 		}
 	}
 
@@ -414,7 +429,7 @@ func pickCommandName(cart *cartridge.Cartridge, input string) string {
 	return ""
 }
 
-func matchCartridgeIntent(cart *cartridge.Cartridge, input string) bool {
+func matchCartridgeName(cart *cartridge.Cartridge, input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	if lower == "" {
 		return false
@@ -425,9 +440,16 @@ func matchCartridgeIntent(cart *cartridge.Cartridge, input string) bool {
 		return true
 	}
 	// Match hyphenated names expressed with spaces (e.g. "github trending").
-	if strings.Contains(name, "-") && strings.Contains(lower, strings.ReplaceAll(name, "-", " ")) {
-		return true
+	return strings.Contains(name, "-") && strings.Contains(lower, strings.ReplaceAll(name, "-", " "))
+}
+
+func matchCartridgeAlias(cart *cartridge.Cartridge, input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
 	}
+	tokens := splitIntentTokens(lower)
+	name := strings.ToLower(cart.Name)
 	for _, alias := range cartridgeIntentAliases[name] {
 		if strings.Contains(alias, " ") {
 			if strings.Contains(lower, alias) {

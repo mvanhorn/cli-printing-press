@@ -87,6 +87,17 @@ func TestRouteMatchesBuiltinCatalogAndFallback(t *testing.T) {
 	assert.True(t, nlHN.Matched)
 	assert.Equal(t, "hackernews", nlHN.App)
 	assert.Equal(t, "cartridge", nlHN.Mode)
+
+	// Explicit named apps (both built-in and catalog) must beat topic aliases.
+	namedBeatsTopic, err := client.Route(context.Background(), "hackernews stories about basketball")
+	require.NoError(t, err)
+	assert.True(t, namedBeatsTopic.Matched)
+	assert.Equal(t, "hackernews", namedBeatsTopic.App)
+
+	catalogBeatsTopic, err := client.Route(context.Background(), "instacart basketball snacks")
+	require.NoError(t, err)
+	assert.True(t, catalogBeatsTopic.Matched)
+	assert.Equal(t, "instacart", catalogBeatsTopic.App)
 }
 
 func TestZeroGoPrebuiltBinaryInstallVerifiesChecksum(t *testing.T) {
