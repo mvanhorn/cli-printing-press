@@ -29,6 +29,7 @@ func isolateHome(t *testing.T) string {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, ".local", "share"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, ".cache"))
 	t.Setenv("PP_HOME", filepath.Join(tmp, ".pp"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	return tmp
 }
 
@@ -324,4 +325,19 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	assert.True(t, isPPExecutableName("PP.EXE", "windows"))
 	assert.True(t, isPPExecutableName("pp", "darwin"))
 	assert.False(t, isPPExecutableName("ppcli.test", "darwin"))
+
+	// Verify T3 Antigravity discovery works when HOME contains glob metacharacters.
+	globHome := filepath.Join(t.TempDir(), "dev[1]")
+	globT3Dir := filepath.Join(globHome, ".t3", "userdata", "providers", "antigravity", "profA", "config")
+	require.NoError(t, os.MkdirAll(globT3Dir, 0o700))
+	assert.Equal(t, []string{globT3Dir}, findT3AntigravityConfigDirs(globHome))
+
+	// Verify CLAUDE_CONFIG_DIR wires custom profile without touching ~/.claude/.
+	customClaudeDir := filepath.Join(tmp, ".claude-gmail")
+	require.NoError(t, os.MkdirAll(customClaudeDir, 0o700))
+	t.Setenv("CLAUDE_CONFIG_DIR", customClaudeDir)
+	_, err = runPP(t, "setup", "--apply", "--json")
+	require.NoError(t, err)
+	assert.FileExists(t, filepath.Join(customClaudeDir, ".claude.json"))
+	assert.NoFileExists(t, filepath.Join(tmp, ".claude", ".claude.json"))
 }

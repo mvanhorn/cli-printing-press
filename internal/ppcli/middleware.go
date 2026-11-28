@@ -561,7 +561,7 @@ func newSetupCmd() *cobra.Command {
 					detectedAgents = append(detectedAgents, candidate.name)
 				}
 			}
-			t3AntigravityDirs, _ := filepath.Glob(filepath.Join(home, ".t3", "userdata", "providers", "antigravity", "*", "config"))
+			t3AntigravityDirs := findT3AntigravityConfigDirs(home)
 			if len(t3AntigravityDirs) > 0 {
 				detectedAgents = append(detectedAgents, "t3-antigravity")
 			}
@@ -591,15 +591,17 @@ func newSetupCmd() *cobra.Command {
 			var applied []string
 			var applyErrs []string
 			if apply {
+				defaultClaudeDir := filepath.Clean(filepath.Join(home, ".claude"))
 				claudeCfgDir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
-				if claudeCfgDir != "" && hasDir(claudeCfgDir) {
+				if claudeCfgDir != "" && filepath.Clean(claudeCfgDir) != defaultClaudeDir && hasDir(claudeCfgDir) {
 					claudeCfg := filepath.Join(claudeCfgDir, ".claude.json")
 					if err := upsertJSONMCPServer(claudeCfg, "printing-press", ppBin, true); err != nil {
 						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", claudeCfg, err))
 					} else {
 						applied = append(applied, claudeCfg)
 					}
-				} else if hasDir(filepath.Join(home, ".claude")) {
+				}
+				if hasDir(defaultClaudeDir) {
 					claudeCfg := filepath.Join(home, ".claude.json")
 					if err := upsertJSONMCPServer(claudeCfg, "printing-press", ppBin, true); err != nil {
 						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", claudeCfg, err))
@@ -1043,6 +1045,28 @@ func tomlBracketDelta(s string) int {
 		}
 	}
 	return delta
+}
+
+// findT3AntigravityConfigDirs locates T3 Code Antigravity provider config
+// directories via os.ReadDir rather than filepath.Glob so home paths with glob
+// metacharacters (e.g. brackets) are handled literally.
+func findT3AntigravityConfigDirs(home string) []string {
+	providersDir := filepath.Join(home, ".t3", "userdata", "providers", "antigravity")
+	entries, err := os.ReadDir(providersDir)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		cfgDir := filepath.Join(providersDir, entry.Name(), "config")
+		if info, statErr := os.Stat(cfgDir); statErr == nil && info.IsDir() {
+			dirs = append(dirs, cfgDir)
+		}
+	}
+	return dirs
 }
 
 func writeDefaultPPSkill(skillPath string) error {
