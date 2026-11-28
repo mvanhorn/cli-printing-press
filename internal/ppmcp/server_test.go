@@ -22,6 +22,9 @@ func TestMCPHandshakeToolsListAndRoute(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmp, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, ".cache"))
 	t.Setenv("PP_HOME", filepath.Join(tmp, ".pp"))
 
 	srv := &Server{
@@ -42,6 +45,12 @@ func TestMCPHandshakeToolsListAndRoute(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	require.Len(t, lines, 3)
+
+	var initResp rpcResponse
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &initResp))
+	initMap, ok := initResp.Result.(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, initMap["instructions"], "pp_run")
 
 	var listResp rpcResponse
 	require.NoError(t, json.Unmarshal([]byte(lines[1]), &listResp))

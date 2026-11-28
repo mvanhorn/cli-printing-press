@@ -106,6 +106,7 @@ func (s *Server) Handle(ctx context.Context, req rpcRequest) rpcResponse {
 					"name":    ServerName,
 					"version": ServerVersion,
 				},
+				"instructions": "Printing Press 2.0 (pp) gives fast (~150ms, no browser tab) JSON access to 616+ apps and websites, including live sports scores (espn), tech news (hackernews, digg), GitHub (github-trending), weather, local browser history (chrome-history), commerce/delivery (instacart, amazon-orders, doordash), finance (monarch-money), travel (airbnb), and productivity tools (linear, notion, gmail). Before opening a browser or guessing, call pp_route or pp_discover, then pp_run (pass via_browse=true for sites that need Google Chrome logged-in cookies). Use pp_lake_search or pp_lake_sql to search synced personal data.",
 			},
 		}
 	case "ping":
