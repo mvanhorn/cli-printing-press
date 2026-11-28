@@ -552,6 +552,7 @@ func newSetupCmd() *cobra.Command {
 			for _, candidate := range []struct{ name, dir string }{
 				{"claude-code", filepath.Join(home, ".claude")},
 				{"codex", filepath.Join(home, ".codex")},
+				{"antigravity", filepath.Join(home, ".gemini", "config")},
 				{"opencode", filepath.Join(home, ".config", "opencode")},
 				{"cursor", filepath.Join(home, ".cursor")},
 				{"agents-skills", filepath.Join(home, ".agents", "skills")},
@@ -559,6 +560,10 @@ func newSetupCmd() *cobra.Command {
 				if hasDir(candidate.dir) {
 					detectedAgents = append(detectedAgents, candidate.name)
 				}
+			}
+			t3AntigravityDirs, _ := filepath.Glob(filepath.Join(home, ".t3", "userdata", "providers", "antigravity", "*", "config"))
+			if len(t3AntigravityDirs) > 0 {
+				detectedAgents = append(detectedAgents, "t3-antigravity")
 			}
 
 			ardiaInstalled := false
@@ -608,6 +613,31 @@ func newSetupCmd() *cobra.Command {
 						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", codexCfg, err))
 					} else {
 						applied = append(applied, codexCfg)
+					}
+				}
+				if hasDir(filepath.Join(home, ".gemini", "config")) {
+					geminiCfg := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+					if err := upsertJSONMCPServer(geminiCfg, "printing-press", ppBin, false); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", geminiCfg, err))
+					} else {
+						applied = append(applied, geminiCfg)
+					}
+					geminiSkill := filepath.Join(home, ".gemini", "config", "skills", "printing-press-pp", "SKILL.md")
+					if err := writeDefaultPPSkill(geminiSkill); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", geminiSkill, err))
+					} else {
+						applied = append(applied, geminiSkill)
+					}
+				}
+				for _, cfgDir := range t3AntigravityDirs {
+					if !hasDir(cfgDir) {
+						continue
+					}
+					t3Cfg := filepath.Join(cfgDir, "mcp_config.json")
+					if err := upsertJSONMCPServer(t3Cfg, "printing-press", ppBin, false); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", t3Cfg, err))
+					} else {
+						applied = append(applied, t3Cfg)
 					}
 				}
 				if hasDir(filepath.Join(home, ".agents", "skills")) {

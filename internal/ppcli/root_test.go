@@ -261,6 +261,10 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".claude"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".codex"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".cursor"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".gemini", "config"), 0o700))
+	t3AntiDir := filepath.Join(tmp, ".t3", "userdata", "providers", "antigravity", "profile123", "config")
+	require.NoError(t, os.MkdirAll(t3AntiDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(t3AntiDir, "mcp_config.json"), []byte(`{"mcpServers":{"browse":{"command":"/usr/local/bin/browse","args":["mcp"]}}}`), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".agents", "skills"), 0o700))
 
 	// Pre-populate ~/.claude.json with existing unrelated settings to verify preservation.
@@ -283,10 +287,21 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	assert.Contains(t, mcps, "existing")
 	assert.Contains(t, mcps, "printing-press")
 
-	// Verify Cursor and ~/.agents/skills were created, and ~/.claude/ was never written to.
+	// Verify Cursor, Gemini/Antigravity, T3 Antigravity, and ~/.agents/skills were
+	// wired while preserving existing entries, and ~/.claude/ was never written to.
 	assert.FileExists(t, filepath.Join(tmp, ".cursor", "mcp.json"))
+	assert.FileExists(t, filepath.Join(tmp, ".gemini", "config", "mcp_config.json"))
+	assert.FileExists(t, filepath.Join(tmp, ".gemini", "config", "skills", "printing-press-pp", "SKILL.md"))
 	assert.FileExists(t, filepath.Join(tmp, ".agents", "skills", "printing-press-pp", "SKILL.md"))
 	assert.NoFileExists(t, filepath.Join(tmp, ".claude", "skills", "printing-press-pp", "SKILL.md"))
+
+	rawT3Anti, err := os.ReadFile(filepath.Join(t3AntiDir, "mcp_config.json"))
+	require.NoError(t, err)
+	var t3AntiDoc map[string]any
+	require.NoError(t, json.Unmarshal(rawT3Anti, &t3AntiDoc))
+	t3Servers := t3AntiDoc["mcpServers"].(map[string]any)
+	assert.Contains(t, t3Servers, "browse")
+	assert.Contains(t, t3Servers, "printing-press")
 
 	// Verify Codex TOML is idempotent on second run and updates quoted headers in place.
 	_, err = runPP(t, "setup", "--apply", "--json")
