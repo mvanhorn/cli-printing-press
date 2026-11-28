@@ -370,7 +370,7 @@ func TestPPAuthDoctorReportsInstalledBinaries(t *testing.T) {
 		}))
 	}
 
-	pinBin("okapp", "#!/bin/sh\necho 'Authenticated as demo@example.com'\n")
+	pinBin("okapp", "#!/bin/sh\necho 'Authenticated as demo@example.com'\necho 'Config: /Users/login/401/config.toml'\n")
 	pinBin("needapp", "#!/bin/sh\necho 'Not authenticated' >&2\nexit 1\n")
 	pinBin("pubapp", "#!/bin/sh\necho 'Error: unknown command \"auth\" for \"pubapp\"' >&2\nexit 1\n")
 	pinBin("brokenapp", "#!/bin/sh\necho 'corrupt config.toml syntax error' >&2\nexit 2\n")

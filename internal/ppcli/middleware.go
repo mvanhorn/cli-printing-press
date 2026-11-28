@@ -408,6 +408,8 @@ func probeBinaryAuth(ctx context.Context, entry *registry.Entry, app, binPath st
 func looksLikeAuthFailure(lower string) bool {
 	for _, needle := range []string{
 		"not authenticated",
+		"not logged in",
+		"login required",
 		"fail ",
 		"expired",
 		"set your token",
@@ -415,9 +417,8 @@ func looksLikeAuthFailure(lower string) bool {
 		"unauthorized",
 		"sign-in",
 		"sign in",
-		"login",
-		"401",
-		"403",
+		"http 401",
+		"http 403",
 	} {
 		if strings.Contains(lower, needle) {
 			return true
