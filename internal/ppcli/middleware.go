@@ -852,7 +852,7 @@ func updateCodexTOMLMCPTable(content, serverName, ppBin string) string {
 		wroteArgs := false
 		for i := tableStart + 1; i < tableEnd; i++ {
 			trimmed := strings.TrimSpace(stripTOMLComment(lines[i]))
-			key, _, hasEq := strings.Cut(trimmed, "=")
+			key, val, hasEq := strings.Cut(trimmed, "=")
 			if hasEq {
 				switch strings.TrimSpace(key) {
 				case "command":
@@ -860,6 +860,13 @@ func updateCodexTOMLMCPTable(content, serverName, ppBin string) string {
 					wroteCmd = true
 					continue
 				case "args":
+					// Skip continuation lines when an existing `args = [...]`
+					// array spans multiple lines so we never leave dangling elements.
+					depth := tomlBracketDelta(val)
+					for depth > 0 && i+1 < tableEnd {
+						i++
+						depth += tomlBracketDelta(stripTOMLComment(lines[i]))
+					}
 					out = append(out, argsLine)
 					wroteArgs = true
 					continue
@@ -966,6 +973,38 @@ func stripTOMLComment(line string) string {
 		}
 	}
 	return line
+}
+
+func tomlBracketDelta(s string) int {
+	delta := 0
+	inQuote := byte(0)
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inQuote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if inQuote == '"' && ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inQuote = ch
+		case '[':
+			delta++
+		case ']':
+			delta--
+		}
+	}
+	return delta
 }
 
 func writeDefaultPPSkill(skillPath string) error {

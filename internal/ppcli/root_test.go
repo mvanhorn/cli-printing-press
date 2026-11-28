@@ -296,10 +296,12 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	assert.Contains(t, string(rawCodex), "[mcp_servers.printing-press]")
 	assert.Equal(t, 1, bytes.Count(rawCodex, []byte("[mcp_servers.printing-press]")))
 
-	quotedTOML := "[mcp_servers.\"printing-press\"]\ncommand = \"/old/pp\"\nargs = [\"mcp\"]\ntool_timeout_sec = 60\n"
+	quotedTOML := "[mcp_servers.\"printing-press\"]\ncommand = \"/old/pp\"\nargs = [\n  \"mcp\",\n  \"--old\",\n]\ntool_timeout_sec = 60\n"
 	updatedTOML := updateCodexTOMLMCPTable(quotedTOML, "printing-press", "/new/pp")
 	assert.Equal(t, 1, bytes.Count([]byte(updatedTOML), []byte("mcp_servers")))
 	assert.Contains(t, updatedTOML, `command = "/new/pp"`)
+	assert.Contains(t, updatedTOML, `args = ["mcp"]`)
+	assert.NotContains(t, updatedTOML, "--old")
 	assert.Contains(t, updatedTOML, "tool_timeout_sec = 60")
 
 	// Verify platform executable name checks accept Windows pp.exe.
