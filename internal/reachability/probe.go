@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/enetx/surf"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
 
@@ -303,13 +302,11 @@ func buildClient(transport Transport, opts Options) (*http.Client, error) {
 	case TransportStdlib:
 		return &http.Client{Timeout: opts.Timeout}, nil
 	case TransportSurfChrome:
-		client, err := surf.NewClient().Builder().Impersonate().Chrome().Timeout(opts.Timeout).Build().Result()
+		client, err := newChromeClient(opts.Timeout)
 		if err != nil {
-			return nil, fmt.Errorf("build surf client: %w", err)
+			return nil, fmt.Errorf("build chrome client: %w", err)
 		}
-		std := client.Std()
-		std.Timeout = opts.Timeout
-		return std, nil
+		return client, nil
 	default:
 		return nil, fmt.Errorf("unknown transport: %q", transport)
 	}
