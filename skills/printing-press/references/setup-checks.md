@@ -98,6 +98,7 @@ npx -y skills@latest update -g \
   printing-press-import \
   printing-press-output-review \
   printing-press-polish \
+  printing-press-pp \
   printing-press-publish \
   printing-press-reprint \
   printing-press-retro \

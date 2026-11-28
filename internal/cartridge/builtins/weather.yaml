@@ -1,0 +1,68 @@
+schema: pp-cartridge/v1
+name: weather
+version: "2.0.0"
+description: Instant local weather forecast and geocoding via Open-Meteo (zero API key, ~120ms).
+category: other
+homepage: https://open-meteo.com
+domains:
+  - open-meteo.com
+  - weather.com
+trust:
+  allowed_hosts:
+    - api.open-meteo.com
+    - geocoding-api.open-meteo.com
+  read_only: true
+auth:
+  strategy: none
+commands:
+  geocode:
+    description: Resolve a city name to latitude and longitude.
+    driver: http
+    method: GET
+    url: https://geocoding-api.open-meteo.com/v1/search
+    params:
+      name:
+        type: string
+        required: true
+        description: City or place name
+      count:
+        type: string
+        default: "5"
+    query:
+      name: "{name}"
+      count: "{count}"
+      format: json
+    extract: "$.results[*]"
+    compact_fields:
+      - name
+      - admin1
+      - country
+      - latitude
+      - longitude
+      - timezone
+  forecast:
+    description: Current conditions and 7-day forecast for latitude/longitude (defaults to San Francisco).
+    driver: http
+    method: GET
+    url: https://api.open-meteo.com/v1/forecast
+    params:
+      latitude:
+        type: string
+        default: "37.7749"
+      longitude:
+        type: string
+        default: "-122.4194"
+      temperature_unit:
+        type: string
+        default: fahrenheit
+    query:
+      latitude: "{latitude}"
+      longitude: "{longitude}"
+      current: "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code"
+      daily: "temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+      temperature_unit: "{temperature_unit}"
+      timezone: auto
+    compact_fields:
+      - timezone
+      - current
+      - daily

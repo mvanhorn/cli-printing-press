@@ -1,10 +1,69 @@
-# CLI Printing Press
+# CLI Printing Press 2.0 (`pp` + `cli-printing-press`)
 
 [![CI](https://github.com/mvanhorn/cli-printing-press/actions/workflows/lint.yml/badge.svg)](https://github.com/mvanhorn/cli-printing-press/actions/workflows/lint.yml)
 [![Golden](https://github.com/mvanhorn/cli-printing-press/actions/workflows/golden.yml/badge.svg)](https://github.com/mvanhorn/cli-printing-press/actions/workflows/golden.yml)
 [![Release](https://img.shields.io/github/v/release/mvanhorn/cli-printing-press?display_name=tag&sort=semver)](https://github.com/mvanhorn/cli-printing-press/releases)
 [![Go](https://img.shields.io/github/go-mod/go-version/mvanhorn/cli-printing-press)](go.mod)
 [![License](https://img.shields.io/github/license/mvanhorn/cli-printing-press)](LICENSE)
+
+Skip pixels on repeat work. Stop paying AI agents 4-70 seconds and 12,000-50,000 tokens to click through websites you use every day.
+
+Printing Press 2.0 turns any website, API, or local app into a 150ms local tool for Claude Code, Claude Cowork, Ardia Browser, OpenClaw, Hermes, Codex, OpenAI Dots, and Cursor - with zero Go compiler required, zero remote MCP rug-pull risk, 616+ prebuilt apps ready in seconds, a unified local SQLite Life Lake, and surgical auto-healing when websites drift.
+
+## Printing Press 2.0 Quickstart (`pp` - Zero Go Required)
+
+Install the single prebuilt `pp` binary (SHA-256 verified):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install-pp.sh | sh
+```
+
+Or paste one sentence into your agent using [docs/agents.txt](docs/agents.txt):
+
+```text
+Set up Printing Press 2.0 on this machine by following https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/docs/agents.txt
+```
+
+Then wire your agent once and skip the browser on repeat work:
+
+```bash
+# 1. Wire the 5-tool local MCP server into Claude Code, Codex, Cursor, and Ardia in one command
+pp setup --apply
+
+# 2. Detect which of the 616+ apps you already use in Ardia or Chrome (plaintext hostnames only, zero Keychain popups)
+pp onboard
+
+# 3. Check the fast path before opening a browser tab (<5ms across 616+ apps)
+pp route https://www.espn.com/nba/scoreboard
+
+# 4. Run an instant local Cartridge (~150ms, ~140 tokens, zero browser) or inside real Google Chrome (--via browse)
+pp run espn scoreboard --compact --limit 5
+pp run espn scoreboard --via browse --compact --limit 5
+
+# 5. Run or install any of the 616+ Printing Press Library apps (auto-hydrates on first call, zero Go, SHA-256 verified)
+pp search instacart
+pp run digg --help
+pp auth sync instacart --browser auto
+
+# 6. Compile ANY new website once via Ardia or Chrome (OpenCode browse) or HAR -> 15KB host-locked Cartridge
+pp record --backend auto https://example.com
+pp record --from-har ./capture.har --name my-app
+
+# 7. Query your unified local Personal Life Lake (~/.pp/lake.db, SQLite + FTS5, strictly read-only SQL)
+pp lake sync espn hackernews chrome-history
+pp lake search "nba"
+pp lake sql "SELECT source, title, url FROM lake_items ORDER BY synced_at DESC LIMIT 10"
+
+# 8. Verified Local Trust Shield (SHA-256 lockfile + scans external MCP configs for rug-pull / prompt injection)
+pp audit
+
+# 9. Diagnose drift and surgically auto-heal when an upstream site changes
+pp heal my-app list --backend auto
+```
+
+For full custom standalone Go CLI generation (the craftsman factory), keep using `cli-printing-press` and `/printing-press <app>` below, or run `pp eject <app>` to export any Cartridge.
+
+---
 
 Nothing is more valuable than time and money. In a world of AI agents, that's speed and token spend. A well-designed CLI is muscle memory for an agent: no hunting through docs, no wrong turns, no wasted tokens. We built the Printing Press to print the best CLIs in the world for agents.
 

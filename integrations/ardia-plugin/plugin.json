@@ -1,0 +1,32 @@
+{
+  "manifest": 2,
+  "name": "printing-press",
+  "title": "Printing Press 2.0",
+  "description": "Skip pixels on repeat work: route URLs to 150ms local Printing Press Cartridges & 616+ CLIs, compile new sites from Ardia HAR traffic, and query your local Life Lake.",
+  "version": "2.0.0",
+  "requires": "0.2.48",
+  "icon": "bolt.fill",
+  "keywords": [
+    "printing press",
+    "cli",
+    "cartridge",
+    "agent",
+    "fast path",
+    "tokens",
+    "speed",
+    "espn",
+    "life lake"
+  ],
+  "permissions": {
+    "control": true
+  },
+  "contributes": {
+    "programs": [
+      {
+        "name": "pp",
+        "path": "bin/pp-ardia-bridge",
+        "example": "pp route https://www.espn.com/nba/scoreboard"
+      }
+    ]
+  }
+}

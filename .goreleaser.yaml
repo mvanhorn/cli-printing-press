@@ -19,6 +19,24 @@ builds:
       - -s -w -X github.com/mvanhorn/cli-printing-press/v4/internal/version.Version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: pp
+    main: ./cmd/pp
+    binary: pp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/mvanhorn/cli-printing-press/v4/internal/version.Version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   - id: cli-printing-press
     ids:
@@ -26,6 +44,17 @@ archives:
     formats:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+  - id: pp
+    ids:
+      - pp
+    formats:
+      - tar.gz
+    name_template: "pp_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats:

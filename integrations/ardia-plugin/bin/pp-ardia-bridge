@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# Bridge wrapper for the Printing Press 2.0 Ardia Browser plugin.
+# Delegates directly to the local `pp` binary on PATH or ~/.local/bin/pp.
+set -eu
+
+if command -v pp >/dev/null 2>&1; then
+  exec pp "$@"
+elif [ -x "$HOME/.local/bin/pp" ]; then
+  exec "$HOME/.local/bin/pp" "$@"
+else
+  echo '{"error":"pp binary not found — install with: curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install-pp.sh | sh"}' >&2
+  exit 127
+fi

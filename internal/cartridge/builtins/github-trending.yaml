@@ -1,0 +1,53 @@
+schema: pp-cartridge/v1
+name: github-trending
+version: "2.0.0"
+description: Fast GitHub repository search and rising-star discovery without browser scraping.
+category: developer-tools
+homepage: https://github.com/trending
+domains:
+  - github.com
+  - api.github.com
+trust:
+  allowed_hosts:
+    - api.github.com
+  read_only: true
+auth:
+  strategy: none
+commands:
+  search:
+    description: Search GitHub repositories sorted by stars.
+    driver: http
+    method: GET
+    url: https://api.github.com/search/repositories
+    params:
+      query:
+        type: string
+        default: "stars:>5000"
+        description: GitHub search query (e.g. "ai agent created:>2026-10-01")
+      sort:
+        type: string
+        default: stars
+      per_page:
+        type: string
+        default: "15"
+    query:
+      q: "{query}"
+      sort: "{sort}"
+      order: desc
+      per_page: "{per_page}"
+    extract: "$.items[*]"
+    compact_fields:
+      - repo=full_name
+      - stars=stargazers_count
+      - forks=forks_count
+      - language
+      - description
+      - url=html_url
+    sync_default: true
+    lake_projection:
+      entity: item
+      key: full_name
+      title: full_name
+      summary: description
+      url: html_url
+      timestamp: pushed_at
