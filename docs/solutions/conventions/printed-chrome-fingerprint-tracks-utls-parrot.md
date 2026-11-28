@@ -61,7 +61,7 @@ uTLS issue [refraction-networking/utls#397](https://github.com/refraction-networ
 - A live chrome-family 403 that "Surf did not get" and the proposed fix is a newer User-Agent.
 - Dependabot or a go.mod bump of `refraction-networking/utls` that might move `HelloChrome_Auto`. After such a bump, re-read the Auto alias and decide whether `chromeMajor` should follow.
 
-Do not apply this to the machine reachability probe (`internal/reachability/probe.go`), which still uses Surf.
+The machine reachability probe (`internal/reachability/chrome.go`) mirrors `chrome_profile.go.tmpl` and `utls.HelloChrome_Auto`, so keep it aligned when doing a coordinated Chrome major bump.
 
 ## Related
 
