@@ -107,7 +107,7 @@ commands:
       url: links.web.href
       timestamp: published
   teams:
-    description: List teams in a league.
+    description: List teams in a league (pass limit=400 for NCAA college leagues).
     driver: http
     method: GET
     url: https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams
@@ -118,9 +118,40 @@ commands:
       league:
         type: string
         default: nba
+      limit:
+        type: string
+        default: "100"
+    query:
+      limit: "{limit}"
     extract: "$.sports[0].leagues[0].teams[*].team"
     compact_fields:
       - id
       - displayName
       - abbreviation
       - location
+  schedule:
+    description: Team season schedule with completed scores and event IDs (use `teams` to look up a team ID, then pass event ID to `summary`).
+    driver: http
+    method: GET
+    url: https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{team}/schedule
+    params:
+      sport:
+        type: string
+        default: basketball
+      league:
+        type: string
+        default: nba
+      team:
+        type: string
+        required: true
+        description: ESPN team ID (e.g. 12 for Arizona Wildcats, or from `teams`)
+    extract: "$.events[*]"
+    compact_fields:
+      - id
+      - shortName
+      - date
+      - home=competitions[0].competitors[0].team.shortDisplayName
+      - home_score=competitions[0].competitors[0].score.displayValue
+      - away=competitions[0].competitors[1].team.shortDisplayName
+      - away_score=competitions[0].competitors[1].score.displayValue
+      - status=competitions[0].status.type.shortDetail

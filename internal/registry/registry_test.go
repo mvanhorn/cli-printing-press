@@ -74,6 +74,19 @@ func TestRouteMatchesBuiltinCatalogAndFallback(t *testing.T) {
 	assert.False(t, unkDec.Matched)
 	assert.Contains(t, unkDec.CompileCmd, "pp record --backend ")
 	assert.NotEmpty(t, unkDec.WebMCPHint)
+
+	// 4. Natural-language intents match built-in cartridges cleanly without URLs.
+	nlSports, err := client.Route(context.Background(), "who won the arizona wildcats men's college basketball game")
+	require.NoError(t, err)
+	assert.True(t, nlSports.Matched)
+	assert.Equal(t, "espn", nlSports.App)
+	assert.Equal(t, "cartridge", nlSports.Mode)
+
+	nlHN, err := client.Route(context.Background(), "top 5 stories on hacker news right now")
+	require.NoError(t, err)
+	assert.True(t, nlHN.Matched)
+	assert.Equal(t, "hackernews", nlHN.App)
+	assert.Equal(t, "cartridge", nlHN.Mode)
 }
 
 func TestZeroGoPrebuiltBinaryInstallVerifiesChecksum(t *testing.T) {

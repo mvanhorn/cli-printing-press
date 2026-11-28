@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -277,6 +278,22 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 		}
 	}
 
+	// 2b. For natural-language queries (no URL host), match installed/built-in
+	// cartridges by explicit app name or high-confidence intent keywords before
+	// falling through to the catalog.
+	if host == "" {
+		for _, cart := range installed {
+			if matchCartridgeIntent(cart, trimmed) {
+				return buildCartridgeDecision(trimmed, host, cart, true, fallback), nil
+			}
+		}
+		for _, cart := range builtins {
+			if matchCartridgeIntent(cart, trimmed) {
+				return buildCartridgeDecision(trimmed, host, cart, true, fallback), nil
+			}
+		}
+	}
+
 	// 3. Check 616+ Printing Press Library registry entries.
 	cat, _ := c.Load(ctx, false)
 	if cat != nil {
@@ -395,6 +412,48 @@ func pickCommandName(cart *cartridge.Cartridge, input string) string {
 		return names[0]
 	}
 	return ""
+}
+
+func matchCartridgeIntent(cart *cartridge.Cartridge, input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	tokens := splitIntentTokens(lower)
+	name := strings.ToLower(cart.Name)
+	if slices.Contains(tokens, name) {
+		return true
+	}
+	// Match hyphenated names expressed with spaces (e.g. "github trending").
+	if strings.Contains(name, "-") && strings.Contains(lower, strings.ReplaceAll(name, "-", " ")) {
+		return true
+	}
+	for _, alias := range cartridgeIntentAliases[name] {
+		if strings.Contains(alias, " ") {
+			if strings.Contains(lower, alias) {
+				return true
+			}
+			continue
+		}
+		if slices.Contains(tokens, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+var cartridgeIntentAliases = map[string][]string{
+	"espn":            {"basketball", "football", "baseball", "hockey", "soccer", "nba", "nfl", "mlb", "nhl", "ncaa", "wnba", "mls", "scoreboard", "boxscore", "standings"},
+	"hackernews":      {"hacker news", "ycombinator"},
+	"weather":         {"weather", "forecast", "temperature"},
+	"github-trending": {"github trending", "trending repos", "trending repositories"},
+	"chrome-history":  {"chrome history", "browser history", "visited pages"},
+}
+
+func splitIntentTokens(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-'
+	})
 }
 
 func matchCatalogEntry(cat *Catalog, input, host string) *Entry {
