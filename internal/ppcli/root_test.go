@@ -342,3 +342,38 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	assert.FileExists(t, filepath.Join(customClaudeDir, ".claude.json"))
 	assert.NoFileExists(t, filepath.Join(tmp, ".claude", ".claude.json"))
 }
+
+func TestPPAuthDoctorReportsInstalledBinaries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX")
+	}
+	tmp := isolateHome(t)
+	binDir := filepath.Join(tmp, ".pp", "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0o700))
+
+	okBin := filepath.Join(binDir, "okapp-pp-cli")
+	require.NoError(t, os.WriteFile(okBin, []byte("#!/bin/sh\necho 'Authenticated as demo@example.com'\n"), 0o755))
+
+	needBin := filepath.Join(binDir, "needapp-pp-cli")
+	require.NoError(t, os.WriteFile(needBin, []byte("#!/bin/sh\necho 'Not authenticated' >&2\nexit 1\n"), 0o755))
+
+	pubBin := filepath.Join(binDir, "pubapp-pp-cli")
+	require.NoError(t, os.WriteFile(pubBin, []byte("#!/bin/sh\necho 'Error: unknown command \"auth\" for \"pubapp\"' >&2\nexit 1\n"), 0o755))
+
+	out, err := runPP(t, "auth", "doctor", "--json")
+	require.NoError(t, err)
+	var doc struct {
+		Installed int              `json:"installed"`
+		Results   []authDoctorItem `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &doc))
+	require.Equal(t, 3, doc.Installed)
+	byApp := map[string]authDoctorItem{}
+	for _, r := range doc.Results {
+		byApp[r.App] = r
+	}
+	assert.Equal(t, "ok", byApp["okapp"].Status)
+	assert.Equal(t, "needs_auth", byApp["needapp"].Status)
+	assert.NotEmpty(t, byApp["needapp"].Hint)
+	assert.Equal(t, "no_auth_required", byApp["pubapp"].Status)
+}

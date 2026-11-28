@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -237,7 +238,148 @@ func newAuthCmd() *cobra.Command {
 	syncCmd.Flags().StringVar(&browser, "browser", "auto", "Browser source: auto, ardia, chrome, firefox")
 	syncCmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	authCmd.AddCommand(syncCmd)
+
+	var doctorJSON bool
+	doctorCmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check authentication readiness across all installed Printing Press binaries in one view",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runAuthDoctor(cmd, doctorJSON)
+		},
+	}
+	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "Output as JSON")
+	authCmd.AddCommand(doctorCmd)
 	return authCmd
+}
+
+type authDoctorItem struct {
+	App    string `json:"app"`
+	Status string `json:"status"` // "ok", "needs_auth", "no_auth_required", "timeout", "error"
+	Detail string `json:"detail,omitempty"`
+	Hint   string `json:"hint,omitempty"`
+}
+
+func runAuthDoctor(cmd *cobra.Command, asJSON bool) error {
+	ppHome, err := cartridge.HomeDir()
+	if err != nil {
+		return err
+	}
+	binDir := filepath.Join(ppHome, "bin")
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if wantsJSON(cmd, asJSON) {
+				return writeJSON(cmd.OutOrStdout(), map[string]any{"installed": 0, "results": []authDoctorItem{}})
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "No prebuilt binaries installed yet. Run `pp onboard --install` or `pp use <app>`.")
+			return nil
+		}
+		return err
+	}
+
+	type target struct {
+		app     string
+		binPath string
+	}
+	var targets []target
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, "-pp-cli") && !strings.HasSuffix(name, "-pp-cli.exe") {
+			continue
+		}
+		app := strings.TrimSuffix(strings.TrimSuffix(name, ".exe"), "-pp-cli")
+		if app == "" {
+			continue
+		}
+		targets = append(targets, target{app: app, binPath: filepath.Join(binDir, name)})
+	}
+	slices.SortFunc(targets, func(a, b target) int {
+		return strings.Compare(a.app, b.app)
+	})
+
+	reg, _ := registry.NewClient()
+	results := make([]authDoctorItem, len(targets))
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for i, tgt := range targets {
+		wg.Add(1)
+		go func(idx int, t target) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = probeBinaryAuth(cmd.Context(), reg, t.app, t.binPath)
+		}(i, tgt)
+	}
+	wg.Wait()
+
+	if wantsJSON(cmd, asJSON) {
+		return writeJSON(cmd.OutOrStdout(), map[string]any{
+			"installed": len(results),
+			"results":   results,
+		})
+	}
+	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "APP\tSTATUS\tDETAIL\tNEXT STEP")
+	for _, r := range results {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.App, r.Status, r.Detail, r.Hint)
+	}
+	return tw.Flush()
+}
+
+func probeBinaryAuth(ctx context.Context, reg *registry.Client, app, binPath string) authDoctorItem {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var authType string
+	var envVars []string
+	if reg != nil {
+		if entry, err := reg.LookupEntry(probeCtx, app); err == nil && entry != nil && entry.MCP != nil {
+			authType = entry.MCP.AuthType
+			envVars = entry.MCP.EnvVars
+		}
+	}
+
+	proc := exec.CommandContext(probeCtx, binPath, "auth", "status")
+	proc.Env = os.Environ()
+	proc.WaitDelay = 500 * time.Millisecond
+	raw, err := proc.CombinedOutput()
+	out := strings.TrimSpace(string(raw))
+	lower := strings.ToLower(out)
+
+	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+		return authDoctorItem{App: app, Status: "timeout", Detail: "auth status timed out after 5s"}
+	}
+	if strings.Contains(lower, "unknown command \"auth\"") || strings.Contains(lower, "unknown command 'auth'") {
+		return authDoctorItem{App: app, Status: "no_auth_required", Detail: "public or no auth subcommand"}
+	}
+	firstLine := firstNonEmptyLine(out, 90)
+	if err == nil && !strings.Contains(lower, "not authenticated") && !strings.Contains(lower, "fail ") && !strings.Contains(lower, "expired") {
+		return authDoctorItem{App: app, Status: "ok", Detail: firstLine}
+	}
+	hint := fmt.Sprintf("~/.local/bin/pp run %s auth login", app)
+	if strings.EqualFold(authType, "cookie") {
+		hint = fmt.Sprintf("~/.local/bin/pp auth sync %s", app)
+	} else if len(envVars) > 0 {
+		hint = fmt.Sprintf("set %s (or run ~/.local/bin/pp run %s auth --help)", envVars[0], app)
+	}
+	return authDoctorItem{App: app, Status: "needs_auth", Detail: firstLine, Hint: hint}
+}
+
+func firstNonEmptyLine(s string, maxLen int) string {
+	for line := range strings.SplitSeq(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > maxLen {
+			return trimmed[:maxLen] + "..."
+		}
+		return trimmed
+	}
+	return ""
 }
 
 func resolveAppDomain(ctx context.Context, app string) (string, error) {
@@ -308,40 +450,20 @@ func hydrateAndExecLibraryBinary(cmd *cobra.Command, app string, childArgs []str
 	}
 
 	env := os.Environ()
-	// Domain-scoped cookie handoff for cookie-auth library CLIs. When a fresh
-	// (<24h) encrypted press-auth snapshot already exists, reuse it in ~1ms and
-	// skip the full Ardia CDP cookie dump.
-	if regErr == nil {
+	// Domain-scoped cookie handoff for cookie-auth library CLIs. Skips meta/help
+	// flags and non-cookie apps completely, reuses fresh (<24h) press-auth
+	// snapshots in ~1ms, and caps Ardia lookups at 5s.
+	if regErr == nil && !sessionbridge.IsMetaOrHelpArgs(childArgs) {
 		if entry, err := reg.LookupEntry(cmd.Context(), app); err == nil && entry.Homepage != "" && entryMayUseCookies(entry) {
-			if u, uerr := url.Parse(entry.Homepage); uerr == nil && u.Hostname() != "" {
-				dom := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
-				needsCookieEnv := entry.MCP != nil && strings.EqualFold(entry.MCP.AuthType, "cookie")
-				existingState, existingErr := loadPressAuthState(dom)
-				freshCached := existingErr == nil && sessionbridge.IsPressAuthFresh(existingState, time.Now().UTC())
-				var cookieHeader string
-				switch {
-				case freshCached:
-					if needsCookieEnv {
-						cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
-					}
-				case strings.TrimSpace(os.Getenv("PP_NO_ARDIA_COOKIES")) != "1":
-					if hdr, cookieMap, aerr := sessionbridge.ResolveArdiaDomainCookies(cmd.Context(), dom); aerr == nil && len(cookieMap) > 0 {
-						_ = savePressAuthState(mergePressAuthCookies(existingState, dom, cookieMap))
-						cookieHeader = hdr
-					} else if needsCookieEnv && existingState != nil && len(existingState.Cookies) > 0 {
-						cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
-					}
-				case needsCookieEnv && existingState != nil && len(existingState.Cookies) > 0:
-					cookieHeader = sessionbridge.JoinCookies(existingState.Cookies)
-				}
-				if needsCookieEnv && cookieHeader != "" {
-					for _, envName := range entry.MCP.EnvVars {
-						if strings.Contains(strings.ToUpper(envName), "COOKIE") && os.Getenv(envName) == "" {
-							env = append(env, envName+"="+cookieHeader)
-						}
-					}
-				}
-			}
+			extra := sessionbridge.ResolveCookieEnvVars(cmd.Context(), sessionbridge.CookieEnvOptions{
+				Homepage:    entry.Homepage,
+				AuthType:    entry.MCP.AuthType,
+				EnvVarNames: entry.MCP.EnvVars,
+				ChildArgs:   childArgs,
+				LoadState:   loadPressAuthState,
+				SaveState:   savePressAuthState,
+			})
+			env = append(env, extra...)
 		}
 	}
 
@@ -355,10 +477,10 @@ func hydrateAndExecLibraryBinary(cmd *cobra.Command, app string, childArgs []str
 
 func entryMayUseCookies(entry *registry.Entry) bool {
 	if entry == nil || entry.MCP == nil {
-		return true
+		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(entry.MCP.AuthType)) {
-	case "", "cookie", "browser_cookie", "session":
+	case "cookie", "browser_cookie", "session":
 		return true
 	default:
 		return false
@@ -369,27 +491,7 @@ func entryMayUseCookies(entry *registry.Entry) bool {
 // press-auth refresh configuration (RefreshEndpoint, JWTCarrierCookie) and
 // recomputing JWTExpiry from the newly synced carrier cookie when present.
 func mergePressAuthCookies(existing *pressauth.State, domain string, cookies map[string]string) *pressauth.State {
-	next := &pressauth.State{
-		Domain:     domain,
-		CapturedAt: time.Now().UTC(),
-		Cookies:    cookies,
-	}
-	if existing != nil {
-		next.RefreshEndpoint = existing.RefreshEndpoint
-		next.JWTCarrierCookie = existing.JWTCarrierCookie
-		if existing.JWTCarrierCookie != "" {
-			if carrierVal, ok := cookies[existing.JWTCarrierCookie]; ok {
-				if token, err := pressauth.ExtractJWT(carrierVal); err == nil {
-					if claims, err := pressauth.DecodeJWT(token); err == nil {
-						if exp, err := pressauth.Exp(claims); err == nil {
-							next.JWTExpiry = exp
-						}
-					}
-				}
-			}
-		}
-	}
-	return next
+	return sessionbridge.MergePressAuthCookies(existing, domain, cookies)
 }
 
 type batchOp struct {
@@ -666,12 +768,18 @@ func newSetupCmd() *cobra.Command {
 				}
 			}
 
+			pathShadowedBy := ""
+			if lookedUp, lErr := exec.LookPath("pp"); lErr == nil && filepath.Clean(lookedUp) != filepath.Clean(ppBin) {
+				pathShadowedBy = lookedUp
+			}
+
 			summary := map[string]any{
 				"detected_agents":   detectedAgents,
 				"ardia_detected":    ardiaInstalled,
 				"ardia_plugin_path": ardiaPluginPath,
 				"opencode_browse":   browseInstalled,
 				"pp_binary":         ppBin,
+				"path_shadowed_by":  pathShadowedBy,
 				"applied":           applied,
 				"apply_errors":      applyErrs,
 				"mcp_config_snippet": map[string]any{
@@ -692,6 +800,10 @@ func newSetupCmd() *cobra.Command {
 			} else {
 				w := cmd.OutOrStdout()
 				fmt.Fprintf(w, "Detected agent environments: %s\n", strings.Join(detectedAgents, ", "))
+				if pathShadowedBy != "" {
+					fmt.Fprintf(w, "Warning: `pp` on $PATH currently resolves to %s (not %s). Put %s earlier in PATH or invoke %s directly.\n",
+						pathShadowedBy, ppBin, filepath.Dir(ppBin), ppBin)
+				}
 				if ardiaPluginPath != "" {
 					fmt.Fprintf(w, "Ardia plugin installed: %s\n", ardiaPluginPath)
 				}

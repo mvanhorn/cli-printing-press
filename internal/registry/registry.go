@@ -235,6 +235,9 @@ type RouteDecision struct {
 	Mode             string           `json:"mode,omitempty"` // "cartridge", "prebuilt-binary", "browser-fallback"
 	Installed        bool             `json:"installed"`
 	Description      string           `json:"description,omitempty"`
+	Commands         []string         `json:"commands,omitempty"`
+	MCPCall          map[string]any   `json:"mcp_call,omitempty"`
+	MCPHint          string           `json:"mcp_hint,omitempty"`
 	RecommendedCmd   string           `json:"recommended_cmd,omitempty"`
 	InstallCmd       string           `json:"install_cmd,omitempty"`
 	CompileCmd       string           `json:"compile_cmd,omitempty"`
@@ -308,6 +311,7 @@ func (c *Client) Route(ctx context.Context, input string) (*RouteDecision, error
 				Mode:            "prebuilt-binary",
 				Installed:       isInstalled,
 				Description:     match.Description,
+				MCPCall:         map[string]any{"tool": "pp_run", "arguments": map[string]any{"app": match.Name, "args": []string{"--help"}}},
 				RecommendedCmd:  recCmd,
 				InstallCmd:      fmt.Sprintf("pp use %s", match.Name),
 				BrowserFallback: fallback,
@@ -386,6 +390,11 @@ func hasBinary(name string) bool {
 
 func buildCartridgeDecision(input, host string, cart *cartridge.Cartridge, installed bool, fallback string) *RouteDecision {
 	firstCmd := pickCommandName(cart, input)
+	cmdNames := make([]string, 0, len(cart.Commands))
+	for name := range cart.Commands {
+		cmdNames = append(cmdNames, name)
+	}
+	sort.Strings(cmdNames)
 	return &RouteDecision{
 		Matched:         true,
 		Input:           input,
@@ -394,6 +403,8 @@ func buildCartridgeDecision(input, host string, cart *cartridge.Cartridge, insta
 		Mode:            "cartridge",
 		Installed:       installed,
 		Description:     cart.Description,
+		Commands:        cmdNames,
+		MCPCall:         map[string]any{"tool": "pp_run", "arguments": map[string]any{"app": cart.Name, "command": firstCmd, "compact": true}},
 		RecommendedCmd:  fmt.Sprintf("pp run %s %s --compact", cart.Name, firstCmd),
 		BrowserFallback: fallback,
 		EstimatedSavings: &SavingsEstimate{
