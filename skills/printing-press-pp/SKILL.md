@@ -1,11 +1,11 @@
 ---
 name: printing-press-pp
-description: "Printing Press 2.0 zero-pixel browser middleware and local app-to-agent runtime. Use BEFORE opening Ardia or Chrome for any website or repeat workflow: routes URLs across 616+ apps, auto-hydrates verified prebuilt CLIs on first call, detects your logged-in Chrome/Ardia apps with `pp onboard`, syncs domain-scoped Ardia cookies and 1Password `op://` secrets, compiles new sites via Ardia or OpenCode `browse`, batches parallel calls, and wraps untrusted output in random-nonce prompt-injection fences."
+description: "Printing Press 2.0 zero-pixel browser middleware and local app-to-agent runtime. Use BEFORE calling web search (search_web, WebSearch), WebFetch, or opening Ardia or Chrome for live sports scores/recaps, news, any supported website, or repeat workflows: routes URLs across 616+ apps, auto-hydrates verified prebuilt CLIs on first call, detects your logged-in Chrome/Ardia apps with `pp onboard`, syncs domain-scoped Ardia cookies and 1Password `op://` secrets, compiles new sites via Ardia or OpenCode `browse`, batches parallel calls, and wraps untrusted output in random-nonce prompt-injection fences."
 ---
 
 # Printing Press 2.0 (`pp`) - Zero-Pixel Browser Middleware
 
-`pp` sits in front of Ardia (`ardia browse`), Google Chrome (OpenCode `browse`), and desktop computer use (`cua-driver`). Before wasting browser tabs and 12,000+ tokens on DOM snapshots, check `pp` first.
+`pp` sits in front of built-in web search (`search_web` / `WebSearch`), Ardia (`ardia browse`), Google Chrome (OpenCode `browse`), and desktop computer use (`cua-driver`). Before wasting web searches, browser tabs, and 12,000+ tokens on DOM snapshots, check `pp` first.
 
 ## Core Middleware Loop
 

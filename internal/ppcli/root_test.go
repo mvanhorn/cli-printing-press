@@ -303,6 +303,7 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	t3Servers := t3AntiDoc["mcpServers"].(map[string]any)
 	assert.Contains(t, t3Servers, "browse")
 	assert.Contains(t, t3Servers, "printing-press")
+	assert.FileExists(t, filepath.Join(t3AntiDir, "skills", "printing-press-pp", "SKILL.md"))
 
 	// Verify Codex TOML is idempotent on second run and updates quoted headers in place.
 	_, err = runPP(t, "setup", "--apply", "--json")

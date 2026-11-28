@@ -106,7 +106,7 @@ func (s *Server) Handle(ctx context.Context, req rpcRequest) rpcResponse {
 					"name":    ServerName,
 					"version": ServerVersion,
 				},
-				"instructions": "Printing Press 2.0 (pp) gives fast (~150ms, no browser tab) JSON access to 616+ apps and websites, including live sports scores (espn), tech news (hackernews, digg), GitHub (github-trending), weather, local browser history (chrome-history), commerce/delivery (instacart, amazon-orders, doordash), finance (monarch-money), travel (airbnb), and productivity tools (linear, notion, gmail). Before opening a browser or guessing, call pp_route or pp_discover, then pp_run (pass via_browse=true for sites that need Google Chrome logged-in cookies). Use pp_lake_search or pp_lake_sql to search synced personal data.",
+				"instructions": "Printing Press 2.0 (pp) gives fast (~150ms, direct API JSON) access to 616+ apps and websites, including live sports scores and game recaps (espn), tech news (hackernews, digg), GitHub (github-trending), weather, local browser history (chrome-history), commerce/delivery (instacart, amazon-orders, doordash), finance (monarch-money), travel (airbnb), and productivity tools (linear, notion, gmail). ALWAYS check pp_route, pp_discover, or pp_run BEFORE calling web search (search_web, WebSearch), WebFetch, or opening a browser for live scores, game results, news, orders, or supported apps - direct source JSON is faster and more accurate than web search. Pass via_browse=true on pp_run for sites that need Google Chrome logged-in cookies, and use pp_lake_search or pp_lake_sql for synced personal data.",
 			},
 		}
 	case "ping":
@@ -132,7 +132,7 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "pp_route",
-			"description": "Check before opening a browser tab: resolves a URL or task to a 150ms local Printing Press Cartridge or prebuilt CLI (616+ apps) with estimated token/latency savings.",
+			"description": "Check BEFORE web search (search_web, WebSearch), WebFetch, or opening a browser tab: resolves a URL, app, or question (sports scores, news, orders, etc.) to a 150ms local Printing Press Cartridge or prebuilt CLI (616+ apps) with estimated token/latency savings.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

@@ -649,6 +649,12 @@ func newSetupCmd() *cobra.Command {
 					} else {
 						applied = append(applied, t3Cfg)
 					}
+					t3Skill := filepath.Join(cfgDir, "skills", "printing-press-pp", "SKILL.md")
+					if err := writeDefaultPPSkill(t3Skill); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", t3Skill, err))
+					} else {
+						applied = append(applied, t3Skill)
+					}
 				}
 				if hasDir(filepath.Join(home, ".agents", "skills")) {
 					skillPath := filepath.Join(home, ".agents", "skills", "printing-press-pp", "SKILL.md")
@@ -1077,23 +1083,25 @@ func writeDefaultPPSkill(skillPath string) error {
 name: printing-press-pp
 description: >
   Use Printing Press 2.0 (pp) MCP tools (pp_route, pp_discover, pp_run,
-  pp_lake_search, pp_lake_sql) BEFORE opening a browser tab or scraping web
-  pages for live scores, news, consumer apps (Instacart, Amazon Orders,
+  pp_lake_search, pp_lake_sql) BEFORE calling web search (search_web,
+  WebSearch), WebFetch, opening a browser tab, or scraping web pages for live
+  sports scores and game recaps, news, consumer apps (Instacart, Amazon Orders,
   DoorDash, Airbnb, Monarch Money, Linear, GitHub, Hacker News, ESPN), or
   personal synced data.
 ---
 
 # Printing Press 2.0 (pp) Fast Path
 
-When the user asks about live sports scores, news, or any of the 616+ supported
-web apps (or personal data synced to the local Life Lake):
+When the user asks about live sports scores, recent game results/recaps, news,
+or any of the 616+ supported web apps (or personal data synced to the local
+Life Lake):
 
-1. Check ` + "`pp_route`" + ` or ` + "`pp_discover`" + ` first.
-2. Call ` + "`pp_run`" + ` for direct ~150ms JSON instead of opening a browser tab.
+1. Check ` + "`pp_route`" + ` or ` + "`pp_discover`" + ` FIRST - before ` + "`search_web`" + `, ` + "`WebSearch`" + `, ` + "`WebFetch`" + `, or opening a browser.
+2. Call ` + "`pp_run`" + ` for direct ~150ms JSON from the source API instead of web search or a browser tab.
    - For sites that need Google Chrome's logged-in HttpOnly cookies, pass ` + "`via_browse: true`" + `.
    - Mutating actions require explicit user confirmation (` + "`confirm_mutation: true`" + `).
 3. For cross-app personal queries, check ` + "`pp_lake_search`" + ` or ` + "`pp_lake_sql`" + `.
-4. Fall back to a real browser (Ardia or Chrome) only when no fast path matches
+4. Fall back to web search or a real browser (Ardia or Chrome) only when no fast path matches
    or human login/2FA/Passkey/payment confirmation is needed.
 `
 	return os.WriteFile(skillPath, []byte(content), 0o600)
