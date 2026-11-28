@@ -17,6 +17,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/cartridge"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/lake"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/registry"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/sessionbridge"
 )
 
 const (
@@ -220,7 +221,11 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 	switch call.Name {
 	case "pp_route":
 		target := stringArg(call.Arguments, "target")
-		payload, err = s.Registry.Route(ctx, target)
+		dec, rErr := s.Registry.Route(ctx, target)
+		if rErr == nil && dec != nil && dec.Matched {
+			dec.MCPHint = "Call the pp_run MCP tool directly using mcp_call.arguments (auto-installs verified binaries on first call). Do not shell out to bare `pp`, which may be shadowed by /usr/bin/pp or /opt/homebrew/bin/pp on macOS."
+		}
+		payload, err = dec, rErr
 	case "pp_discover":
 		query := stringArg(call.Arguments, "query")
 		catFilter := stringArg(call.Arguments, "category")
@@ -262,10 +267,10 @@ func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse
 				Journal:      s.Journal,
 			})
 		} else if binPath, ok := registry.InstalledBinaryPath(app); ok {
-			payload, err = runVerifiedBinaryMCP(ctx, app, binPath, cmdName, call.Arguments)
+			payload, err = s.runVerifiedBinaryMCP(ctx, app, binPath, cmdName, call.Arguments)
 		} else if s.Registry != nil && strings.TrimSpace(os.Getenv("PP_NO_AUTO_INSTALL")) != "1" {
 			if hydratedPath, _, hydErr := s.Registry.EnsureInstalled(ctx, app); hydErr == nil {
-				payload, err = runVerifiedBinaryMCP(ctx, app, hydratedPath, cmdName, call.Arguments)
+				payload, err = s.runVerifiedBinaryMCP(ctx, app, hydratedPath, cmdName, call.Arguments)
 			} else {
 				err = resolveErr
 			}
@@ -443,9 +448,34 @@ func cartridgeMatchesQuery(c *cartridge.Cartridge, lowerQuery string) bool {
 	return false
 }
 
-func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arguments map[string]any) (any, error) {
+func (s *Server) runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arguments map[string]any) (any, error) {
 	if err := registry.VerifyInstalledBinary(app, binPath); err != nil {
 		return nil, err
+	}
+	var entry *registry.Entry
+	if s.Registry != nil {
+		if e, err := s.Registry.LookupEntry(ctx, app); err == nil {
+			entry = e
+		}
+	}
+	if boolArg(arguments, "via_browse") {
+		targetURL := "https://" + app + ".com"
+		if entry != nil && strings.TrimSpace(entry.Homepage) != "" {
+			targetURL = strings.TrimSpace(entry.Homepage)
+		}
+		return nil, &cartridge.ExecError{
+			Code:    cartridge.ExitUsage,
+			Class:   cartridge.ClassUsage,
+			Message: fmt.Sprintf("via_browse is only supported for HTTP/GraphQL Cartridges; %q is a prebuilt library CLI", app),
+			Hint:    fmt.Sprintf("retry pp_run without via_browse (after syncing cookies with `pp auth sync %s`), or open %s directly in a background browser", app, targetURL),
+			Handoff: &cartridge.HandoffHint{
+				Action:     "browser_fallback",
+				URL:        targetURL,
+				BrowserCmd: fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", targetURL),
+				Reason:     fmt.Sprintf("%s is a prebuilt Go CLI and cannot route requests through --via browse", app),
+				ResumeCmd:  fmt.Sprintf("pp auth sync %s", app),
+			},
+		}
 	}
 	confirmMut := boolArg(arguments, "confirm_mutation")
 	argv := make([]string, 0, 8)
@@ -498,7 +528,20 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 		defer cancel()
 	}
 
+	env := os.Environ()
+	if entry != nil && entry.Homepage != "" && entry.MCP != nil {
+		extra := sessionbridge.ResolveCookieEnvVars(runCtx, sessionbridge.CookieEnvOptions{
+			Homepage:    entry.Homepage,
+			AuthType:    entry.MCP.AuthType,
+			EnvVarNames: entry.MCP.EnvVars,
+			ChildArgs:   argv,
+		})
+		env = append(env, extra...)
+	}
+
 	proc := exec.CommandContext(runCtx, binPath, argv...)
+	proc.Env = env
+	proc.WaitDelay = 500 * time.Millisecond
 	var stdout, stderr bytes.Buffer
 	outCap := &limitedBuffer{buf: &stdout, max: maxBinaryOutputBytes}
 	errCap := &limitedBuffer{buf: &stderr, max: maxBinaryOutputBytes}
@@ -508,6 +551,26 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 	outText := strings.TrimSpace(stdout.String())
 	errText := strings.TrimSpace(stderr.String())
 	if err != nil {
+		combined := strings.TrimSpace(errText + "\n" + outText)
+		if isBinaryAuthFailure(combined) {
+			targetURL := "https://" + app + ".com"
+			if entry != nil && strings.TrimSpace(entry.Homepage) != "" {
+				targetURL = strings.TrimSpace(entry.Homepage)
+			}
+			return nil, &cartridge.ExecError{
+				Code:    cartridge.ExitAuth,
+				Class:   cartridge.ClassAuthError,
+				Message: fmt.Sprintf("%s authentication failed: %v (%s)", app, err, truncateForError(combined, 300)),
+				Hint:    fmt.Sprintf("check auth with `pp auth doctor`, refresh login via `%s auth login` or `pp auth sync %s`, or use a background browser for %s", app, app, targetURL),
+				Handoff: &cartridge.HandoffHint{
+					Action:     "sign_in",
+					URL:        targetURL,
+					BrowserCmd: fmt.Sprintf("ARDIA_BACKGROUND=1 ardia browse open %s", targetURL),
+					Reason:     fmt.Sprintf("%s rejected stored credentials or requires one-time login", app),
+					ResumeCmd:  "pp auth doctor",
+				},
+			}
+		}
 		if errText != "" {
 			return nil, fmt.Errorf("%s failed: %v (%s)", app, err, errText)
 		}
@@ -529,6 +592,39 @@ func runVerifiedBinaryMCP(ctx context.Context, app, binPath, cmdName string, arg
 		"mode":   "prebuilt-binary",
 		"output": outText,
 	}, nil
+}
+
+func isBinaryAuthFailure(output string) bool {
+	lower := strings.ToLower(output)
+	for _, needle := range []string{
+		"not authenticated",
+		"sign-in",
+		"sign in",
+		"refresh-token expired",
+		"refresh token expired",
+		"session expired",
+		"set your token",
+		"set credentials",
+		"browser-session proof",
+		"http 401",
+		"http 403",
+		"permission denied",
+		"unauthorized",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateForError(s string, maxRunes int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func isConfirmationFlagToken(tok string) bool {

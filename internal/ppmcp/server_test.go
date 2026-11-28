@@ -74,6 +74,9 @@ func TestMCPHandshakeToolsListAndRoute(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(firstContent["text"].(string)), &decision))
 	assert.Equal(t, "espn", decision["app"])
 	assert.Equal(t, "pp run espn scoreboard --compact", decision["recommended_cmd"])
+	assert.NotEmpty(t, decision["mcp_hint"])
+	assert.NotNil(t, decision["mcp_call"])
+	assert.Contains(t, decision["commands"], "schedule")
 
 	// pp_discover must include local cartridges with their commands.
 	discResp := srv.Handle(context.Background(), rpcRequest{
@@ -103,7 +106,7 @@ func TestMCPRunVerifiedBinaryGuardsConfirmationBooleansAndOverflow(t *testing.T)
 	binDir := filepath.Join(ppHome, "bin")
 	require.NoError(t, os.MkdirAll(binDir, 0o700))
 	binPath := filepath.Join(binDir, "demo-pp-cli")
-	script := []byte("#!/bin/sh\nif [ \"$1\" = \"flood\" ]; then head -c 600000 /dev/zero | tr '\\0' 'a'; exit 0; fi\nprintf '%s\\n' \"$*\"\n")
+	script := []byte("#!/bin/sh\nif [ \"$1\" = \"flood\" ]; then head -c 600000 /dev/zero | tr '\\0' 'a'; exit 0; fi\nif [ \"$1\" = \"authfail\" ]; then echo 'Not authenticated. Run demo auth login' >&2; exit 1; fi\nprintf '%s\\n' \"$*\"\n")
 	require.NoError(t, os.WriteFile(binPath, script, 0o755))
 
 	sum := sha256.Sum256(script)
@@ -155,4 +158,30 @@ func TestMCPRunVerifiedBinaryGuardsConfirmationBooleansAndOverflow(t *testing.T)
 	assert.Equal(t, true, floodMap["isError"])
 	floodTxt := floodMap["content"].([]map[string]any)[0]["text"].(string)
 	assert.Contains(t, floodTxt, "exceeded")
+
+	// 4. via_browse=true on a prebuilt binary must return a structured handoff error.
+	viaResp := srv.Handle(context.Background(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      13,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"pp_run","arguments":{"app":"demo","command":"list","via_browse":true}}`),
+	})
+	viaMap := viaResp.Result.(map[string]any)
+	assert.Equal(t, true, viaMap["isError"])
+	viaTxt := viaMap["content"].([]map[string]any)[0]["text"].(string)
+	assert.Contains(t, viaTxt, "via_browse is only supported for HTTP/GraphQL Cartridges")
+	assert.Contains(t, viaTxt, `"handoff"`)
+
+	// 5. Auth failures from a prebuilt binary must return a structured auth handoff.
+	authResp := srv.Handle(context.Background(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      14,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"pp_run","arguments":{"app":"demo","command":"authfail"}}`),
+	})
+	authMap := authResp.Result.(map[string]any)
+	assert.Equal(t, true, authMap["isError"])
+	authTxt := authMap["content"].([]map[string]any)[0]["text"].(string)
+	assert.Contains(t, authTxt, `"class": "auth_error"`)
+	assert.Contains(t, authTxt, `"handoff"`)
 }
