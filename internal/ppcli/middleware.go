@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -592,12 +593,6 @@ func newSetupCmd() *cobra.Command {
 					} else {
 						applied = append(applied, claudeCfg)
 					}
-					skillPath := filepath.Join(home, ".claude", "skills", "printing-press-pp", "SKILL.md")
-					if err := writeDefaultPPSkill(skillPath); err != nil {
-						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", skillPath, err))
-					} else {
-						applied = append(applied, skillPath)
-					}
 				}
 				if hasDir(filepath.Join(home, ".cursor")) {
 					cursorCfg := filepath.Join(home, ".cursor", "mcp.json")
@@ -683,94 +678,294 @@ func newSetupCmd() *cobra.Command {
 }
 
 func resolvePPBinaryPath(home string) string {
-	if p, err := exec.LookPath("pp"); err == nil && p != "" {
+	exeName := "pp"
+	if runtime.GOOS == "windows" {
+		exeName = "pp.exe"
+	}
+	if exe, err := os.Executable(); err == nil && isPPExecutableName(filepath.Base(exe), runtime.GOOS) {
+		if abs, absErr := filepath.Abs(exe); absErr == nil {
+			return abs
+		}
+		return exe
+	}
+	if p, err := exec.LookPath(exeName); err == nil && p != "" {
+		if abs, absErr := filepath.Abs(p); absErr == nil {
+			return abs
+		}
 		return p
 	}
-	candidate := filepath.Join(home, ".local", "bin", "pp")
+	candidate := filepath.Join(home, ".local", "bin", exeName)
 	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 		return candidate
 	}
-	if exe, err := os.Executable(); err == nil && strings.HasSuffix(filepath.Base(exe), "pp") {
-		return exe
-	}
-	return "pp"
+	return exeName
 }
 
-func upsertJSONMCPServer(cfgPath, serverName, ppBin string, includeType bool) error {
-	doc := make(map[string]any)
-	raw, err := os.ReadFile(cfgPath)
-	if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
-		if uErr := json.Unmarshal(raw, &doc); uErr != nil {
-			return fmt.Errorf("parsing existing JSON: %w", uErr)
-		}
-	} else if err != nil && !os.IsNotExist(err) {
+func isPPExecutableName(base, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(base, "pp.exe")
+	}
+	return base == "pp"
+}
+
+func withConfigFileLock(cfgPath string, fn func() error) error {
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
 		return err
 	}
-	servers, _ := doc["mcpServers"].(map[string]any)
-	if servers == nil {
-		servers = make(map[string]any)
+	lockPath := cfgPath + ".pp.lock"
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			defer func() { _ = os.Remove(lockPath) }()
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+		if info, sErr := os.Stat(lockPath); sErr == nil && time.Since(info.ModTime()) > 30*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for config lock %s", lockPath)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	entry := map[string]any{
-		"command": ppBin,
-		"args":    []string{"mcp"},
-	}
-	if includeType {
-		entry["type"] = "stdio"
-	}
-	servers[serverName] = entry
-	doc["mcpServers"] = servers
+}
 
-	encoded, err := json.MarshalIndent(doc, "", "  ")
+func writeFileAtomicUnique(dstPath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(dstPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(dstPath)+".pp-*.tmp")
 	if err != nil {
 		return err
 	}
-	encoded = append(encoded, '\n')
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	tmpPath := cfgPath + ".pp-tmp"
-	if err := os.WriteFile(tmpPath, encoded, 0o600); err != nil {
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := os.Rename(tmpPath, cfgPath); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := tmp.Close(); err != nil {
 		return err
 	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
 }
 
+func upsertJSONMCPServer(cfgPath, serverName, ppBin string, includeType bool) error {
+	return withConfigFileLock(cfgPath, func() error {
+		doc := make(map[string]any)
+		raw, err := os.ReadFile(cfgPath)
+		if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+			if uErr := json.Unmarshal(raw, &doc); uErr != nil {
+				return fmt.Errorf("parsing existing JSON: %w", uErr)
+			}
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		servers, _ := doc["mcpServers"].(map[string]any)
+		if servers == nil {
+			servers = make(map[string]any)
+		}
+		entry := map[string]any{
+			"command": ppBin,
+			"args":    []string{"mcp"},
+		}
+		if includeType {
+			entry["type"] = "stdio"
+		}
+		servers[serverName] = entry
+		doc["mcpServers"] = servers
+
+		encoded, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		encoded = append(encoded, '\n')
+		return writeFileAtomicUnique(cfgPath, encoded, 0o600)
+	})
+}
+
 func upsertCodexTOMLMCPServer(cfgPath, serverName, ppBin string) error {
-	var existing string
-	if raw, err := os.ReadFile(cfgPath); err == nil {
-		existing = string(raw)
-	} else if !os.IsNotExist(err) {
-		return err
+	return withConfigFileLock(cfgPath, func() error {
+		var existing string
+		if raw, err := os.ReadFile(cfgPath); err == nil {
+			existing = string(raw)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+
+		updated := updateCodexTOMLMCPTable(existing, serverName, ppBin)
+		return writeFileAtomicUnique(cfgPath, []byte(updated), 0o600)
+	})
+}
+
+// updateCodexTOMLMCPTable locates any existing [mcp_servers.<name>] table
+// (including quoted forms like [mcp_servers."printing-press"]) and updates its
+// command and args in place while preserving unrelated keys and subtables. If
+// no matching table exists, it appends a clean new table block.
+func updateCodexTOMLMCPTable(content, serverName, ppBin string) string {
+	lines := strings.Split(content, "\n")
+	if content == "" {
+		lines = nil
 	}
-	header := "[mcp_servers." + serverName + "]"
-	if strings.Contains(existing, header) {
-		return nil
+	cmdLine := "command = " + strconv.Quote(ppBin)
+	argsLine := `args = ["mcp"]`
+
+	tableStart := -1
+	tableEnd := len(lines)
+	for i, raw := range lines {
+		segs, isHeader := parseTOMLTableHeader(raw)
+		if !isHeader {
+			continue
+		}
+		if tableStart >= 0 {
+			tableEnd = i
+			break
+		}
+		if len(segs) == 2 && segs[0] == "mcp_servers" && segs[1] == serverName {
+			tableStart = i
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
-		return err
+
+	if tableStart >= 0 {
+		out := make([]string, 0, len(lines)+2)
+		out = append(out, lines[:tableStart+1]...)
+		wroteCmd := false
+		wroteArgs := false
+		for i := tableStart + 1; i < tableEnd; i++ {
+			trimmed := strings.TrimSpace(stripTOMLComment(lines[i]))
+			key, _, hasEq := strings.Cut(trimmed, "=")
+			if hasEq {
+				switch strings.TrimSpace(key) {
+				case "command":
+					out = append(out, cmdLine)
+					wroteCmd = true
+					continue
+				case "args":
+					out = append(out, argsLine)
+					wroteArgs = true
+					continue
+				}
+			}
+			out = append(out, lines[i])
+		}
+		if !wroteCmd {
+			out = append(out, cmdLine)
+		}
+		if !wroteArgs {
+			out = append(out, argsLine)
+		}
+		out = append(out, lines[tableEnd:]...)
+		res := strings.Join(out, "\n")
+		if !strings.HasSuffix(res, "\n") {
+			res += "\n"
+		}
+		return res
 	}
+
 	var b strings.Builder
-	b.WriteString(existing)
-	if existing != "" && !strings.HasSuffix(existing, "\n") {
+	b.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
 		b.WriteByte('\n')
 	}
-	if existing != "" {
+	if content != "" {
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "%s\ncommand = %s\nargs = [\"mcp\"]\n", header, strconv.Quote(ppBin))
-	tmpPath := cfgPath + ".pp-tmp"
-	if err := os.WriteFile(tmpPath, []byte(b.String()), 0o600); err != nil {
-		return err
+	fmt.Fprintf(&b, "[mcp_servers.%s]\n%s\n%s\n", serverName, cmdLine, argsLine)
+	return b.String()
+}
+
+func parseTOMLTableHeader(line string) ([]string, bool) {
+	s := strings.TrimSpace(stripTOMLComment(line))
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") || strings.HasPrefix(s, "[[") {
+		return nil, false
 	}
-	if err := os.Rename(tmpPath, cfgPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	if inner == "" {
+		return nil, false
 	}
-	return nil
+	var segs []string
+	var cur strings.Builder
+	inQuote := byte(0)
+	escaped := false
+	for i := 0; i < len(inner); i++ {
+		ch := inner[i]
+		if inQuote != 0 {
+			if escaped {
+				cur.WriteByte(ch)
+				escaped = false
+				continue
+			}
+			if inQuote == '"' && ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inQuote {
+				inQuote = 0
+				continue
+			}
+			cur.WriteByte(ch)
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inQuote = ch
+		case '.':
+			segs = append(segs, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		default:
+			cur.WriteByte(ch)
+		}
+	}
+	segs = append(segs, strings.TrimSpace(cur.String()))
+	return segs, true
+}
+
+func stripTOMLComment(line string) string {
+	inQuote := byte(0)
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if inQuote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if inQuote == '"' && ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inQuote = ch
+		case '#':
+			return line[:i]
+		}
+	}
+	return line
 }
 
 func writeDefaultPPSkill(skillPath string) error {

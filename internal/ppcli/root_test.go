@@ -283,16 +283,28 @@ func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
 	assert.Contains(t, mcps, "existing")
 	assert.Contains(t, mcps, "printing-press")
 
-	// Verify Cursor and skills were created.
+	// Verify Cursor and ~/.agents/skills were created, and ~/.claude/ was never written to.
 	assert.FileExists(t, filepath.Join(tmp, ".cursor", "mcp.json"))
-	assert.FileExists(t, filepath.Join(tmp, ".claude", "skills", "printing-press-pp", "SKILL.md"))
 	assert.FileExists(t, filepath.Join(tmp, ".agents", "skills", "printing-press-pp", "SKILL.md"))
+	assert.NoFileExists(t, filepath.Join(tmp, ".claude", "skills", "printing-press-pp", "SKILL.md"))
 
-	// Verify Codex TOML is idempotent on second run.
+	// Verify Codex TOML is idempotent on second run and updates quoted headers in place.
 	_, err = runPP(t, "setup", "--apply", "--json")
 	require.NoError(t, err)
 	rawCodex, err := os.ReadFile(codexTOML)
 	require.NoError(t, err)
 	assert.Contains(t, string(rawCodex), "[mcp_servers.printing-press]")
 	assert.Equal(t, 1, bytes.Count(rawCodex, []byte("[mcp_servers.printing-press]")))
+
+	quotedTOML := "[mcp_servers.\"printing-press\"]\ncommand = \"/old/pp\"\nargs = [\"mcp\"]\ntool_timeout_sec = 60\n"
+	updatedTOML := updateCodexTOMLMCPTable(quotedTOML, "printing-press", "/new/pp")
+	assert.Equal(t, 1, bytes.Count([]byte(updatedTOML), []byte("mcp_servers")))
+	assert.Contains(t, updatedTOML, `command = "/new/pp"`)
+	assert.Contains(t, updatedTOML, "tool_timeout_sec = 60")
+
+	// Verify platform executable name checks accept Windows pp.exe.
+	assert.True(t, isPPExecutableName("pp.exe", "windows"))
+	assert.True(t, isPPExecutableName("PP.EXE", "windows"))
+	assert.True(t, isPPExecutableName("pp", "darwin"))
+	assert.False(t, isPPExecutableName("ppcli.test", "darwin"))
 }
