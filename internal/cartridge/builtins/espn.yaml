@@ -38,6 +38,10 @@ commands:
       - id
       - shortName
       - date
+      - home=competitions[0].competitors[0].team.shortDisplayName
+      - home_score=competitions[0].competitors[0].score
+      - away=competitions[0].competitors[1].team.shortDisplayName
+      - away_score=competitions[0].competitors[1].score
       - status=status.type.shortDetail
       - state=status.type.state
     sync_default: true

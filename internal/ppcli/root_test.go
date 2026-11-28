@@ -255,3 +255,44 @@ INSERT INTO cookies VALUES ('.google.com', 'SID', 'do_not_leak', '/', 1);`)
 	assert.Equal(t, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC), merged.JWTExpiry)
 	assert.Equal(t, freshJWT, merged.Cookies["session_jwt"])
 }
+
+func TestPPSetupApplyWiresClaudeCodexCursorIdempotently(t *testing.T) {
+	tmp := isolateHome(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".claude"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".codex"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".cursor"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, ".agents", "skills"), 0o700))
+
+	// Pre-populate ~/.claude.json with existing unrelated settings to verify preservation.
+	claudeJSON := filepath.Join(tmp, ".claude.json")
+	require.NoError(t, os.WriteFile(claudeJSON, []byte(`{"theme":"dark","mcpServers":{"existing":{"command":"demo"}}}`), 0o600))
+	codexTOML := filepath.Join(tmp, ".codex", "config.toml")
+	require.NoError(t, os.WriteFile(codexTOML, []byte("model = \"o3\"\n"), 0o600))
+
+	out, err := runPP(t, "setup", "--apply", "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"applied"`)
+
+	// Verify ~/.claude.json preserved existing keys and added printing-press.
+	rawClaude, err := os.ReadFile(claudeJSON)
+	require.NoError(t, err)
+	var claudeDoc map[string]any
+	require.NoError(t, json.Unmarshal(rawClaude, &claudeDoc))
+	assert.Equal(t, "dark", claudeDoc["theme"])
+	mcps := claudeDoc["mcpServers"].(map[string]any)
+	assert.Contains(t, mcps, "existing")
+	assert.Contains(t, mcps, "printing-press")
+
+	// Verify Cursor and skills were created.
+	assert.FileExists(t, filepath.Join(tmp, ".cursor", "mcp.json"))
+	assert.FileExists(t, filepath.Join(tmp, ".claude", "skills", "printing-press-pp", "SKILL.md"))
+	assert.FileExists(t, filepath.Join(tmp, ".agents", "skills", "printing-press-pp", "SKILL.md"))
+
+	// Verify Codex TOML is idempotent on second run.
+	_, err = runPP(t, "setup", "--apply", "--json")
+	require.NoError(t, err)
+	rawCodex, err := os.ReadFile(codexTOML)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawCodex), "[mcp_servers.printing-press]")
+	assert.Equal(t, 1, bytes.Count(rawCodex, []byte("[mcp_servers.printing-press]")))
+}

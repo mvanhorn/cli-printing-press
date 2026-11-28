@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -532,16 +533,21 @@ func executeBatchOp(ctx context.Context, reg *registry.Client, item batchOp) (an
 }
 
 func newSetupCmd() *cobra.Command {
+	var apply bool
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "One-command cross-agent bootstrap (installs Ardia plugin if present, detects local coding agents, and prints MCP + routing wiring)",
+		Short: "One-command cross-agent bootstrap (installs Ardia plugin, detects local coding agents, and wires MCP + skills with --apply)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return err
 			}
 			var detectedAgents []string
+			hasDir := func(p string) bool {
+				info, statErr := os.Stat(p)
+				return statErr == nil && info.IsDir()
+			}
 			for _, candidate := range []struct{ name, dir string }{
 				{"claude-code", filepath.Join(home, ".claude")},
 				{"codex", filepath.Join(home, ".codex")},
@@ -549,7 +555,7 @@ func newSetupCmd() *cobra.Command {
 				{"cursor", filepath.Join(home, ".cursor")},
 				{"agents-skills", filepath.Join(home, ".agents", "skills")},
 			} {
-				if info, statErr := os.Stat(candidate.dir); statErr == nil && info.IsDir() {
+				if hasDir(candidate.dir) {
 					detectedAgents = append(detectedAgents, candidate.name)
 				}
 			}
@@ -575,38 +581,226 @@ func newSetupCmd() *cobra.Command {
 				browseInstalled = true
 			}
 
+			ppBin := resolvePPBinaryPath(home)
+			var applied []string
+			var applyErrs []string
+			if apply {
+				if hasDir(filepath.Join(home, ".claude")) {
+					claudeCfg := filepath.Join(home, ".claude.json")
+					if err := upsertJSONMCPServer(claudeCfg, "printing-press", ppBin, true); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", claudeCfg, err))
+					} else {
+						applied = append(applied, claudeCfg)
+					}
+					skillPath := filepath.Join(home, ".claude", "skills", "printing-press-pp", "SKILL.md")
+					if err := writeDefaultPPSkill(skillPath); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", skillPath, err))
+					} else {
+						applied = append(applied, skillPath)
+					}
+				}
+				if hasDir(filepath.Join(home, ".cursor")) {
+					cursorCfg := filepath.Join(home, ".cursor", "mcp.json")
+					if err := upsertJSONMCPServer(cursorCfg, "printing-press", ppBin, false); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", cursorCfg, err))
+					} else {
+						applied = append(applied, cursorCfg)
+					}
+				}
+				if hasDir(filepath.Join(home, ".codex")) {
+					codexCfg := filepath.Join(home, ".codex", "config.toml")
+					if err := upsertCodexTOMLMCPServer(codexCfg, "printing-press", ppBin); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", codexCfg, err))
+					} else {
+						applied = append(applied, codexCfg)
+					}
+				}
+				if hasDir(filepath.Join(home, ".agents", "skills")) {
+					skillPath := filepath.Join(home, ".agents", "skills", "printing-press-pp", "SKILL.md")
+					if err := writeDefaultPPSkill(skillPath); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", skillPath, err))
+					} else {
+						applied = append(applied, skillPath)
+					}
+				}
+			}
+
 			summary := map[string]any{
 				"detected_agents":   detectedAgents,
 				"ardia_detected":    ardiaInstalled,
 				"ardia_plugin_path": ardiaPluginPath,
 				"opencode_browse":   browseInstalled,
+				"pp_binary":         ppBin,
+				"applied":           applied,
+				"apply_errors":      applyErrs,
 				"mcp_config_snippet": map[string]any{
 					"printing-press": map[string]any{
-						"command": "pp",
+						"command": ppBin,
 						"args":    []string{"mcp"},
 					},
 				},
-				"next_step": "run `pp onboard` to see which of the 616+ apps match your local Chrome/Ardia sessions",
+				"next_step": "run `pp setup --apply` to wire your coding agents automatically, then `pp onboard` to match your browser domains",
+			}
+			if apply {
+				summary["next_step"] = "open a new Claude Code, Codex, or Cursor session and ask normally (e.g. check scores, orders, or search your apps)"
 			}
 			if wantsJSON(cmd, asJSON) {
-				return writeJSON(cmd.OutOrStdout(), summary)
+				if err := writeJSON(cmd.OutOrStdout(), summary); err != nil {
+					return err
+				}
+			} else {
+				w := cmd.OutOrStdout()
+				fmt.Fprintf(w, "Detected agent environments: %s\n", strings.Join(detectedAgents, ", "))
+				if ardiaPluginPath != "" {
+					fmt.Fprintf(w, "Ardia plugin installed: %s\n", ardiaPluginPath)
+				}
+				if browseInstalled {
+					fmt.Fprintln(w, "OpenCode `browse` detected: Chrome zero-popup recording (`pp record --backend browse`) and `--via browse` ready.")
+				}
+				if apply {
+					if len(applied) > 0 {
+						fmt.Fprintln(w, "\nWired `pp mcp` (5-tool server) and routing skill into:")
+						for _, p := range applied {
+							fmt.Fprintf(w, "  %s\n", p)
+						}
+					}
+					fmt.Fprintln(w, "\nDone. Open a new Claude Code, Codex, or Cursor session and ask in plain English.")
+				} else {
+					fmt.Fprintln(w, "\nRun `pp setup --apply` to automatically wire this 5-tool MCP entry into your detected agents, or add manually:")
+					fmt.Fprintf(w, "  \"printing-press\": { \"command\": %s, \"args\": [\"mcp\"] }\n", strconv.Quote(ppBin))
+					fmt.Fprintln(w, "\nNext: run `pp onboard` to match your browser domains against all 616+ Printing Press apps.")
+				}
 			}
-			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "Detected agent environments: %s\n", strings.Join(detectedAgents, ", "))
-			if ardiaPluginPath != "" {
-				fmt.Fprintf(w, "Ardia plugin installed: %s\n", ardiaPluginPath)
+			if len(applyErrs) > 0 {
+				return fmt.Errorf("setup --apply failed on %d target(s): %s", len(applyErrs), strings.Join(applyErrs, "; "))
 			}
-			if browseInstalled {
-				fmt.Fprintln(w, "OpenCode `browse` detected: Chrome zero-popup recording (`pp record --backend browse`) ready.")
-			}
-			fmt.Fprintln(w, "\nAdd this single 5-tool MCP entry to your agent config:")
-			fmt.Fprintln(w, `  "printing-press": { "command": "pp", "args": ["mcp"] }`)
-			fmt.Fprintln(w, "\nNext: run `pp onboard` to match your browser domains against all 616+ Printing Press apps.")
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&apply, "apply", false, "Automatically write the 5-tool `printing-press` MCP entry and routing skill into detected Claude Code, Codex, and Cursor configs")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
+}
+
+func resolvePPBinaryPath(home string) string {
+	if p, err := exec.LookPath("pp"); err == nil && p != "" {
+		return p
+	}
+	candidate := filepath.Join(home, ".local", "bin", "pp")
+	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		return candidate
+	}
+	if exe, err := os.Executable(); err == nil && strings.HasSuffix(filepath.Base(exe), "pp") {
+		return exe
+	}
+	return "pp"
+}
+
+func upsertJSONMCPServer(cfgPath, serverName, ppBin string, includeType bool) error {
+	doc := make(map[string]any)
+	raw, err := os.ReadFile(cfgPath)
+	if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+		if uErr := json.Unmarshal(raw, &doc); uErr != nil {
+			return fmt.Errorf("parsing existing JSON: %w", uErr)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = make(map[string]any)
+	}
+	entry := map[string]any{
+		"command": ppBin,
+		"args":    []string{"mcp"},
+	}
+	if includeType {
+		entry["type"] = "stdio"
+	}
+	servers[serverName] = entry
+	doc["mcpServers"] = servers
+
+	encoded, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		return err
+	}
+	tmpPath := cfgPath + ".pp-tmp"
+	if err := os.WriteFile(tmpPath, encoded, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, cfgPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func upsertCodexTOMLMCPServer(cfgPath, serverName, ppBin string) error {
+	var existing string
+	if raw, err := os.ReadFile(cfgPath); err == nil {
+		existing = string(raw)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	header := "[mcp_servers." + serverName + "]"
+	if strings.Contains(existing, header) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString(existing)
+	if existing != "" && !strings.HasSuffix(existing, "\n") {
+		b.WriteByte('\n')
+	}
+	if existing != "" {
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "%s\ncommand = %s\nargs = [\"mcp\"]\n", header, strconv.Quote(ppBin))
+	tmpPath := cfgPath + ".pp-tmp"
+	if err := os.WriteFile(tmpPath, []byte(b.String()), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, cfgPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func writeDefaultPPSkill(skillPath string) error {
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o700); err != nil {
+		return err
+	}
+	const content = `---
+name: printing-press-pp
+description: >
+  Use Printing Press 2.0 (pp) MCP tools (pp_route, pp_discover, pp_run,
+  pp_lake_search, pp_lake_sql) BEFORE opening a browser tab or scraping web
+  pages for live scores, news, consumer apps (Instacart, Amazon Orders,
+  DoorDash, Airbnb, Monarch Money, Linear, GitHub, Hacker News, ESPN), or
+  personal synced data.
+---
+
+# Printing Press 2.0 (pp) Fast Path
+
+When the user asks about live sports scores, news, or any of the 616+ supported
+web apps (or personal data synced to the local Life Lake):
+
+1. Check ` + "`pp_route`" + ` or ` + "`pp_discover`" + ` first.
+2. Call ` + "`pp_run`" + ` for direct ~150ms JSON instead of opening a browser tab.
+   - For sites that need Google Chrome's logged-in HttpOnly cookies, pass ` + "`via_browse: true`" + `.
+   - Mutating actions require explicit user confirmation (` + "`confirm_mutation: true`" + `).
+3. For cross-app personal queries, check ` + "`pp_lake_search`" + ` or ` + "`pp_lake_sql`" + `.
+4. Fall back to a real browser (Ardia or Chrome) only when no fast path matches
+   or human login/2FA/Passkey/payment confirmation is needed.
+`
+	return os.WriteFile(skillPath, []byte(content), 0o600)
 }
 
 // buildBoundedRunJSON preserves strict JSON validity whenever a RunResult
