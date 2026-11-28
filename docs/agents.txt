@@ -74,7 +74,7 @@ Save these rules in your agent's persistent instructions:
 1. Before opening a browser tab (`ardia browse`, `browse`, or computer-use) for a known consumer site, SaaS app, or repeat lookup, check the fast path first:
    `pp route <url-or-app> --json`
 2. If `matched: true`, call `pp run <app> <cmd> --compact --json` (or MCP `pp_run`). All 616+ library binaries auto-hydrate (SHA-256 verified, zero Go) on first call and run in ~150ms thereafter. Pass `--via browse` / `via_browse: true` when a Cartridge needs Chrome's logged-in cookies.
-3. For multiple lookups in one turn, use `pp batch '[...]'`.
+3. For multiple `route`, Cartridge `run`, or Life Lake (`lake_search`/`lake_sql`) operations in one turn, use `pp batch '[...]'` (for prebuilt library binaries such as `digg` or `instacart`, invoke `pp run <app> ...` directly).
 4. If `matched: false` and the user will repeat this workflow, compile it once from a real browser session:
    `pp record --backend auto <url>` (Ardia first, then Chrome via OpenCode `browse`) or `pp record --from-har <capture.har>`.
    Every subsequent run skips the browser forever.
