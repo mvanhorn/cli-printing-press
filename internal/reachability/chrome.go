@@ -224,25 +224,13 @@ func chromeDialTCP(ctx context.Context, dialer *net.Dialer, addr string, rootCAs
 	default:
 		return nil, fmt.Errorf("chrome transport: unsupported proxy scheme %q", proxyURL.Scheme)
 	}
-	proxyAddr := proxyURL.Host
-	if _, _, err := net.SplitHostPort(proxyAddr); err != nil {
-		port := "80"
-		if proxyURL.Scheme == "https" {
-			port = "443"
-		}
-		proxyAddr = net.JoinHostPort(proxyAddr, port)
-	}
+	proxyAddr := formatProxyAddr(proxyURL)
 	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
 	}
 	if proxyURL.Scheme == "https" {
-		host, _, splitErr := net.SplitHostPort(proxyAddr)
-		if splitErr != nil {
-			_ = conn.Close()
-			return nil, splitErr
-		}
-		tlsConn := tls.Client(conn, &tls.Config{ServerName: host, RootCAs: rootCAs})
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: proxyURL.Hostname(), RootCAs: rootCAs})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = conn.Close()
 			return nil, err
@@ -255,6 +243,17 @@ func chromeDialTCP(ctx context.Context, dialer *net.Dialer, addr string, rootCAs
 		return nil, err
 	}
 	return &chromePrefixedConn{Conn: conn, r: br}, nil
+}
+
+func formatProxyAddr(proxyURL *url.URL) string {
+	port := proxyURL.Port()
+	if port == "" {
+		port = "80"
+		if proxyURL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
 }
 
 func chromeProxyCONNECT(ctx context.Context, conn net.Conn, addr string, proxyURL *url.URL) (*bufio.Reader, error) {
