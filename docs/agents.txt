@@ -1,4 +1,4 @@
-# Printing Press 2.0 — Agent Self-Onboarding Instructions (agents.txt)
+# Printing Press 2.0 - Agent Self-Onboarding Instructions (agents.txt)
 #
 # Paste this into Claude Code, Claude Cowork, OpenClaw, Hermes, Codex, OpenAI Dots,
 # Grok Bot, Cursor, or any terminal agent:
@@ -7,10 +7,11 @@
 #   https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/docs/agents.txt
 #
 # Zero Go compiler required. Installs one prebuilt `pp` binary, verifies its SHA-256
-# checksum, enables instant access to 616+ local apps + Personal Life Lake + lean 5-tool MCP,
-# and installs the "skip pixels on repeat work" routing rule.
+# checksum, wires the single 5-tool MCP server into detected coding agents, detects
+# which of the 616+ supported apps you already use in Ardia/Chrome, and enables
+# fast (~150ms) local access to your apps + Personal Life Lake.
 
-## Part A — Install the single `pp` binary (zero Go required)
+## Part A - Install `pp` and wire your agents (zero Go required)
 
 1. Install `pp` to `~/.local/bin/pp`:
 
@@ -24,63 +25,58 @@
    pp --version
    ```
 
-2. Smoke-test a zero-auth starter cartridge (~150ms, ~140 tokens, no browser):
+2. Wire the single 5-tool local MCP server (`pp mcp`), Ardia plugin (if installed), and routing skill automatically:
+
+   ```bash
+   pp setup --apply
+   ```
+
+   This single stdio server exposes 5 progressive-discovery tools (`pp_route`, `pp_discover`, `pp_run`, `pp_lake_search`, `pp_lake_sql`) plus MCP `initialize` instructions so deferred-tool hosts like Claude Code auto-discover `pp_run` across all 616+ apps and your local Life Lake.
+
+   Manual config equivalent (for Claude Desktop, Cowork, Windsurf, or custom hosts):
+
+   ```json
+   {
+     "mcpServers": {
+       "printing-press": {
+         "command": "pp",
+         "args": ["mcp"]
+       }
+     }
+   }
+   ```
+
+3. Match your existing Ardia, Chrome, or Firefox domains against the 616+ supported apps (reads plaintext hostnames only, zero Keychain popups):
+
+   ```bash
+   pp onboard
+   ```
+
+4. Smoke-test a starter cartridge (~150ms, compact JSON, no browser tab) and seed your local Personal Life Lake (`~/.pp/lake.db`):
 
    ```bash
    pp route https://www.espn.com/nba/scoreboard --json
    pp run espn scoreboard --compact --limit 5 --json
-   ```
-
-3. Seed your private local Personal Life Lake (`~/.pp/lake.db`):
-
-   ```bash
    pp lake sync espn hackernews
-   pp lake stats --json
-   ```
-
-4. Run the Verified Local Trust Shield audit:
-
-   ```bash
    pp audit --json
    ```
 
-## Part B — Connect the lean 5-tool local MCP server (optional, ~650 tokens total)
+## Part B - Logged-In Browser Sessions (Ardia + Google Chrome)
 
-For MCP hosts (Claude Desktop, Cowork, Cursor, OpenClaw, Hermes, Windsurf):
+- Ardia Browser: `pp auth sync <app> --browser ardia` syncs strictly one domain's cookies into encrypted `~/.press-auth/<domain>.json` (cached 24h and checked against JWT expiry so repeat calls stay ~1ms).
+- Google Chrome (via OpenCode `browse`): pass `--via browse` (CLI) or `via_browse: true` (MCP `pp_run`) to run HTTP/GraphQL Cartridges inside Chrome using `credentials: "include"` (attaches real HttpOnly cookies with zero Keychain prompts, enforces `trust.allowed_hosts`, and chunks >100 KB responses cleanly).
+- 1Password Touch ID: configure `op_ref: op://Vault/Item/field` (or an env var starting with `op://`) for zero plaintext API tokens on disk.
 
-```json
-{
-  "mcpServers": {
-    "printing-press": {
-      "command": "pp",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-This single stdio server exposes 5 progressive-discovery tools (`pp_route`, `pp_discover`, `pp_run`, `pp_lake_search`, `pp_lake_sql`) covering all 616+ Printing Press apps and your local Life Lake — with zero remote MCP server and zero tool-mutation rug-pull risk.
-
-## Part C — Wire into Ardia Browser (optional, macOS)
-
-If `/Applications/Ardia.app` is installed, print and install the Printing Press Ardia plugin + omnibox hook:
-
-```bash
-pp ardia setup
-```
-
-Then enable the plugin in Ardia > Settings > Plugins.
-
-## Part D — Standing Agent Routing Rule ("Skip Pixels on Repeat Work")
+## Part C - Standing Agent Routing Rule ("Skip Pixels on Repeat Work")
 
 Save these rules in your agent's persistent instructions:
 
 1. Before opening a browser tab (`ardia browse`, `browse`, or computer-use) for a known consumer site, SaaS app, or repeat lookup, check the fast path first:
    `pp route <url-or-app> --json`
-2. If `matched: true` and installed, run `pp run <app> <cmd> --compact --json` (or the installed `<app>-pp-cli` binary). Typical win: ~150ms and ~150 tokens instead of 4-70 seconds and 12,000-50,000 tokens.
-3. If `matched: true` and not yet installed, install with zero Go compilation via `pp use <app>` (downloads checksum-verified prebuilt binary or signed cartridge in <2s).
-4. If `matched: false` and the user will run this workflow more than once, compile it once from a real browser session:
-   `pp record --backend ardia <url>` (or `pp record --from-har <capture.har>`)
+2. If `matched: true`, call `pp run <app> <cmd> --compact --json` (or MCP `pp_run`). All 616+ library binaries auto-hydrate (SHA-256 verified, zero Go) on first call and run in ~150ms thereafter. Pass `--via browse` / `via_browse: true` when a Cartridge needs Chrome's logged-in cookies.
+3. For multiple lookups in one turn, use `pp batch '[...]'`.
+4. If `matched: false` and the user will repeat this workflow, compile it once from a real browser session:
+   `pp record --backend auto <url>` (Ardia first, then Chrome via OpenCode `browse`) or `pp record --from-har <capture.har>`.
    Every subsequent run skips the browser forever.
 5. For cross-app personal questions, query the local Life Lake first:
    `pp lake search "<query>" --json` or `pp lake sql "SELECT ..."` (read-only, ~5ms, zero cloud).

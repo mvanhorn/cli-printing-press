@@ -24,40 +24,41 @@ Or paste one sentence into your agent using [docs/agents.txt](docs/agents.txt):
 Set up Printing Press 2.0 on this machine by following https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/docs/agents.txt
 ```
 
-Then skip the browser on repeat work:
+Then wire your agent once and skip the browser on repeat work:
 
 ```bash
-# 1. Check the fast path before opening a browser tab (<5ms across 616+ apps)
+# 1. Wire the 5-tool local MCP server into Claude Code, Codex, Cursor, and Ardia in one command
+pp setup --apply
+
+# 2. Detect which of the 616+ apps you already use in Ardia or Chrome (plaintext hostnames only, zero Keychain popups)
+pp onboard
+
+# 3. Check the fast path before opening a browser tab (<5ms across 616+ apps)
 pp route https://www.espn.com/nba/scoreboard
 
-# 2. Run an instant local Cartridge (~150ms, ~140 tokens, zero browser)
+# 4. Run an instant local Cartridge (~150ms, ~140 tokens, zero browser) or inside real Google Chrome (--via browse)
 pp run espn scoreboard --compact --limit 5
-pp run hackernews frontpage --compact --limit 10
+pp run espn scoreboard --via browse --compact --limit 5
 
-# 3. Install any of the 616+ Printing Press Library apps in <2s (zero Go, SHA-256 verified)
-pp search flights
-pp use flight-goat instacart airbnb
+# 5. Run or install any of the 616+ Printing Press Library apps (auto-hydrates on first call, zero Go, SHA-256 verified)
+pp search instacart
+pp run digg --help
+pp auth sync instacart --browser auto
 
-# 4. Compile ANY new website once via Ardia background browser or HAR -> 15KB host-locked Cartridge
-pp record --backend ardia https://example.com
+# 6. Compile ANY new website once via Ardia or Chrome (OpenCode browse) or HAR -> 15KB host-locked Cartridge
+pp record --backend auto https://example.com
 pp record --from-har ./capture.har --name my-app
 
-# 5. Query your unified local Personal Life Lake (~/.pp/lake.db, SQLite + FTS5, strictly read-only SQL)
+# 7. Query your unified local Personal Life Lake (~/.pp/lake.db, SQLite + FTS5, strictly read-only SQL)
 pp lake sync espn hackernews chrome-history
 pp lake search "nba"
 pp lake sql "SELECT source, title, url FROM lake_items ORDER BY synced_at DESC LIMIT 10"
 
-# 6. Single lean 5-tool local MCP server (~650 tokens total for all 616+ apps + Life Lake)
-pp mcp
-
-# 7. Verified Local Trust Shield (SHA-256 lockfile + scans external MCP configs for rug-pull / prompt injection)
+# 8. Verified Local Trust Shield (SHA-256 lockfile + scans external MCP configs for rug-pull / prompt injection)
 pp audit
 
-# 8. Diagnose drift & surgically auto-heal when an upstream site changes
-pp heal my-app list --backend ardia
-
-# 9. Wire directly into Ardia Browser (plugin + omnibox `pp` hook)
-pp ardia setup
+# 9. Diagnose drift and surgically auto-heal when an upstream site changes
+pp heal my-app list --backend auto
 ```
 
 For full custom standalone Go CLI generation (the craftsman factory), keep using `cli-printing-press` and `/printing-press <app>` below, or run `pp eject <app>` to export any Cartridge.

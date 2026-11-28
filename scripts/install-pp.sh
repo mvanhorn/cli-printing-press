@@ -72,4 +72,4 @@ case ":${PATH}:" in
     echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
     ;;
 esac
-echo "Next: pp route https://www.espn.com/nba/scoreboard && pp run espn scoreboard --compact"
+echo "Next: pp setup --apply && pp onboard"

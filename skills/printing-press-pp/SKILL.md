@@ -20,18 +20,20 @@ description: "Printing Press 2.0 zero-pixel browser middleware and local app-to-
      pp record --from-har ./capture.har # or exported HAR
      ```
 
-2. Personalize in one command from your local Chrome/Ardia domains:
+2. Personalize and wire agents in one command:
    ```bash
+   pp setup --apply       # wires 5-tool `pp mcp` into Claude Code, Codex, Cursor, and Ardia plugin
    pp onboard             # reads plaintext host_key + visit counts only (zero Keychain prompts, zero secret values)
    pp onboard --install   # optionally pre-warm matched apps locally
-   pp setup               # detect agents + wire Ardia plugin + MCP snippet
    ```
 
-3. Logged-in sessions (Ardia cookies + 1Password Touch ID):
+3. Logged-in sessions (Ardia cookies, Google Chrome `--via browse`, and 1Password Touch ID):
    ```bash
-   pp auth sync <app>     # pulls strictly one domain's cookies from Ardia into encrypted press-auth store
+   pp auth sync <app> --browser auto            # tries agentcookie -> Ardia -> Firefox (cached 24h with JWT expiry check)
+   pp run <app> <command> --via browse --json   # runs inside real Google Chrome using HttpOnly cookies (zero Keychain prompts)
    ```
-   - For API-key Cartridges, set `op_ref: op://Vault/Item/field` (or an env var starting with `op://`) to hydrate via 1Password CLI Touch ID with zero plaintext tokens on disk.
+   - In MCP `pp_run`, pass `via_browse: true` for the same Chrome HttpOnly session path.
+   - For API-key Cartridges, set `op_ref: op://Vault/Item/field` (or an env var starting with `op://`) to hydrate via 1Password CLI Touch ID with zero plaintext tokens on disk (omit `--via browse` so direct credentials stay over TLS).
    - At login, 2FA, Passkey, or payment gates, `pp` returns a structured `handoff` hint instead of stealing focus.
 
 4. Batch parallel calls, guard output size, and query the local Life Lake:
