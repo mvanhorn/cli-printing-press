@@ -591,7 +591,15 @@ func newSetupCmd() *cobra.Command {
 			var applied []string
 			var applyErrs []string
 			if apply {
-				if hasDir(filepath.Join(home, ".claude")) {
+				claudeCfgDir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
+				if claudeCfgDir != "" && hasDir(claudeCfgDir) {
+					claudeCfg := filepath.Join(claudeCfgDir, ".claude.json")
+					if err := upsertJSONMCPServer(claudeCfg, "printing-press", ppBin, true); err != nil {
+						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", claudeCfg, err))
+					} else {
+						applied = append(applied, claudeCfg)
+					}
+				} else if hasDir(filepath.Join(home, ".claude")) {
 					claudeCfg := filepath.Join(home, ".claude.json")
 					if err := upsertJSONMCPServer(claudeCfg, "printing-press", ppBin, true); err != nil {
 						applyErrs = append(applyErrs, fmt.Sprintf("%s: %v", claudeCfg, err))

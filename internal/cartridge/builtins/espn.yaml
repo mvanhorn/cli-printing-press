@@ -51,6 +51,29 @@ commands:
       title: name
       summary: status.type.shortDetail
       timestamp: date
+  summary:
+    description: Game box score leaders, team stats, and recap headline/story for one ESPN event ID (answers "why did they win").
+    driver: http
+    method: GET
+    url: https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary
+    params:
+      sport:
+        type: string
+        default: basketball
+      league:
+        type: string
+        default: nba
+      event:
+        type: string
+        required: true
+        description: ESPN event ID from `scoreboard`
+    query:
+      event: "{event}"
+    compact_fields:
+      - headline=article.headline
+      - description=article.description
+      - leaders=leaders
+      - status=header.competitions[0].status.type.shortDetail
   news:
     description: Latest breaking headlines and injury news for a sport and league.
     driver: http
